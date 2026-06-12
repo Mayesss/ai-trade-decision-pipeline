@@ -10,22 +10,22 @@ import {
 } from "./composerExecution";
 import { EXIT_RULE_RESEARCH_PROFILES } from "./exitRulePresets";
 import { REGIME_GATE_RESEARCH_PROFILES } from "./regimeGatePresets";
-import { listScalpV2CatalogStrategies } from "./strategyCatalog";
+import { listScalpComposerCatalogStrategies } from "./strategyCatalog";
 
 import type {
-  ScalpV2CandidateDslSpec,
-  ScalpV2ComposerModelFamily,
-  ScalpV2ComposerModelScore,
-  ScalpV2ModelGuidedCandidateDslSpec,
-  ScalpV2PrimitiveBlock,
-  ScalpV2PrimitiveBlockMap,
-  ScalpV2PrimitiveFamily,
-  ScalpV2Session,
-  ScalpV2StrategyPrimitiveReference,
-  ScalpV2Venue,
+  ScalpComposerCandidateDslSpec,
+  ScalpComposerModelFamily,
+  ScalpComposerModelScore,
+  ScalpComposerModelGuidedCandidateDslSpec,
+  ScalpComposerPrimitiveBlock,
+  ScalpComposerPrimitiveBlockMap,
+  ScalpComposerPrimitiveFamily,
+  ScalpComposerSession,
+  ScalpComposerStrategyPrimitiveReference,
+  ScalpComposerVenue,
 } from "./types";
 
-const PRIMITIVE_FAMILIES: ScalpV2PrimitiveFamily[] = [
+const PRIMITIVE_FAMILIES: ScalpComposerPrimitiveFamily[] = [
   "pattern",
   "session_filter",
   "state_machine",
@@ -34,7 +34,7 @@ const PRIMITIVE_FAMILIES: ScalpV2PrimitiveFamily[] = [
   "risk_rule",
 ];
 
-function emptyBlockMap(): ScalpV2PrimitiveBlockMap {
+function emptyBlockMap(): ScalpComposerPrimitiveBlockMap {
   return {
     pattern: [],
     session_filter: [],
@@ -46,8 +46,8 @@ function emptyBlockMap(): ScalpV2PrimitiveBlockMap {
 }
 
 function toBlockMap(
-  patch: Partial<ScalpV2PrimitiveBlockMap>,
-): ScalpV2PrimitiveBlockMap {
+  patch: Partial<ScalpComposerPrimitiveBlockMap>,
+): ScalpComposerPrimitiveBlockMap {
   return {
     pattern: uniqueStrings(patch.pattern || []),
     session_filter: uniqueStrings(patch.session_filter || []),
@@ -113,7 +113,7 @@ function envBool(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
-const PRIMITIVE_BLOCKS: ScalpV2PrimitiveBlock[] = [
+const PRIMITIVE_BLOCKS: ScalpComposerPrimitiveBlock[] = [
   {
     id: "pattern_regime_bias",
     family: "pattern",
@@ -655,7 +655,7 @@ const PRIMITIVE_BLOCKS: ScalpV2PrimitiveBlock[] = [
   },
 ];
 
-const STRATEGY_REFERENCE_MAP: Record<string, ScalpV2PrimitiveBlockMap> = {
+const STRATEGY_REFERENCE_MAP: Record<string, ScalpComposerPrimitiveBlockMap> = {
   regime_pullback_m15_m3: toBlockMap({
     pattern: [
       "pattern_regime_bias",
@@ -832,7 +832,7 @@ const STRATEGY_REFERENCE_MAP: Record<string, ScalpV2PrimitiveBlockMap> = {
   }),
 };
 
-const SESSION_PRIMARY_BLOCK_BY_PROFILE: Record<ScalpV2Session, string> = {
+const SESSION_PRIMARY_BLOCK_BY_PROFILE: Record<ScalpComposerSession, string> = {
   tokyo: "session_tokyo_window",
   berlin: "session_berlin_window",
   newyork: "session_newyork_window",
@@ -840,7 +840,7 @@ const SESSION_PRIMARY_BLOCK_BY_PROFILE: Record<ScalpV2Session, string> = {
   sydney: "session_sydney_window",
 };
 
-function fallbackReferenceMap(): ScalpV2PrimitiveBlockMap {
+function fallbackReferenceMap(): ScalpComposerPrimitiveBlockMap {
   return toBlockMap({
     pattern: ["pattern_regime_bias", "pattern_pullback_structure", "pattern_ifvg_displacement"],
     session_filter: ["session_berlin_window", "session_raid_window"],
@@ -874,8 +874,8 @@ function strategyNotes(strategyId: string): string[] {
 }
 
 function familyBlockUsageCount(
-  references: ScalpV2StrategyPrimitiveReference[],
-  family: ScalpV2PrimitiveFamily,
+  references: ScalpComposerStrategyPrimitiveReference[],
+  family: ScalpComposerPrimitiveFamily,
 ): Map<string, number> {
   const counts = new Map<string, number>();
   for (const ref of references) {
@@ -895,18 +895,18 @@ function strategyIdsForBlock(blockId: string): string[] {
   return Array.from(strategyIds);
 }
 
-function blockByIdMap(): Map<string, ScalpV2PrimitiveBlock> {
+function blockByIdMap(): Map<string, ScalpComposerPrimitiveBlock> {
   return new Map(PRIMITIVE_BLOCKS.map((row) => [row.id, row]));
 }
 
 function scoreBlockForContext(params: {
   blockId: string;
-  family: ScalpV2PrimitiveFamily;
+  family: ScalpComposerPrimitiveFamily;
   symbol: string;
-  venue: ScalpV2Venue;
-  entrySessionProfile: ScalpV2Session;
+  venue: ScalpComposerVenue;
+  entrySessionProfile: ScalpComposerSession;
   usageCounts: Map<string, number>;
-  blockMap: Map<string, ScalpV2PrimitiveBlock>;
+  blockMap: Map<string, ScalpComposerPrimitiveBlock>;
 }): number {
   const base = params.usageCounts.get(params.blockId) || 0;
   const block = params.blockMap.get(params.blockId);
@@ -942,13 +942,13 @@ function scoreBlockForContext(params: {
 }
 
 function sortedBlockPool(params: {
-  family: ScalpV2PrimitiveFamily;
-  references: ScalpV2StrategyPrimitiveReference[];
+  family: ScalpComposerPrimitiveFamily;
+  references: ScalpComposerStrategyPrimitiveReference[];
   symbol: string;
-  venue: ScalpV2Venue;
-  entrySessionProfile: ScalpV2Session;
+  venue: ScalpComposerVenue;
+  entrySessionProfile: ScalpComposerSession;
   maxSize: number;
-  blockMap: Map<string, ScalpV2PrimitiveBlock>;
+  blockMap: Map<string, ScalpComposerPrimitiveBlock>;
 }): string[] {
   const usageCounts = familyBlockUsageCount(params.references, params.family);
   const sorted = Array.from(usageCounts.keys()).sort((a, b) => {
@@ -1055,7 +1055,7 @@ function normalizeCursorOffset(value: unknown): number {
   return n;
 }
 
-export function resolveScalpV2CandidateEvaluationWindow<T>(params: {
+export function resolveScalpComposerCandidateEvaluationWindow<T>(params: {
   candidates: T[];
   maxCandidates: number;
   startOffset?: number;
@@ -1117,7 +1117,7 @@ function hasBlockId(
 function hasBlockTag(
   blockIds: string[],
   tag: string,
-  blockMap: Map<string, ScalpV2PrimitiveBlock>,
+  blockMap: Map<string, ScalpComposerPrimitiveBlock>,
 ): boolean {
   const normalizedTag = String(tag || "").trim().toLowerCase();
   if (!normalizedTag) return false;
@@ -1139,7 +1139,7 @@ function inferComposerFamily(
   interpretableScore: number,
   treeScore: number,
   sequenceScore: number,
-): ScalpV2ComposerModelFamily {
+): ScalpComposerModelFamily {
   const best = Math.max(interpretableScore, treeScore, sequenceScore);
   if (best === treeScore) return "tree_split_proxy";
   if (best === sequenceScore) return "sequence_state_proxy";
@@ -1147,9 +1147,9 @@ function inferComposerFamily(
 }
 
 function buildComposerModelScore(params: {
-  dsl: ScalpV2CandidateDslSpec;
-  blockMap: Map<string, ScalpV2PrimitiveBlock>;
-}): ScalpV2ComposerModelScore {
+  dsl: ScalpComposerCandidateDslSpec;
+  blockMap: Map<string, ScalpComposerPrimitiveBlock>;
+}): ScalpComposerModelScore {
   const { dsl, blockMap } = params;
   const patternBlocks = dsl.blocksByFamily.pattern;
   const sessionBlocks = dsl.blocksByFamily.session_filter;
@@ -1266,12 +1266,12 @@ function buildComposerModelScore(params: {
   };
 }
 
-export function listScalpV2PrimitiveBlocks(): ScalpV2PrimitiveBlock[] {
+export function listScalpComposerPrimitiveBlocks(): ScalpComposerPrimitiveBlock[] {
   return PRIMITIVE_BLOCKS.slice();
 }
 
-export function listScalpV2StrategyPrimitiveReferences(): ScalpV2StrategyPrimitiveReference[] {
-  return listScalpV2CatalogStrategies().map((strategy) => {
+export function listScalpComposerStrategyPrimitiveReferences(): ScalpComposerStrategyPrimitiveReference[] {
+  return listScalpComposerCatalogStrategies().map((strategy) => {
     const strategyId = strategy.id;
     const mapped = STRATEGY_REFERENCE_MAP[strategyId] || fallbackReferenceMap();
     return {
@@ -1282,11 +1282,11 @@ export function listScalpV2StrategyPrimitiveReferences(): ScalpV2StrategyPrimiti
   });
 }
 
-export function buildScalpV2PrimitiveCatalogByFamily(): Record<
-  ScalpV2PrimitiveFamily,
-  ScalpV2PrimitiveBlock[]
+export function buildScalpComposerPrimitiveCatalogByFamily(): Record<
+  ScalpComposerPrimitiveFamily,
+  ScalpComposerPrimitiveBlock[]
 > {
-  const out: Record<ScalpV2PrimitiveFamily, ScalpV2PrimitiveBlock[]> = {
+  const out: Record<ScalpComposerPrimitiveFamily, ScalpComposerPrimitiveBlock[]> = {
     pattern: [],
     session_filter: [],
     state_machine: [],
@@ -1301,26 +1301,26 @@ export function buildScalpV2PrimitiveCatalogByFamily(): Record<
   return out;
 }
 
-export function toScalpV2ResearchCursorKey(params: {
-  venue: ScalpV2Venue;
+export function toScalpComposerResearchCursorKey(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
 }): string {
   return `v2:${params.venue}:${normalizeSymbol(params.symbol)}:${params.entrySessionProfile}`;
 }
 
-export function buildScalpV2CandidateDslGrid(params: {
-  venue: ScalpV2Venue;
+export function buildScalpComposerCandidateDslGrid(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   maxCandidates?: number;
-}): ScalpV2CandidateDslSpec[] {
+}): ScalpComposerCandidateDslSpec[] {
   const symbol = normalizeSymbol(params.symbol);
   const maxCandidates = Math.max(
     1,
     Math.min(6000, Math.floor(params.maxCandidates || 360)),
   );
-  const references = listScalpV2StrategyPrimitiveReferences();
+  const references = listScalpComposerStrategyPrimitiveReferences();
   const blockMap = blockByIdMap();
 
   const patternPoolSize = envInt(
@@ -1415,7 +1415,7 @@ export function buildScalpV2CandidateDslGrid(params: {
   // Candidates are collected unsorted, then ranked by supportScore so the
   // best-supported combos survive the maxCandidates cap.
   type RawCandidate = {
-    blocksByFamily: ScalpV2PrimitiveBlockMap;
+    blocksByFamily: ScalpComposerPrimitiveBlockMap;
     referenceStrategyIds: string[];
     supportScore: number;
     patternBlock: string;
@@ -1476,7 +1476,7 @@ export function buildScalpV2CandidateDslGrid(params: {
   rawCandidates.sort((a, b) => b.supportScore - a.supportScore);
   const capped = rawCandidates.slice(0, maxCandidates);
 
-  const out: ScalpV2CandidateDslSpec[] = [];
+  const out: ScalpComposerCandidateDslSpec[] = [];
   for (const raw of capped) {
     const digest = candidateHash(
       `${params.venue}:${symbol}:${params.entrySessionProfile}:${JSON.stringify(raw.blocksByFamily)}`,
@@ -1497,12 +1497,12 @@ export function buildScalpV2CandidateDslGrid(params: {
   return out;
 }
 
-export function buildScalpV2ModelGuidedComposerGrid(params: {
-  venue: ScalpV2Venue;
+export function buildScalpComposerModelGuidedComposerGrid(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   maxCandidates?: number;
-}): ScalpV2ModelGuidedCandidateDslSpec[] {
+}): ScalpComposerModelGuidedCandidateDslSpec[] {
   const maxCandidates = Math.max(
     1,
     Math.min(6000, Math.floor(params.maxCandidates || 360)),
@@ -1521,7 +1521,7 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
         24,
       )
     : 0;
-  const baseGrid = buildScalpV2CandidateDslGrid({
+  const baseGrid = buildScalpComposerCandidateDslGrid({
     venue: params.venue,
     symbol: params.symbol,
     entrySessionProfile: params.entrySessionProfile,
@@ -1567,7 +1567,7 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
   // (variant tuple) that resolves to the same set of dimensions the
   // composer actually consumes at execution time. See the BEHAVIOR
   // FINGERPRINT comment below for the exact contract.
-  const expanded: ScalpV2ModelGuidedCandidateDslSpec[] = [];
+  const expanded: ScalpComposerModelGuidedCandidateDslSpec[] = [];
   const seenBehaviorKeys = new Set<string>();
   let dedupedByBehavior = 0;
   for (let rowIdx = 0; rowIdx < dedupedByBaseArm.length; rowIdx += 1) {
@@ -1667,24 +1667,24 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
   return expanded;
 }
 
-export function buildScalpV2SessionCandidateDslGrid(params: {
-  venue: ScalpV2Venue;
+export function buildScalpComposerSessionCandidateDslGrid(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  sessions: ScalpV2Session[];
+  sessions: ScalpComposerSession[];
   maxCandidatesPerSession?: number;
-}): ScalpV2CandidateDslSpec[] {
+}): ScalpComposerCandidateDslSpec[] {
   const sessions = uniqueStrings(params.sessions).filter(
-    (row): row is ScalpV2Session =>
+    (row): row is ScalpComposerSession =>
       row === "tokyo" ||
       row === "berlin" ||
       row === "newyork" ||
       row === "pacific" ||
       row === "sydney",
   );
-  const out: ScalpV2CandidateDslSpec[] = [];
+  const out: ScalpComposerCandidateDslSpec[] = [];
   for (const session of sessions) {
     out.push(
-      ...buildScalpV2CandidateDslGrid({
+      ...buildScalpComposerCandidateDslGrid({
         venue: params.venue,
         symbol: params.symbol,
         entrySessionProfile: session,
@@ -1699,14 +1699,14 @@ export function strategyPrimitiveCoverageSummary(): {
   strategiesCovered: number;
   strategyCount: number;
   primitiveBlocks: number;
-  families: Record<ScalpV2PrimitiveFamily, number>;
+  families: Record<ScalpComposerPrimitiveFamily, number>;
 } {
-  const strategies = listScalpV2CatalogStrategies().map((row) => row.id);
-  const refs = listScalpV2StrategyPrimitiveReferences();
+  const strategies = listScalpComposerCatalogStrategies().map((row) => row.id);
+  const refs = listScalpComposerStrategyPrimitiveReferences();
   const covered = refs.filter((row) =>
     PRIMITIVE_FAMILIES.some((family) => row.blocksByFamily[family].length > 0),
   ).length;
-  const families = PRIMITIVE_FAMILIES.reduce<Record<ScalpV2PrimitiveFamily, number>>(
+  const families = PRIMITIVE_FAMILIES.reduce<Record<ScalpComposerPrimitiveFamily, number>>(
     (acc, family) => {
       acc[family] = PRIMITIVE_BLOCKS.filter((row) => row.family === family).length;
       return acc;

@@ -4,14 +4,14 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  listScalpV2ExecutionEvents,
-  listScalpV2Deployments,
-  listScalpV2JournalRows,
-  listScalpV2Jobs,
-  listScalpV2LedgerRows,
-  listScalpV2SessionSnapshots,
-  loadScalpV2RuntimeConfig,
-  loadScalpV2Summary,
+  listScalpComposerExecutionEvents,
+  listScalpComposerDeployments,
+  listScalpComposerJournalRows,
+  listScalpComposerJobs,
+  listScalpComposerLedgerRows,
+  listScalpComposerSessionSnapshots,
+  loadScalpComposerRuntimeConfig,
+  loadScalpComposerSummary,
 } from "../../../../../lib/scalp/composer/db";
 import {
   parseBool,
@@ -20,7 +20,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { isScalpV4Enabled, loadScalpV4CurrentRegimeSnapshot } from "../../../../../lib/scalp/regimes";
+import { isScalpRegimeEnabled, loadScalpRegimeCurrentRegimeSnapshot } from "../../../../../lib/scalp/regimes";
 
 // In-memory cache — avoids hammering Neon on every dashboard refresh
 let summaryCache: { data: Record<string, unknown>; ts: number; key: string } | null = null;
@@ -118,10 +118,10 @@ export default async function handler(
     }
 
     // Sequential queries — Neon serverless can't handle parallel reliably
-    const runtime = await loadScalpV2RuntimeConfig();
-    const summary = await loadScalpV2Summary();
-    const jobs = await listScalpV2Jobs({ limit: jobLimit });
-    const deploymentRows = await listScalpV2Deployments({
+    const runtime = await loadScalpComposerRuntimeConfig();
+    const summary = await loadScalpComposerSummary();
+    const jobs = await listScalpComposerJobs({ limit: jobLimit });
+    const deploymentRows = await listScalpComposerDeployments({
       limit: deploymentLimit,
       session,
       venue,
@@ -133,9 +133,9 @@ export default async function handler(
       .filter(Boolean)
       .slice(0, runtimeDeploymentLimit);
     const v4RegimeByDeploymentId = new Map<string, Record<string, unknown>>();
-    if (isScalpV4Enabled()) {
+    if (isScalpRegimeEnabled()) {
       for (const row of deploymentRows.filter((deployment) => deployment.enabled).slice(0, runtimeDeploymentLimit)) {
-        const current = await loadScalpV4CurrentRegimeSnapshot({
+        const current = await loadScalpRegimeCurrentRegimeSnapshot({
           venue: row.venue,
           symbol: row.symbol,
           nowMs: Date.now(),
@@ -165,18 +165,18 @@ export default async function handler(
     const deployments = compactDeployments
       ? deploymentsWithV4.map((row) => compactDeploymentForDashboard(row))
       : deploymentsWithV4;
-    const events = await listScalpV2ExecutionEvents({
+    const events = await listScalpComposerExecutionEvents({
       limit: eventLimit,
       venue,
       session,
     });
     const sessions = runtimeDeploymentIds.length
-      ? await listScalpV2SessionSnapshots({
+      ? await listScalpComposerSessionSnapshots({
           deploymentIds: runtimeDeploymentIds,
           limit: runtimeDeploymentIds.length,
         })
       : [];
-    const journal = await listScalpV2JournalRows({
+    const journal = await listScalpComposerJournalRows({
       limit: eventLimit,
       venue,
       session,
@@ -185,7 +185,7 @@ export default async function handler(
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const fromTsMs = Math.max(0, nowMs - THIRTY_DAYS_MS);
     const ledger = runtimeDeploymentIds.length
-      ? await listScalpV2LedgerRows({
+      ? await listScalpComposerLedgerRows({
           deploymentIds: runtimeDeploymentIds,
           fromTsMs,
           toTsMs: nowMs + 1,

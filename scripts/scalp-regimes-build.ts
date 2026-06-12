@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 import {
-  applyScalpV4Hysteresis,
-  buildScalpV4ClassifierValidityReport,
-  classifyScalpV4RawRegimes,
-  loadOrRefreshScalpV4WeeklyBars,
-  loadScalpV4DeploymentSymbols,
-  runScalpV4WeeklyRegimeBuild,
+  applyScalpRegimeHysteresis,
+  buildScalpRegimeClassifierValidityReport,
+  classifyScalpRegimeRawRegimes,
+  loadOrRefreshScalpRegimeWeeklyBars,
+  loadScalpRegimeDeploymentSymbols,
+  runScalpRegimeWeeklyRegimeBuild,
   SCALP_V4_CLASSIFIER_VERSION,
-  upsertScalpV4RegimeSnapshots,
-  type ScalpV4Venue,
+  upsertScalpRegimeSnapshots,
+  type ScalpRegimeVenue,
 } from "../lib/scalp/regimes";
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -34,15 +34,15 @@ function csv(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function venue(value: unknown): ScalpV4Venue {
+function venue(value: unknown): ScalpRegimeVenue {
   return String(value || "").toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60_000;
 const HISTORY_WEEKS = Math.max(64, Math.min(156, Math.floor(Number(process.env.SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS || 72))));
 
-async function loadWeekly(symbol: string, v: ScalpV4Venue, fromMs: number, toMs: number) {
-  return loadOrRefreshScalpV4WeeklyBars({
+async function loadWeekly(symbol: string, v: ScalpRegimeVenue, fromMs: number, toMs: number) {
+  return loadOrRefreshScalpRegimeWeeklyBars({
     symbol,
     venue: v,
     fromMs,
@@ -62,7 +62,7 @@ async function main() {
   // Default path: auto-discover from deployments and apply.
   if (!explicitSymbols) {
     if (dryRun) {
-      const targets = await loadScalpV4DeploymentSymbols();
+      const targets = await loadScalpRegimeDeploymentSymbols();
       const filtered = explicitVenues ? targets.filter((row) => explicitVenues.includes(row.venue)) : targets;
       console.log(JSON.stringify({
         ok: true,
@@ -73,9 +73,9 @@ async function main() {
       }, null, 2));
       return;
     }
-    const targets = await loadScalpV4DeploymentSymbols();
+    const targets = await loadScalpRegimeDeploymentSymbols();
     const filtered = explicitVenues ? targets.filter((row) => explicitVenues.includes(row.venue)) : targets;
-    const result = await runScalpV4WeeklyRegimeBuild({
+    const result = await runScalpRegimeWeeklyRegimeBuild({
       symbols: filtered,
       classifierVersion,
       forceValidity: force,
@@ -99,7 +99,7 @@ async function main() {
     btcUsdt: await loadWeekly("BTCUSDT", "bitget", fromMs, toMs),
   };
   const results: unknown[] = [];
-  const rowsToSave: ReturnType<typeof applyScalpV4Hysteresis> = [];
+  const rowsToSave: ReturnType<typeof applyScalpRegimeHysteresis> = [];
   let saved = 0;
   for (const v of venues) {
     for (const symbol of symbols) {
@@ -108,15 +108,15 @@ async function main() {
         results.push({ venue: v, symbol, skipped: true, reason: "missing_symbol_history" });
         continue;
       }
-      const raw = classifyScalpV4RawRegimes({
+      const raw = classifyScalpRegimeRawRegimes({
         venue: v,
         symbol,
         weeklyBars,
         marketContext: shared,
         options: { classifierVersion },
       });
-      const snapshots = applyScalpV4Hysteresis(raw);
-      const report = buildScalpV4ClassifierValidityReport({
+      const snapshots = applyScalpRegimeHysteresis(raw);
+      const report = buildScalpRegimeClassifierValidityReport({
         snapshots,
         marketBarsByName: {
           [symbol]: weeklyBars,
@@ -134,7 +134,7 @@ async function main() {
     console.log(JSON.stringify({ ok: false, dryRun, classifierVersion, reason: "classifier_validity_failed", invalid, results }, null, 2));
     process.exit(1);
   }
-  if (!dryRun) saved = await upsertScalpV4RegimeSnapshots(rowsToSave);
+  if (!dryRun) saved = await upsertScalpRegimeSnapshots(rowsToSave);
   console.log(JSON.stringify({ ok: true, dryRun, forced: force, classifierVersion, saved, results }, null, 2));
 }
 

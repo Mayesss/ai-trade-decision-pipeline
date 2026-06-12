@@ -284,7 +284,7 @@ const DECISION_ORDER: V5GateDecision[] = [
 
 // ─── page ────────────────────────────────────────────────────────────────────
 
-export default function ScalpV5Dashboard() {
+export default function ScalpResearchDashboard() {
   // Four independent slices so a slow endpoint doesn't gate the others.
   const [coverage, setCoverage] = useState<CoverageResp | null>(null);
   const [gateState, setGateState] = useState<GateStateResp | null>(null);

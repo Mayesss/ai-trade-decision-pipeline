@@ -2,15 +2,15 @@ import crypto from "crypto";
 
 import { weekStartForEntryMs } from "./week";
 import type {
-  ScalpV4CellAggregate,
-  ScalpV4CellCumulativeStat,
-  ScalpV4CellId,
-  ScalpV4EnvelopeThresholds,
-  ScalpV4IncrementalState,
-  ScalpV4RegimeEnvelope,
-  ScalpV4RegimeSnapshot,
-  ScalpV4TradeLike,
-  ScalpV4WindowResult,
+  ScalpRegimeCellAggregate,
+  ScalpRegimeCellCumulativeStat,
+  ScalpRegimeCellId,
+  ScalpRegimeEnvelopeThresholds,
+  ScalpRegimeIncrementalState,
+  ScalpRegimeEnvelope,
+  ScalpRegimeSnapshot,
+  ScalpRegimeTradeLike,
+  ScalpRegimeWindowResult,
 } from "./types";
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -21,7 +21,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 // (`minCellWindows=12`, `minCellTrades=30`). `positiveWindowPct=70` kept
 // because the distribution is bimodal — ~15% of cells exceed 70% positive
 // windows and the rest cluster well below.
-export const DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS: ScalpV4EnvelopeThresholds = {
+export const DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS: ScalpRegimeEnvelopeThresholds = {
   minCellWindows: 12,
   minCellTrades: 30,
   minDistinctEpochs: 1,
@@ -42,7 +42,7 @@ function envNum(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-export function resolveScalpV4EnvelopeThresholds(): ScalpV4EnvelopeThresholds {
+export function resolveScalpRegimeEnvelopeThresholds(): ScalpRegimeEnvelopeThresholds {
   return {
     minCellWindows: envNum("SCALP_V4_MIN_CELL_WINDOWS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellWindows),
     minCellTrades: envNum("SCALP_V4_MIN_CELL_TRADES", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellTrades),
@@ -61,12 +61,12 @@ export function resolveScalpV4EnvelopeThresholds(): ScalpV4EnvelopeThresholds {
 // Recompute the envelope decision from already-stored cell aggregates without
 // re-running any replay. Lets us re-evaluate completed candidates instantly
 // when thresholds change.
-export function reevaluateScalpV4EnvelopeFromCells(params: {
-  envelope: ScalpV4RegimeEnvelope;
-  thresholds?: Partial<ScalpV4EnvelopeThresholds>;
+export function reevaluateScalpRegimeEnvelopeFromCells(params: {
+  envelope: ScalpRegimeEnvelope;
+  thresholds?: Partial<ScalpRegimeEnvelopeThresholds>;
   evaluatedAtMs?: number;
-}): ScalpV4RegimeEnvelope {
-  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
+}): ScalpRegimeEnvelope {
+  const thresholds = { ...resolveScalpRegimeEnvelopeThresholds(), ...(params.thresholds || {}) };
   const cells = params.envelope.cells.map((cell) => {
     const strictPassed =
       cell.windows >= thresholds.minCellWindows &&
@@ -187,7 +187,7 @@ export function bootstrapP05Expectancy(params: {
   return percentile(sampledMeans, 5);
 }
 
-function diagnosticDeflatedSharpe(windowExpectancyR: number[], effectiveTrials: number): ScalpV4CellAggregate["deflatedSharpe"] {
+function diagnosticDeflatedSharpe(windowExpectancyR: number[], effectiveTrials: number): ScalpRegimeCellAggregate["deflatedSharpe"] {
   const m = mean(windowExpectancyR);
   const s = std(windowExpectancyR);
   if (windowExpectancyR.length < 2 || s <= 1e-9) {
@@ -202,14 +202,14 @@ function diagnosticDeflatedSharpe(windowExpectancyR: number[], effectiveTrials: 
   };
 }
 
-export function buildScalpV4SnapshotLookup(snapshots: ScalpV4RegimeSnapshot[]): Map<number, ScalpV4RegimeSnapshot> {
+export function buildScalpRegimeSnapshotLookup(snapshots: ScalpRegimeSnapshot[]): Map<number, ScalpRegimeSnapshot> {
   return new Map((snapshots || []).map((row) => [row.weekStartMs, row]));
 }
 
-function epochIdByWeek(snapshots: ScalpV4RegimeSnapshot[]): Map<number, number> {
+function epochIdByWeek(snapshots: ScalpRegimeSnapshot[]): Map<number, number> {
   const out = new Map<number, number>();
   let epoch = 0;
-  let prev: ScalpV4CellId | null = null;
+  let prev: ScalpRegimeCellId | null = null;
   for (const row of snapshots.slice().sort((a, b) => a.weekStartMs - b.weekStartMs)) {
     if (row.cellId !== "unknown" && row.cellId !== prev) {
       epoch += 1;
@@ -220,30 +220,30 @@ function epochIdByWeek(snapshots: ScalpV4RegimeSnapshot[]): Map<number, number> 
   return out;
 }
 
-export function buildScalpV4RegimeEnvelope(params: {
+export function buildScalpRegimeEnvelope(params: {
   classifierVersion: string;
-  snapshots: ScalpV4RegimeSnapshot[];
-  windows: ScalpV4WindowResult[];
+  snapshots: ScalpRegimeSnapshot[];
+  windows: ScalpRegimeWindowResult[];
   effectiveTrials: number;
   evaluatedAtMs?: number;
-  thresholds?: Partial<ScalpV4EnvelopeThresholds>;
-}): ScalpV4RegimeEnvelope {
-  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
-  const byWeek = buildScalpV4SnapshotLookup(params.snapshots);
+  thresholds?: Partial<ScalpRegimeEnvelopeThresholds>;
+}): ScalpRegimeEnvelope {
+  const thresholds = { ...resolveScalpRegimeEnvelopeThresholds(), ...(params.thresholds || {}) };
+  const byWeek = buildScalpRegimeSnapshotLookup(params.snapshots);
   const epochByWeek = epochIdByWeek(params.snapshots);
   const byCell = new Map<
-    ScalpV4CellId,
+    ScalpRegimeCellId,
     {
       windowExpectancyR: number[];
       windowNetR: number[];
-      trades: ScalpV4TradeLike[];
+      trades: ScalpRegimeTradeLike[];
       crossed: number;
       epochs: Set<number>;
     }
   >();
 
   for (const window of params.windows || []) {
-    const tradesByCell = new Map<ScalpV4CellId, ScalpV4TradeLike[]>();
+    const tradesByCell = new Map<ScalpRegimeCellId, ScalpRegimeTradeLike[]>();
     for (const trade of window.trades || []) {
       const entryWeek = weekStartForEntryMs(trade.entryTs);
       const exitWeek = weekStartForEntryMs(trade.exitTs);
@@ -275,7 +275,7 @@ export function buildScalpV4RegimeEnvelope(params: {
     }
   }
 
-  const cells: ScalpV4CellAggregate[] = Array.from(byCell.entries())
+  const cells: ScalpRegimeCellAggregate[] = Array.from(byCell.entries())
     .map(([cellId, row]) => {
       const tradesR = row.trades.map((trade) => finite(trade.rMultiple));
       const trades = tradesR.length;
@@ -356,11 +356,11 @@ export function buildScalpV4RegimeEnvelope(params: {
   };
 }
 
-export function resolveScalpV4EnvelopeBlock(params: {
+export function resolveScalpRegimeEnvelopeBlock(params: {
   enabled: boolean;
   hardGate: boolean;
   envelope: unknown;
-  currentCellId: ScalpV4CellId | null;
+  currentCellId: ScalpRegimeCellId | null;
   stale: boolean;
 }): { blocked: boolean; shadowOnly: boolean; reasonCodes: string[] } {
   if (!params.enabled) return { blocked: false, shadowOnly: false, reasonCodes: [] };
@@ -388,7 +388,7 @@ export function resolveScalpV4EnvelopeBlock(params: {
 // Incremental walk-forward helpers
 // -----------------------------------------------------------------------------
 
-function emptyCellStat(): ScalpV4CellCumulativeStat {
+function emptyCellStat(): ScalpRegimeCellCumulativeStat {
   return {
     trades: 0,
     netR: 0,
@@ -411,12 +411,12 @@ function mergeCellEpochs(existing: number[], next: number[]): number[] {
 // `windowResult` provides the trades; `snapshotByWeek` and `epochByWeek` map
 // trade-entry-weeks to confirmed cells and epoch IDs (computed once per sweep).
 export function foldWindowIntoIncrementalState(params: {
-  state: ScalpV4IncrementalState;
-  window: ScalpV4WindowResult;
-  snapshotByWeek: Map<number, ScalpV4RegimeSnapshot>;
+  state: ScalpRegimeIncrementalState;
+  window: ScalpRegimeWindowResult;
+  snapshotByWeek: Map<number, ScalpRegimeSnapshot>;
   epochByWeek: Map<number, number>;
-}): ScalpV4IncrementalState {
-  const tradesByCell = new Map<string, ScalpV4TradeLike[]>();
+}): ScalpRegimeIncrementalState {
+  const tradesByCell = new Map<string, ScalpRegimeTradeLike[]>();
   const crossByCell = new Map<string, number>();
   const epochsByCell = new Map<string, Set<number>>();
   for (const trade of params.window.trades || []) {
@@ -473,15 +473,15 @@ export function foldWindowIntoIncrementalState(params: {
 }
 
 // Rebuild the envelope from cumulative cell stats. Same gate logic as
-// buildScalpV4RegimeEnvelope but consuming pre-aggregated per-cell state.
+// buildScalpRegimeEnvelope but consuming pre-aggregated per-cell state.
 export function buildEnvelopeFromIncrementalState(params: {
-  state: ScalpV4IncrementalState;
+  state: ScalpRegimeIncrementalState;
   effectiveTrials: number;
-  thresholds?: Partial<ScalpV4EnvelopeThresholds>;
+  thresholds?: Partial<ScalpRegimeEnvelopeThresholds>;
   evaluatedAtMs?: number;
-}): ScalpV4RegimeEnvelope {
-  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
-  const cells: ScalpV4CellAggregate[] = Object.entries(params.state.cells)
+}): ScalpRegimeEnvelope {
+  const thresholds = { ...resolveScalpRegimeEnvelopeThresholds(), ...(params.thresholds || {}) };
+  const cells: ScalpRegimeCellAggregate[] = Object.entries(params.state.cells)
     .map(([cellId, stat]) => {
       const trades = stat.trades;
       const netR = stat.netR;
@@ -524,7 +524,7 @@ export function buildEnvelopeFromIncrementalState(params: {
       const sharpe = stdR > 1e-9 ? m / stdR : null;
       const trialPenalty = Math.sqrt(Math.max(0, 2 * Math.log(Math.max(1, params.effectiveTrials))));
       return {
-        cellId: cellId as ScalpV4CellId,
+        cellId: cellId as ScalpRegimeCellId,
         windows: stat.windowExpectancyR.length,
         trades,
         distinctEpochCount: stat.epochsSeen.length,
@@ -583,13 +583,13 @@ export function buildEnvelopeFromIncrementalState(params: {
 // per-window detail, callers should pass `synthesized: true` and we'll
 // approximate from cell-level summary stats.
 export function initIncrementalStateFromEnvelope(params: {
-  envelope: ScalpV4RegimeEnvelope;
+  envelope: ScalpRegimeEnvelope;
   windowFromMs: number;
   windowToMs: number;
   synthesizeFromSummary?: boolean;
   seed?: string;
-}): ScalpV4IncrementalState {
-  const cells: Record<string, ScalpV4CellCumulativeStat> = {};
+}): ScalpRegimeIncrementalState {
+  const cells: Record<string, ScalpRegimeCellCumulativeStat> = {};
   for (const cell of params.envelope.cells || []) {
     const n = Math.max(1, Math.floor(cell.windows || 1));
     let windowExpectancyR: number[] = [];

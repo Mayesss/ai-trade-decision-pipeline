@@ -6,23 +6,23 @@ import {
   resolveDayRobustnessPolicy,
 } from "../composer/dayRobustness";
 import {
-  getScalpV2DefaultRiskProfile,
-  getScalpV2RuntimeConfig,
-  isScalpV2RuntimeSymbolInScope,
+  getScalpComposerDefaultRiskProfile,
+  getScalpComposerRuntimeConfig,
+  isScalpComposerRuntimeSymbolInScope,
 } from "../composer/config";
-import { loadScalpV2RuntimeConfig, upsertScalpV2Deployments } from "../composer/db";
+import { loadScalpComposerRuntimeConfig, upsertScalpComposerDeployments } from "../composer/db";
 import { toDeploymentId } from "../composer/logic";
-import type { ScalpV2CandidateStatus, ScalpV2RiskProfile, ScalpV2Session, ScalpV2Venue } from "../composer/types";
+import type { ScalpComposerCandidateStatus, ScalpComposerRiskProfile, ScalpComposerSession, ScalpComposerVenue } from "../composer/types";
 import type { ScalpReplayCheckpoint } from "../replay/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
-  evaluateScalpV5PromotionEvidence,
-  resolveScalpV5Config,
+  evaluateScalpResearchPromotionEvidence,
+  resolveScalpResearchConfig,
   SCALP_V5_VERSION,
-  type ScalpV5CellEvidence,
-  type ScalpV5EvidenceVersion,
-  type ScalpV5PromotionMetrics,
-  type ScalpV5PromotionThresholds,
+  type ScalpResearchCellEvidence,
+  type ScalpResearchEvidenceVersion,
+  type ScalpResearchPromotionMetrics,
+  type ScalpResearchPromotionThresholds,
 } from "./index";
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -32,9 +32,9 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export interface ScalpV5DeploymentRow {
+export interface ScalpResearchDeploymentRow {
   deploymentId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -50,7 +50,7 @@ export interface ScalpV5DeploymentRow {
   // riskProfile drives position sizing / loss-pause limits in the replay,
   // so it has to mirror the deployment's actual profile rather than the
   // global default. JSONB on the row; defaults applied when missing.
-  riskProfile: ScalpV2RiskProfile;
+  riskProfile: ScalpComposerRiskProfile;
 }
 
 // Default work-lease TTL: the bulk eval processes one row in ~5-30s, so 10
@@ -70,7 +70,7 @@ const DEFAULT_V5_LEASE_MS = 10 * 60_000;
 // disjoint row sets without coordination. Failed evaluations don't block the
 // queue — the lease auto-expires after leaseMs and another worker reclaims
 // the row; successful evaluations clear the lease via
-// upsertScalpV5DeploymentEvidence.
+// upsertScalpResearchDeploymentEvidence.
 //
 // Sort priorities, descending importance:
 //   1. enabled DESC          — live rows refresh ahead of inactive
@@ -78,7 +78,7 @@ const DEFAULT_V5_LEASE_MS = 10 * 60_000;
 //                              promotion-ready evidence stays current
 //   3. v5_evaluated_at ASC NULLS FIRST — within a tier, never-evaluated and
 //                              oldest-evaluated rows go first
-export async function loadScalpV5DeploymentsForEvaluation(params: {
+export async function loadScalpResearchDeploymentsForEvaluation(params: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
@@ -93,7 +93,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   // Defaults to 10 minutes. Set lower for short evals, higher to give a slow
   // network more slack.
   leaseMs?: number;
-}): Promise<ScalpV5DeploymentRow[]> {
+}): Promise<ScalpResearchDeploymentRow[]> {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit || 50))));
   const staleOlderThanMs = Math.max(
@@ -187,10 +187,10 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
       t.promotion_gate AS "promotionGate",
       t.risk_profile AS "riskProfile";
   `);
-  const defaultRiskProfile = getScalpV2DefaultRiskProfile();
+  const defaultRiskProfile = getScalpComposerDefaultRiskProfile();
   return rows.map((row) => {
     const rpRaw = asRecord(row.riskProfile);
-    const rp: ScalpV2RiskProfile = {
+    const rp: ScalpComposerRiskProfile = {
       riskPerTradePct:
         Number.isFinite(Number(rpRaw.riskPerTradePct))
           ? Number(rpRaw.riskPerTradePct)
@@ -210,7 +210,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     };
     return {
       deploymentId: String(row.deploymentId || "").trim(),
-      venue: (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV2Venue,
+      venue: (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpComposerVenue,
       symbol: String(row.symbol || "").trim().toUpperCase(),
       strategyId: String(row.strategyId || "").trim().toLowerCase(),
       tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
@@ -246,7 +246,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
 //
 // Either way, the `enabled` flag on the deployment is NOT touched — v5
 // auto-promoted rows stay live.
-export async function invalidateAllScalpV5Evidence(params: {
+export async function invalidateAllScalpResearchEvidence(params: {
   onlyEnabled?: boolean;
   mode?: "full" | "stale";
 } = {}): Promise<{ invalidated: number; mode: "full" | "stale" }> {
@@ -284,7 +284,7 @@ export async function invalidateAllScalpV5Evidence(params: {
   return { invalidated: rows.length, mode };
 }
 
-export interface ScalpV5AdvancementBreakdown {
+export interface ScalpResearchAdvancementBreakdown {
   // Evidence row is missing entirely (never evaluated, refilled, or
   // wiped by a force=full path). Requires a full 12-week replay.
   missingEvidence: number;
@@ -307,7 +307,7 @@ export interface ScalpV5AdvancementBreakdown {
 // Smart Sunday queue: returns the deployment IDs whose v5 evidence has NOT
 // yet been advanced to the new holdout boundary, along with a breakdown of
 // WHY each row needs work. Replaces the blanket
-// invalidateAllScalpV5Evidence({ mode: "stale" }) NULLing of v5_evaluated_at:
+// invalidateAllScalpResearchEvidence({ mode: "stale" }) NULLing of v5_evaluated_at:
 //
 //   - Idempotent re-runs: a row that's already been advanced this run will
 //     not appear in the returned ID list, so a crashed-and-restarted Sunday
@@ -326,13 +326,13 @@ export interface ScalpV5AdvancementBreakdown {
 // also happens to be week-stale (the version mismatch is the more useful
 // signal because it forces a full replay regardless).
 //
-// Holdout boundary is computed the same way evaluateScalpV5ForDeployment
+// Holdout boundary is computed the same way evaluateScalpResearchForDeployment
 // computes it: Sunday UTC advances the boundary to the upcoming Monday so
 // the just-completed week becomes the 12th holdout week; Mon-Sat use the
 // standard week-start boundary.
-export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
+export async function selectScalpResearchDeploymentsNeedingAdvancement(params: {
   nowMs?: number;
-  evidenceVersion?: ScalpV5EvidenceVersion;
+  evidenceVersion?: ScalpResearchEvidenceVersion;
   classifierVersion?: string;
   holdoutWeeks?: number;
   // Restrict to live rows only. The Sunday flow leaves this false so v5
@@ -341,13 +341,13 @@ export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
 } = {}): Promise<{
   newHoldoutToMs: number;
   newHoldoutFromMs: number;
-  evidenceVersion: ScalpV5EvidenceVersion;
+  evidenceVersion: ScalpResearchEvidenceVersion;
   classifierVersion: string;
   deploymentIds: string[];
-  breakdown: ScalpV5AdvancementBreakdown;
+  breakdown: ScalpResearchAdvancementBreakdown;
 }> {
-  const cfg = resolveScalpV5Config();
-  const evidenceVersion: ScalpV5EvidenceVersion = params.evidenceVersion || SCALP_V5_VERSION;
+  const cfg = resolveScalpResearchConfig();
+  const evidenceVersion: ScalpResearchEvidenceVersion = params.evidenceVersion || SCALP_V5_VERSION;
   const classifierVersion = String(
     params.classifierVersion || cfg.classifierVersion,
   ).trim() || cfg.classifierVersion;
@@ -361,7 +361,7 @@ export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
     new Date(nowMs).getUTCDay() === 0 ? weekStart + ONE_WEEK_MS : weekStart;
   const newHoldoutFromMs = newHoldoutToMs - holdoutWeeks * ONE_WEEK_MS;
   const onlyEnabled = Boolean(params.onlyEnabled);
-  const emptyBreakdown: ScalpV5AdvancementBreakdown = {
+  const emptyBreakdown: ScalpResearchAdvancementBreakdown = {
     missingEvidence: 0,
     versionStale: 0,
     classifierStale: 0,
@@ -406,7 +406,7 @@ export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
       );
   `);
   const deploymentIds: string[] = [];
-  const breakdown: ScalpV5AdvancementBreakdown = { ...emptyBreakdown, total: rows.length };
+  const breakdown: ScalpResearchAdvancementBreakdown = { ...emptyBreakdown, total: rows.length };
   for (const row of rows) {
     const id = String(row.deploymentId || "").trim();
     switch (row.reason) {
@@ -444,7 +444,7 @@ export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
 // Explicitly release a lease without writing evidence. Useful when an
 // evaluation aborts early (e.g. no candles) and the caller wants the row to
 // be available for retry sooner than the leaseMs TTL.
-export async function releaseScalpV5DeploymentLease(params: {
+export async function releaseScalpResearchDeploymentLease(params: {
   deploymentId: string;
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
@@ -484,7 +484,7 @@ export async function releaseScalpV5DeploymentLease(params: {
 // Returns the threshold NetR (the worst-performing kept row's score) so
 // the cron log shows "we retired everything below -3.5R" — useful operator
 // signal for tuning percentToRetire over time.
-export async function cullBottomPerformersScalpV5Deployments(params: {
+export async function cullBottomPerformersScalpResearchDeployments(params: {
   percentToRetire?: number;
   graceDays?: number;
   minTrades?: number;
@@ -647,7 +647,7 @@ export async function cullBottomPerformersScalpV5Deployments(params: {
 // tuple, refill skips it — we already paid the compute proving the
 // strategy doesn't work and won't pay it again. Manual reset requires
 // clearing retired_at directly in SQL.
-export async function retireConsistentlyFailingScalpV5Deployments(params: {
+export async function retireConsistentlyFailingScalpResearchDeployments(params: {
   stalenessDays?: number;
   dryRun?: boolean;
 } = {}): Promise<{ retired: number; deploymentIds: string[]; dryRun: boolean }> {
@@ -704,15 +704,15 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
   };
 }
 
-export type ScalpV5StageCRefillCandidate = {
+export type ScalpResearchStageCRefillCandidate = {
   id: number;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   score: number;
-  status: ScalpV2CandidateStatus;
+  status: ScalpComposerCandidateStatus;
   metadata: Record<string, unknown>;
   stageCNetR: number;
   stageCTrades: number;
@@ -722,11 +722,11 @@ export type ScalpV5StageCRefillCandidate = {
   inRuntimeScope?: boolean;
 };
 
-function normalizeVenue(value: unknown): ScalpV2Venue {
+function normalizeVenue(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-function normalizeSession(value: unknown): ScalpV2Session {
+function normalizeSession(value: unknown): ScalpComposerSession {
   const normalized = String(value || "").trim().toLowerCase();
   if (
     normalized === "tokyo" ||
@@ -740,7 +740,7 @@ function normalizeSession(value: unknown): ScalpV2Session {
   return "berlin";
 }
 
-function normalizeStatus(value: unknown): ScalpV2CandidateStatus {
+function normalizeStatus(value: unknown): ScalpComposerCandidateStatus {
   const normalized = String(value || "").trim().toLowerCase();
   if (
     normalized === "discovered" ||
@@ -776,12 +776,12 @@ function resolveStageCRecord(metadata: Record<string, unknown>): Record<string, 
   return asRecord(metadata.stage_c);
 }
 
-export function rankScalpV5StageCRefillCandidates(params: {
-  candidates: ScalpV5StageCRefillCandidate[];
+export function rankScalpResearchStageCRefillCandidates(params: {
+  candidates: ScalpResearchStageCRefillCandidate[];
   targetNewSeats?: number;
   minStageCNetR?: number;
   minStageCTrades?: number;
-}): ScalpV5StageCRefillCandidate[] {
+}): ScalpResearchStageCRefillCandidate[] {
   const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 500)));
   const minStageCNetR = Number.isFinite(Number(params.minStageCNetR)) ? Number(params.minStageCNetR) : 4;
   const minStageCTrades = Math.max(0, Math.floor(Number(params.minStageCTrades ?? 30)));
@@ -802,12 +802,12 @@ export function rankScalpV5StageCRefillCandidates(params: {
     .slice(0, targetNewSeats);
 }
 
-export async function listScalpV5StageCRankedRefillCandidates(params: {
+export async function listScalpResearchStageCRankedRefillCandidates(params: {
   targetNewSeats?: number;
   minStageCNetR?: number;
   minStageCTrades?: number;
   fetchLimit?: number;
-} = {}): Promise<ScalpV5StageCRefillCandidate[]> {
+} = {}): Promise<ScalpResearchStageCRefillCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 500)));
   if (targetNewSeats <= 0) return [];
@@ -817,7 +817,7 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
     targetNewSeats,
     Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
   );
-  const runtime = await loadScalpV2RuntimeConfig();
+  const runtime = await loadScalpComposerRuntimeConfig();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: number | bigint;
@@ -930,15 +930,15 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
       stageCTrades,
       deploymentId,
       scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
-      inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+      inRuntimeScope: isScalpComposerRuntimeSymbolInScope({
         runtime,
         venue,
         symbol,
         includeLiveSeeds: true,
       }),
-    } satisfies ScalpV5StageCRefillCandidate;
+    } satisfies ScalpResearchStageCRefillCandidate;
   });
-  return rankScalpV5StageCRefillCandidates({
+  return rankScalpResearchStageCRefillCandidates({
     candidates,
     targetNewSeats,
     minStageCNetR,
@@ -950,9 +950,9 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
 // the new deployment's promotion_gate so survival/promotion rates can be
 // tracked per-bucket over future Sundays — the operator signal that says
 // "is the 60/25/15 split the right ratio for THIS market regime?"
-export type ScalpV5RefillBucket = "stagec" | "mutation" | "exploration";
+export type ScalpResearchRefillBucket = "stagec" | "mutation" | "exploration";
 
-export type ScalpV5MutationRefillCandidate = ScalpV5StageCRefillCandidate & {
+export type ScalpResearchMutationRefillCandidate = ScalpResearchStageCRefillCandidate & {
   // Which winner-similarity axis caught this candidate:
   //   strategy = shares (strategyId, tuneId) with at least one v5 winner
   //   regime   = shares (venue, symbol, entrySessionProfile)
@@ -973,7 +973,7 @@ export type ScalpV5MutationRefillCandidate = ScalpV5StageCRefillCandidate & {
 // Candidates that ARE already the winner row (same candidate_id deployed)
 // are excluded by the NOT EXISTS deployment filter — only OTHER candidates
 // sharing the identity slip through.
-export async function listScalpV5WinnerMutationRefillCandidates(params: {
+export async function listScalpResearchWinnerMutationRefillCandidates(params: {
   targetNewSeats?: number;
   // Minimum stage-C netR floor. Set lower than the stage-C pool's 4R bar by
   // default — mutations are a "second chance" pool, the strict bar already
@@ -992,7 +992,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
   // candidate per symbol. Default 2; set higher to let dense clusters
   // through, set to 0 to disable.
   maxPerSymbol?: number;
-} = {}): Promise<ScalpV5MutationRefillCandidate[]> {
+} = {}): Promise<ScalpResearchMutationRefillCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 125)));
   if (targetNewSeats <= 0) return [];
@@ -1017,7 +1017,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
       ? Math.min(1000, Math.floor(maxPerSymbolRaw))
       : 2;
   const symbolCapEnabled = maxPerSymbol > 0;
-  const runtime = await loadScalpV2RuntimeConfig();
+  const runtime = await loadScalpComposerRuntimeConfig();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: number | bigint;
@@ -1078,7 +1078,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
         )
-        -- Permanent ban: see listScalpV5StageCRankedRefillCandidates.
+        -- Permanent ban: see listScalpResearchStageCRankedRefillCandidates.
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d
           WHERE d.venue = c.venue
@@ -1143,7 +1143,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
     ORDER BY stage_c_net_r DESC, stage_c_trades DESC, score DESC NULLS LAST
     LIMIT ${fetchLimit};
   `);
-  const mapped: ScalpV5MutationRefillCandidate[] = rows.map((row) => {
+  const mapped: ScalpResearchMutationRefillCandidate[] = rows.map((row) => {
     const venue = normalizeVenue(row.venue);
     const symbol = normalizeSymbol(row.symbol);
     const strategyId = String(row.strategyId || "").trim().toLowerCase();
@@ -1157,7 +1157,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
       Math.floor(numericOrNull(row.stageCTrades) ?? numericOrNull(stageC.trades) ?? 0),
     );
     const matchBasisRaw = String(row.matchBasis || "");
-    const matchBasis: ScalpV5MutationRefillCandidate["matchBasis"] =
+    const matchBasis: ScalpResearchMutationRefillCandidate["matchBasis"] =
       matchBasisRaw === "both" || matchBasisRaw === "strategy" || matchBasisRaw === "regime"
         ? matchBasisRaw
         : "strategy";
@@ -1181,7 +1181,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
         session: entrySessionProfile,
       }),
       scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
-      inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+      inRuntimeScope: isScalpComposerRuntimeSymbolInScope({
         runtime,
         venue,
         symbol,
@@ -1201,7 +1201,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
 // rescue: a strategy with mediocre global expectancy can still be excellent
 // in one specific regime cell, which is exactly what v5's evidence shape
 // surfaces.
-export async function listScalpV5ExplorationRefillCandidates(params: {
+export async function listScalpResearchExplorationRefillCandidates(params: {
   targetNewSeats?: number;
   // Lower bound on stage-C netR. 0 = "at least broke even globally."
   minStageCNetR?: number;
@@ -1212,7 +1212,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
   // with thinner samples but plausible distributions still get a v5 chance.
   minStageCTrades?: number;
   fetchLimit?: number;
-} = {}): Promise<ScalpV5StageCRefillCandidate[]> {
+} = {}): Promise<ScalpResearchStageCRefillCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 75)));
   if (targetNewSeats <= 0) return [];
@@ -1227,7 +1227,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
     targetNewSeats,
     Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
   );
-  const runtime = await loadScalpV2RuntimeConfig();
+  const runtime = await loadScalpComposerRuntimeConfig();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: number | bigint;
@@ -1274,7 +1274,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
         )
-        -- Permanent ban: see listScalpV5StageCRankedRefillCandidates.
+        -- Permanent ban: see listScalpResearchStageCRankedRefillCandidates.
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d
           WHERE d.venue = c.venue
@@ -1305,7 +1305,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
     LIMIT ${fetchLimit};
   `);
   return rows
-    .map((row): ScalpV5StageCRefillCandidate => {
+    .map((row): ScalpResearchStageCRefillCandidate => {
       const venue = normalizeVenue(row.venue);
       const symbol = normalizeSymbol(row.symbol);
       const strategyId = String(row.strategyId || "").trim().toLowerCase();
@@ -1338,7 +1338,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
           session: entrySessionProfile,
         }),
         scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
-        inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+        inRuntimeScope: isScalpComposerRuntimeSymbolInScope({
           runtime,
           venue,
           symbol,
@@ -1351,7 +1351,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
     .slice(0, targetNewSeats);
 }
 
-export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params: {
+export async function refillScalpResearchDeploymentsFromStageCRankedCandidates(params: {
   targetNewSeats?: number;
   minStageCNetR?: number;
   minStageCTrades?: number;
@@ -1361,10 +1361,10 @@ export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params:
   selected: number;
   upserted: number;
   deploymentIds: string[];
-  candidates: ScalpV5StageCRefillCandidate[];
+  candidates: ScalpResearchStageCRefillCandidate[];
 }> {
   const dryRun = Boolean(params.dryRun);
-  const candidates = await listScalpV5StageCRankedRefillCandidates({
+  const candidates = await listScalpResearchStageCRankedRefillCandidates({
     targetNewSeats: params.targetNewSeats,
     minStageCNetR: params.minStageCNetR,
     minStageCTrades: params.minStageCTrades,
@@ -1373,9 +1373,9 @@ export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params:
   if (dryRun || candidates.length === 0 || !isScalpPgConfigured()) {
     return { dryRun, selected: candidates.length, upserted: 0, deploymentIds, candidates };
   }
-  const riskProfile = getScalpV2DefaultRiskProfile();
+  const riskProfile = getScalpComposerDefaultRiskProfile();
   const refilledAtMs = Date.now();
-  await upsertScalpV2Deployments({
+  await upsertScalpComposerDeployments({
     rows: candidates.map((row) => {
       const metadata = asRecord(row.metadata);
       const worker = asRecord(metadata.worker);
@@ -1432,10 +1432,10 @@ export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params:
 
 // Mixed-source refill: pulls from three sub-pools at a 60/25/15 split.
 //
-//   stagec (60%) — listScalpV5StageCRankedRefillCandidates: globally-strong
-//   mutation (25%) — listScalpV5WinnerMutationRefillCandidates: identity
+//   stagec (60%) — listScalpResearchStageCRankedRefillCandidates: globally-strong
+//   mutation (25%) — listScalpResearchWinnerMutationRefillCandidates: identity
 //                    neighbors of current v5 winners
-//   exploration (15%) — listScalpV5ExplorationRefillCandidates: globally-
+//   exploration (15%) — listScalpResearchExplorationRefillCandidates: globally-
 //                       marginal candidates that may have a regime cell
 //                       where they excel
 //
@@ -1450,7 +1450,7 @@ export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params:
 // pool that picks it — stagec wins ties — and tag its bucket accordingly
 // so future operators can read survival rates per bucket from
 // promotion_gate.refill.bucket.
-export async function refillScalpV5DeploymentsMixed(params: {
+export async function refillScalpResearchDeploymentsMixed(params: {
   targetNewSeats?: number;
   stagecFraction?: number;       // default 0.60
   mutationFraction?: number;     // default 0.25
@@ -1513,19 +1513,19 @@ export async function refillScalpV5DeploymentsMixed(params: {
   // sibling pool comes up short. If we capped each pool at its primary
   // quota, spill would have nothing to fall back to.
   const fetchLimit = Math.max(targetNewSeats * 5, 1000);
-  const stagecPool = await listScalpV5StageCRankedRefillCandidates({
+  const stagecPool = await listScalpResearchStageCRankedRefillCandidates({
     targetNewSeats,
     fetchLimit,
     minStageCNetR: params.minStageCNetR,
     minStageCTrades: params.minStageCTrades,
   });
-  const mutationPool = await listScalpV5WinnerMutationRefillCandidates({
+  const mutationPool = await listScalpResearchWinnerMutationRefillCandidates({
     targetNewSeats,
     fetchLimit,
     minStageCNetR: params.mutationMinStageCNetR,
     minStageCTrades: params.mutationMinStageCTrades,
   });
-  const explorationPool = await listScalpV5ExplorationRefillCandidates({
+  const explorationPool = await listScalpResearchExplorationRefillCandidates({
     targetNewSeats,
     fetchLimit,
     minStageCNetR: params.explorationMinStageCNetR,
@@ -1538,9 +1538,9 @@ export async function refillScalpV5DeploymentsMixed(params: {
   // picks it (because that's the strongest signal for "why we took it"
   // — stage-C strength beats winner-similarity beats globally-marginal).
   type Picked = {
-    candidate: ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate;
-    bucket: ScalpV5RefillBucket;
-    matchBasis?: ScalpV5MutationRefillCandidate["matchBasis"];
+    candidate: ScalpResearchStageCRefillCandidate | ScalpResearchMutationRefillCandidate;
+    bucket: ScalpResearchRefillBucket;
+    matchBasis?: ScalpResearchMutationRefillCandidate["matchBasis"];
   };
   const seen = new Set<string>();
   const picked: Picked[] = [];
@@ -1551,8 +1551,8 @@ export async function refillScalpV5DeploymentsMixed(params: {
   };
   const selected = { stagec: 0, mutation: 0, exploration: 0 };
   function take(
-    pool: Array<ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate>,
-    bucket: ScalpV5RefillBucket,
+    pool: Array<ScalpResearchStageCRefillCandidate | ScalpResearchMutationRefillCandidate>,
+    bucket: ScalpResearchRefillBucket,
     quota: number,
   ): number {
     let taken = 0;
@@ -1583,8 +1583,8 @@ export async function refillScalpV5DeploymentsMixed(params: {
   let remaining = targetNewSeats - (stagecTaken + mutationTaken + explorationTaken);
   if (remaining > 0) {
     const spillOrder: Array<{
-      pool: Array<ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate>;
-      bucket: ScalpV5RefillBucket;
+      pool: Array<ScalpResearchStageCRefillCandidate | ScalpResearchMutationRefillCandidate>;
+      bucket: ScalpResearchRefillBucket;
     }> = [
       { pool: stagecPool, bucket: "stagec" },
       { pool: mutationPool, bucket: "mutation" },
@@ -1609,9 +1609,9 @@ export async function refillScalpV5DeploymentsMixed(params: {
     };
   }
 
-  const riskProfile = getScalpV2DefaultRiskProfile();
+  const riskProfile = getScalpComposerDefaultRiskProfile();
   const refilledAtMs = Date.now();
-  await upsertScalpV2Deployments({
+  await upsertScalpComposerDeployments({
     rows: picked.map(({ candidate, bucket, matchBasis }) => {
       const metadata = asRecord(candidate.metadata);
       const worker = asRecord(metadata.worker);
@@ -1676,7 +1676,7 @@ function clampFraction(value: unknown, fallback: number): number {
   return parsed;
 }
 
-export async function getScalpV5EvaluationQueueStats(params: {
+export async function getScalpResearchEvaluationQueueStats(params: {
   staleOlderThanMs?: number;
   nowMs?: number;
 } = {}): Promise<{
@@ -1753,7 +1753,7 @@ export async function getScalpV5EvaluationQueueStats(params: {
 // with its evidence. Strict criteria 4-7 are computed in JS (the JSONB walk
 // to "sum across cells per week" is too verbose in SQL); the qualifying rows
 // get per-row promotion metrics merged into promotion_gate.
-export async function autoPromoteScalpV5WinnersToEnabled(params: {
+export async function autoPromoteScalpResearchWinnersToEnabled(params: {
   staleOlderThanMs?: number;
   nowMs?: number;
   dryRun?: boolean;
@@ -1806,7 +1806,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     shortlisted: 0,
     promoted: 0,
   };
-  const runtime = getScalpV2RuntimeConfig();
+  const runtime = getScalpComposerRuntimeConfig();
   const runtimeLiveEnabled = Boolean(runtime.liveEnabled);
   const v5LiveBypassesV2LiveEnabled = true;
   const liveMode: "live" = "live";
@@ -1824,7 +1824,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     60_000,
     Math.floor(Number(params.staleOlderThanMs || 14 * 24 * 60 * 60_000)),
   );
-  const thresholds: ScalpV5PromotionThresholds = {
+  const thresholds: ScalpResearchPromotionThresholds = {
     minTotalNetR: Number.isFinite(Number(params.minTotalNetR))
       ? Number(params.minTotalNetR)
       : 4,
@@ -1903,7 +1903,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     alreadyEnabled: boolean;
     liveRepair: boolean;
     passReason: string;
-    metrics: ScalpV5PromotionMetrics;
+    metrics: ScalpResearchPromotionMetrics;
   }> = [];
 
   for (const row of candidates) {
@@ -1919,9 +1919,9 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     }
 
     const evidence = (row.v5CellEvidence && typeof row.v5CellEvidence === "object" && !Array.isArray(row.v5CellEvidence))
-      ? (row.v5CellEvidence as ScalpV5CellEvidence)
+      ? (row.v5CellEvidence as ScalpResearchCellEvidence)
       : null;
-    const evaluation = evaluateScalpV5PromotionEvidence({ evidence, thresholds });
+    const evaluation = evaluateScalpResearchPromotionEvidence({ evidence, thresholds });
     if (evaluation.reason === "v5_total_net_r_below_threshold") {
       funnel.failedTotalNetR += 1;
       continue;
@@ -2072,9 +2072,9 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   };
 }
 
-export async function upsertScalpV5DeploymentEvidence(params: {
+export async function upsertScalpResearchDeploymentEvidence(params: {
   deploymentId: string;
-  evidence: ScalpV5CellEvidence;
+  evidence: ScalpResearchCellEvidence;
   enabled: boolean;
   // Replay checkpoint paired with this evidence. The next evaluation can
   // resume from this checkpoint instead of replaying the full 12 weeks,
@@ -2107,7 +2107,7 @@ export async function upsertScalpV5DeploymentEvidence(params: {
 // Load just the replay checkpoint for a deployment. The dashboard never
 // reads this (it's only useful to the incremental evaluator), so it's a
 // separate query rather than bolted onto the deployment loader.
-export async function loadScalpV5DeploymentCheckpoint(params: {
+export async function loadScalpResearchDeploymentCheckpoint(params: {
   deploymentId: string;
 }): Promise<ScalpReplayCheckpoint | null> {
   if (!isScalpPgConfigured()) return null;
@@ -2136,12 +2136,12 @@ export async function loadScalpV5DeploymentCheckpoint(params: {
 
 // Lightweight read for the live entry gate. Returns null when the row has
 // not been evaluated yet, which the gate treats as "no signal."
-export async function loadScalpV5DeploymentEvidence(params: {
+export async function loadScalpResearchDeploymentEvidence(params: {
   deploymentId: string;
 }): Promise<{
   v5Enabled: boolean;
   v5EvaluatedAtMs: number | null;
-  evidence: ScalpV5CellEvidence | null;
+  evidence: ScalpResearchCellEvidence | null;
 } | null> {
   if (!isScalpPgConfigured()) return null;
   const db = scalpPrisma();
@@ -2162,7 +2162,7 @@ export async function loadScalpV5DeploymentEvidence(params: {
   if (!row) return null;
   const raw = row.v5CellEvidence;
   const evidence = raw && typeof raw === "object" && !Array.isArray(raw)
-    ? (raw as unknown as ScalpV5CellEvidence)
+    ? (raw as unknown as ScalpResearchCellEvidence)
     : null;
   return {
     v5Enabled: Boolean(row.v5Enabled),

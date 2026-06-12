@@ -152,7 +152,7 @@ interface RecentResp {
 
 // ─── page ────────────────────────────────────────────────────────────────────
 
-export default function ScalpV4Pipeline() {
+export default function ScalpRegimePipeline() {
   const [health, setHealth] = useState<HealthResp | null>(null);
   const [deploymentsResp, setDeploymentsResp] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);

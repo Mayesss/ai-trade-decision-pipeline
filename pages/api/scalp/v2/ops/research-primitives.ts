@@ -3,7 +3,7 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp/composer/db";
+import { loadScalpComposerRuntimeConfig } from "../../../../../lib/scalp/composer/db";
 import {
   firstQueryValue,
   parseIntBounded,
@@ -12,15 +12,15 @@ import {
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
 import {
-  buildScalpV2CandidateDslGrid,
-  buildScalpV2ModelGuidedComposerGrid,
-  buildScalpV2PrimitiveCatalogByFamily,
-  listScalpV2StrategyPrimitiveReferences,
+  buildScalpComposerCandidateDslGrid,
+  buildScalpComposerModelGuidedComposerGrid,
+  buildScalpComposerPrimitiveCatalogByFamily,
+  listScalpComposerStrategyPrimitiveReferences,
   strategyPrimitiveCoverageSummary,
 } from "../../../../../lib/scalp/composer/research";
 import type {
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "../../../../../lib/scalp/composer/types";
 
 function normalizeSymbol(value: unknown): string {
@@ -30,7 +30,7 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
-function fallbackSession(value: unknown): ScalpV2Session {
+function fallbackSession(value: unknown): ScalpComposerSession {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -46,7 +46,7 @@ function fallbackSession(value: unknown): ScalpV2Session {
   return "berlin";
 }
 
-function fallbackVenue(value: unknown): ScalpV2Venue {
+function fallbackVenue(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase() === "capital"
     ? "capital"
     : "bitget";
@@ -65,7 +65,7 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   try {
-    const runtime = await loadScalpV2RuntimeConfig();
+    const runtime = await loadScalpComposerRuntimeConfig();
     const venue =
       parseVenue(req.query.venue) ||
       fallbackVenue(runtime.supportedVenues[0] || "bitget");
@@ -79,14 +79,14 @@ export default async function handler(
     );
     const symbol = symbolFromQuery || symbolFallback;
     const previewLimit = parseIntBounded(req.query.previewLimit, 24, 1, 250);
-    const references = listScalpV2StrategyPrimitiveReferences();
-    const previewCandidates = buildScalpV2CandidateDslGrid({
+    const references = listScalpComposerStrategyPrimitiveReferences();
+    const previewCandidates = buildScalpComposerCandidateDslGrid({
       venue,
       symbol,
       entrySessionProfile: session,
       maxCandidates: previewLimit,
     });
-    const previewComposerCandidates = buildScalpV2ModelGuidedComposerGrid({
+    const previewComposerCandidates = buildScalpComposerModelGuidedComposerGrid({
       venue,
       symbol,
       entrySessionProfile: session,
@@ -103,7 +103,7 @@ export default async function handler(
         entrySessionProfile: session,
         previewLimit,
       },
-      primitiveCatalog: buildScalpV2PrimitiveCatalogByFamily(),
+      primitiveCatalog: buildScalpComposerPrimitiveCatalogByFamily(),
       strategyReferences: references,
       previewCandidates,
       previewComposerCandidates,

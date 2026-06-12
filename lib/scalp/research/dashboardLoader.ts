@@ -7,16 +7,16 @@
 // returns everything callers need to render a section without redoing the DB
 // work.
 
-import { loadScalpV4RegimeSnapshotsBulk, resolveScalpV4FailClosedStaleMs } from "../regimes/pg";
-import type { ScalpV4Venue } from "../regimes/types";
+import { loadScalpRegimeSnapshotsBulk, resolveScalpRegimeFailClosedStaleMs } from "../regimes/pg";
+import type { ScalpRegimeVenue } from "../regimes/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
 import { scalpPrisma } from "../pg/client";
 import { sql } from "../pg/sql";
 import {
-  resolveScalpV5Config,
-  type ScalpV5CellEvidence,
-  type ScalpV5CellStat,
-  type ScalpV5Config,
+  resolveScalpResearchConfig,
+  type ScalpResearchCellEvidence,
+  type ScalpResearchCellStat,
+  type ScalpResearchConfig,
 } from "./index";
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60_000;
@@ -31,7 +31,7 @@ export type V5GateDecision =
 
 export interface V5DashboardDeploymentRow {
   deploymentId: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -40,17 +40,17 @@ export interface V5DashboardDeploymentRow {
   liveMode: string | null;
   v5Enabled: boolean;
   v5EvaluatedAtMs: number | null;
-  evidence: ScalpV5CellEvidence | null;
+  evidence: ScalpResearchCellEvidence | null;
   currentCell: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
   decision: V5GateDecision;
-  currentCellStat: ScalpV5CellStat | null;
+  currentCellStat: ScalpResearchCellStat | null;
   // Sum of netR across every cell in the evidence (12w holdout total). 0 when
   // evidence is missing. Used as the deployment-list sort key.
   totalNetR: number;
 }
 
 export interface V5DashboardLoad {
-  cfg: ScalpV5Config;
+  cfg: ScalpResearchConfig;
   nowMs: number;
   staleThresholdMs: number;
   rows: V5DashboardDeploymentRow[];
@@ -99,7 +99,7 @@ function parseNumberArray(value: unknown, length: number): number[] {
   return arr.concat(new Array(length - arr.length).fill(0));
 }
 
-function parseCellStat(value: unknown): ScalpV5CellStat | null {
+function parseCellStat(value: unknown): ScalpResearchCellStat | null {
   const rec = asRecord(value);
   if (!rec) return null;
   const weeklyNetR = Array.isArray(rec.weeklyNetR)
@@ -122,11 +122,11 @@ function parseCellStat(value: unknown): ScalpV5CellStat | null {
   };
 }
 
-function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
+function parseEvidence(value: unknown): ScalpResearchCellEvidence | null {
   const rec = asRecord(value);
   if (!rec) return null;
   const cellsRec = asRecord(rec.cells) || {};
-  const cells: Record<string, ScalpV5CellStat> = {};
+  const cells: Record<string, ScalpResearchCellStat> = {};
   for (const [cellId, raw] of Object.entries(cellsRec)) {
     const stat = parseCellStat(raw);
     if (stat) cells[cellId] = stat;
@@ -139,7 +139,7 @@ function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
     // version constant but at runtime we coerce. r2 rows show up here too
     // and the incremental evaluator checks `version !== SCALP_V5_VERSION`
     // to know to fall back to full replay.
-    version: (rec.version as ScalpV5CellEvidence["version"]) ?? "scalp_v5_cell_evidence_r3",
+    version: (rec.version as ScalpResearchCellEvidence["version"]) ?? "scalp_v5_cell_evidence_r3",
     classifierVersion: String(rec.classifierVersion || ""),
     evaluatedAtMs: Number(rec.evaluatedAtMs) || 0,
     holdoutFromMs: Number(rec.holdoutFromMs) || 0,
@@ -151,7 +151,7 @@ function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
 }
 
 export function decideV5Gate(params: {
-  evidence: ScalpV5CellEvidence | null;
+  evidence: ScalpResearchCellEvidence | null;
   consistencyException: boolean;
   currentCellId: string | null;
   stale: boolean;
@@ -204,7 +204,7 @@ function normalizeLimit(value: unknown, fallback: number, max: number): number {
 // snapshots. The bulk snapshot fetch uses `= ANY(keys::text[])`, so cost is
 // bounded by the number of symbols in the requested page.
 export async function loadV5DashboardData(options: V5DashboardLoadOptions = {}): Promise<V5DashboardLoad> {
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Date.now();
   const staleThresholdMs = resolveStaleThresholdMs();
   const db = scalpPrisma();
@@ -280,10 +280,10 @@ export async function loadV5DashboardData(options: V5DashboardLoadOptions = {}):
 
   // Build the dedup'd (venue, symbol) pair set for the bulk snapshot load.
   const currentWeekStartMs = startOfUtcWeekMondayMs(nowMs);
-  const pairs: Array<{ venue: ScalpV4Venue; symbol: string }> = [];
+  const pairs: Array<{ venue: ScalpRegimeVenue; symbol: string }> = [];
   const seenPair = new Set<string>();
   for (const row of deployRows) {
-    const venue = (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV4Venue;
+    const venue = (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpRegimeVenue;
     const symbol = String(row.symbol || "").trim().toUpperCase();
     const key = `${venue}:${symbol}`;
     if (seenPair.has(key)) continue;
@@ -291,14 +291,14 @@ export async function loadV5DashboardData(options: V5DashboardLoadOptions = {}):
     pairs.push({ venue, symbol });
   }
   const snapshotMap = pairs.length
-    ? await loadScalpV4RegimeSnapshotsBulk({
+    ? await loadScalpRegimeSnapshotsBulk({
         pairs,
         classifierVersion: cfg.classifierVersion,
         fromMs: currentWeekStartMs,
         toMs: currentWeekStartMs + ONE_WEEK_MS,
       })
-    : new Map<string, Awaited<ReturnType<typeof loadScalpV4RegimeSnapshotsBulk>> extends Map<string, infer V> ? V : never>();
-  const failClosedStaleMs = resolveScalpV4FailClosedStaleMs();
+    : new Map<string, Awaited<ReturnType<typeof loadScalpRegimeSnapshotsBulk>> extends Map<string, infer V> ? V : never>();
+  const failClosedStaleMs = resolveScalpRegimeFailClosedStaleMs();
 
   const rows: V5DashboardDeploymentRow[] = [];
   let enabled = 0;
@@ -309,7 +309,7 @@ export async function loadV5DashboardData(options: V5DashboardLoadOptions = {}):
   let oldestEvaluationMs: number | null = null;
 
   for (const r of deployRows) {
-    const venue = (String(r.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV4Venue;
+    const venue = (String(r.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpRegimeVenue;
     const symbol = String(r.symbol || "").trim().toUpperCase();
     const evidence = parseEvidence(r.v5CellEvidence);
     const v5EvaluatedAtMs = r.v5EvaluatedAt ? r.v5EvaluatedAt.getTime() : null;

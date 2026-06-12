@@ -4,14 +4,14 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  invokeScalpV2CronEndpointDetached,
-  type ScalpV2CronInvokeResult,
+  invokeScalpComposerCronEndpointDetached,
+  type ScalpComposerCronInvokeResult,
 } from "../../../../../lib/scalp/composer/cronChaining";
 import {
-  clampScalpV2HardCap,
-  resolveScalpV2ResearchHardCaps,
+  clampScalpComposerHardCap,
+  resolveScalpComposerResearchHardCaps,
 } from "../../../../../lib/scalp/composer/costControls";
-import { runScalpV2DiscoverJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpComposerDiscoverJob } from "../../../../../lib/scalp/composer/pipeline";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -67,10 +67,10 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const hardCaps = resolveScalpV2ResearchHardCaps();
+  const hardCaps = resolveScalpComposerResearchHardCaps();
   const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
   const dryRun = parseBool(req.query.dryRun, false);
-  const maxCandidates = clampScalpV2HardCap(
+  const maxCandidates = clampScalpComposerHardCap(
     parseIntBounded(req.query.maxCandidates, 250, 20, 2_000),
     hardCaps.maxCandidates,
   );
@@ -83,10 +83,10 @@ export default async function handler(
     hardCaps.maxSelfHops,
   );
 
-  const result = await runScalpV2DiscoverJob();
+  const result = await runScalpComposerDiscoverJob();
 
-  let downstream: ScalpV2CronInvokeResult | null = null;
-  let selfRecall: ScalpV2CronInvokeResult | null = null;
+  let downstream: ScalpComposerCronInvokeResult | null = null;
+  let selfRecall: ScalpComposerCronInvokeResult | null = null;
 
   if (
     result.ok &&
@@ -94,7 +94,7 @@ export default async function handler(
     autoSuccessor &&
     result.processed > 0
   ) {
-    downstream = await invokeScalpV2CronEndpointDetached(
+    downstream = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/evaluate",
       {
@@ -112,7 +112,7 @@ export default async function handler(
     result.pendingAfter > 0 &&
     selfHop < selfMaxHops
   ) {
-    selfRecall = await invokeScalpV2CronEndpointDetached(
+    selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/discover",
       {

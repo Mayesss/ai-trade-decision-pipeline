@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  resolveScalpV2CompletedWeekWindowToUtc,
-  resolveScalpV2WeekCompleteAtUtc,
-  resolveScalpV2WeekCompleteConfig,
+  resolveScalpComposerCompletedWeekWindowToUtc,
+  resolveScalpComposerWeekCompleteAtUtc,
+  resolveScalpComposerWeekCompleteConfig,
 } from "./weekWindows";
 
 function withWeekCompleteEnv<T>(
@@ -33,12 +33,12 @@ function withWeekCompleteEnv<T>(
 test("v2 week completion defaults to Saturday Pacific close plus grace", { concurrency: false }, () => {
   withWeekCompleteEnv({}, () => {
     const saturdayOfDstWeek = Date.UTC(2026, 4, 2, 12, 0, 0); // Saturday, May 2, 2026
-    assert.deepEqual(resolveScalpV2WeekCompleteConfig(), {
+    assert.deepEqual(resolveScalpComposerWeekCompleteConfig(), {
       finalSession: "pacific",
       graceMinutes: 60,
     });
     assert.equal(
-      resolveScalpV2WeekCompleteAtUtc(saturdayOfDstWeek),
+      resolveScalpComposerWeekCompleteAtUtc(saturdayOfDstWeek),
       Date.UTC(2026, 4, 2, 22, 0, 0),
     );
   });
@@ -50,15 +50,15 @@ test("v2 completed-week window rolls after final session close grace", { concurr
     const nextWeekStart = Date.UTC(2026, 4, 4, 0, 0, 0);
 
     assert.equal(
-      resolveScalpV2CompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 21, 59, 59)),
+      resolveScalpComposerCompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 21, 59, 59)),
       currentWeekStart,
     );
     assert.equal(
-      resolveScalpV2CompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 22, 0, 0)),
+      resolveScalpComposerCompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 22, 0, 0)),
       nextWeekStart,
     );
     assert.equal(
-      resolveScalpV2CompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 23, 3, 0)),
+      resolveScalpComposerCompletedWeekWindowToUtc(Date.UTC(2026, 4, 2, 23, 3, 0)),
       nextWeekStart,
     );
   });
@@ -67,12 +67,12 @@ test("v2 completed-week window rolls after final session close grace", { concurr
 test("v2 week completion session and grace are configurable", { concurrency: false }, () => {
   withWeekCompleteEnv({ finalSession: "newyork", graceMinutes: "30" }, () => {
     const saturdayOfDstWeek = Date.UTC(2026, 4, 2, 12, 0, 0);
-    assert.deepEqual(resolveScalpV2WeekCompleteConfig(), {
+    assert.deepEqual(resolveScalpComposerWeekCompleteConfig(), {
       finalSession: "newyork",
       graceMinutes: 30,
     });
     assert.equal(
-      resolveScalpV2WeekCompleteAtUtc(saturdayOfDstWeek),
+      resolveScalpComposerWeekCompleteAtUtc(saturdayOfDstWeek),
       Date.UTC(2026, 4, 2, 16, 30, 0),
     );
   });

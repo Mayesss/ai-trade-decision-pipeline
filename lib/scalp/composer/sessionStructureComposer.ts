@@ -1,10 +1,10 @@
 import crypto from "crypto";
 
 import type {
-  ScalpV2ComposerModelScore,
-  ScalpV2PrimitiveBlockMap,
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerModelScore,
+  ScalpComposerPrimitiveBlockMap,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "./types";
 
 export const SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID =
@@ -144,10 +144,10 @@ export interface SessionStructureNoveltyTrace {
 export interface SessionStructureComposerCandidateDslSpec {
   candidateId: string;
   tuneId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
-  blocksByFamily: ScalpV2PrimitiveBlockMap;
+  entrySessionProfile: ScalpComposerSession;
+  blocksByFamily: ScalpComposerPrimitiveBlockMap;
   sessionBlocksByFamily: {
     context: SessionStructureContextBlockId[];
     level: SessionStructureLevelBlockId[];
@@ -160,7 +160,7 @@ export interface SessionStructureComposerCandidateDslSpec {
   generatedAtMs: number;
   behaviorFingerprint: string;
   compatibilityReasonCodes: string[];
-  model: ScalpV2ComposerModelScore;
+  model: ScalpComposerModelScore;
   sessionComposerPlan: SessionStructureComposerPlan;
   adaptivePrior?: SessionStructureAdaptiveScoreTrace | null;
   novelty?: SessionStructureNoveltyTrace | null;
@@ -279,7 +279,7 @@ function invert<T extends string>(input: Record<T, string>): Record<string, T> {
   ) as Record<string, T>;
 }
 
-function emptyLegacyBlockMap(): ScalpV2PrimitiveBlockMap {
+function emptyLegacyBlockMap(): ScalpComposerPrimitiveBlockMap {
   return {
     pattern: [],
     session_filter: [],
@@ -436,9 +436,9 @@ function deterministicScore(seed: string): number {
 }
 
 function scoreCombo(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   contextId: SessionStructureContextBlockId;
   levelId: SessionStructureLevelBlockId;
   triggerId: SessionStructureTriggerBlockId;
@@ -552,9 +552,9 @@ function sessionStructureTriggerFamily(triggerId: SessionStructureTriggerBlockId
 }
 
 function sessionStructureAdaptiveScopeKey(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
 }): string {
   return [params.venue, String(params.symbol || "").trim().toUpperCase(), params.session].join(":");
 }
@@ -586,9 +586,9 @@ function clampScore(value: number, min: number, max: number): number {
 
 function resolveSessionStructureAdaptiveScore(params: {
   priors?: SessionStructureAdaptivePriorSet | null;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   contextId: SessionStructureContextBlockId;
   levelId: SessionStructureLevelBlockId;
   triggerId: SessionStructureTriggerBlockId;
@@ -869,10 +869,10 @@ function selectNovelSessionStructureCandidates(
   );
 }
 
-export function buildScalpV2SessionStructureComposerGrid(params: {
-  venue: ScalpV2Venue;
+export function buildScalpComposerSessionStructureComposerGrid(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   maxCandidates?: number;
   generatedAtMs?: number;
   adaptivePriors?: SessionStructureAdaptivePriorSet | null;
@@ -938,7 +938,7 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               ? evolutionScoreBoost * Math.max(0, Math.min(1, offspringSpec.rankWeight))
               : 0;
             const compositeScore = Math.max(0, Math.min(1, rawScore + evolutionBoost));
-            const model: ScalpV2ComposerModelScore = {
+            const model: ScalpComposerModelScore = {
               family: "interpretable_pattern_blend",
               version: "session_structure_composer_v1",
               interpretableScore: compositeScore,

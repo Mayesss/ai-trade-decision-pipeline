@@ -1,15 +1,15 @@
 import {
-  listScalpV2Deployments,
-  updateScalpV2CandidateStatuses,
-  upsertScalpV2Deployments,
+  listScalpComposerDeployments,
+  updateScalpComposerCandidateStatuses,
+  upsertScalpComposerDeployments,
 } from "../lib/scalp/composer/db";
 import { scalpPrisma } from "../lib/scalp/composer/pg";
 import type {
-  ScalpV2RiskProfile,
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerRiskProfile,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "../lib/scalp/composer/types";
-import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
+import { resolveScalpComposerCompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
 
 type Options = {
   apply: boolean;
@@ -84,10 +84,10 @@ function toIso(ts: number | null): string | null {
 type Finding = {
   deploymentId: string;
   symbol: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   strategyId: string;
   tuneId: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   candidateId: number | null;
   reason:
     | "execute_guard_freshness_not_ready"
@@ -107,14 +107,14 @@ type Finding = {
   expectedWindowToTs: number;
   expectedWindowToIso: string;
   promotionGate: Record<string, unknown>;
-  riskProfile: ScalpV2RiskProfile;
+  riskProfile: ScalpComposerRiskProfile;
 };
 
 async function main() {
   const options = parseCli(process.argv.slice(2));
   const nowTs = Date.now();
-  const expectedWindowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
-  const rows = await listScalpV2Deployments({
+  const expectedWindowToTs = resolveScalpComposerCompletedWeekWindowToUtc(nowTs);
+  const rows = await listScalpComposerDeployments({
     enabledOnly: true,
     limit: options.limit,
   });
@@ -210,7 +210,7 @@ async function main() {
   let demotedDeployments = 0;
   let requeuedCandidates = 0;
   if (options.apply && findings.length > 0) {
-    demotedDeployments = await upsertScalpV2Deployments({
+    demotedDeployments = await upsertScalpComposerDeployments({
       rows: findings.map((row) => ({
         candidateId: row.candidateId,
         venue: row.venue,
@@ -251,7 +251,7 @@ async function main() {
       ),
     );
     if (candidateIds.length > 0) {
-      requeuedCandidates = await updateScalpV2CandidateStatuses({
+      requeuedCandidates = await updateScalpComposerCandidateStatuses({
         ids: candidateIds,
         status: "discovered",
         metadataPatch: {

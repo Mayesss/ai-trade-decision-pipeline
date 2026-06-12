@@ -5,20 +5,20 @@ import {
   deriveCloseTypeFromReasonCodes,
   enforceCandidateBudgets,
   enforceDeploymentBudget,
-  isScalpV2SundayUtc,
-  isScalpV2DiscoverSymbolAllowed,
+  isScalpComposerSundayUtc,
+  isScalpComposerDiscoverSymbolAllowed,
   mapV1LedgerRowToV2,
   normalizeReasonCodes,
   toLedgerCloseTypeFromEvent,
 } from "./logic";
-import type { ScalpV2Candidate, ScalpV2Deployment } from "./types";
+import type { ScalpComposerCandidate, ScalpComposerDeployment } from "./types";
 
 function candidate(
   id: number,
   symbol: string,
   score: number,
   updatedAtMs: number,
-): ScalpV2Candidate {
+): ScalpComposerCandidate {
   return {
     id,
     venue: "bitget",
@@ -40,7 +40,7 @@ function deployment(
   enabled: boolean,
   liveMode: "shadow" | "live",
   updatedAtMs: number,
-): ScalpV2Deployment {
+): ScalpComposerDeployment {
   return {
     deploymentId,
     candidateId: null,
@@ -165,18 +165,18 @@ test("mapV1LedgerRowToV2 preserves identity and derives close type", () => {
 });
 
 test("v2 discovery enforces bitget crypto-only and capital non-crypto", () => {
-  assert.equal(isScalpV2DiscoverSymbolAllowed("bitget", "BTCUSDT"), true);
-  assert.equal(isScalpV2DiscoverSymbolAllowed("bitget", "XAUUSDT"), false);
-  assert.equal(isScalpV2DiscoverSymbolAllowed("bitget", "AAPLUSDT"), false);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("bitget", "BTCUSDT"), true);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("bitget", "XAUUSDT"), false);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("bitget", "AAPLUSDT"), false);
 
-  assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "EURUSD"), true);
-  assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "BTCUSD"), false);
-  assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "ETHUSD"), false);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("capital", "EURUSD"), true);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("capital", "BTCUSD"), false);
+  assert.equal(isScalpComposerDiscoverSymbolAllowed("capital", "ETHUSD"), false);
 });
 
 test("sunday guard uses UTC day", () => {
   const sundayUtc = Date.UTC(2026, 2, 29, 9, 0, 0); // Sunday, March 29, 2026 UTC
   const mondayUtc = Date.UTC(2026, 2, 30, 9, 0, 0); // Monday, March 30, 2026 UTC
-  assert.equal(isScalpV2SundayUtc(sundayUtc), true);
-  assert.equal(isScalpV2SundayUtc(mondayUtc), false);
+  assert.equal(isScalpComposerSundayUtc(sundayUtc), true);
+  assert.equal(isScalpComposerSundayUtc(mondayUtc), false);
 });

@@ -11,18 +11,18 @@ import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { loadScalpSymbolMarketMetadataBulk } from "../lib/scalp/symbolMarketMetadataStore";
 import {
-  aggregateScalpV2PatternEdges,
-  buildScalpV2PatternKey,
-  extractScalpV2PatternTradeVectors,
+  aggregateScalpComposerPatternEdges,
+  buildScalpComposerPatternKey,
+  extractScalpComposerPatternTradeVectors,
   SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
-  selectScalpV2PatternRepresentativeCandidates,
-  type ScalpV2PatternCandidateSummary,
+  selectScalpComposerPatternRepresentativeCandidates,
+  type ScalpComposerPatternCandidateSummary,
 } from "../lib/scalp/composer/patternEvidence";
 import {
-  listScalpV2PatternEvidenceBackfillCandidates,
-  loadScalpV2PatternTradeVectors,
-  replaceScalpV2PatternTradeVectors,
-  upsertScalpV2PatternEdges,
+  listScalpComposerPatternEvidenceBackfillCandidates,
+  loadScalpComposerPatternTradeVectors,
+  replaceScalpComposerPatternTradeVectors,
+  upsertScalpComposerPatternEdges,
 } from "../lib/scalp/composer/db";
 import { resolveEntryTriggerOverrides } from "../lib/scalp/composer/entryTriggerPresets";
 import { resolveExitRuleOverrides } from "../lib/scalp/composer/exitRulePresets";
@@ -30,10 +30,10 @@ import { toDeploymentId } from "../lib/scalp/composer/logic";
 import { isScalpPgConfigured } from "../lib/scalp/composer/pg";
 import { resolveRiskRuleReplayOverrides } from "../lib/scalp/composer/riskRulePresets";
 import { parseSessionStructureComposerTuneId } from "../lib/scalp/composer/sessionStructureComposer";
-import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "../lib/scalp/composer/symbolInfo";
+import { inferScalpComposerAssetCategory, minSpreadPipsForCategory } from "../lib/scalp/composer/symbolInfo";
 import { resolveStateMachineReplayOverrides } from "../lib/scalp/composer/stateMachinePresets";
-import type { ScalpV2Candidate, ScalpV2Session, ScalpV2Venue } from "../lib/scalp/composer/types";
-import { startOfScalpV2WeekMondayUtc } from "../lib/scalp/composer/weekWindows";
+import type { ScalpComposerCandidate, ScalpComposerSession, ScalpComposerVenue } from "../lib/scalp/composer/types";
+import { startOfScalpComposerWeekMondayUtc } from "../lib/scalp/composer/weekWindows";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -126,7 +126,7 @@ function toReplayCandlesFromHistory(candles: ScalpCandle[], spreadPips: number):
 function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCandle[] {
   const byWeek = new Map<number, { nonSunday: ScalpReplayCandle[]; sunday: ScalpReplayCandle[] }>();
   for (const row of candles || []) {
-    const weekStart = startOfScalpV2WeekMondayUtc(row.ts);
+    const weekStart = startOfScalpComposerWeekMondayUtc(row.ts);
     const bucket = byWeek.get(weekStart) || { nonSunday: [], sunday: [] };
     if (new Date(row.ts).getUTCDay() === 0) bucket.sunday.push(row);
     else bucket.nonSunday.push(row);
@@ -140,7 +140,7 @@ function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCan
   return out.sort((a, b) => a.ts - b.ts);
 }
 
-function behaviorFingerprintForCandidate(candidate: ScalpV2Candidate): string {
+function behaviorFingerprintForCandidate(candidate: ScalpComposerCandidate): string {
   const meta = asRecord(candidate.metadata);
   const existing = String(meta.sessionComposerBehaviorFingerprint || "").trim();
   if (existing) return existing;
@@ -165,7 +165,7 @@ function behaviorFingerprintForCandidate(candidate: ScalpV2Candidate): string {
   ].join("|");
 }
 
-function summaryForCandidate(candidate: ScalpV2Candidate): ScalpV2PatternCandidateSummary {
+function summaryForCandidate(candidate: ScalpComposerCandidate): ScalpComposerPatternCandidateSummary {
   const meta = asRecord(candidate.metadata);
   const worker = asRecord(meta.worker);
   const stageC = asRecord(worker.stageC);
@@ -187,10 +187,10 @@ function summaryForCandidate(candidate: ScalpV2Candidate): ScalpV2PatternCandida
   };
 }
 
-function countByPattern(rows: ScalpV2PatternCandidateSummary[]): Map<string, number> {
+function countByPattern(rows: ScalpComposerPatternCandidateSummary[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const row of rows) {
-    const key = buildScalpV2PatternKey({
+    const key = buildScalpComposerPatternKey({
       venue: row.venue,
       session: row.session,
       behaviorFingerprint: row.behaviorFingerprint,
@@ -200,7 +200,7 @@ function countByPattern(rows: ScalpV2PatternCandidateSummary[]): Map<string, num
   return out;
 }
 
-function legacyBlocks(candidate: ScalpV2Candidate): {
+function legacyBlocks(candidate: ScalpComposerCandidate): {
   entry_trigger: string[];
   exit_rule: string[];
   risk_rule: string[];
@@ -252,14 +252,14 @@ async function main() {
     return;
   }
 
-  const candidates = await listScalpV2PatternEvidenceBackfillCandidates({
+  const candidates = await listScalpComposerPatternEvidenceBackfillCandidates({
     windowToTs: windowToTs === "latest" ? "latest" : windowToTs,
     limit,
   });
   const summaries = candidates
     .map(summaryForCandidate)
     .filter((row) => row.windowToTs > 0 && row.behaviorFingerprint);
-  const representatives = selectScalpV2PatternRepresentativeCandidates(summaries);
+  const representatives = selectScalpComposerPatternRepresentativeCandidates(summaries);
   const representativeIds = new Set(representatives.map((row) => row.candidateId).filter((id): id is number => id !== null));
   const representativeCandidates = candidates.filter((row) => representativeIds.has(row.id));
   const effectiveWindowToTs = representatives[0]?.windowToTs || 0;
@@ -288,7 +288,7 @@ async function main() {
         const pipSize = pipSizeForScalpSymbol(candidate.symbol, symbolMeta || undefined);
         let candles = candleCache.get(candidate.symbol);
         if (!candles) {
-          const category = inferScalpV2AssetCategory(candidate.symbol);
+          const category = inferScalpComposerAssetCategory(candidate.symbol);
           const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
           const tickSpreadPips = symbolMeta?.tickSize ? symbolMeta.tickSize / pipSize : 0;
           const spreadPips = Math.max(
@@ -343,20 +343,20 @@ async function main() {
           symbolMeta: symbolMeta || null,
         });
         const behaviorFingerprint = behaviorFingerprintForCandidate(candidate);
-        const rows = extractScalpV2PatternTradeVectors({
+        const rows = extractScalpComposerPatternTradeVectors({
           candidateId: candidate.id,
-          venue: candidate.venue as ScalpV2Venue,
+          venue: candidate.venue as ScalpComposerVenue,
           symbol: candidate.symbol,
           strategyId: candidate.strategyId,
           tuneId: candidate.tuneId,
-          session: candidate.entrySessionProfile as ScalpV2Session,
+          session: candidate.entrySessionProfile as ScalpComposerSession,
           windowToTs: Math.floor(num(worker.windowToTs, toTs)),
           behaviorFingerprint,
           trades: replay.trades,
           bucketMinutes,
         });
         if (!dryRun) {
-          await replaceScalpV2PatternTradeVectors({
+          await replaceScalpComposerPatternTradeVectors({
             identity: {
               venue: candidate.venue,
               symbol: candidate.symbol,
@@ -383,7 +383,7 @@ async function main() {
   }
 
   if (aggregate && effectiveWindowToTs > 0) {
-    const allVectors = await loadScalpV2PatternTradeVectors({
+    const allVectors = await loadScalpComposerPatternTradeVectors({
       windowToTs: effectiveWindowToTs,
       bucketMinutes,
       populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
@@ -391,7 +391,7 @@ async function main() {
     const filteredVectors = allVectors.filter((row) => row.candidateId !== null && representativeIds.has(row.candidateId));
     const candidateCountsByPattern = countByPattern(summaries);
     const representativeCountsByPattern = countByPattern(representatives);
-    const edges = aggregateScalpV2PatternEdges({
+    const edges = aggregateScalpComposerPatternEdges({
       trades: filteredVectors,
       candidateCount: summaries.length,
       representativeCandidateCount: representatives.length,
@@ -401,7 +401,7 @@ async function main() {
       populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
     });
     if (!dryRun) {
-      await upsertScalpV2PatternEdges({ edges });
+      await upsertScalpComposerPatternEdges({ edges });
     }
     console.log(`aggregate done: vectors=${filteredVectors.length}/${allVectors.length} edges=${edges.length}`);
     for (const edge of edges.slice(0, 10)) {

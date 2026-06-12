@@ -9,24 +9,24 @@ import { scalpPrisma } from "../pg/client";
 import { sql } from "../pg/sql";
 import type { ScalpCandle } from "../types";
 import {
-  assessScalpV4CandleCoverage,
-  ensureScalpV4CandleCoverage,
+  assessScalpRegimeCandleCoverage,
+  ensureScalpRegimeCandleCoverage,
 } from "./candleCoverage";
 import { SCALP_V4_CLASSIFIER_VERSION } from "./classifier";
 import {
-  claimScalpV4WalkforwardDeployment,
-  listScalpV4ResearchCandidates,
-  loadScalpV4CompletedWalkforwardDeploymentIds,
-  loadScalpV4IncrementalStates,
-  loadScalpV4WalkforwardClusterCounts,
-  resolveScalpV4WalkforwardClaimLeaseMs,
-  loadScalpV4RegimeSnapshotsBulk,
-  upsertScalpV4WalkforwardResult,
+  claimScalpRegimeWalkforwardDeployment,
+  listScalpRegimeResearchCandidates,
+  loadScalpRegimeCompletedWalkforwardDeploymentIds,
+  loadScalpRegimeIncrementalStates,
+  loadScalpRegimeWalkforwardClusterCounts,
+  resolveScalpRegimeWalkforwardClaimLeaseMs,
+  loadScalpRegimeSnapshotsBulk,
+  upsertScalpRegimeWalkforwardResult,
 } from "./pg";
-import { buildScalpV4ClassifierValidityReport } from "./sanity";
-import type { ScalpV4IncrementalState, ScalpV4RegimeSnapshot, ScalpV4Venue } from "./types";
-import { buildScalpV4ClusterKey } from "./v4Status";
-import { runScalpV4WalkForward } from "./walkForward";
+import { buildScalpRegimeClassifierValidityReport } from "./sanity";
+import type { ScalpRegimeIncrementalState, ScalpRegimeSnapshot, ScalpRegimeVenue } from "./types";
+import { buildScalpRegimeClusterKey } from "./v4Status";
+import { runScalpRegimeWalkForward } from "./walkForward";
 import {
   buildEnvelopeFromIncrementalState,
   foldWindowIntoIncrementalState,
@@ -35,7 +35,7 @@ import { startOfUtcWeekMondayMs } from "./week";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
-export interface ScalpV4WalkforwardSweepOptions {
+export interface ScalpRegimeWalkforwardSweepOptions {
   classifierVersion?: string;
   effectiveTrials?: number;
   windowToMs?: number;
@@ -51,10 +51,10 @@ export interface ScalpV4WalkforwardSweepOptions {
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
   progressIntervalMs?: number;
-  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
+  onProgress?: (event: ScalpRegimeWalkforwardProgressEvent) => void;
 }
 
-export interface ScalpV4WalkforwardSweepResult {
+export interface ScalpRegimeWalkforwardSweepResult {
   classifierVersion: string;
   windowFromMs: number;
   windowToMs: number;
@@ -74,11 +74,11 @@ export interface ScalpV4WalkforwardSweepResult {
   results: Array<Record<string, unknown>>;
 }
 
-export interface ScalpV4WalkforwardProgressEvent {
+export interface ScalpRegimeWalkforwardProgressEvent {
   phase: "candidate_start" | "candidate_heartbeat" | "candidate_done" | "candidate_skip";
   candidateId: number;
   deploymentId: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -127,9 +127,9 @@ function evictOldestCandles(
   }
 }
 
-export async function runScalpV4WalkforwardSweep(
-  options: ScalpV4WalkforwardSweepOptions = {},
-): Promise<ScalpV4WalkforwardSweepResult> {
+export async function runScalpRegimeWalkforwardSweep(
+  options: ScalpRegimeWalkforwardSweepOptions = {},
+): Promise<ScalpRegimeWalkforwardSweepResult> {
   const classifierVersion = options.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
   const effectiveTrials = Math.max(
     1,
@@ -155,7 +155,7 @@ export async function runScalpV4WalkforwardSweep(
     ),
   );
   // Top-N pre-filter: candidates are sorted by stage-C netR DESC in
-  // listScalpV4ResearchCandidates, so capping the fetch limit effectively
+  // listScalpRegimeResearchCandidates, so capping the fetch limit effectively
   // restricts walk-forward to the top-N candidates. With 0% pass rate observed
   // in the bottom half of the stage-C distribution, this lets us focus compute
   // on the candidates most likely to have edge.
@@ -201,7 +201,7 @@ export async function runScalpV4WalkforwardSweep(
   let claimSkipped = 0;
   const workClaimLeaseMs = Math.max(
     5 * 60_000,
-    Math.min(24 * 60 * 60_000, Math.floor(Number(options.workClaimLeaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+    Math.min(24 * 60 * 60_000, Math.floor(Number(options.workClaimLeaseMs) || resolveScalpRegimeWalkforwardClaimLeaseMs())),
   );
   if (maxCandidatesPerCall === 0) {
     return {
@@ -224,13 +224,13 @@ export async function runScalpV4WalkforwardSweep(
       results: [],
     };
   }
-  const candidates = await listScalpV4ResearchCandidates({
+  const candidates = await listScalpRegimeResearchCandidates({
     limit: candidateFetchLimit,
   });
   // Exact-week match for the "already done this Sunday" check. Cross-week
   // results are handled by the incremental-state lookup below — those
   // candidates get updated, not skipped.
-  const completed = await loadScalpV4CompletedWalkforwardDeploymentIds({
+  const completed = await loadScalpRegimeCompletedWalkforwardDeploymentIds({
     classifierVersion,
     windowFromMs,
     windowToMs: alignedWindowToMs,
@@ -249,7 +249,7 @@ export async function runScalpV4WalkforwardSweep(
       tuneId: candidate.tuneId,
     }).deploymentId;
   });
-  const incrementalStates = await loadScalpV4IncrementalStates({
+  const incrementalStates = await loadScalpRegimeIncrementalStates({
     classifierVersion,
     deploymentIds: candidateDeploymentIds,
   });
@@ -260,12 +260,12 @@ export async function runScalpV4WalkforwardSweep(
   const uniquePairs = Array.from(
     new Map(
       candidates.map((c) => {
-        const v = (String(c.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV4Venue;
+        const v = (String(c.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpRegimeVenue;
         return [`${v}:${c.symbol}`, { venue: v, symbol: c.symbol }];
       }),
     ).values(),
   );
-  const snapshotsByVenueSymbol = await loadScalpV4RegimeSnapshotsBulk({
+  const snapshotsByVenueSymbol = await loadScalpRegimeSnapshotsBulk({
     pairs: uniquePairs,
     classifierVersion,
     fromMs: windowFromMs,
@@ -283,7 +283,7 @@ export async function runScalpV4WalkforwardSweep(
   );
   const clusterCounts =
     clusterCap > 0
-      ? await loadScalpV4WalkforwardClusterCounts({
+      ? await loadScalpRegimeWalkforwardClusterCounts({
           classifierVersion,
           windowFromMs,
           windowToMs: alignedWindowToMs,
@@ -305,7 +305,7 @@ export async function runScalpV4WalkforwardSweep(
     0,
     Math.min(10 * 60_000, Math.floor(Number(options.progressIntervalMs) || 0)),
   );
-  const notifyProgress = (event: ScalpV4WalkforwardProgressEvent): void => {
+  const notifyProgress = (event: ScalpRegimeWalkforwardProgressEvent): void => {
     if (!options.onProgress) return;
     try {
       options.onProgress(event);
@@ -327,7 +327,7 @@ export async function runScalpV4WalkforwardSweep(
       recordSkip("already_completed_or_claimed");
       continue;
     }
-    const clusterKey = buildScalpV4ClusterKey({
+    const clusterKey = buildScalpRegimeClusterKey({
       venue,
       symbol: candidate.symbol,
       session: candidate.entrySessionProfile,
@@ -349,7 +349,7 @@ export async function runScalpV4WalkforwardSweep(
       results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_regime_snapshots" });
       continue;
     }
-    const validity = buildScalpV4ClassifierValidityReport({ snapshots: snapshots as any });
+    const validity = buildScalpRegimeClassifierValidityReport({ snapshots: snapshots as any });
     if (!validity.passed && !options.forceValidity) {
       recordSkip(`classifier_validity_failed:${validity.reason}`);
       results.push({
@@ -360,10 +360,10 @@ export async function runScalpV4WalkforwardSweep(
       });
       continue;
     }
-    const claimed = await claimScalpV4WalkforwardDeployment({
+    const claimed = await claimScalpRegimeWalkforwardDeployment({
       candidateId: candidate.id,
       deploymentId: deployment.deploymentId,
-      venue: venue as ScalpV4Venue,
+      venue: venue as ScalpRegimeVenue,
       symbol: candidate.symbol,
       strategyId: candidate.strategyId,
       tuneId: candidate.tuneId,
@@ -394,7 +394,7 @@ export async function runScalpV4WalkforwardSweep(
       candleCache.set(candleCacheKey, candles);
       evictOldestCandles(candleCache, candleCacheSoftCap);
     }
-    const coverage = assessScalpV4CandleCoverage({
+    const coverage = assessScalpRegimeCandleCoverage({
       candles,
       fromMs: windowFromMs,
       toMs: alignedWindowToMs,
@@ -402,8 +402,8 @@ export async function runScalpV4WalkforwardSweep(
     });
     if (!coverage.ok && autoBackfillCandles) {
       candleBackfillsAttempted += 1;
-      const ensured = await ensureScalpV4CandleCoverage({
-        venue: venue as ScalpV4Venue,
+      const ensured = await ensureScalpRegimeCandleCoverage({
+        venue: venue as ScalpRegimeVenue,
         symbol: candidate.symbol,
         fromMs: windowFromMs,
         toMs: alignedWindowToMs,
@@ -418,7 +418,7 @@ export async function runScalpV4WalkforwardSweep(
       candleCache.set(candleCacheKey, candles);
       evictOldestCandles(candleCache, candleCacheSoftCap);
     }
-    const finalCoverage = assessScalpV4CandleCoverage({
+    const finalCoverage = assessScalpRegimeCandleCoverage({
       candles,
       fromMs: windowFromMs,
       toMs: alignedWindowToMs,
@@ -431,7 +431,7 @@ export async function runScalpV4WalkforwardSweep(
         phase: "candidate_skip",
         candidateId: Number(candidate.id),
         deploymentId: deployment.deploymentId,
-        venue: venue as ScalpV4Venue,
+        venue: venue as ScalpRegimeVenue,
         symbol: candidate.symbol,
         strategyId: candidate.strategyId,
         tuneId: candidate.tuneId,
@@ -461,7 +461,7 @@ export async function runScalpV4WalkforwardSweep(
       phase: "candidate_start",
       candidateId: Number(candidate.id),
       deploymentId: deployment.deploymentId,
-      venue: venue as ScalpV4Venue,
+      venue: venue as ScalpRegimeVenue,
       symbol: candidate.symbol,
       strategyId: candidate.strategyId,
       tuneId: candidate.tuneId,
@@ -482,7 +482,7 @@ export async function runScalpV4WalkforwardSweep(
           phase: "candidate_heartbeat",
           candidateId: Number(candidate.id),
           deploymentId: deployment.deploymentId,
-          venue: venue as ScalpV4Venue,
+          venue: venue as ScalpRegimeVenue,
           symbol: candidate.symbol,
           strategyId: candidate.strategyId,
           tuneId: candidate.tuneId,
@@ -518,7 +518,7 @@ export async function runScalpV4WalkforwardSweep(
       : windowFromMs;
     const run = await (async () => {
       try {
-        return await runScalpV4WalkForward({
+        return await runScalpRegimeWalkForward({
           classifierVersion,
           snapshots: snapshots as any,
           windowFromMs: walkFromMs,
@@ -548,8 +548,8 @@ export async function runScalpV4WalkforwardSweep(
     // SnapshotRow → RegimeSnapshot cast was already structurally loose; the
     // new updatedAtMs field tipped TS over its overlap threshold so route via
     // unknown to preserve prior behaviour.
-    const snapshotsAsRegime = snapshots as unknown as ScalpV4RegimeSnapshot[];
-    const snapshotByWeek = new Map<number, ScalpV4RegimeSnapshot>(
+    const snapshotsAsRegime = snapshots as unknown as ScalpRegimeSnapshot[];
+    const snapshotByWeek = new Map<number, ScalpRegimeSnapshot>(
       snapshotsAsRegime.map((row) => [row.weekStartMs, row]),
     );
     const sortedSnaps = [...snapshotsAsRegime].sort(
@@ -566,7 +566,7 @@ export async function runScalpV4WalkforwardSweep(
       epochByWeek.set(snap.weekStartMs, epochCounter);
     }
     // Fold all new windows into state (existing for incremental, fresh for full).
-    let state: ScalpV4IncrementalState = isIncrementalPath
+    let state: ScalpRegimeIncrementalState = isIncrementalPath
       ? existingEntry!.incrementalState
       : {
           version: "scalp_v4_incremental_r1",
@@ -593,10 +593,10 @@ export async function runScalpV4WalkforwardSweep(
       evaluatedAtMs: Date.now(),
     });
     const newWindowsAppended = run.windows.filter((w) => w.windowEndMs > foldFromMs).length;
-    await upsertScalpV4WalkforwardResult({
+    await upsertScalpRegimeWalkforwardResult({
       candidateId: candidate.id,
       deploymentId: deployment.deploymentId,
-      venue: venue as ScalpV4Venue,
+      venue: venue as ScalpRegimeVenue,
       symbol: candidate.symbol,
       strategyId: candidate.strategyId,
       tuneId: candidate.tuneId,
@@ -639,7 +639,7 @@ export async function runScalpV4WalkforwardSweep(
       phase: "candidate_done",
       candidateId: Number(candidate.id),
       deploymentId: deployment.deploymentId,
-      venue: venue as ScalpV4Venue,
+      venue: venue as ScalpRegimeVenue,
       symbol: candidate.symbol,
       strategyId: candidate.strategyId,
       tuneId: candidate.tuneId,

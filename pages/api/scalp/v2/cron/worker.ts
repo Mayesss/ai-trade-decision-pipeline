@@ -4,20 +4,20 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  invokeScalpV2CronEndpointDetached,
-  type ScalpV2CronInvokeResult,
+  invokeScalpComposerCronEndpointDetached,
+  type ScalpComposerCronInvokeResult,
 } from "../../../../../lib/scalp/composer/cronChaining";
 import {
-  clampScalpV2HardCap,
-  resolveScalpV2ResearchHardCaps,
+  clampScalpComposerHardCap,
+  resolveScalpComposerResearchHardCaps,
 } from "../../../../../lib/scalp/composer/costControls";
 import {
   parseBool,
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2WorkerJob } from "../../../../../lib/scalp/composer/pipeline";
-import { runScalpV4ResearchJob } from "../../../../../lib/scalp/regimes";
+import { runScalpComposerWorkerJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
   req: NextApiRequest,
@@ -31,15 +31,15 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const hardCaps = resolveScalpV2ResearchHardCaps();
-  const batchSize = clampScalpV2HardCap(
+  const hardCaps = resolveScalpComposerResearchHardCaps();
+  const batchSize = clampScalpComposerHardCap(
     parseIntBounded(req.query.batchSize, 12, 1, 600),
     hardCaps.maxBatchSizeWorker,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const legacyV2 = parseBool(req.query.legacyV2, false);
   if (!legacyV2) {
-    const job = await runScalpV4ResearchJob({
+    const job = await runScalpRegimeResearchJob({
       maxCandidatesPerCall: Math.max(0, Math.min(500, batchSize)),
       candidateFetchLimit: Math.max(Math.min(500, batchSize) * 4, 50),
       forceValidity: parseBool(req.query.forceValidity, false),
@@ -59,11 +59,11 @@ export default async function handler(
     });
   }
 
-  const job = await runScalpV2WorkerJob({ batchSize });
+  const job = await runScalpComposerWorkerJob({ batchSize });
 
-  let downstream: ScalpV2CronInvokeResult | null = null;
+  let downstream: ScalpComposerCronInvokeResult | null = null;
   if (job.ok && !job.busy && autoSuccessor) {
-    downstream = await invokeScalpV2CronEndpointDetached(
+    downstream = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/promote",
       {

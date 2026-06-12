@@ -15,10 +15,10 @@ import { sql } from "../lib/scalp/pg/sql";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
 import type { ScalpCandle } from "../lib/scalp/types";
 import {
-  assessScalpV4CandleCoverage,
-  type ScalpV4CandleCoverageStatus,
+  assessScalpRegimeCandleCoverage,
+  type ScalpRegimeCandleCoverageStatus,
 } from "../lib/scalp/regimes/candleCoverage";
-import type { ScalpV4Venue } from "../lib/scalp/regimes/types";
+import type { ScalpRegimeVenue } from "../lib/scalp/regimes/types";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -38,11 +38,11 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
-function normalizeVenue(value: unknown): ScalpV4Venue {
+function normalizeVenue(value: unknown): ScalpRegimeVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-function toPlainCoverage(coverage: ScalpV4CandleCoverageStatus): Record<string, unknown> {
+function toPlainCoverage(coverage: ScalpRegimeCandleCoverageStatus): Record<string, unknown> {
   return {
     ok: coverage.ok,
     reason: coverage.reason,
@@ -54,7 +54,7 @@ function toPlainCoverage(coverage: ScalpV4CandleCoverageStatus): Record<string, 
   };
 }
 
-async function loadStageCScopes(): Promise<Array<{ venue: ScalpV4Venue; symbol: string; candidates: number }>> {
+async function loadStageCScopes(): Promise<Array<{ venue: ScalpRegimeVenue; symbol: string; candidates: number }>> {
   const rows = await scalpPrisma().$queryRaw<Array<{ venue: string; symbol: string; candidates: bigint }>>(sql`
     SELECT venue, symbol, COUNT(*)::bigint AS candidates
     FROM scalp_v2_candidates
@@ -73,7 +73,7 @@ async function loadStageCScopes(): Promise<Array<{ venue: ScalpV4Venue; symbol: 
 }
 
 async function fetchCandles(params: {
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   fromMs: number;
   toMs: number;
@@ -114,14 +114,14 @@ function countCandlesInRange(candles: ScalpCandle[], fromMs: number, toMs: numbe
 }
 
 async function backfillScope(params: {
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   windowFromMs: number;
   windowToMs: number;
   targetCoverageRatio: number;
   chunkWeeks: number;
   maxRequestsPerChunk: number;
-}): Promise<{ fetched: number; savedChunks: number; before: ScalpV4CandleCoverageStatus; after: ScalpV4CandleCoverageStatus }> {
+}): Promise<{ fetched: number; savedChunks: number; before: ScalpRegimeCandleCoverageStatus; after: ScalpRegimeCandleCoverageStatus }> {
   const history = await loadScalpCandleHistoryInRange(
     params.symbol,
     "1m",
@@ -129,7 +129,7 @@ async function backfillScope(params: {
     params.windowToMs,
   );
   let candles = (history.record?.candles || []) as ScalpCandle[];
-  const before = assessScalpV4CandleCoverage({
+  const before = assessScalpRegimeCandleCoverage({
     candles,
     fromMs: params.windowFromMs,
     toMs: params.windowToMs,
@@ -184,7 +184,7 @@ async function backfillScope(params: {
     candles = mergeScalpCandleHistory(candles, fetched.candles);
     fetchedTotal += fetched.candles.length;
     savedChunks += 1;
-    const coverage = assessScalpV4CandleCoverage({
+    const coverage = assessScalpRegimeCandleCoverage({
       candles,
       fromMs: params.windowFromMs,
       toMs: params.windowToMs,
@@ -195,7 +195,7 @@ async function backfillScope(params: {
     }
   }
 
-  const after = assessScalpV4CandleCoverage({
+  const after = assessScalpRegimeCandleCoverage({
     candles,
     fromMs: params.windowFromMs,
     toMs: params.windowToMs,

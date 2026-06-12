@@ -4,12 +4,12 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  listScalpV2Candidates,
-  listScalpV2Deployments,
-  listScalpV2ResearchCursors,
-  listScalpV2ResearchHighlights,
-  loadScalpV2RuntimeConfig,
-  loadScalpV2Summary,
+  listScalpComposerCandidates,
+  listScalpComposerDeployments,
+  listScalpComposerResearchCursors,
+  listScalpComposerResearchHighlights,
+  loadScalpComposerRuntimeConfig,
+  loadScalpComposerSummary,
 } from "../../../../../lib/scalp/composer/db";
 import {
   parseIntBounded,
@@ -32,12 +32,12 @@ export default async function handler(
     const limit = parseIntBounded(req.query.limit, 500, 20, 5_000);
 
     const [runtime, summary, candidates, deployments, researchCursors, researchHighlights] = await Promise.all([
-      loadScalpV2RuntimeConfig(),
-      loadScalpV2Summary(),
-      listScalpV2Candidates({ limit }),
-      listScalpV2Deployments({ limit }),
-      listScalpV2ResearchCursors({ limit: Math.min(limit, 500) }),
-      listScalpV2ResearchHighlights({ limit: Math.min(limit, 500) }),
+      loadScalpComposerRuntimeConfig(),
+      loadScalpComposerSummary(),
+      listScalpComposerCandidates({ limit }),
+      listScalpComposerDeployments({ limit }),
+      listScalpComposerResearchCursors({ limit: Math.min(limit, 500) }),
+      listScalpComposerResearchHighlights({ limit: Math.min(limit, 500) }),
     ]);
 
     return res.status(200).json({

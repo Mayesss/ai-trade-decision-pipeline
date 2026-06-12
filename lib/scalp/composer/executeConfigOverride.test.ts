@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
+import { buildScalpComposerExecuteConfigOverride } from "./executeConfigOverride";
 
 test("execute config override always applies deployment entry session profile", () => {
-  const override = buildScalpV2ExecuteConfigOverride({
+  const override = buildScalpComposerExecuteConfigOverride({
     entrySessionProfile: "sydney",
     riskProfile: {
       riskPerTradePct: 0.5,
@@ -21,7 +21,7 @@ test("execute config override always applies deployment entry session profile", 
 });
 
 test("execute config override merges state-machine overrides while preserving session binding", () => {
-  const override = buildScalpV2ExecuteConfigOverride({
+  const override = buildScalpComposerExecuteConfigOverride({
     entrySessionProfile: "tokyo",
     riskProfile: {
       riskPerTradePct: 0.35,
@@ -49,7 +49,7 @@ test("execute config override merges state-machine overrides while preserving se
 });
 
 test("execute config override maps promoted DSL presets to live strategy config", () => {
-  const override = buildScalpV2ExecuteConfigOverride({
+  const override = buildScalpComposerExecuteConfigOverride({
     entrySessionProfile: "berlin",
     riskProfile: {
       riskPerTradePct: 0.4,
@@ -100,7 +100,7 @@ test("execute config override maps promoted DSL presets to live strategy config"
 });
 
 test("execute config override lets state-machine presets win on overlapping fields", () => {
-  const override = buildScalpV2ExecuteConfigOverride({
+  const override = buildScalpComposerExecuteConfigOverride({
     entrySessionProfile: "newyork",
     riskProfile: {
       riskPerTradePct: 0.35,

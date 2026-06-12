@@ -3,20 +3,20 @@ import test from "node:test";
 
 import type { ScalpReplayTrade } from "../replay/types";
 import {
-  buildScalpV5CellEvidence,
-  evaluateScalpV5PromotionEvidence,
-  resolveScalpV5EntryBlock,
-  resolveScalpV5EvidenceFreshness,
+  buildScalpResearchCellEvidence,
+  evaluateScalpResearchPromotionEvidence,
+  resolveScalpResearchEntryBlock,
+  resolveScalpResearchEvidenceFreshness,
   SCALP_V5_VERSION,
   tagTradesWithCells,
 } from "./index";
 import {
-  isScalpV5RemovedBitgetSymbolError,
-  resolveScalpV5PreflightWeek,
-  summarizeScalpV5CandleCoverage,
+  isScalpResearchRemovedBitgetSymbolError,
+  resolveScalpResearchPreflightWeek,
+  summarizeScalpResearchCandleCoverage,
 } from "./candlePreflight";
-import { shouldRunScalpV5EvaluationCandlePreflight } from "./evaluator";
-import { rankScalpV5StageCRefillCandidates, type ScalpV5StageCRefillCandidate } from "./pg";
+import { shouldRunScalpResearchEvaluationCandlePreflight } from "./evaluator";
+import { rankScalpResearchStageCRefillCandidates, type ScalpResearchStageCRefillCandidate } from "./pg";
 
 const CELL_A = "vol=mid|trend=trending_up|risk=risk_on";
 const CELL_B = "vol=high|trend=choppy|risk=risk_off";
@@ -80,7 +80,7 @@ test("tagTradesWithCells maps each trade to its week-start cell", () => {
   assert.equal(tagged[2]!.cellId, null);
 });
 
-test("buildScalpV5CellEvidence aggregates per cell and marks eligible cells", () => {
+test("buildScalpResearchCellEvidence aggregates per cell and marks eligible cells", () => {
   const tagged = tagTradesWithCells({
     trades: [
       // CELL_A: 3 trades, netR +1.5, expectancy 0.5
@@ -98,7 +98,7 @@ test("buildScalpV5CellEvidence aggregates per cell and marks eligible cells", ()
       [ANCHOR + WEEK_MS, CELL_B as any],
     ]),
   });
-  const evidence = buildScalpV5CellEvidence({
+  const evidence = buildScalpResearchCellEvidence({
     tagged,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR + 12 * WEEK_MS,
@@ -117,7 +117,7 @@ test("buildScalpV5CellEvidence aggregates per cell and marks eligible cells", ()
   assert.deepEqual(evidence.eligibleCells, [CELL_A]);
 });
 
-test("buildScalpV5CellEvidence populates per-cell weeklyNetR aligned to the holdout window", () => {
+test("buildScalpResearchCellEvidence populates per-cell weeklyNetR aligned to the holdout window", () => {
   // 12-week holdout window starting at ANCHOR. Cell A has trades in weeks 0
   // and 2 only; cell B has a trade in week 1 only.
   const tagged = tagTradesWithCells({
@@ -133,7 +133,7 @@ test("buildScalpV5CellEvidence populates per-cell weeklyNetR aligned to the hold
       [ANCHOR + 2 * WEEK_MS, CELL_A as any],
     ]),
   });
-  const evidence = buildScalpV5CellEvidence({
+  const evidence = buildScalpResearchCellEvidence({
     tagged,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR + 12 * WEEK_MS,
@@ -153,7 +153,7 @@ test("buildScalpV5CellEvidence populates per-cell weeklyNetR aligned to the hold
   assert.equal(bWeekly[2], 0);
 });
 
-test("buildScalpV5CellEvidence respects the minTradesPerCell threshold", () => {
+test("buildScalpResearchCellEvidence respects the minTradesPerCell threshold", () => {
   const tagged = tagTradesWithCells({
     trades: [
       tradeAt(0, 0.5),
@@ -166,7 +166,7 @@ test("buildScalpV5CellEvidence respects the minTradesPerCell threshold", () => {
       [ANCHOR + WEEK_MS, CELL_B as any],
     ]),
   });
-  const evidence = buildScalpV5CellEvidence({
+  const evidence = buildScalpResearchCellEvidence({
     tagged,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR + 12 * WEEK_MS,
@@ -178,7 +178,7 @@ test("buildScalpV5CellEvidence respects the minTradesPerCell threshold", () => {
   assert.deepEqual(evidence.eligibleCells, []);
 });
 
-test("resolveScalpV5EntryBlock allows when current cell is profitable", () => {
+test("resolveScalpResearchEntryBlock allows when current cell is profitable", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
@@ -192,7 +192,7 @@ test("resolveScalpV5EntryBlock allows when current cell is profitable", () => {
     },
     eligibleCells: [CELL_A],
   };
-  const gate = resolveScalpV5EntryBlock({
+  const gate = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence,
@@ -207,7 +207,7 @@ test("resolveScalpV5EntryBlock allows when current cell is profitable", () => {
   assert.deepEqual(gate.reasonCodes, []);
 });
 
-test("resolveScalpV5EntryBlock allows positive thin cell for consistency exception rows", () => {
+test("resolveScalpResearchEntryBlock allows positive thin cell for consistency exception rows", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
@@ -220,7 +220,7 @@ test("resolveScalpV5EntryBlock allows positive thin cell for consistency excepti
     },
     eligibleCells: [],
   };
-  const withoutException = resolveScalpV5EntryBlock({
+  const withoutException = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence,
@@ -231,7 +231,7 @@ test("resolveScalpV5EntryBlock allows positive thin cell for consistency excepti
   assert.equal(withoutException.blocked, true);
   assert.ok(withoutException.reasonCodes.includes("V5_CELL_INSUFFICIENT_TRADES"));
 
-  const withException = resolveScalpV5EntryBlock({
+  const withException = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence,
@@ -245,7 +245,7 @@ test("resolveScalpV5EntryBlock allows positive thin cell for consistency excepti
   assert.deepEqual(withException.reasonCodes, []);
 });
 
-test("resolveScalpV5EntryBlock blocks when current cell is unprofitable (hard gate)", () => {
+test("resolveScalpResearchEntryBlock blocks when current cell is unprofitable (hard gate)", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
@@ -258,7 +258,7 @@ test("resolveScalpV5EntryBlock blocks when current cell is unprofitable (hard ga
     },
     eligibleCells: [],
   };
-  const gate = resolveScalpV5EntryBlock({
+  const gate = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence,
@@ -270,7 +270,7 @@ test("resolveScalpV5EntryBlock blocks when current cell is unprofitable (hard ga
   assert.ok(gate.reasonCodes.includes("V5_CELL_NEGATIVE_EXPECTANCY"));
 });
 
-test("resolveScalpV5EntryBlock soft-blocks (shadow) when hard gate is off", () => {
+test("resolveScalpResearchEntryBlock soft-blocks (shadow) when hard gate is off", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
@@ -281,7 +281,7 @@ test("resolveScalpV5EntryBlock soft-blocks (shadow) when hard gate is off", () =
     cells: {},
     eligibleCells: [],
   };
-  const gate = resolveScalpV5EntryBlock({
+  const gate = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: false,
     evidence,
@@ -294,8 +294,8 @@ test("resolveScalpV5EntryBlock soft-blocks (shadow) when hard gate is off", () =
   assert.ok(gate.reasonCodes.includes("V5_CELL_NOT_IN_EVIDENCE_SHADOW"));
 });
 
-test("resolveScalpV5EntryBlock does not block when evidence is missing (evaluator hasn't run)", () => {
-  const gate = resolveScalpV5EntryBlock({
+test("resolveScalpResearchEntryBlock does not block when evidence is missing (evaluator hasn't run)", () => {
+  const gate = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence: null,
@@ -308,7 +308,7 @@ test("resolveScalpV5EntryBlock does not block when evidence is missing (evaluato
   assert.deepEqual(gate.reasonCodes, ["V5_CELL_EVIDENCE_MISSING"]);
 });
 
-test("resolveScalpV5EntryBlock blocks when regime data is stale", () => {
+test("resolveScalpResearchEntryBlock blocks when regime data is stale", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
@@ -321,7 +321,7 @@ test("resolveScalpV5EntryBlock blocks when regime data is stale", () => {
     },
     eligibleCells: [CELL_A],
   };
-  const gate = resolveScalpV5EntryBlock({
+  const gate = resolveScalpResearchEntryBlock({
     enabled: true,
     hardGate: true,
     evidence,
@@ -333,8 +333,8 @@ test("resolveScalpV5EntryBlock blocks when regime data is stale", () => {
   assert.ok(gate.reasonCodes.includes("V5_CELL_DATA_STALE"));
 });
 
-test("resolveScalpV5EntryBlock returns blocked=false when v5 is disabled", () => {
-  const gate = resolveScalpV5EntryBlock({
+test("resolveScalpResearchEntryBlock returns blocked=false when v5 is disabled", () => {
+  const gate = resolveScalpResearchEntryBlock({
     enabled: false,
     hardGate: true,
     evidence: null,
@@ -385,8 +385,8 @@ const PROMOTION_THRESHOLDS = {
   minTrailing4wNetR: 4,
 };
 
-test("evaluateScalpV5PromotionEvidence qualifies v5 evidence without v2 promotion_gate", () => {
-  const evaluation = evaluateScalpV5PromotionEvidence({
+test("evaluateScalpResearchPromotionEvidence qualifies v5 evidence without v2 promotion_gate", () => {
+  const evaluation = evaluateScalpResearchPromotionEvidence({
     evidence: promotionEvidence({
       trades: 72,
       weekly: [0.5, 0.4, -0.2, 0.7, 0.6, -0.5, 0.4, 0.5, 1.2, 1.1, 1.0, 0.9],
@@ -399,8 +399,8 @@ test("evaluateScalpV5PromotionEvidence qualifies v5 evidence without v2 promotio
   assert.equal(evaluation.metrics.trailing4wNetR.toFixed(1), "4.2");
 });
 
-test("evaluateScalpV5PromotionEvidence allows exceptional low-sample consistency", () => {
-  const evaluation = evaluateScalpV5PromotionEvidence({
+test("evaluateScalpResearchPromotionEvidence allows exceptional low-sample consistency", () => {
+  const evaluation = evaluateScalpResearchPromotionEvidence({
     evidence: {
       ...promotionEvidence({
         trades: 29,
@@ -440,16 +440,16 @@ test("evaluateScalpV5PromotionEvidence allows exceptional low-sample consistency
   assert.equal(evaluation.metrics.activeCells, 2);
 });
 
-test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure", () => {
+test("evaluateScalpResearchPromotionEvidence reports the binding v5 threshold failure", () => {
   assert.equal(
-    evaluateScalpV5PromotionEvidence({
+    evaluateScalpResearchPromotionEvidence({
       evidence: promotionEvidence({ trades: 72, weekly: [0.1, 0.1, 0.1, 0.1] }),
       thresholds: PROMOTION_THRESHOLDS,
     }).reason,
     "v5_total_net_r_below_threshold",
   );
   assert.equal(
-    evaluateScalpV5PromotionEvidence({
+    evaluateScalpResearchPromotionEvidence({
       evidence: promotionEvidence({
         trades: 20,
         weekly: [0.5, 0.4, -0.2, 0.7, 0.6, -0.5, 0.4, 0.5, 1.2, 1.1, 1.0, 0.9],
@@ -459,7 +459,7 @@ test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure"
     "v5_total_trades_below_threshold",
   );
   assert.equal(
-    evaluateScalpV5PromotionEvidence({
+    evaluateScalpResearchPromotionEvidence({
       evidence: promotionEvidence({
         trades: 72,
         weekly: [2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1],
@@ -469,7 +469,7 @@ test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure"
     "v5_positive_weeks_below_threshold",
   );
   assert.equal(
-    evaluateScalpV5PromotionEvidence({
+    evaluateScalpResearchPromotionEvidence({
       evidence: promotionEvidence({
         trades: 72,
         weekly: [2, 1, 1, 1, 1, 1, 1, 1, 1, -4, 1, 1],
@@ -479,7 +479,7 @@ test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure"
     "v5_worst_week_below_threshold",
   );
   assert.equal(
-    evaluateScalpV5PromotionEvidence({
+    evaluateScalpResearchPromotionEvidence({
       evidence: promotionEvidence({
         trades: 72,
         weekly: [1, 1, -0.2, 1, 1, -0.2, 1, 1, 0.2, 0.2, 0.2, 0.2],
@@ -490,11 +490,11 @@ test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure"
   );
 });
 
-test("resolveScalpV5EvidenceFreshness marks stale and fresh evidence", () => {
+test("resolveScalpResearchEvidenceFreshness marks stale and fresh evidence", () => {
   const nowMs = ANCHOR + 20 * ONE_DAY_MS;
   const staleOlderThanMs = 14 * ONE_DAY_MS;
   assert.equal(
-    resolveScalpV5EvidenceFreshness({
+    resolveScalpResearchEvidenceFreshness({
       evaluatedAtMs: nowMs - 15 * ONE_DAY_MS,
       nowMs,
       staleOlderThanMs,
@@ -502,7 +502,7 @@ test("resolveScalpV5EvidenceFreshness marks stale and fresh evidence", () => {
     true,
   );
   assert.equal(
-    resolveScalpV5EvidenceFreshness({
+    resolveScalpResearchEvidenceFreshness({
       evaluatedAtMs: nowMs - 2 * ONE_DAY_MS,
       nowMs,
       staleOlderThanMs,
@@ -510,22 +510,22 @@ test("resolveScalpV5EvidenceFreshness marks stale and fresh evidence", () => {
     false,
   );
   assert.equal(
-    resolveScalpV5EvidenceFreshness({ evaluatedAtMs: null, nowMs, staleOlderThanMs }).stale,
+    resolveScalpResearchEvidenceFreshness({ evaluatedAtMs: null, nowMs, staleOlderThanMs }).stale,
     true,
   );
 });
 
-test("resolveScalpV5PreflightWeek targets the just-completed week on Sunday", () => {
+test("resolveScalpResearchPreflightWeek targets the just-completed week on Sunday", () => {
   const sunday = Date.UTC(2026, 4, 24, 7, 30, 0);
-  const out = resolveScalpV5PreflightWeek({ nowMs: sunday, holdoutWeeks: 12 });
+  const out = resolveScalpResearchPreflightWeek({ nowMs: sunday, holdoutWeeks: 12 });
   assert.equal(out.targetWeekStartMs, Date.UTC(2026, 4, 18));
   assert.equal(out.targetWeekEndMs, Date.UTC(2026, 4, 25));
   assert.equal(out.holdoutFromMs, Date.UTC(2026, 2, 2));
   assert.equal(out.holdoutToMs, Date.UTC(2026, 4, 25));
 });
 
-test("summarizeScalpV5CandleCoverage flags missing and partial weekly buckets", () => {
-  const failures = summarizeScalpV5CandleCoverage({
+test("summarizeScalpResearchCandleCoverage flags missing and partial weekly buckets", () => {
+  const failures = summarizeScalpResearchCandleCoverage({
     scopes: [
       { venue: "bitget", symbol: "BTCUSDT" },
       { venue: "capital", symbol: "EURUSD" },
@@ -548,36 +548,36 @@ test("summarizeScalpV5CandleCoverage flags missing and partial weekly buckets", 
 
 test("removed Bitget symbols are classified from provider errors", () => {
   assert.equal(
-    isScalpV5RemovedBitgetSymbolError(
+    isScalpResearchRemovedBitgetSymbolError(
       "bitget_history_request_failed:MKRUSDT: Bitget error 40309: The symbol has been removed",
     ),
     true,
   );
-  assert.equal(isScalpV5RemovedBitgetSymbolError("capital timeout"), false);
+  assert.equal(isScalpResearchRemovedBitgetSymbolError("capital timeout"), false);
 });
 
 test("v5 evaluation candle preflight runs only on Sunday unless forced", () => {
   assert.equal(
-    shouldRunScalpV5EvaluationCandlePreflight({
+    shouldRunScalpResearchEvaluationCandlePreflight({
       nowMs: Date.UTC(2026, 4, 24, 7, 0, 0),
     }),
     true,
   );
   assert.equal(
-    shouldRunScalpV5EvaluationCandlePreflight({
+    shouldRunScalpResearchEvaluationCandlePreflight({
       nowMs: Date.UTC(2026, 4, 25, 7, 0, 0),
     }),
     false,
   );
   assert.equal(
-    shouldRunScalpV5EvaluationCandlePreflight({
+    shouldRunScalpResearchEvaluationCandlePreflight({
       nowMs: Date.UTC(2026, 4, 25, 7, 0, 0),
       forcePreflight: true,
     }),
     true,
   );
   assert.equal(
-    shouldRunScalpV5EvaluationCandlePreflight({
+    shouldRunScalpResearchEvaluationCandlePreflight({
       nowMs: Date.UTC(2026, 4, 24, 7, 0, 0),
       preflightCandles: false,
     }),
@@ -587,9 +587,9 @@ test("v5 evaluation candle preflight runs only on Sunday unless forced", () => {
 
 function makeRefillCandidate(
   id: number,
-  overrides: Partial<ScalpV5StageCRefillCandidate> = {},
-): ScalpV5StageCRefillCandidate {
-  const base: ScalpV5StageCRefillCandidate = {
+  overrides: Partial<ScalpResearchStageCRefillCandidate> = {},
+): ScalpResearchStageCRefillCandidate {
+  const base: ScalpResearchStageCRefillCandidate = {
     id,
     venue: "bitget",
     symbol: `T${id}USDT`,
@@ -607,8 +607,8 @@ function makeRefillCandidate(
   return { ...base, ...overrides };
 }
 
-test("rankScalpV5StageCRefillCandidates filters inactive quality candidates and orders by edge", () => {
-  const selected = rankScalpV5StageCRefillCandidates({
+test("rankScalpResearchStageCRefillCandidates filters inactive quality candidates and orders by edge", () => {
+  const selected = rankScalpResearchStageCRefillCandidates({
     targetNewSeats: 3,
     minStageCNetR: 4,
     minStageCTrades: 30,

@@ -5,7 +5,7 @@
 // locally — Vercel runs this server-side and keeps `v5_cell_evidence` fresh.
 //
 // Safe to coexist with local bulk runs: the SELECT in
-// loadScalpV5DeploymentsForEvaluation orders by staleness, so a local
+// loadScalpResearchDeploymentsForEvaluation orders by staleness, so a local
 // process and the cron will mostly pick disjoint rows, and any overlap just
 // recomputes the same evidence (idempotent upsert).
 
@@ -15,7 +15,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { runScalpV5EvaluationBatch } from "../../../../../lib/scalp/research/evaluator";
+import { runScalpResearchEvaluationBatch } from "../../../../../lib/scalp/research/evaluator";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
@@ -67,7 +67,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const preflightBatchSize = parseIntBounded(req.query.preflightBatchSize, 200, 1, 200);
     const preflightMaxAttempts = parseIntBounded(req.query.preflightMaxAttempts, 10, 1, 30);
 
-    const result = await runScalpV5EvaluationBatch({
+    const result = await runScalpResearchEvaluationBatch({
       limit,
       staleOlderThanMs: staleOlderThanHours * 60 * 60_000,
       preflightCandles,

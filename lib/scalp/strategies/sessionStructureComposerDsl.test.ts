@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-  buildScalpV2SessionStructureComposerGrid,
+  buildScalpComposerSessionStructureComposerGrid,
   buildSessionStructureComposerTuneId,
   isSessionStructureComposerStrategyId,
   parseSessionStructureComposerTuneId,
@@ -11,7 +11,7 @@ import {
 } from "../composer/sessionStructureComposer";
 import { buildSessionStructureAdaptivePriorsFromRows } from "../composer/sessionStructureAdaptiveSearch";
 
-function composerFamilyKey(row: ReturnType<typeof buildScalpV2SessionStructureComposerGrid>[number]): string {
+function composerFamilyKey(row: ReturnType<typeof buildScalpComposerSessionStructureComposerGrid>[number]): string {
   const level = row.sessionComposerPlan.levelId.startsWith("opening_range_")
     ? "opening_range"
     : row.sessionComposerPlan.levelId;
@@ -106,14 +106,14 @@ test("session structure compatibility rejects invalid no-op combinations", () =>
 });
 
 test("session structure grid is deterministic, capped, and deduped by behavior fingerprint", () => {
-  const a = buildScalpV2SessionStructureComposerGrid({
+  const a = buildScalpComposerSessionStructureComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "berlin",
     maxCandidates: 60,
     generatedAtMs: 1,
   });
-  const b = buildScalpV2SessionStructureComposerGrid({
+  const b = buildScalpComposerSessionStructureComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "berlin",
@@ -166,7 +166,7 @@ test("session structure adaptive priors bias the next generated grid", () => {
     nowMs: 2,
     minSamples: 4,
   });
-  const adaptiveGrid = buildScalpV2SessionStructureComposerGrid({
+  const adaptiveGrid = buildScalpComposerSessionStructureComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "berlin",

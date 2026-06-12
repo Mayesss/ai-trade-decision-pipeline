@@ -12,8 +12,8 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import { scalpPrisma } from "../../../../../lib/scalp/pg/client";
 import { sql } from "../../../../../lib/scalp/pg/sql";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../../../../../lib/scalp/composer/types";
+import { runScalpComposerLoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
+import type { ScalpComposerVenue } from "../../../../../lib/scalp/composer/types";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
@@ -32,11 +32,11 @@ function parseIntBounded(
   return Math.max(min, Math.min(max, parsed));
 }
 
-function normalizeVenue(value: unknown): ScalpV2Venue {
+function normalizeVenue(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-async function loadEnabledLiveScopes(): Promise<Array<{ venue: ScalpV2Venue; symbol: string }>> {
+async function loadEnabledLiveScopes(): Promise<Array<{ venue: ScalpComposerVenue; symbol: string }>> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
     SELECT DISTINCT venue, symbol
@@ -66,7 +66,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const batchSize = parseIntBounded(req.query.batchSize, 20, 1, 100);
     const maxAttempts = parseIntBounded(req.query.maxAttempts, 10, 1, 30);
 
-    const result = await runScalpV2LoadCandlesPipelineJob({
+    const result = await runScalpComposerLoadCandlesPipelineJob({
       batchSize,
       maxAttempts,
       scopes,

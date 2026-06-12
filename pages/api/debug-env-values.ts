@@ -8,7 +8,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!requireAdminAccess(req, res)) return;
 
     try {
-        const scalpV2StaleRecoveryDays =
+        const scalpComposerStaleRecoveryDays =
             process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
             process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
             '(default: 14)';
@@ -72,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
-            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpV2StaleRecoveryDays,
+            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
             SCALP_V2_WEEK_COMPLETE_FINAL_SESSION:
                 process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
             SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES:
@@ -126,7 +126,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
-            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpV2StaleRecoveryDays,
+            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
             SCALP_V2_WEEK_COMPLETE_FINAL_SESSION:
                 process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
             SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES:

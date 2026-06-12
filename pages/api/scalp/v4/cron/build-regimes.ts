@@ -13,9 +13,9 @@ import { scalpPrisma } from "../../../../../lib/scalp/pg/client";
 import { sql } from "../../../../../lib/scalp/pg/sql";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
 import {
-  runScalpV4WeeklyRegimeBuild,
+  runScalpRegimeWeeklyRegimeBuild,
   SCALP_V4_CLASSIFIER_VERSION,
-  type ScalpV4Venue,
+  type ScalpRegimeVenue,
 } from "../../../../../lib/scalp/regimes";
 
 function firstQueryValue(value: string | string[] | undefined): string {
@@ -30,11 +30,11 @@ function parseBool(value: string | string[] | undefined, fallback: boolean): boo
   return fallback;
 }
 
-function normalizeVenue(value: unknown): ScalpV4Venue {
+function normalizeVenue(value: unknown): ScalpRegimeVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-async function loadLiveDeploymentSymbols(): Promise<Array<{ venue: ScalpV4Venue; symbol: string }>> {
+async function loadLiveDeploymentSymbols(): Promise<Array<{ venue: ScalpRegimeVenue; symbol: string }>> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
     SELECT DISTINCT venue, symbol
@@ -66,7 +66,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       firstQueryValue(req.query.classifierVersion).trim() || SCALP_V4_CLASSIFIER_VERSION;
     const symbols = liveOnly ? await loadLiveDeploymentSymbols() : undefined;
 
-    const result = await runScalpV4WeeklyRegimeBuild({
+    const result = await runScalpRegimeWeeklyRegimeBuild({
       symbols,
       classifierVersion,
       forceValidity,

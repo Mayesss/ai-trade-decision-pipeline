@@ -24,15 +24,15 @@ import { runScalpReplay } from "../lib/scalp/replay/harness";
 import type { ScalpReplayCandle, ScalpReplayTrade } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
-import { loadScalpV4RegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../lib/scalp/regimes/types";
+import { loadScalpRegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
+import type { ScalpRegimeCellId, ScalpRegimeVenue } from "../lib/scalp/regimes/types";
 import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
 import {
-  buildScalpV5CellEvidence,
-  resolveScalpV5Config,
+  buildScalpResearchCellEvidence,
+  resolveScalpResearchConfig,
   tagTradesWithCells,
 } from "../lib/scalp/research";
-import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
+import type { ScalpResearchDeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -55,14 +55,14 @@ function toReplayCandles(rows: ScalpCandle[], spreadPips: number): ScalpReplayCa
 
 function evidenceFrom(
   trades: ScalpReplayTrade[],
-  snapshotsByWeekStart: Map<number, ScalpV4CellId>,
+  snapshotsByWeekStart: Map<number, ScalpRegimeCellId>,
   cfg: { classifierVersion: string; minTradesPerCell: number },
   holdoutFromMs: number,
   holdoutToMs: number,
   nowMs: number,
 ) {
   const tagged = tagTradesWithCells({ trades, snapshotsByWeekStart });
-  return buildScalpV5CellEvidence({
+  return buildScalpResearchCellEvidence({
     tagged,
     classifierVersion: cfg.classifierVersion,
     evaluatedAtMs: nowMs,
@@ -75,11 +75,11 @@ function evidenceFrom(
 async function main() {
   if (!isScalpPgConfigured()) throw new Error("scalp_pg_not_configured");
   const db = scalpPrisma();
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Date.now();
   const { holdoutFromMs, holdoutToMs } = resolveHoldoutWindow(nowMs, cfg.holdoutWeeks);
 
-  const rows = await db.$queryRaw<Array<ScalpV5DeploymentRow & { riskProfile: unknown }>>(sql`
+  const rows = await db.$queryRaw<Array<ScalpResearchDeploymentRow & { riskProfile: unknown }>>(sql`
     SELECT deployment_id AS "deploymentId", venue, symbol,
            strategy_id AS "strategyId", tune_id AS "tuneId",
            entry_session_profile AS "entrySessionProfile",
@@ -109,7 +109,7 @@ async function main() {
   const results: Array<{ symbol: string; willEnable: boolean }> = [];
 
   for (const row of rows) {
-    const { runtime } = buildDeploymentRuntime(row as ScalpV5DeploymentRow);
+    const { runtime } = buildDeploymentRuntime(row as ScalpResearchDeploymentRow);
     let history;
     try {
       history = await loadScalpCandleHistoryInRange(row.symbol, "1m", holdoutFromMs, holdoutToMs);
@@ -132,14 +132,14 @@ async function main() {
       captureTimeline: false,
     });
 
-    const snapshotMap = await loadScalpV4RegimeSnapshotsBulk({
-      pairs: [{ venue: row.venue as ScalpV4Venue, symbol: row.symbol }],
+    const snapshotMap = await loadScalpRegimeSnapshotsBulk({
+      pairs: [{ venue: row.venue as ScalpRegimeVenue, symbol: row.symbol }],
       classifierVersion: cfg.classifierVersion,
       fromMs: holdoutFromMs,
       toMs: holdoutToMs,
     });
     const snaps = snapshotMap.get(`${row.venue}:${row.symbol}`) || [];
-    const snapshotsByWeekStart = new Map<number, ScalpV4CellId>();
+    const snapshotsByWeekStart = new Map<number, ScalpRegimeCellId>();
     for (const snap of snaps) snapshotsByWeekStart.set(snap.weekStartMs, snap.cellId);
 
     // Net evidence (as the patched harness scores it) vs gross (fee-free).

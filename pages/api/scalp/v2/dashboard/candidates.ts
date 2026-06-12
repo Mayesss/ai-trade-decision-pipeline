@@ -3,8 +3,8 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { paginateScalpV2Candidates } from "../../../../../lib/scalp/composer/db";
-import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp/composer/types";
+import { paginateScalpComposerCandidates } from "../../../../../lib/scalp/composer/db";
+import type { ScalpComposerCandidateStatus } from "../../../../../lib/scalp/composer/types";
 import {
   firstQueryValue,
   parseSession,
@@ -15,7 +15,7 @@ import {
 
 function parseCandidateStatus(
   value: string | string[] | undefined,
-): ScalpV2CandidateStatus | undefined {
+): ScalpComposerCandidateStatus | undefined {
   const raw = firstQueryValue(value);
   if (!raw) return undefined;
   const normalized = raw.toLowerCase();
@@ -28,7 +28,7 @@ function parseCandidateStatus(
 
 function parseCandidateState(
   value: string | string[] | undefined,
-): "all" | "enabled" | ScalpV2CandidateStatus {
+): "all" | "enabled" | ScalpComposerCandidateStatus {
   const raw = firstQueryValue(value);
   if (!raw) return "all";
   const normalized = raw.toLowerCase();
@@ -65,7 +65,7 @@ export default async function handler(
           ? null
           : false;
 
-    const result = await paginateScalpV2Candidates({
+    const result = await paginateScalpComposerCandidates({
       session,
       venue,
       status,

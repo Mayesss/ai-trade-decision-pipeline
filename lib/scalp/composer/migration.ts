@@ -1,11 +1,11 @@
 import {
-  aggregateScalpV2CutoverParityWindow,
-  importV1LedgerIntoScalpV2,
-  importV1JournalIntoScalpV2,
-  importV1SessionsIntoScalpV2,
+  aggregateScalpComposerCutoverParityWindow,
+  importV1LedgerIntoScalpComposer,
+  importV1JournalIntoScalpComposer,
+  importV1SessionsIntoScalpComposer,
 } from "./db";
 
-export async function runScalpV2CutoverMigration(params: {
+export async function runScalpComposerCutoverMigration(params: {
   limit?: number;
   parityWindowDays?: number;
   journalParityLimit?: number;
@@ -30,21 +30,21 @@ export async function runScalpV2CutoverMigration(params: {
       skipped: number;
     };
   };
-  parity: Awaited<ReturnType<typeof aggregateScalpV2CutoverParityWindow>>;
+  parity: Awaited<ReturnType<typeof aggregateScalpComposerCutoverParityWindow>>;
 }> {
   const limit = Math.max(100, Math.min(500_000, Math.floor(params.limit || 50_000)));
   const [ledger, sessions, journal] = await Promise.all([
-    importV1LedgerIntoScalpV2({
+    importV1LedgerIntoScalpComposer({
       limit,
     }),
-    importV1SessionsIntoScalpV2({
+    importV1SessionsIntoScalpComposer({
       limit,
     }),
-    importV1JournalIntoScalpV2({
+    importV1JournalIntoScalpComposer({
       limit,
     }),
   ]);
-  const parity = await aggregateScalpV2CutoverParityWindow({
+  const parity = await aggregateScalpComposerCutoverParityWindow({
     sinceDays: Math.max(1, Math.min(3650, Math.floor(params.parityWindowDays || 30))),
     journalLimit: Math.max(
       100,
@@ -61,7 +61,7 @@ export async function runScalpV2CutoverMigration(params: {
   };
 }
 
-export async function runScalpV2LedgerMigration(params: {
+export async function runScalpComposerLedgerMigration(params: {
   limit?: number;
   parityWindowDays?: number;
 } = {}): Promise<{
@@ -74,7 +74,7 @@ export async function runScalpV2LedgerMigration(params: {
     v2NetR: number;
   };
 }> {
-  const cutover = await runScalpV2CutoverMigration({
+  const cutover = await runScalpComposerCutoverMigration({
     limit: params.limit,
     parityWindowDays: params.parityWindowDays,
     journalParityLimit: 500,

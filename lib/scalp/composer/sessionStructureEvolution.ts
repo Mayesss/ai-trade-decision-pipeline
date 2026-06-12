@@ -20,7 +20,7 @@ import {
   validateSessionStructureCompatibility,
   type SessionStructureComposerPlan,
 } from "./sessionStructureComposer";
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
 export const SESSION_STRUCTURE_EVOLUTION_VERSION =
   "session_structure_evolution_v1";
@@ -35,9 +35,9 @@ export type SessionStructureEvolutionOp = "mutation" | "crossover";
 
 export interface SessionStructureSurvivor {
   scopeKey: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   genome: SessionStructureGenome;
   fingerprint: string;
   tuneId: string;
@@ -88,9 +88,9 @@ export interface SessionStructureOffspring {
 }
 
 type SurvivorRow = {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   tuneId: string;
   metadata: Record<string, unknown>;
 };
@@ -617,9 +617,9 @@ export function generateOffspring(params: {
 /** Builder-facing helper: the canonical tuneId for an offspring in a scope. */
 export function offspringTuneId(params: {
   genome: SessionStructureGenome;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
 }): string {
   const fingerprint = sessionStructureBehaviorFingerprint(params.genome);
   const digest = crypto

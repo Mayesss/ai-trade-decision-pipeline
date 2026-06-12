@@ -10,9 +10,9 @@ import { requireAdminAccess } from "../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import { startOfUtcDayMs } from "../../../../lib/scalp/regimes/week";
 import {
-  isScalpV5Enabled,
-  isScalpV5HardGateEnabled,
-  resolveScalpV5Config,
+  isScalpResearchEnabled,
+  isScalpResearchHardGateEnabled,
+  resolveScalpResearchConfig,
 } from "../../../../lib/scalp/research";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
@@ -23,7 +23,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   setNoStoreHeaders(res);
 
   try {
-    const cfg = resolveScalpV5Config();
+    const cfg = resolveScalpResearchConfig();
     const nowMs = Date.now();
     const staleThresholdMs = Math.max(
       60 * 60_000,
@@ -204,8 +204,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({
       ok: true,
       classifierVersion: cfg.classifierVersion,
-      v5Enabled: isScalpV5Enabled(),
-      v5HardGateEnabled: isScalpV5HardGateEnabled(),
+      v5Enabled: isScalpResearchEnabled(),
+      v5HardGateEnabled: isScalpResearchHardGateEnabled(),
       config: {
         holdoutWeeks: cfg.holdoutWeeks,
         minTradesPerCell: cfg.minTradesPerCell,

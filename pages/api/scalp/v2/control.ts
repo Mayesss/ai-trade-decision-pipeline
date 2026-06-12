@@ -4,11 +4,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
 import {
-  loadScalpV2RuntimeConfig,
-  upsertScalpV2RuntimeConfig,
+  loadScalpComposerRuntimeConfig,
+  upsertScalpComposerRuntimeConfig,
 } from "../../../../lib/scalp/composer/db";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
-import type { ScalpV2RuntimeConfig } from "../../../../lib/scalp/composer/types";
+import type { ScalpComposerRuntimeConfig } from "../../../../lib/scalp/composer/types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -16,13 +16,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function mergeRuntimeConfig(
-  base: ScalpV2RuntimeConfig,
+  base: ScalpComposerRuntimeConfig,
   patch: Record<string, unknown>,
-): ScalpV2RuntimeConfig {
+): ScalpComposerRuntimeConfig {
   const merged = {
     ...base,
     ...patch,
-  } as ScalpV2RuntimeConfig;
+  } as ScalpComposerRuntimeConfig;
 
   merged.budgets = {
     ...base.budgets,
@@ -39,11 +39,11 @@ function mergeRuntimeConfig(
   merged.seedSymbolsByVenue = {
     ...base.seedSymbolsByVenue,
     ...seedSymbolsByVenue,
-  } as ScalpV2RuntimeConfig["seedSymbolsByVenue"];
+  } as ScalpComposerRuntimeConfig["seedSymbolsByVenue"];
   merged.seedLiveSymbolsByVenue = {
     ...base.seedLiveSymbolsByVenue,
     ...seedLiveSymbolsByVenue,
-  } as ScalpV2RuntimeConfig["seedLiveSymbolsByVenue"];
+  } as ScalpComposerRuntimeConfig["seedLiveSymbolsByVenue"];
 
   return merged;
 }
@@ -57,7 +57,7 @@ export default async function handler(
 
   try {
     if (req.method === "GET") {
-      const runtime = await loadScalpV2RuntimeConfig();
+      const runtime = await loadScalpComposerRuntimeConfig();
       return res.status(200).json({
         ok: true,
         mode: "scalp_v2",
@@ -66,10 +66,10 @@ export default async function handler(
     }
 
     if (req.method === "POST") {
-      const current = await loadScalpV2RuntimeConfig();
+      const current = await loadScalpComposerRuntimeConfig();
       const patch = asRecord(req.body);
       const next = mergeRuntimeConfig(current, patch);
-      const runtime = await upsertScalpV2RuntimeConfig(next);
+      const runtime = await upsertScalpComposerRuntimeConfig(next);
       return res.status(200).json({
         ok: true,
         mode: "scalp_v2",

@@ -6,7 +6,7 @@ import {
   runDayRobustnessBatch,
   resolveDayRobustnessPolicy,
 } from "../lib/scalp/composer/dayRobustness";
-import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
+import { resolveScalpComposerCompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -37,7 +37,7 @@ const maxBatches = envInt("DAY_ROBUSTNESS_MAX_BATCHES", 1, 1, 10_000);
 const dryRun = envBool("DAY_ROBUSTNESS_DRY_RUN", false);
 const extended = envBool("DAY_ROBUSTNESS_EXTENDED", false);
 const includeFailed = envBool("DAY_ROBUSTNESS_INCLUDE_FAILED", false);
-const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(Date.now());
+const windowToTs = resolveScalpComposerCompletedWeekWindowToUtc(Date.now());
 const owner = `day-robustness-local:${process.pid}:${Date.now().toString(36)}`;
 
 console.log("Day composer finalist robustness runner");

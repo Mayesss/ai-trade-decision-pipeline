@@ -23,7 +23,7 @@ import {
   resolveStateMachineBlockFromShortCode,
   type StateMachineBlockId,
 } from "./stateMachinePresets";
-import type { ScalpV2PrimitiveBlockMap } from "./types";
+import type { ScalpComposerPrimitiveBlockMap } from "./types";
 
 export const MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID =
   "model_guided_composer_v2";
@@ -446,7 +446,7 @@ export function resolveModelGuidedComposerExecutionPlanFromTuneId(
 }
 
 export function resolveModelGuidedComposerExecutionPlanFromBlocks(
-  blocksByFamily: Partial<ScalpV2PrimitiveBlockMap> | null | undefined,
+  blocksByFamily: Partial<ScalpComposerPrimitiveBlockMap> | null | undefined,
   tfVariant?: ModelGuidedComposerTimeframeVariant,
 ): ModelGuidedComposerExecutionPlan {
   const patterns = Array.isArray(blocksByFamily?.pattern)
@@ -463,7 +463,7 @@ export function resolveModelGuidedComposerExecutionPlanFromBlocks(
 }
 
 export function resolveBaseArmFromPatternBlock(
-  blocksByFamily: Partial<ScalpV2PrimitiveBlockMap> | null | undefined,
+  blocksByFamily: Partial<ScalpComposerPrimitiveBlockMap> | null | undefined,
 ): ModelGuidedComposerBaseArm {
   const patterns = Array.isArray(blocksByFamily?.pattern)
     ? blocksByFamily!.pattern.map((row) => String(row || "").trim()).filter(Boolean)
@@ -477,7 +477,7 @@ export function resolveBaseArmFromPatternBlock(
 
 export function resolveModelGuidedComposerExecutionPlan(params: {
   tuneId?: unknown;
-  blocksByFamily?: Partial<ScalpV2PrimitiveBlockMap> | null;
+  blocksByFamily?: Partial<ScalpComposerPrimitiveBlockMap> | null;
 }): ModelGuidedComposerExecutionPlan {
   const fromBlocks = resolveModelGuidedComposerExecutionPlanFromBlocks(
     params.blocksByFamily,

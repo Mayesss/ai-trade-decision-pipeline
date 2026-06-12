@@ -11,10 +11,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../lib/admin";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
-import { resolveScalpV4FailClosedStaleMs } from "../../../../lib/scalp/regimes/pg";
+import { resolveScalpRegimeFailClosedStaleMs } from "../../../../lib/scalp/regimes/pg";
 import { startOfUtcWeekMondayMs } from "../../../../lib/scalp/regimes/week";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
-import { resolveScalpV5Config, type ScalpV5CellStat } from "../../../../lib/scalp/research";
+import { resolveScalpResearchConfig, type ScalpResearchCellStat } from "../../../../lib/scalp/research";
 import { decideV5Gate, type V5GateDecision } from "../../../../lib/scalp/research/dashboardLoader";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -22,7 +22,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function parseCurrentCellStat(value: unknown): ScalpV5CellStat | null {
+function parseCurrentCellStat(value: unknown): ScalpResearchCellStat | null {
   const rec = asRecord(value);
   if (!rec) return null;
   return {
@@ -49,10 +49,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   setNoStoreHeaders(res);
 
   try {
-    const cfg = resolveScalpV5Config();
+    const cfg = resolveScalpResearchConfig();
     const nowMs = Date.now();
     const weekStartMs = startOfUtcWeekMondayMs(nowMs);
-    const staleBefore = new Date(nowMs - resolveScalpV4FailClosedStaleMs());
+    const staleBefore = new Date(nowMs - resolveScalpRegimeFailClosedStaleMs());
     const db = scalpPrisma();
     const rows = await db.$queryRaw<Array<{
       enabled: boolean;

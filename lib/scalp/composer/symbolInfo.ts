@@ -1,4 +1,4 @@
-export type ScalpV2AssetCategory =
+export type ScalpComposerAssetCategory =
   | "forex"
   | "crypto"
   | "commodity"
@@ -75,7 +75,7 @@ function isFxSymbol(symbol: string): boolean {
   return FX_CODES.has(lhs) && FX_CODES.has(rhs) && !symbol.endsWith("USDT");
 }
 
-export function isScalpV2PreciousMetalFamilySymbol(symbol: string): boolean {
+export function isScalpComposerPreciousMetalFamilySymbol(symbol: string): boolean {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return false;
   if (METAL_SYMBOLS.has(normalized)) return true;
@@ -91,7 +91,7 @@ export function isScalpV2PreciousMetalFamilySymbol(symbol: string): boolean {
  * Minimum spread in pips per asset category.
  * Crypto tick sizes are tiny relative to price so 1.1 forex pips is unrealistic.
  */
-const MIN_SPREAD_PIPS_BY_CATEGORY: Record<ScalpV2AssetCategory, number> = {
+const MIN_SPREAD_PIPS_BY_CATEGORY: Record<ScalpComposerAssetCategory, number> = {
   forex: 1.1,
   crypto: 5,
   commodity: 3,
@@ -100,11 +100,11 @@ const MIN_SPREAD_PIPS_BY_CATEGORY: Record<ScalpV2AssetCategory, number> = {
   other: 2,
 };
 
-export function minSpreadPipsForCategory(category: ScalpV2AssetCategory): number {
+export function minSpreadPipsForCategory(category: ScalpComposerAssetCategory): number {
   return MIN_SPREAD_PIPS_BY_CATEGORY[category] ?? 2;
 }
 
-export function inferScalpV2AssetCategory(symbol: string): ScalpV2AssetCategory {
+export function inferScalpComposerAssetCategory(symbol: string): ScalpComposerAssetCategory {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return "other";
   if (isFxSymbol(normalized)) return "forex";
@@ -119,7 +119,7 @@ export function inferScalpV2AssetCategory(symbol: string): ScalpV2AssetCategory 
     return "index";
   }
   if (
-    isScalpV2PreciousMetalFamilySymbol(normalized) ||
+    isScalpComposerPreciousMetalFamilySymbol(normalized) ||
     COMMODITY_SYMBOLS.has(normalized)
   ) {
     return "commodity";

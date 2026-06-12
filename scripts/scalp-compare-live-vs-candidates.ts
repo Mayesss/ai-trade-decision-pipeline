@@ -20,11 +20,11 @@ import { runScalpReplay } from "../lib/scalp/replay/harness";
 import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
-import { loadScalpV4RegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../lib/scalp/regimes/types";
+import { loadScalpRegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
+import type { ScalpRegimeCellId, ScalpRegimeVenue } from "../lib/scalp/regimes/types";
 import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
-import { buildScalpV5CellEvidence, resolveScalpV5Config, tagTradesWithCells } from "../lib/scalp/research";
-import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
+import { buildScalpResearchCellEvidence, resolveScalpResearchConfig, tagTradesWithCells } from "../lib/scalp/research";
+import type { ScalpResearchDeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -51,8 +51,8 @@ function toReplayCandles(rows: ScalpCandle[], spreadPips: number): ScalpReplayCa
 }
 
 async function analyze(
-  row: ScalpV5DeploymentRow,
-  cfg: ReturnType<typeof resolveScalpV5Config>,
+  row: ScalpResearchDeploymentRow,
+  cfg: ReturnType<typeof resolveScalpResearchConfig>,
   nowMs: number,
   holdoutFromMs: number,
   holdoutToMs: number,
@@ -68,16 +68,16 @@ async function analyze(
     config: runtime,
     captureTimeline: false,
   });
-  const snapshotMap = await loadScalpV4RegimeSnapshotsBulk({
-    pairs: [{ venue: row.venue as ScalpV4Venue, symbol: row.symbol }],
+  const snapshotMap = await loadScalpRegimeSnapshotsBulk({
+    pairs: [{ venue: row.venue as ScalpRegimeVenue, symbol: row.symbol }],
     classifierVersion: cfg.classifierVersion,
     fromMs: holdoutFromMs,
     toMs: holdoutToMs,
   });
   const snaps = snapshotMap.get(`${row.venue}:${row.symbol}`) || [];
-  const byWeek = new Map<number, ScalpV4CellId>();
+  const byWeek = new Map<number, ScalpRegimeCellId>();
   for (const s of snaps) byWeek.set(s.weekStartMs, s.cellId);
-  const ev = buildScalpV5CellEvidence({
+  const ev = buildScalpResearchCellEvidence({
     tagged: tagTradesWithCells({ trades: replay.trades, snapshotsByWeekStart: byWeek }),
     classifierVersion: cfg.classifierVersion,
     evaluatedAtMs: nowMs,
@@ -112,11 +112,11 @@ async function analyze(
 async function main() {
   if (!isScalpPgConfigured()) throw new Error("scalp_pg_not_configured");
   const db = scalpPrisma();
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Date.now();
   const { holdoutFromMs, holdoutToMs } = resolveHoldoutWindow(nowMs, cfg.holdoutWeeks);
 
-  const rows = await db.$queryRaw<Array<ScalpV5DeploymentRow & { riskProfile: unknown }>>(sql`
+  const rows = await db.$queryRaw<Array<ScalpResearchDeploymentRow & { riskProfile: unknown }>>(sql`
     SELECT deployment_id AS "deploymentId", venue, symbol,
            strategy_id AS "strategyId", tune_id AS "tuneId",
            entry_session_profile AS "entrySessionProfile", enabled,
@@ -132,7 +132,7 @@ async function main() {
 
   const out: Array<{ group: string; r: NonNullable<Awaited<ReturnType<typeof analyze>>> }> = [];
   for (const row of rows) {
-    const r = await analyze(row as ScalpV5DeploymentRow, cfg, nowMs, holdoutFromMs, holdoutToMs).catch(() => null);
+    const r = await analyze(row as ScalpResearchDeploymentRow, cfg, nowMs, holdoutFromMs, holdoutToMs).catch(() => null);
     if (r) out.push({ group: liveIds.has(row.deploymentId) ? "LIVE" : "CAND", r });
   }
 

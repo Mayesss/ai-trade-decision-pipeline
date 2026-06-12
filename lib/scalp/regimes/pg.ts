@@ -1,17 +1,17 @@
 import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
 import { join, sql } from "../pg/sql";
 import type {
-  ScalpV4CellId,
-  ScalpV4IncrementalState,
-  ScalpV4ResearchCandidate,
-  ScalpV4RegimeEnvelope,
-  ScalpV4RegimeSnapshot,
-  ScalpV4Venue,
-  ScalpV4WeeklyBar,
+  ScalpRegimeCellId,
+  ScalpRegimeIncrementalState,
+  ScalpRegimeResearchCandidate,
+  ScalpRegimeEnvelope,
+  ScalpRegimeSnapshot,
+  ScalpRegimeVenue,
+  ScalpRegimeWeeklyBar,
 } from "./types";
 import { startOfUtcWeekMondayMs } from "./week";
 
-function normalizeVenue(value: unknown): ScalpV4Venue {
+function normalizeVenue(value: unknown): ScalpRegimeVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
@@ -19,9 +19,9 @@ function normalizeSymbol(value: unknown): string {
   return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9._-]/g, "");
 }
 
-function asCellId(value: unknown): ScalpV4CellId {
+function asCellId(value: unknown): ScalpRegimeCellId {
   const normalized = String(value || "").trim();
-  return normalized.startsWith("vol=") ? (normalized as ScalpV4CellId) : "unknown";
+  return normalized.startsWith("vol=") ? (normalized as ScalpRegimeCellId) : "unknown";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -29,19 +29,19 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export function isScalpV4Enabled(): boolean {
+export function isScalpRegimeEnabled(): boolean {
   const raw = String(process.env.SCALP_V4_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-export function isScalpV4HardGateEnabled(): boolean {
+export function isScalpRegimeHardGateEnabled(): boolean {
   // Default ON: v4 entry-blocks are real, not shadow. Set
   // SCALP_V4_HARD_GATE_ENABLED=false to revert to shadow-only logging.
   const raw = String(process.env.SCALP_V4_HARD_GATE_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-export function resolveScalpV4WalkforwardClaimLeaseMs(): number {
+export function resolveScalpRegimeWalkforwardClaimLeaseMs(): number {
   const n = Number(process.env.SCALP_V4_WALKFORWARD_CLAIM_LEASE_MS);
   if (!Number.isFinite(n) || n <= 0) return 2 * 60 * 60_000;
   return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
@@ -51,13 +51,13 @@ export function resolveScalpV4WalkforwardClaimLeaseMs(): number {
 // results are re-evaluated. Default 4 weeks: every Sunday rollover, only
 // candidates whose result is >4 weeks old get re-walked. Saves ~75% of the
 // recurring weekly recompute that would otherwise happen on every rollover.
-export function resolveScalpV4WalkforwardReuseWeeks(): number {
+export function resolveScalpRegimeWalkforwardReuseWeeks(): number {
   const n = Number(process.env.SCALP_V4_WALKFORWARD_REUSE_WEEKS);
   if (!Number.isFinite(n) || n < 0) return 4;
   return Math.max(0, Math.min(52, Math.floor(n)));
 }
 
-export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: ScalpV4Venue; symbol: string }>> {
+export async function loadScalpRegimeDeploymentSymbols(): Promise<Array<{ venue: ScalpRegimeVenue; symbol: string }>> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
@@ -71,9 +71,9 @@ export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: Sca
     .filter((row) => Boolean(row.symbol));
 }
 
-export async function listScalpV4ResearchCandidates(params: {
+export async function listScalpRegimeResearchCandidates(params: {
   limit?: number;
-} = {}): Promise<ScalpV4ResearchCandidate[]> {
+} = {}): Promise<ScalpRegimeResearchCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(2_000, Math.floor(Number(params.limit || 100))));
   const db = scalpPrisma();
@@ -132,7 +132,7 @@ export async function listScalpV4ResearchCandidates(params: {
     .filter((row) => row.id > 0 && Boolean(row.symbol) && Boolean(row.strategyId));
 }
 
-export async function loadScalpV4SymbolsWithSnapshotForWeek(params: {
+export async function loadScalpRegimeSymbolsWithSnapshotForWeek(params: {
   classifierVersion: string;
   weekStartMs: number;
 }): Promise<Set<string>> {
@@ -148,12 +148,12 @@ export async function loadScalpV4SymbolsWithSnapshotForWeek(params: {
   return new Set(rows.map((row) => `${normalizeVenue(row.venue)}:${normalizeSymbol(row.symbol)}`));
 }
 
-export async function loadScalpV4WeeklyBars(params: {
-  venue: ScalpV4Venue;
+export async function loadScalpRegimeWeeklyBars(params: {
+  venue: ScalpRegimeVenue;
   symbol: string;
   fromMs: number;
   toMs: number;
-}): Promise<ScalpV4WeeklyBar[]> {
+}): Promise<ScalpRegimeWeeklyBar[]> {
   if (!isScalpPgConfigured()) return [];
   const venue = normalizeVenue(params.venue);
   const symbol = normalizeSymbol(params.symbol);
@@ -198,10 +198,10 @@ export async function loadScalpV4WeeklyBars(params: {
     );
 }
 
-export async function upsertScalpV4WeeklyBars(params: {
-  venue: ScalpV4Venue;
+export async function upsertScalpRegimeWeeklyBars(params: {
+  venue: ScalpRegimeVenue;
   symbol: string;
-  bars: ScalpV4WeeklyBar[];
+  bars: ScalpRegimeWeeklyBar[];
   source?: string;
 }): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
@@ -250,8 +250,8 @@ export async function upsertScalpV4WeeklyBars(params: {
   return bars.length;
 }
 
-export async function backfillScalpV4WeeklyBarsFromCandleHistory(params: {
-  venue: ScalpV4Venue;
+export async function backfillScalpRegimeWeeklyBarsFromCandleHistory(params: {
+  venue: ScalpRegimeVenue;
   symbol: string;
   fromMs: number;
   toMs: number;
@@ -331,20 +331,20 @@ export async function backfillScalpV4WeeklyBarsFromCandleHistory(params: {
   return Math.max(0, Math.floor(Number(rows[0]?.inserted || 0)));
 }
 
-export function resolveScalpV4SnapshotTtlMs(venue: unknown): number {
+export function resolveScalpRegimeSnapshotTtlMs(venue: unknown): number {
   const fallback = normalizeVenue(venue) === "capital" ? 15 * 60_000 : 5 * 60_000;
   const n = Number(process.env.SCALP_V4_SNAPSHOT_TTL_MS);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
 }
 
-export function resolveScalpV4FailClosedStaleMs(): number {
+export function resolveScalpRegimeFailClosedStaleMs(): number {
   const n = Number(process.env.SCALP_V4_FAIL_CLOSED_STALE_MS);
   if (!Number.isFinite(n) || n <= 0) return 2 * 60 * 60_000;
   return Math.max(5 * 60_000, Math.min(7 * 24 * 60 * 60_000, Math.floor(n)));
 }
 
-export async function upsertScalpV4RegimeSnapshots(rows: ScalpV4RegimeSnapshot[]): Promise<number> {
+export async function upsertScalpRegimeSnapshots(rows: ScalpRegimeSnapshot[]): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
   const normalized = (rows || []).filter((row) => row.symbol && row.venue && row.weekStartMs > 0);
   if (!normalized.length) return 0;
@@ -442,12 +442,12 @@ export async function upsertScalpV4RegimeSnapshots(rows: ScalpV4RegimeSnapshot[]
   return normalized.length;
 }
 
-export async function loadScalpV4CurrentRegimeSnapshot(params: {
+export async function loadScalpRegimeCurrentRegimeSnapshot(params: {
   venue: unknown;
   symbol: unknown;
   nowMs?: number;
   classifierVersion?: string;
-}): Promise<{ cellId: ScalpV4CellId | null; stale: boolean; snapshot: Record<string, unknown> | null }> {
+}): Promise<{ cellId: ScalpRegimeCellId | null; stale: boolean; snapshot: Record<string, unknown> | null }> {
   if (!isScalpPgConfigured()) return { cellId: null, stale: true, snapshot: null };
   const venue = normalizeVenue(params.venue);
   const symbol = normalizeSymbol(params.symbol);
@@ -484,18 +484,18 @@ export async function loadScalpV4CurrentRegimeSnapshot(params: {
   const ageMs = Math.max(0, Date.now() - row.updatedAt.getTime());
   return {
     cellId: asCellId(row.cellId),
-    stale: ageMs > resolveScalpV4FailClosedStaleMs(),
+    stale: ageMs > resolveScalpRegimeFailClosedStaleMs(),
     snapshot: {
       ...row,
       updatedAtMs: row.updatedAt.getTime(),
       ageMs,
-      ttlMs: resolveScalpV4SnapshotTtlMs(venue),
-      failClosedStaleMs: resolveScalpV4FailClosedStaleMs(),
+      ttlMs: resolveScalpRegimeSnapshotTtlMs(venue),
+      failClosedStaleMs: resolveScalpRegimeFailClosedStaleMs(),
     },
   };
 }
 
-export async function loadScalpV4RegimeSnapshots(params: {
+export async function loadScalpRegimeSnapshots(params: {
   venue: unknown;
   symbol: unknown;
   classifierVersion?: string;
@@ -504,11 +504,11 @@ export async function loadScalpV4RegimeSnapshots(params: {
 }): Promise<Array<{
   weekStartMs: number;
   classifierVersion: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
-  rawCellId: ScalpV4CellId;
-  cellId: ScalpV4CellId;
-  pendingCellId: ScalpV4CellId | null;
+  rawCellId: ScalpRegimeCellId;
+  cellId: ScalpRegimeCellId;
+  pendingCellId: ScalpRegimeCellId | null;
   pendingWeeks: number;
   volAxis: string;
   trendAxis: string;
@@ -581,20 +581,20 @@ export async function loadScalpV4RegimeSnapshots(params: {
   }));
 }
 
-// Bulk variant of loadScalpV4RegimeSnapshots — fetches snapshots for many
+// Bulk variant of loadScalpRegimeSnapshots — fetches snapshots for many
 // (venue, symbol) pairs in a single round-trip. Used by walkforwardSweep so
 // per-candidate snapshot loads collapse to one query per sweep.
-export type ScalpV4SnapshotRow = {
+export type ScalpRegimeSnapshotRow = {
   weekStartMs: number;
   // Wall-clock time the row was last written, used by staleness checks. May be
   // 0 when the source query did not include it (older callers).
   updatedAtMs: number;
   classifierVersion: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
-  rawCellId: ScalpV4CellId;
-  cellId: ScalpV4CellId;
-  pendingCellId: ScalpV4CellId | null;
+  rawCellId: ScalpRegimeCellId;
+  cellId: ScalpRegimeCellId;
+  pendingCellId: ScalpRegimeCellId | null;
   pendingWeeks: number;
   volAxis: string;
   trendAxis: string;
@@ -605,12 +605,12 @@ export type ScalpV4SnapshotRow = {
   transition: null;
 };
 
-export async function loadScalpV4RegimeSnapshotsBulk(params: {
-  pairs: Array<{ venue: ScalpV4Venue; symbol: string }>;
+export async function loadScalpRegimeSnapshotsBulk(params: {
+  pairs: Array<{ venue: ScalpRegimeVenue; symbol: string }>;
   classifierVersion: string;
   fromMs: number;
   toMs: number;
-}): Promise<Map<string, ScalpV4SnapshotRow[]>> {
+}): Promise<Map<string, ScalpRegimeSnapshotRow[]>> {
   type Row = {
     venue: string;
     symbol: string;
@@ -627,7 +627,7 @@ export async function loadScalpV4RegimeSnapshotsBulk(params: {
     sourceCoverageJson: unknown;
     detailsJson: unknown;
   };
-  const out = new Map<string, ScalpV4SnapshotRow[]>();
+  const out = new Map<string, ScalpRegimeSnapshotRow[]>();
   if (!isScalpPgConfigured() || params.pairs.length === 0) return out;
   // Dedupe and normalize to canonical lower:UPPER pairs.
   const seen = new Set<string>();
@@ -697,10 +697,10 @@ export async function loadScalpV4RegimeSnapshotsBulk(params: {
   }
   return out;
 }
-export async function upsertScalpV4WalkforwardResult(params: {
+export async function upsertScalpRegimeWalkforwardResult(params: {
   candidateId?: number | null;
   deploymentId: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -709,8 +709,8 @@ export async function upsertScalpV4WalkforwardResult(params: {
   windowToMs: number;
   effectiveTrials: number;
   status: string;
-  envelope: ScalpV4RegimeEnvelope;
-  incrementalState?: ScalpV4IncrementalState | null;
+  envelope: ScalpRegimeEnvelope;
+  incrementalState?: ScalpRegimeIncrementalState | null;
   nextWindowStartMs?: number | null;
   windowResults?: unknown;
   details?: Record<string, unknown>;
@@ -799,10 +799,10 @@ export async function upsertScalpV4WalkforwardResult(params: {
 // Bulk-load the most recent walk-forward incremental state per deployment
 // for a given classifier version. Used by the sweep to skip historical
 // windows that have already been aggregated.
-export async function loadScalpV4IncrementalStates(params: {
+export async function loadScalpRegimeIncrementalStates(params: {
   classifierVersion: string;
   deploymentIds: string[];
-}): Promise<Map<string, { incrementalState: ScalpV4IncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>> {
+}): Promise<Map<string, { incrementalState: ScalpRegimeIncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>> {
   if (!isScalpPgConfigured() || params.deploymentIds.length === 0) return new Map();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
@@ -824,11 +824,11 @@ export async function loadScalpV4IncrementalStates(params: {
       AND deployment_id = ANY(${params.deploymentIds}::text[])
     ORDER BY deployment_id, evaluated_at DESC;
   `);
-  const out = new Map<string, { incrementalState: ScalpV4IncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>();
+  const out = new Map<string, { incrementalState: ScalpRegimeIncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>();
   for (const row of rows) {
     if (!row.incrementalStateJson || !row.nextWindowStart) continue;
     out.set(row.deploymentId, {
-      incrementalState: row.incrementalStateJson as ScalpV4IncrementalState,
+      incrementalState: row.incrementalStateJson as ScalpRegimeIncrementalState,
       nextWindowStartMs: row.nextWindowStart.getTime(),
       windowFromMs: row.windowFrom.getTime(),
       windowToMs: row.windowTo.getTime(),
@@ -837,10 +837,10 @@ export async function loadScalpV4IncrementalStates(params: {
   return out;
 }
 
-export async function claimScalpV4WalkforwardDeployment(params: {
+export async function claimScalpRegimeWalkforwardDeployment(params: {
   candidateId?: number | null;
   deploymentId: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -853,7 +853,7 @@ export async function claimScalpV4WalkforwardDeployment(params: {
   if (!isScalpPgConfigured()) return true;
   const leaseMs = Math.max(
     5 * 60_000,
-    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpRegimeWalkforwardClaimLeaseMs())),
   );
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
@@ -910,7 +910,7 @@ export async function claimScalpV4WalkforwardDeployment(params: {
 // we don't spend compute on 26 variations of the same bet. Excludes
 // in_progress claims unless they're past the lease (those represent crashed
 // workers and should be reclaimable).
-export async function loadScalpV4WalkforwardClusterCounts(params: {
+export async function loadScalpRegimeWalkforwardClusterCounts(params: {
   classifierVersion: string;
   windowFromMs: number;
   windowToMs: number;
@@ -920,9 +920,9 @@ export async function loadScalpV4WalkforwardClusterCounts(params: {
   if (!isScalpPgConfigured()) return new Map();
   const leaseMs = Math.max(
     5 * 60_000,
-    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpRegimeWalkforwardClaimLeaseMs())),
   );
-  const reuseWeeks = params.reuseWeeks ?? resolveScalpV4WalkforwardReuseWeeks();
+  const reuseWeeks = params.reuseWeeks ?? resolveScalpRegimeWalkforwardReuseWeeks();
   const reuseWindowMs = Math.max(0, reuseWeeks) * 7 * 24 * 60 * 60_000;
   const minWindowToMs = params.windowToMs - reuseWindowMs;
   const db = scalpPrisma();
@@ -959,7 +959,7 @@ export async function loadScalpV4WalkforwardClusterCounts(params: {
   return out;
 }
 
-export async function loadScalpV4CompletedWalkforwardDeploymentIds(params: {
+export async function loadScalpRegimeCompletedWalkforwardDeploymentIds(params: {
   classifierVersion: string;
   windowFromMs: number;
   windowToMs: number;
@@ -969,9 +969,9 @@ export async function loadScalpV4CompletedWalkforwardDeploymentIds(params: {
   if (!isScalpPgConfigured()) return new Set();
   const leaseMs = Math.max(
     5 * 60_000,
-    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpRegimeWalkforwardClaimLeaseMs())),
   );
-  const reuseWeeks = params.reuseWeeks ?? resolveScalpV4WalkforwardReuseWeeks();
+  const reuseWeeks = params.reuseWeeks ?? resolveScalpRegimeWalkforwardReuseWeeks();
   const reuseWindowMs = Math.max(0, reuseWeeks) * 7 * 24 * 60 * 60_000;
   const minWindowToMs = params.windowToMs - reuseWindowMs;
   const db = scalpPrisma();
@@ -989,7 +989,7 @@ export async function loadScalpV4CompletedWalkforwardDeploymentIds(params: {
   return new Set(rows.map((row) => String(row.deploymentId || "").trim()).filter(Boolean));
 }
 
-export async function applyScalpV4OverbroadAutoRejects(nowMs = Date.now()): Promise<number> {
+export async function applyScalpRegimeOverbroadAutoRejects(nowMs = Date.now()): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ id: string }>>(sql`

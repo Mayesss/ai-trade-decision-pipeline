@@ -7,7 +7,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { runScalpV5CandlePreflight } from "../../../../../lib/scalp/research/candlePreflight";
+import { runScalpResearchCandlePreflight } from "../../../../../lib/scalp/research/candlePreflight";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
@@ -37,7 +37,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 200);
     const maxAttempts = parseIntBounded(req.query.maxAttempts, 10, 1, 30);
-    const result = await runScalpV5CandlePreflight({
+    const result = await runScalpResearchCandlePreflight({
       batchSize,
       maxAttempts,
       auditTrigger: "v5_preflight_cron",

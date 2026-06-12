@@ -23,8 +23,8 @@ import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
 import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
-import { resolveScalpV5Config } from "../lib/scalp/research";
-import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
+import { resolveScalpResearchConfig } from "../lib/scalp/research";
+import type { ScalpResearchDeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -40,12 +40,12 @@ function toReplayCandles(rows: ScalpCandle[], spreadPips: number): ScalpReplayCa
 async function main() {
   if (!isScalpPgConfigured()) throw new Error("scalp_pg_not_configured");
   const db = scalpPrisma();
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Date.now();
   const { holdoutFromMs, holdoutToMs } = resolveHoldoutWindow(nowMs, cfg.holdoutWeeks);
 
   // One representative deployment per capital symbol (prefer enabled).
-  const rows = await db.$queryRaw<Array<ScalpV5DeploymentRow & { riskProfile: unknown }>>(sql`
+  const rows = await db.$queryRaw<Array<ScalpResearchDeploymentRow & { riskProfile: unknown }>>(sql`
     SELECT DISTINCT ON (symbol)
       deployment_id AS "deploymentId", venue, symbol,
       strategy_id AS "strategyId", tune_id AS "tuneId",
@@ -63,7 +63,7 @@ async function main() {
   console.log(`Measuring per-symbol forex feeR over ${rows.length} symbols...`);
   for (const row of rows) {
     try {
-      const { runtime } = buildDeploymentRuntime(row as ScalpV5DeploymentRow);
+      const { runtime } = buildDeploymentRuntime(row as ScalpResearchDeploymentRow);
       const history = await loadScalpCandleHistoryInRange(row.symbol, "1m", holdoutFromMs, holdoutToMs);
       const raw = (history?.record?.candles || []) as ScalpCandle[];
       if (!raw.length) { console.log(`  ${row.symbol}: no_candles`); continue; }

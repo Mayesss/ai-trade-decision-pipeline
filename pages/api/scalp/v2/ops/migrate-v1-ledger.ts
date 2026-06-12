@@ -7,7 +7,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2CutoverMigration } from "../../../../../lib/scalp/composer/migration";
+import { runScalpComposerCutoverMigration } from "../../../../../lib/scalp/composer/migration";
 
 export default async function handler(
   req: NextApiRequest,
@@ -30,7 +30,7 @@ export default async function handler(
       100,
       50_000,
     );
-    const out = await runScalpV2CutoverMigration({
+    const out = await runScalpComposerCutoverMigration({
       limit,
       parityWindowDays,
       journalParityLimit,

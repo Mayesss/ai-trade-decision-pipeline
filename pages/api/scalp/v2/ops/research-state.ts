@@ -4,11 +4,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  listScalpV2ResearchCursors,
-  listScalpV2ResearchHighlights,
-  loadScalpV2ResearchCursor,
-  upsertScalpV2ResearchCursor,
-  upsertScalpV2ResearchHighlights,
+  listScalpComposerResearchCursors,
+  listScalpComposerResearchHighlights,
+  loadScalpComposerResearchCursor,
+  upsertScalpComposerResearchCursor,
+  upsertScalpComposerResearchHighlights,
 } from "../../../../../lib/scalp/composer/db";
 import {
   firstQueryValue,
@@ -17,11 +17,11 @@ import {
   parseVenue,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { toScalpV2ResearchCursorKey } from "../../../../../lib/scalp/composer/research";
+import { toScalpComposerResearchCursorKey } from "../../../../../lib/scalp/composer/research";
 import type {
-  ScalpV2ResearchCursor,
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerResearchCursor,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "../../../../../lib/scalp/composer/types";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -36,7 +36,7 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
-function parseVenueLoose(value: unknown): ScalpV2Venue | null {
+function parseVenueLoose(value: unknown): ScalpComposerVenue | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -45,7 +45,7 @@ function parseVenueLoose(value: unknown): ScalpV2Venue | null {
   return null;
 }
 
-function parseSessionLoose(value: unknown): ScalpV2Session | null {
+function parseSessionLoose(value: unknown): ScalpComposerSession | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -63,7 +63,7 @@ function parseSessionLoose(value: unknown): ScalpV2Session | null {
 
 function parsePhaseLoose(
   value: unknown,
-): ScalpV2ResearchCursor["phase"] | null {
+): ScalpComposerResearchCursor["phase"] | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -79,10 +79,10 @@ function parseCursorBody(
 ):
   | {
       cursorKey: string;
-      venue: ScalpV2Venue;
+      venue: ScalpComposerVenue;
       symbol: string;
-      entrySessionProfile: ScalpV2Session;
-      phase: ScalpV2ResearchCursor["phase"];
+      entrySessionProfile: ScalpComposerSession;
+      phase: ScalpComposerResearchCursor["phase"];
       lastCandidateOffset: number;
       lastWeekStartMs: number | null;
       progress: Record<string, unknown>;
@@ -105,7 +105,7 @@ function parseCursorBody(
   const providedCursorKey = String(body.cursorKey || "").trim();
   const cursorKey =
     providedCursorKey ||
-    toScalpV2ResearchCursorKey({
+    toScalpComposerResearchCursorKey({
       venue,
       symbol,
       entrySessionProfile,
@@ -125,9 +125,9 @@ function parseCursorBody(
 
 function parseHighlightRowsBody(
   value: unknown,
-): Parameters<typeof upsertScalpV2ResearchHighlights>[0]["rows"] {
+): Parameters<typeof upsertScalpComposerResearchHighlights>[0]["rows"] {
   if (!Array.isArray(value)) return [];
-  const rows: Parameters<typeof upsertScalpV2ResearchHighlights>[0]["rows"] = [];
+  const rows: Parameters<typeof upsertScalpComposerResearchHighlights>[0]["rows"] = [];
   for (const raw of value) {
     const row = asRecord(raw);
     const candidateId = String(row.candidateId || "").trim();
@@ -188,7 +188,7 @@ export default async function handler(
       const impliedCursorKey =
         cursorKeyQuery ||
         (venue && symbol && entrySessionProfile
-          ? toScalpV2ResearchCursorKey({
+          ? toScalpComposerResearchCursorKey({
               venue,
               symbol,
               entrySessionProfile,
@@ -197,15 +197,15 @@ export default async function handler(
 
       const [cursor, cursors, highlights] = await Promise.all([
         impliedCursorKey
-          ? loadScalpV2ResearchCursor({ cursorKey: impliedCursorKey })
+          ? loadScalpComposerResearchCursor({ cursorKey: impliedCursorKey })
           : Promise.resolve(null),
-        listScalpV2ResearchCursors({
+        listScalpComposerResearchCursors({
           venue,
           symbol,
           entrySessionProfile,
           limit: limitCursors,
         }),
-        listScalpV2ResearchHighlights({
+        listScalpComposerResearchHighlights({
           venue,
           symbol,
           entrySessionProfile,
@@ -230,10 +230,10 @@ export default async function handler(
 
       const [cursor, highlightsWritten] = await Promise.all([
         cursorBody
-          ? upsertScalpV2ResearchCursor(cursorBody)
+          ? upsertScalpComposerResearchCursor(cursorBody)
           : Promise.resolve(null),
         highlightRows.length
-          ? upsertScalpV2ResearchHighlights({ rows: highlightRows })
+          ? upsertScalpComposerResearchHighlights({ rows: highlightRows })
           : Promise.resolve(0),
       ]);
 

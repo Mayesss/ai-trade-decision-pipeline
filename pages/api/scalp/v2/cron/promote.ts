@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2PromoteJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpComposerPromoteJob } from "../../../../../lib/scalp/composer/pipeline";
 
 export default async function handler(
   req: NextApiRequest,
@@ -18,6 +18,6 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const job = await runScalpV2PromoteJob();
+  const job = await runScalpComposerPromoteJob();
   return res.status(200).json({ ok: job.ok, busy: job.busy, job });
 }

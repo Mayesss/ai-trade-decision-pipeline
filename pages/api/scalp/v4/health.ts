@@ -5,8 +5,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
-  isScalpV4Enabled,
-  isScalpV4HardGateEnabled,
+  isScalpRegimeEnabled,
+  isScalpRegimeHardGateEnabled,
   SCALP_V4_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
 } from "../../../../lib/scalp/regimes";
@@ -151,8 +151,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({
       ok: true,
       classifierVersion,
-      v4Enabled: isScalpV4Enabled(),
-      v4HardGateEnabled: isScalpV4HardGateEnabled(),
+      v4Enabled: isScalpRegimeEnabled(),
+      v4HardGateEnabled: isScalpRegimeHardGateEnabled(),
       stageCSurvivors,
       walkforwardCounts,
       walkforwardTotal,

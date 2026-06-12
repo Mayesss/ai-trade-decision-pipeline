@@ -1,15 +1,15 @@
 import type {
-  ScalpV2BudgetConfig,
-  ScalpV2Candidate,
-  ScalpV2CloseType,
-  ScalpV2Deployment,
-  ScalpV2EventType,
-  ScalpV2RiskProfile,
-  ScalpV2Venue,
+  ScalpComposerBudgetConfig,
+  ScalpComposerCandidate,
+  ScalpComposerCloseType,
+  ScalpComposerDeployment,
+  ScalpComposerEventType,
+  ScalpComposerRiskProfile,
+  ScalpComposerVenue,
 } from "./types";
 import {
-  inferScalpV2AssetCategory,
-  isScalpV2PreciousMetalFamilySymbol,
+  inferScalpComposerAssetCategory,
+  isScalpComposerPreciousMetalFamilySymbol,
 } from "./symbolInfo";
 
 const STOCK_OR_INDEX_BASES = new Set([
@@ -103,7 +103,7 @@ function isLikelyCryptoSymbol(symbolRaw: string): boolean {
   if (symbol.endsWith("USDT") || symbol.endsWith("USDC") || symbol.endsWith("BUSD")) {
     return true;
   }
-  if (inferScalpV2AssetCategory(symbol) === "crypto") return true;
+  if (inferScalpComposerAssetCategory(symbol) === "crypto") return true;
 
   const base = stripKnownQuoteSuffix(symbol);
   if (!base) return false;
@@ -114,7 +114,7 @@ function isBitgetCryptoOnlyAllowed(symbolRaw: string): boolean {
   const symbol = normalizeSymbol(symbolRaw);
   if (!symbol) return false;
   if (!symbol.endsWith("USDT")) return false;
-  if (isScalpV2PreciousMetalFamilySymbol(symbol)) return false;
+  if (isScalpComposerPreciousMetalFamilySymbol(symbol)) return false;
   if (symbol.includes("OIL") || symbol.includes("GAS")) return false;
 
   const base = stripKnownQuoteSuffix(symbol);
@@ -131,8 +131,8 @@ function isCapitalNonCryptoAllowed(symbolRaw: string): boolean {
   return !isLikelyCryptoSymbol(symbol);
 }
 
-export function isScalpV2DiscoverSymbolAllowed(
-  venue: ScalpV2Venue,
+export function isScalpComposerDiscoverSymbolAllowed(
+  venue: ScalpComposerVenue,
   symbolRaw: string,
 ): boolean {
   if (venue === "bitget") return isBitgetCryptoOnlyAllowed(symbolRaw);
@@ -156,7 +156,7 @@ export function normalizeReasonCodes(value: unknown): string[] {
 
 export function deriveCloseTypeFromReasonCodes(
   reasonCodes: string[],
-): ScalpV2CloseType {
+): ScalpComposerCloseType {
   const codes = normalizeReasonCodes(reasonCodes);
   if (codes.some((code) => code.includes("LIQUID"))) return "liquidation";
   if (codes.some((code) => code.includes("TRAIL_STOP"))) {
@@ -175,9 +175,9 @@ export function deriveCloseTypeFromReasonCodes(
 }
 
 export function toLedgerCloseTypeFromEvent(
-  eventType: ScalpV2EventType,
+  eventType: ScalpComposerEventType,
   reasonCodes: string[],
-): ScalpV2CloseType | null {
+): ScalpComposerCloseType | null {
   if (eventType === "fill") return "fill";
   if (eventType === "stop_loss") return "stop_loss";
   if (eventType === "liquidation") return "liquidation";
@@ -223,7 +223,7 @@ export function toDeploymentId(params: {
  * get a significant boost; candidates with positive netR get a smaller
  * boost proportional to their backtest performance.
  */
-function effectiveBudgetScore(candidate: ScalpV2Candidate): number {
+function effectiveBudgetScore(candidate: ScalpComposerCandidate): number {
   const base = candidate.score;
   const worker = candidate.metadata?.worker as Record<string, unknown> | undefined;
   if (!worker) return base;
@@ -243,19 +243,19 @@ function effectiveBudgetScore(candidate: ScalpV2Candidate): number {
 }
 
 export function enforceCandidateBudgets(params: {
-  candidates: ScalpV2Candidate[];
-  budgets: ScalpV2BudgetConfig;
+  candidates: ScalpComposerCandidate[];
+  budgets: ScalpComposerBudgetConfig;
 }): {
-  kept: ScalpV2Candidate[];
-  dropped: ScalpV2Candidate[];
+  kept: ScalpComposerCandidate[];
+  dropped: ScalpComposerCandidate[];
 } {
   const { candidates, budgets } = params;
   const sorted = candidates
     .slice()
     .sort((a, b) => effectiveBudgetScore(b) - effectiveBudgetScore(a) || a.updatedAtMs - b.updatedAtMs);
 
-  const kept: ScalpV2Candidate[] = [];
-  const dropped: ScalpV2Candidate[] = [];
+  const kept: ScalpComposerCandidate[] = [];
+  const dropped: ScalpComposerCandidate[] = [];
   const symbolCounts = new Map<string, number>();
 
   for (const candidate of sorted) {
@@ -277,18 +277,18 @@ export function enforceCandidateBudgets(params: {
 }
 
 export function enforceDeploymentBudget(params: {
-  deployments: ScalpV2Deployment[];
-  budgets: ScalpV2BudgetConfig;
+  deployments: ScalpComposerDeployment[];
+  budgets: ScalpComposerBudgetConfig;
 }): {
-  live: ScalpV2Deployment[];
-  shadow: ScalpV2Deployment[];
+  live: ScalpComposerDeployment[];
+  shadow: ScalpComposerDeployment[];
 } {
   const sorted = params.deployments
     .slice()
     .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
 
-  const live: ScalpV2Deployment[] = [];
-  const shadow: ScalpV2Deployment[] = [];
+  const live: ScalpComposerDeployment[] = [];
+  const shadow: ScalpComposerDeployment[] = [];
   for (const deployment of sorted) {
     if (deployment.enabled && live.length < params.budgets.maxEnabledDeployments) {
       live.push(deployment);
@@ -299,7 +299,7 @@ export function enforceDeploymentBudget(params: {
   return { live, shadow };
 }
 
-export function defaultRiskProfile(): ScalpV2RiskProfile {
+export function defaultRiskProfile(): ScalpComposerRiskProfile {
   return {
     riskPerTradePct: 0.35,
     maxOpenPositionsPerSymbol: 1,
@@ -308,7 +308,7 @@ export function defaultRiskProfile(): ScalpV2RiskProfile {
   };
 }
 
-export function isScalpV2SundayUtc(tsMs: number): boolean {
+export function isScalpComposerSundayUtc(tsMs: number): boolean {
   const ts = Math.floor(Number(tsMs));
   if (!Number.isFinite(ts) || ts <= 0) return false;
   return new Date(ts).getUTCDay() === 0;
@@ -332,7 +332,7 @@ export type V2LedgerLikeRow = {
   symbol: string;
   strategyId: string;
   tuneId: string;
-  closeType: ScalpV2CloseType;
+  closeType: ScalpComposerCloseType;
   rMultiple: number;
 };
 

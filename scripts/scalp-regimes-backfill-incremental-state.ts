@@ -7,7 +7,7 @@
 import {
   initIncrementalStateFromEnvelope,
   SCALP_V4_CLASSIFIER_VERSION,
-  type ScalpV4RegimeEnvelope,
+  type ScalpRegimeEnvelope,
 } from "../lib/scalp/regimes";
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
@@ -70,7 +70,7 @@ async function main() {
       summary.skippedHasIncremental += 1;
       continue;
     }
-    const envelope = row.envelopeJson as ScalpV4RegimeEnvelope | null;
+    const envelope = row.envelopeJson as ScalpRegimeEnvelope | null;
     if (!envelope || !Array.isArray(envelope.cells) || envelope.cells.length === 0) {
       summary.skippedMissingCells += 1;
       continue;

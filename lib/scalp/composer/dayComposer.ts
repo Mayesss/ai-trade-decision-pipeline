@@ -1,10 +1,10 @@
 import crypto from "crypto";
 
 import type {
-  ScalpV2ComposerModelScore,
-  ScalpV2PrimitiveBlockMap,
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerModelScore,
+  ScalpComposerPrimitiveBlockMap,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "./types";
 
 export const DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID =
@@ -58,10 +58,10 @@ export interface DayComposerPlan {
 export interface DayComposerCandidateDslSpec {
   candidateId: string;
   tuneId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
-  blocksByFamily: ScalpV2PrimitiveBlockMap;
+  entrySessionProfile: ScalpComposerSession;
+  blocksByFamily: ScalpComposerPrimitiveBlockMap;
   dayBlocksByFamily: {
     context: DayComposerContextBlockId[];
     level: DayComposerLevelBlockId[];
@@ -74,7 +74,7 @@ export interface DayComposerCandidateDslSpec {
   generatedAtMs: number;
   behaviorFingerprint: string;
   compatibilityReasonCodes: string[];
-  model: ScalpV2ComposerModelScore;
+  model: ScalpComposerModelScore;
   dayComposerPlan: DayComposerPlan;
   regimeGateId?: string | null;
 }
@@ -174,7 +174,7 @@ function invert<T extends string>(input: Record<T, string>): Record<string, T> {
   ) as Record<string, T>;
 }
 
-function emptyLegacyBlockMap(): ScalpV2PrimitiveBlockMap {
+function emptyLegacyBlockMap(): ScalpComposerPrimitiveBlockMap {
   return {
     pattern: [],
     session_filter: [],
@@ -289,9 +289,9 @@ function deterministicScore(seed: string): number {
 }
 
 function scoreCombo(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   contextId: DayComposerContextBlockId;
   levelId: DayComposerLevelBlockId;
   triggerId: DayComposerTriggerBlockId;
@@ -352,10 +352,10 @@ function scoreCombo(params: {
   );
 }
 
-export function buildScalpV2DayModelComposerGrid(params: {
-  venue: ScalpV2Venue;
+export function buildScalpComposerDayModelComposerGrid(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   maxCandidates?: number;
   generatedAtMs?: number;
 }): DayComposerCandidateDslSpec[] {
@@ -408,7 +408,7 @@ export function buildScalpV2DayModelComposerGrid(params: {
               managementId,
             });
             const compositeScore = Math.max(0, Math.min(1, rawScore));
-            const model: ScalpV2ComposerModelScore = {
+            const model: ScalpComposerModelScore = {
               family: "interpretable_pattern_blend",
               version: "day_model_guided_composer_v1",
               interpretableScore: compositeScore,

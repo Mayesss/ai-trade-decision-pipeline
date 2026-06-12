@@ -17,33 +17,33 @@ import type {
 } from "../replay/types";
 import type { ScalpCandle, ScalpDeploymentRef } from "../types";
 import { resolveEntryTriggerOverrides } from "../composer/entryTriggerPresets";
-import { buildScalpV2ExecuteConfigOverride } from "../composer/executeConfigOverride";
+import { buildScalpComposerExecuteConfigOverride } from "../composer/executeConfigOverride";
 import { resolveExitRuleOverrides } from "../composer/exitRulePresets";
 import { resolveRiskRuleReplayOverrides } from "../composer/riskRulePresets";
 import { resolveStateMachineOverrides } from "../composer/stateMachinePresets";
-import type { ScalpV2Session } from "../composer/types";
-import type { ScalpV2V3TemporalFilter } from "../evidence";
-import { loadScalpV4RegimeSnapshotsBulk } from "../regimes/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../regimes/types";
+import type { ScalpComposerSession } from "../composer/types";
+import type { ScalpComposerV3TemporalFilter } from "../evidence";
+import { loadScalpRegimeSnapshotsBulk } from "../regimes/pg";
+import type { ScalpRegimeCellId, ScalpRegimeVenue } from "../regimes/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
   SCALP_V5_VERSION,
-  buildScalpV5CellEvidence,
+  buildScalpResearchCellEvidence,
   mergeIncrementalCellEvidence,
-  resolveScalpV5Config,
+  resolveScalpResearchConfig,
   tagTradesWithCells,
 } from "./index";
-import type { ScalpV5CellEvidence } from "./index";
+import type { ScalpResearchCellEvidence } from "./index";
 import {
-  loadScalpV5DeploymentCheckpoint,
-  loadScalpV5DeploymentEvidence,
-  loadScalpV5DeploymentsForEvaluation,
-  upsertScalpV5DeploymentEvidence,
-  type ScalpV5DeploymentRow,
+  loadScalpResearchDeploymentCheckpoint,
+  loadScalpResearchDeploymentEvidence,
+  loadScalpResearchDeploymentsForEvaluation,
+  upsertScalpResearchDeploymentEvidence,
+  type ScalpResearchDeploymentRow,
 } from "./pg";
 import {
-  runScalpV5CandlePreflight,
-  type ScalpV5CandlePreflightResult,
+  runScalpResearchCandlePreflight,
+  type ScalpResearchCandlePreflightResult,
 } from "./candlePreflight";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -73,12 +73,12 @@ function toReplayCandles(
   }));
 }
 
-export interface ScalpV5EvaluationOutcome {
+export interface ScalpResearchEvaluationOutcome {
   deploymentId: string;
   ok: boolean;
   reason?: string;
   enabled?: boolean;
-  evidence?: ScalpV5CellEvidence;
+  evidence?: ScalpResearchCellEvidence;
   durationMs: number;
   tradeCount?: number;
   eligibleCells?: string[];
@@ -108,7 +108,7 @@ export function resolveHoldoutWindow(nowMs: number, holdoutWeeks: number): {
 // Build the per-deployment replay runtime + its config hash. Same logic for
 // full and incremental paths, factored so we only build it once and so the
 // dispatcher can compute the hash before deciding which path to take.
-export function buildDeploymentRuntime(deploymentRow: ScalpV5DeploymentRow): {
+export function buildDeploymentRuntime(deploymentRow: ScalpResearchDeploymentRow): {
   runtime: ScalpReplayRuntimeConfig;
   configHash: string;
   deploymentRef: ScalpDeploymentRef;
@@ -128,10 +128,10 @@ export function buildDeploymentRuntime(deploymentRow: ScalpV5DeploymentRow): {
   const temporalFilterRaw = asRecord(deploymentRow.promotionGate).v3TemporalFilter;
   const temporalFilter =
     Object.keys(asRecord(temporalFilterRaw)).length > 0
-      ? (asRecord(temporalFilterRaw) as ScalpV2V3TemporalFilter)
+      ? (asRecord(temporalFilterRaw) as ScalpComposerV3TemporalFilter)
       : null;
-  const configOverride = buildScalpV2ExecuteConfigOverride({
-    entrySessionProfile: deploymentRow.entrySessionProfile as ScalpV2Session,
+  const configOverride = buildScalpComposerExecuteConfigOverride({
+    entrySessionProfile: deploymentRow.entrySessionProfile as ScalpComposerSession,
     riskProfile: deploymentRow.riskProfile,
     entryTriggerOverrides: entryOverrides,
     exitRuleOverrides: exitOverrides,
@@ -160,26 +160,26 @@ export function buildDeploymentRuntime(deploymentRow: ScalpV5DeploymentRow): {
 // evidence for the new holdout window. Falls back to a full replay when
 // the previous evaluation's checkpoint isn't reusable (no checkpoint,
 // version mismatch, config drift, holdout gap, etc.).
-export async function evaluateScalpV5ForDeployment(params: {
-  deployment: ScalpV5DeploymentRow;
+export async function evaluateScalpResearchForDeployment(params: {
+  deployment: ScalpResearchDeploymentRow;
   nowMs?: number;
-}): Promise<ScalpV5EvaluationOutcome> {
+}): Promise<ScalpResearchEvaluationOutcome> {
   const startedAt = Date.now();
   const deploymentRow = params.deployment;
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const { holdoutFromMs, holdoutToMs } = resolveHoldoutWindow(nowMs, cfg.holdoutWeeks);
   const { runtime, configHash, deploymentRef } = buildDeploymentRuntime(deploymentRow);
 
   // Try incremental first. The dispatcher's only job is to gate the
   // incremental path on tight prerequisites; the actual work happens in
-  // evaluateScalpV5Incremental.
-  const existing = await loadScalpV5DeploymentEvidence({ deploymentId: deploymentRow.deploymentId }).catch(
+  // evaluateScalpResearchIncremental.
+  const existing = await loadScalpResearchDeploymentEvidence({ deploymentId: deploymentRow.deploymentId }).catch(
     () => null,
   );
   const evidence = existing?.evidence ?? null;
   const checkpoint = evidence
-    ? await loadScalpV5DeploymentCheckpoint({ deploymentId: deploymentRow.deploymentId }).catch(() => null)
+    ? await loadScalpResearchDeploymentCheckpoint({ deploymentId: deploymentRow.deploymentId }).catch(() => null)
     : null;
   const canIncremental =
     evidence !== null &&
@@ -192,7 +192,7 @@ export async function evaluateScalpV5ForDeployment(params: {
     checkpoint.configHash === configHash;
 
   if (canIncremental) {
-    return await evaluateScalpV5Incremental({
+    return await evaluateScalpResearchIncremental({
       deploymentRow,
       existing: evidence!,
       checkpoint: checkpoint!,
@@ -206,7 +206,7 @@ export async function evaluateScalpV5ForDeployment(params: {
     });
   }
 
-  return await evaluateScalpV5Full({
+  return await evaluateScalpResearchFull({
     deploymentRow,
     runtime,
     deploymentRef,
@@ -222,16 +222,16 @@ export async function evaluateScalpV5ForDeployment(params: {
 // any time the incremental prerequisites fail (config drift, missing
 // checkpoint, evidence-version mismatch, etc.). Writes a fresh checkpoint
 // at the end so the NEXT evaluation can go incremental.
-async function evaluateScalpV5Full(params: {
-  deploymentRow: ScalpV5DeploymentRow;
+async function evaluateScalpResearchFull(params: {
+  deploymentRow: ScalpResearchDeploymentRow;
   runtime: ScalpReplayRuntimeConfig;
   deploymentRef: ScalpDeploymentRef;
   nowMs: number;
-  cfg: ReturnType<typeof resolveScalpV5Config>;
+  cfg: ReturnType<typeof resolveScalpResearchConfig>;
   holdoutFromMs: number;
   holdoutToMs: number;
   startedAt: number;
-}): Promise<ScalpV5EvaluationOutcome> {
+}): Promise<ScalpResearchEvaluationOutcome> {
   const { deploymentRow, runtime, nowMs, cfg, holdoutFromMs, holdoutToMs, startedAt } = params;
   void params.deploymentRef;
   let history;
@@ -275,20 +275,20 @@ async function evaluateScalpV5Full(params: {
   // Snapshot bounds match the holdout exactly. The candle loader excludes
   // weeks with week_start >= holdoutToMs, so no trade can fall in the
   // current week.
-  const snapshotMap = await loadScalpV4RegimeSnapshotsBulk({
-    pairs: [{ venue: deploymentRow.venue as ScalpV4Venue, symbol: deploymentRow.symbol }],
+  const snapshotMap = await loadScalpRegimeSnapshotsBulk({
+    pairs: [{ venue: deploymentRow.venue as ScalpRegimeVenue, symbol: deploymentRow.symbol }],
     classifierVersion: cfg.classifierVersion,
     fromMs: holdoutFromMs,
     toMs: holdoutToMs,
   });
   const snaps = snapshotMap.get(`${deploymentRow.venue}:${deploymentRow.symbol}`) || [];
-  const snapshotsByWeekStart = new Map<number, ScalpV4CellId>();
+  const snapshotsByWeekStart = new Map<number, ScalpRegimeCellId>();
   for (const snap of snaps) {
     snapshotsByWeekStart.set(snap.weekStartMs, snap.cellId);
   }
 
   const tagged = tagTradesWithCells({ trades: replay.trades, snapshotsByWeekStart });
-  const evidence = buildScalpV5CellEvidence({
+  const evidence = buildScalpResearchCellEvidence({
     tagged,
     classifierVersion: cfg.classifierVersion,
     evaluatedAtMs: nowMs,
@@ -298,7 +298,7 @@ async function evaluateScalpV5Full(params: {
   });
   const enabled = evidence.eligibleCells.length > 0;
 
-  await upsertScalpV5DeploymentEvidence({
+  await upsertScalpResearchDeploymentEvidence({
     deploymentId: deploymentRow.deploymentId,
     evidence,
     enabled,
@@ -321,18 +321,18 @@ async function evaluateScalpV5Full(params: {
 // existing 12-week evidence (drop oldest, append new). Strategy state is
 // resumed from the previous checkpoint so indicators see the full
 // historical context, not just one week's worth of warmup.
-async function evaluateScalpV5Incremental(params: {
-  deploymentRow: ScalpV5DeploymentRow;
-  existing: ScalpV5CellEvidence;
+async function evaluateScalpResearchIncremental(params: {
+  deploymentRow: ScalpResearchDeploymentRow;
+  existing: ScalpResearchCellEvidence;
   checkpoint: ScalpReplayCheckpoint;
   runtime: ScalpReplayRuntimeConfig;
   deploymentRef: ScalpDeploymentRef;
   nowMs: number;
-  cfg: ReturnType<typeof resolveScalpV5Config>;
+  cfg: ReturnType<typeof resolveScalpResearchConfig>;
   holdoutFromMs: number;
   holdoutToMs: number;
   startedAt: number;
-}): Promise<ScalpV5EvaluationOutcome> {
+}): Promise<ScalpResearchEvaluationOutcome> {
   const { deploymentRow, existing, checkpoint, runtime, nowMs, cfg, holdoutFromMs, holdoutToMs, startedAt } =
     params;
   void params.deploymentRef;
@@ -394,14 +394,14 @@ async function evaluateScalpV5Incremental(params: {
   );
 
   // Look up the new week's regime cell. Just one snapshot expected.
-  const snapshotMap = await loadScalpV4RegimeSnapshotsBulk({
-    pairs: [{ venue: deploymentRow.venue as ScalpV4Venue, symbol: deploymentRow.symbol }],
+  const snapshotMap = await loadScalpRegimeSnapshotsBulk({
+    pairs: [{ venue: deploymentRow.venue as ScalpRegimeVenue, symbol: deploymentRow.symbol }],
     classifierVersion: cfg.classifierVersion,
     fromMs: newWeekStartMs,
     toMs: newWeekEndMs,
   });
   const snaps = snapshotMap.get(`${deploymentRow.venue}:${deploymentRow.symbol}`) || [];
-  const snapshotsByWeekStart = new Map<number, ScalpV4CellId>();
+  const snapshotsByWeekStart = new Map<number, ScalpRegimeCellId>();
   for (const snap of snaps) {
     snapshotsByWeekStart.set(snap.weekStartMs, snap.cellId);
   }
@@ -418,7 +418,7 @@ async function evaluateScalpV5Incremental(params: {
   });
   const enabled = evidence.eligibleCells.length > 0;
 
-  await upsertScalpV5DeploymentEvidence({
+  await upsertScalpResearchDeploymentEvidence({
     deploymentId: deploymentRow.deploymentId,
     evidence,
     enabled,
@@ -437,7 +437,7 @@ async function evaluateScalpV5Incremental(params: {
   };
 }
 
-export interface ScalpV5BulkResult {
+export interface ScalpResearchBulkResult {
   processed: number;
   succeeded: number;
   failed: number;
@@ -448,8 +448,8 @@ export interface ScalpV5BulkResult {
   // incremental; on subsequent weeks, expect the opposite.
   fullCount: number;
   incrementalCount: number;
-  outcomes: ScalpV5EvaluationOutcome[];
-  preflight: ScalpV5CandlePreflightResult | null;
+  outcomes: ScalpResearchEvaluationOutcome[];
+  preflight: ScalpResearchCandlePreflightResult | null;
   skippedReason?: "v5_candle_preflight_not_ready";
   details: {
     classifierVersion: string;
@@ -459,7 +459,7 @@ export interface ScalpV5BulkResult {
   };
 }
 
-export function shouldRunScalpV5EvaluationCandlePreflight(params: {
+export function shouldRunScalpResearchEvaluationCandlePreflight(params: {
   nowMs: number;
   preflightCandles?: boolean;
   forcePreflight?: boolean;
@@ -469,7 +469,7 @@ export function shouldRunScalpV5EvaluationCandlePreflight(params: {
   return new Date(params.nowMs).getUTCDay() === 0;
 }
 
-export async function runScalpV5EvaluationBatch(params: {
+export async function runScalpResearchEvaluationBatch(params: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
@@ -485,18 +485,18 @@ export async function runScalpV5EvaluationBatch(params: {
   // Direct local orchestration path: evaluate these deployments regardless
   // of normal staleness ordering. Still uses the v5 lease claim.
   deploymentIds?: string[];
-} = {}): Promise<ScalpV5BulkResult> {
-  const cfg = resolveScalpV5Config();
+} = {}): Promise<ScalpResearchBulkResult> {
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
-  let preflight: ScalpV5CandlePreflightResult | null = null;
+  let preflight: ScalpResearchCandlePreflightResult | null = null;
   if (
-    shouldRunScalpV5EvaluationCandlePreflight({
+    shouldRunScalpResearchEvaluationCandlePreflight({
       nowMs,
       preflightCandles: params.preflightCandles,
       forcePreflight: params.forcePreflight,
     })
   ) {
-    preflight = await runScalpV5CandlePreflight({
+    preflight = await runScalpResearchCandlePreflight({
       nowMs,
       batchSize: params.preflightBatchSize,
       maxAttempts: params.preflightMaxAttempts,
@@ -523,7 +523,7 @@ export async function runScalpV5EvaluationBatch(params: {
       };
     }
   }
-  const deployments = await loadScalpV5DeploymentsForEvaluation({
+  const deployments = await loadScalpResearchDeploymentsForEvaluation({
     limit: params.limit,
     staleOlderThanMs: params.staleOlderThanMs,
     nowMs,
@@ -538,15 +538,15 @@ export async function runScalpV5EvaluationBatch(params: {
   let disabled = 0;
   let fullCount = 0;
   let incrementalCount = 0;
-  const outcomes: ScalpV5EvaluationOutcome[] = [];
+  const outcomes: ScalpResearchEvaluationOutcome[] = [];
   for (const deployment of deployments) {
     processed += 1;
-    const outcome = await evaluateScalpV5ForDeployment({ deployment, nowMs }).catch((err) => ({
+    const outcome = await evaluateScalpResearchForDeployment({ deployment, nowMs }).catch((err) => ({
       deploymentId: deployment.deploymentId,
       ok: false,
       reason: `evaluator_threw:${err instanceof Error ? err.message : String(err)}`,
       durationMs: 0,
-    } as ScalpV5EvaluationOutcome));
+    } as ScalpResearchEvaluationOutcome));
     outcomes.push(outcome);
     if (outcome.ok) {
       succeeded += 1;

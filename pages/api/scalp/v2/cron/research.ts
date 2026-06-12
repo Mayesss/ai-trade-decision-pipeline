@@ -4,20 +4,20 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  invokeScalpV2CronEndpointDetached,
-  type ScalpV2CronInvokeResult,
+  invokeScalpComposerCronEndpointDetached,
+  type ScalpComposerCronInvokeResult,
 } from "../../../../../lib/scalp/composer/cronChaining";
 import {
-  clampScalpV2HardCap,
-  resolveScalpV2ResearchHardCaps,
+  clampScalpComposerHardCap,
+  resolveScalpComposerResearchHardCaps,
 } from "../../../../../lib/scalp/composer/costControls";
 import {
   parseBool,
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2ResearchJob } from "../../../../../lib/scalp/composer/pipeline";
-import { runScalpV4ResearchJob } from "../../../../../lib/scalp/regimes";
+import { runScalpComposerResearchJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
   req: NextApiRequest,
@@ -31,9 +31,9 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const hardCaps = resolveScalpV2ResearchHardCaps();
+  const hardCaps = resolveScalpComposerResearchHardCaps();
   const batchSizeHardCap = Math.max(100, hardCaps.maxBatchSizeWorker);
-  const batchSize = clampScalpV2HardCap(
+  const batchSize = clampScalpComposerHardCap(
     parseIntBounded(req.query.batchSize, 100, 1, 600),
     batchSizeHardCap,
   );
@@ -54,7 +54,7 @@ export default async function handler(
       0,
       500,
     );
-    const job = await runScalpV4ResearchJob({
+    const job = await runScalpRegimeResearchJob({
       maxCandidatesPerCall,
       candidateFetchLimit: Math.max(maxCandidatesPerCall * 4, 50),
       forceValidity: parseBool(req.query.forceValidity, false),
@@ -81,10 +81,10 @@ export default async function handler(
     });
   }
 
-  const job = await runScalpV2ResearchJob({ batchSize, debugTiming: debug });
+  const job = await runScalpComposerResearchJob({ batchSize, debugTiming: debug });
 
-  let downstream: ScalpV2CronInvokeResult | null = null;
-  let selfRecall: ScalpV2CronInvokeResult | null = null;
+  let downstream: ScalpComposerCronInvokeResult | null = null;
+  let selfRecall: ScalpComposerCronInvokeResult | null = null;
   if (
     job.ok &&
     !job.busy &&
@@ -92,7 +92,7 @@ export default async function handler(
     job.pendingAfter > 0 &&
     selfHop < selfMaxHops
   ) {
-    selfRecall = await invokeScalpV2CronEndpointDetached(
+    selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/research",
       {
@@ -107,7 +107,7 @@ export default async function handler(
     );
   }
   if (job.ok && !job.busy && autoSuccessor && job.pendingAfter <= 0) {
-    downstream = await invokeScalpV2CronEndpointDetached(
+    downstream = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/promote",
       {

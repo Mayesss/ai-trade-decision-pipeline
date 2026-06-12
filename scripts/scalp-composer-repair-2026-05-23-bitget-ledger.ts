@@ -1,7 +1,7 @@
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
 import { resolveBitgetBrokerCloseLedger } from "../lib/scalp/composer/bitgetCloseHistory";
-import { snapshotScalpV2DailyMetrics } from "../lib/scalp/composer/db";
+import { snapshotScalpComposerDailyMetrics } from "../lib/scalp/composer/db";
 import { deriveCloseTypeFromReasonCodes } from "../lib/scalp/composer/logic";
 
 const APPLY = process.argv.includes("--apply");
@@ -125,7 +125,7 @@ async function main() {
   }
 
   if (APPLY) {
-    await snapshotScalpV2DailyMetrics({ dayKey: "2026-05-23" });
+    await snapshotScalpComposerDailyMetrics({ dayKey: "2026-05-23" });
   }
 
   console.log(JSON.stringify({ apply: APPLY, deploymentId: BCH_DEPLOYMENT, results }, null, 2));

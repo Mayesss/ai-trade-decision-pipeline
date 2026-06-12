@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildScalpV2CandidateDslGrid,
-  buildScalpV2ModelGuidedComposerGrid,
-  listScalpV2StrategyPrimitiveReferences,
-  resolveScalpV2CandidateEvaluationWindow,
+  buildScalpComposerCandidateDslGrid,
+  buildScalpComposerModelGuidedComposerGrid,
+  listScalpComposerStrategyPrimitiveReferences,
+  resolveScalpComposerCandidateEvaluationWindow,
   strategyPrimitiveCoverageSummary,
-  toScalpV2ResearchCursorKey,
+  toScalpComposerResearchCursorKey,
 } from "./research";
 import {
   parseRegimeGateFromTuneId,
   resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
-import { listScalpV2CatalogStrategyIds } from "./strategyCatalog";
+import { listScalpComposerCatalogStrategyIds } from "./strategyCatalog";
 
 function withEnv<T>(
   patch: Record<string, string | null>,
@@ -36,8 +36,8 @@ function withEnv<T>(
 }
 
 test("strategy primitive references cover all v2 catalog strategy ids", () => {
-  const strategyIds = new Set(listScalpV2CatalogStrategyIds());
-  const references = listScalpV2StrategyPrimitiveReferences();
+  const strategyIds = new Set(listScalpComposerCatalogStrategyIds());
+  const references = listScalpComposerStrategyPrimitiveReferences();
   const referencedIds = new Set(references.map((row) => row.strategyId));
 
   assert.equal(references.length, strategyIds.size);
@@ -51,13 +51,13 @@ test("strategy primitive references cover all v2 catalog strategy ids", () => {
 });
 
 test("candidate DSL grid is bounded and deterministic for same context", () => {
-  const a = buildScalpV2CandidateDslGrid({
+  const a = buildScalpComposerCandidateDslGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
     maxCandidates: 20,
   });
-  const b = buildScalpV2CandidateDslGrid({
+  const b = buildScalpComposerCandidateDslGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
@@ -84,7 +84,7 @@ test("candidate DSL grid novelty quota changes candidate mix deterministically",
       SCALP_V2_NOVELTY_MIN_SLOTS: "0",
     },
     () =>
-      buildScalpV2CandidateDslGrid({
+      buildScalpComposerCandidateDslGrid({
         venue: "bitget",
         symbol: "BTCUSDT",
         entrySessionProfile: "berlin",
@@ -98,7 +98,7 @@ test("candidate DSL grid novelty quota changes candidate mix deterministically",
       SCALP_V2_NOVELTY_MIN_SLOTS: "2",
     },
     () =>
-      buildScalpV2CandidateDslGrid({
+      buildScalpComposerCandidateDslGrid({
         venue: "bitget",
         symbol: "BTCUSDT",
         entrySessionProfile: "berlin",
@@ -115,7 +115,7 @@ test("candidate DSL grid novelty quota changes candidate mix deterministically",
 });
 
 test("candidate DSL grid enforces requested session as primary filter block", () => {
-  const rows = buildScalpV2CandidateDslGrid({
+  const rows = buildScalpComposerCandidateDslGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "newyork",
@@ -130,13 +130,13 @@ test("candidate DSL grid enforces requested session as primary filter block", ()
 });
 
 test("model-guided composer grid is deterministic and bounded", () => {
-  const a = buildScalpV2ModelGuidedComposerGrid({
+  const a = buildScalpComposerModelGuidedComposerGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
     maxCandidates: 16,
   });
-  const b = buildScalpV2ModelGuidedComposerGrid({
+  const b = buildScalpComposerModelGuidedComposerGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
@@ -159,7 +159,7 @@ test("model-guided composer grid is deterministic and bounded", () => {
 });
 
 test("model-guided composer scores stay in [0,1] and preserve session filter intent", () => {
-  const rows = buildScalpV2ModelGuidedComposerGrid({
+  const rows = buildScalpComposerModelGuidedComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "newyork",
@@ -194,7 +194,7 @@ test("model-guided composer regime gate variants are quota-bounded by top base a
       SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "1",
     },
     () =>
-      buildScalpV2ModelGuidedComposerGrid({
+      buildScalpComposerModelGuidedComposerGrid({
         venue: "bitget",
         symbol: "BTCUSDT",
         entrySessionProfile: "berlin",
@@ -221,7 +221,7 @@ test("model-guided composer can disable regime gate variants entirely", () => {
       SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "12",
     },
     () =>
-      buildScalpV2ModelGuidedComposerGrid({
+      buildScalpComposerModelGuidedComposerGrid({
         venue: "capital",
         symbol: "EURUSD",
         entrySessionProfile: "newyork",
@@ -236,7 +236,7 @@ test("model-guided composer can disable regime gate variants entirely", () => {
 });
 
 test("research cursor key is stable and normalized", () => {
-  const key = toScalpV2ResearchCursorKey({
+  const key = toScalpComposerResearchCursorKey({
     venue: "capital",
     symbol: " eur/usd ",
     entrySessionProfile: "newyork",
@@ -254,7 +254,7 @@ test("coverage summary reports non-empty primitive inventory", () => {
 });
 
 test("candidate evaluation window rotates deterministically by cursor offset", () => {
-  const outA = resolveScalpV2CandidateEvaluationWindow({
+  const outA = resolveScalpComposerCandidateEvaluationWindow({
     candidates: ["a", "b", "c", "d"],
     maxCandidates: 2,
     startOffset: 0,
@@ -262,7 +262,7 @@ test("candidate evaluation window rotates deterministically by cursor offset", (
   assert.deepEqual(outA.selectedCandidates, ["a", "b"]);
   assert.equal(outA.nextOffset, 2);
 
-  const outB = resolveScalpV2CandidateEvaluationWindow({
+  const outB = resolveScalpComposerCandidateEvaluationWindow({
     candidates: ["a", "b", "c", "d"],
     maxCandidates: 2,
     startOffset: outA.nextOffset,
@@ -272,7 +272,7 @@ test("candidate evaluation window rotates deterministically by cursor offset", (
 });
 
 test("candidate evaluation window evaluates full pool when max exceeds pool", () => {
-  const out = resolveScalpV2CandidateEvaluationWindow({
+  const out = resolveScalpComposerCandidateEvaluationWindow({
     candidates: ["x", "y", "z"],
     maxCandidates: 10,
     startOffset: 2,

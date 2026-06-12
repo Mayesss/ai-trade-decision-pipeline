@@ -5,10 +5,10 @@
 // fee-aware (the Sunday pipeline otherwise skips fresh rows via advancement gating).
 //
 // Steps:
-//   1. (optional) invalidateAllScalpV5Evidence({mode:'full'}) — nulls evidence +
+//   1. (optional) invalidateAllScalpResearchEvidence({mode:'full'}) — nulls evidence +
 //      checkpoint + v5_enabled so every row re-runs a FULL 12-week replay.
-//   2. Loop runScalpV5EvaluationBatch until the queue drains (re-costs each row).
-//   3. (optional) autoPromoteScalpV5WinnersToEnabled — sets `enabled` (live) for
+//   2. Loop runScalpResearchEvaluationBatch until the queue drains (re-costs each row).
+//   3. (optional) autoPromoteScalpResearchWinnersToEnabled — sets `enabled` (live) for
 //      rows that clear the promotion thresholds on the fee-adjusted evidence.
 //
 // Flags:
@@ -27,10 +27,10 @@ import nextEnv from "@next/env";
 
 import { isScalpPgConfigured, scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { runScalpV5EvaluationBatch } from "../lib/scalp/research/evaluator";
+import { runScalpResearchEvaluationBatch } from "../lib/scalp/research/evaluator";
 import {
-  autoPromoteScalpV5WinnersToEnabled,
-  invalidateAllScalpV5Evidence,
+  autoPromoteScalpResearchWinnersToEnabled,
+  invalidateAllScalpResearchEvidence,
 } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
@@ -80,7 +80,7 @@ async function main() {
 
   const invalidateOnly = flag("--invalidateOnly");
   if (!measureOnly && (invalidate === "full" || invalidate === "stale")) {
-    const inv = await invalidateAllScalpV5Evidence({
+    const inv = await invalidateAllScalpResearchEvidence({
       mode: invalidate === "full" ? "full" : "stale",
     });
     console.log(`  invalidated ${inv.invalidated} rows (mode=${inv.mode})`);
@@ -105,7 +105,7 @@ async function main() {
     const limit = measureOnly > 0 ? Math.min(evalLimit, measureOnly - totalProcessed) : evalLimit;
 
     const tb = Date.now();
-    const result = await runScalpV5EvaluationBatch({
+    const result = await runScalpResearchEvaluationBatch({
       limit,
       staleOlderThanMs,
       preflightCandles: false,
@@ -147,7 +147,7 @@ async function main() {
   if (doAutopromote && !measureOnly) {
     console.log("");
     console.log(`Auto-promotion (dryRun=${autopromoteDryRun})...`);
-    const promo = await autoPromoteScalpV5WinnersToEnabled({ dryRun: autopromoteDryRun });
+    const promo = await autoPromoteScalpResearchWinnersToEnabled({ dryRun: autopromoteDryRun });
     console.log(
       `  promoted=${promo.promoted} candidates=${promo.funnel.candidates} qualified=${promo.funnel.qualified} ` +
         `shortlisted=${promo.funnel.shortlisted}`,

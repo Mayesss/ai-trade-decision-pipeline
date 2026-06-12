@@ -4,10 +4,10 @@
 // replay. Used after threshold tuning to immediately reclassify
 // already-evaluated candidates as eligible / no_passing_cells / overbroad.
 import {
-  reevaluateScalpV4EnvelopeFromCells,
-  resolveScalpV4EnvelopeThresholds,
+  reevaluateScalpRegimeEnvelopeFromCells,
+  resolveScalpRegimeEnvelopeThresholds,
   SCALP_V4_CLASSIFIER_VERSION,
-  type ScalpV4RegimeEnvelope,
+  type ScalpRegimeEnvelope,
 } from "../lib/scalp/regimes";
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
@@ -32,7 +32,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const dryRun = Boolean(args.dryRun);
   const classifierVersion = String(args.classifierVersion || SCALP_V4_CLASSIFIER_VERSION);
-  const thresholds = resolveScalpV4EnvelopeThresholds();
+  const thresholds = resolveScalpRegimeEnvelopeThresholds();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: string;
@@ -63,10 +63,10 @@ async function main() {
     sample: [] as Array<{ deploymentId: string; before: string; after: string; allowedCells: string[] }>,
   };
   for (const row of rows) {
-    const envelope = row.envelopeJson as ScalpV4RegimeEnvelope | null;
+    const envelope = row.envelopeJson as ScalpRegimeEnvelope | null;
     if (!envelope || !Array.isArray(envelope.cells)) continue;
     summary.statusBefore[row.status] = (summary.statusBefore[row.status] || 0) + 1;
-    const next = reevaluateScalpV4EnvelopeFromCells({ envelope, thresholds });
+    const next = reevaluateScalpRegimeEnvelopeFromCells({ envelope, thresholds });
     summary.statusAfter[next.status] = (summary.statusAfter[next.status] || 0) + 1;
     if (next.status !== row.status) {
       summary.flipped += 1;

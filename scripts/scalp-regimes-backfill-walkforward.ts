@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import {
-  applyScalpV4OverbroadAutoRejects,
-  buildScalpV4ClassifierValidityReport,
-  listScalpV4ResearchCandidates,
-  loadScalpV4CompletedWalkforwardDeploymentIds,
-  loadScalpV4RegimeSnapshots,
-  runScalpV4WalkForward,
+  applyScalpRegimeOverbroadAutoRejects,
+  buildScalpRegimeClassifierValidityReport,
+  listScalpRegimeResearchCandidates,
+  loadScalpRegimeCompletedWalkforwardDeploymentIds,
+  loadScalpRegimeSnapshots,
+  runScalpRegimeWalkForward,
   SCALP_V4_CLASSIFIER_VERSION,
-  upsertScalpV4WalkforwardResult,
+  upsertScalpRegimeWalkforwardResult,
 } from "../lib/scalp/regimes";
 import { loadScalpCandleHistoryInRange } from "../lib/scalp/candleHistory";
 import { resolveScalpDeployment } from "../lib/scalp/deployments";
@@ -60,11 +60,11 @@ async function main() {
   const windowToMs = Math.floor(Number(args.windowToMs || Date.now()));
   const alignedWindowToMs = windowToMs - (windowToMs % WEEK);
   const windowFromMs = alignedWindowToMs - 104 * WEEK;
-  const candidates = await listScalpV4ResearchCandidates({ limit });
-  const autoRejected = apply ? await applyScalpV4OverbroadAutoRejects(Date.now()) : 0;
+  const candidates = await listScalpRegimeResearchCandidates({ limit });
+  const autoRejected = apply ? await applyScalpRegimeOverbroadAutoRejects(Date.now()) : 0;
   const completedDeploymentIds = rerun
     ? new Set<string>()
-    : await loadScalpV4CompletedWalkforwardDeploymentIds({
+    : await loadScalpRegimeCompletedWalkforwardDeploymentIds({
         classifierVersion,
         windowFromMs,
         windowToMs: alignedWindowToMs,
@@ -81,7 +81,7 @@ async function main() {
       results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "already_completed" });
       continue;
     }
-    const snapshots = await loadScalpV4RegimeSnapshots({
+    const snapshots = await loadScalpRegimeSnapshots({
       venue: candidate.venue,
       symbol: candidate.symbol,
       classifierVersion,
@@ -92,7 +92,7 @@ async function main() {
       results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_regime_snapshots" });
       continue;
     }
-    const validity = buildScalpV4ClassifierValidityReport({ snapshots: snapshots as any });
+    const validity = buildScalpRegimeClassifierValidityReport({ snapshots: snapshots as any });
     if (!validity.passed && !forceValidity) {
       throw new Error(
         `v4 classifier validity failed for ${deployment.deploymentId}: ${validity.reason} ` +
@@ -112,7 +112,7 @@ async function main() {
     });
     const startedAt = Date.now();
     const fullReplayCandles = toReplayCandles(candles, runtime.defaultSpreadPips);
-    const run = await runScalpV4WalkForward({
+    const run = await runScalpRegimeWalkForward({
       classifierVersion,
       snapshots: snapshots as any,
       windowFromMs,
@@ -135,7 +135,7 @@ async function main() {
       },
     });
     if (apply) {
-      await upsertScalpV4WalkforwardResult({
+      await upsertScalpRegimeWalkforwardResult({
         candidateId: candidate.id,
         deploymentId: deployment.deploymentId,
         venue: candidate.venue,

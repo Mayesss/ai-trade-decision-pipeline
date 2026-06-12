@@ -16,13 +16,13 @@ import {
   SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
   parseSessionStructureComposerTuneId,
 } from "./sessionStructureComposer";
-import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
+import { buildScalpComposerExecuteConfigOverride } from "./executeConfigOverride";
 import { toDeploymentId } from "./logic";
 import { isScalpPgConfigured, scalpPrisma, sql } from "./pg";
-import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
-import type { ScalpV2Candidate, ScalpV2RiskProfile, ScalpV2Session } from "./types";
-import { getScalpV2RuntimeConfig } from "./config";
-import { startOfScalpV2WeekMondayUtc } from "./weekWindows";
+import { inferScalpComposerAssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
+import type { ScalpComposerCandidate, ScalpComposerRiskProfile, ScalpComposerSession } from "./types";
+import { getScalpComposerRuntimeConfig } from "./config";
+import { startOfScalpComposerWeekMondayUtc } from "./weekWindows";
 
 const ONE_DAY_MS = 24 * 60 * 60_000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
@@ -313,7 +313,7 @@ function toReplayCandlesFromHistory(candles: ScalpCandle[], spreadPips: number):
 function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCandle[] {
   const byWeek = new Map<number, { nonSunday: ScalpReplayCandle[]; sunday: ScalpReplayCandle[] }>();
   for (const row of candles) {
-    const weekStart = startOfScalpV2WeekMondayUtc(row.ts);
+    const weekStart = startOfScalpComposerWeekMondayUtc(row.ts);
     const bucket = byWeek.get(weekStart) || { nonSunday: [], sunday: [] };
     if (new Date(row.ts).getUTCDay() === 0) bucket.sunday.push(row);
     else bucket.nonSunday.push(row);
@@ -355,7 +355,7 @@ export async function claimDayRobustnessCandidates(params: {
   windowToTs: number;
   policy?: DayRobustnessPolicy;
   includeFailed?: boolean;
-}): Promise<ScalpV2Candidate[]> {
+}): Promise<ScalpComposerCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   await ensureRobustnessLeaseColumns();
   const policy = params.policy || resolveDayRobustnessPolicy();
@@ -489,7 +489,7 @@ export async function claimDayRobustnessCandidates(params: {
     symbol: String(row.symbol || "").trim().toUpperCase(),
     strategyId: String(row.strategyId || "").trim().toLowerCase(),
     tuneId: String(row.tuneId || "").trim().toLowerCase(),
-    entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase() as ScalpV2Session,
+    entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase() as ScalpComposerSession,
     score: Number(row.score || 0),
     status: "evaluated",
     reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes.map(String) : [],
@@ -568,7 +568,7 @@ export async function runDayRobustnessBatch(params: {
   });
   const symbols = Array.from(new Set(candidates.map((row) => row.symbol)));
   const metadata = await loadScalpSymbolMarketMetadataBulk(symbols).catch(() => new Map());
-  const runtime = getScalpV2RuntimeConfig();
+  const runtime = getScalpComposerRuntimeConfig();
   const candleCache = new Map<string, ScalpReplayCandle[]>();
   let processed = 0;
   let passed = 0;
@@ -586,7 +586,7 @@ export async function runDayRobustnessBatch(params: {
       const meta = metadata.get(candidate.symbol) || null;
       const pipSize = pipSizeForScalpSymbol(candidate.symbol, meta || undefined);
       if (!candles) {
-        const category = inferScalpV2AssetCategory(candidate.symbol);
+        const category = inferScalpComposerAssetCategory(candidate.symbol);
         const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
         const tickSpreadPips = meta?.tickSize ? meta.tickSize / pipSize : 0;
         const spreadPips = Math.max(baseReplayConfig.defaultSpreadPips, minSpreadPipsForCategory(category), tickSpreadPips);
@@ -608,9 +608,9 @@ export async function runDayRobustnessBatch(params: {
       });
       const base = defaultScalpReplayConfig(candidate.symbol);
       const sessionManagement = parseSessionStructureComposerTuneId(candidate.tuneId).managementId;
-      const configOverride = buildScalpV2ExecuteConfigOverride({
+      const configOverride = buildScalpComposerExecuteConfigOverride({
         entrySessionProfile: candidate.entrySessionProfile,
-        riskProfile: runtime.riskProfile as ScalpV2RiskProfile,
+        riskProfile: runtime.riskProfile as ScalpComposerRiskProfile,
         stateMachineOverrides: {},
       });
       const replayConfig = {

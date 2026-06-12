@@ -19,7 +19,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { retireConsistentlyFailingScalpV5Deployments } from "../../../../../lib/scalp/research/pg";
+import { retireConsistentlyFailingScalpResearchDeployments } from "../../../../../lib/scalp/research/pg";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
@@ -71,7 +71,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const result = await retireConsistentlyFailingScalpV5Deployments({
+    const result = await retireConsistentlyFailingScalpResearchDeployments({
       stalenessDays,
       dryRun,
     });

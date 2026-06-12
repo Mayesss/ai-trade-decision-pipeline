@@ -4,7 +4,7 @@
 // Two candidates with the same family but different suffixes are minor parameter
 // variations of the SAME strategy idea — they fire on the same conditions, so
 // walk-forwarding all of them is redundant.
-export function extractScalpV4StrategyFamily(tuneId: string): string {
+export function extractScalpRegimeStrategyFamily(tuneId: string): string {
   const parts = String(tuneId || "").split("_");
   return parts.slice(0, 4).join("_") || "unknown";
 }
@@ -12,7 +12,7 @@ export function extractScalpV4StrategyFamily(tuneId: string): string {
 // Cluster key — candidates with the same key are treated as the same bet.
 // Used by walk-forward to cap effort per cluster and by promote-time gates
 // to limit concurrent positions on equivalent strategies.
-export function buildScalpV4ClusterKey(args: {
+export function buildScalpRegimeClusterKey(args: {
   venue: string;
   symbol: string;
   session: string;
@@ -24,14 +24,14 @@ export function buildScalpV4ClusterKey(args: {
     args.venue.toLowerCase(),
     args.symbol.toUpperCase(),
     args.session.toLowerCase(),
-    extractScalpV4StrategyFamily(args.tuneId),
+    extractScalpRegimeStrategyFamily(args.tuneId),
     variant,
   ].join(":");
 }
 
 // Per-deployment v4 lifecycle state used by dashboard endpoints.
 // Pure helper — no DB / IO. Same labels used in `pages/index.tsx`.
-export type ScalpV4DeploymentStatus =
+export type ScalpRegimeDeploymentStatus =
   | "trading"
   | "dormant_wrong_regime"
   | "dormant_no_regime"
@@ -44,11 +44,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function classifyScalpV4DeploymentStatus(args: {
+export function classifyScalpRegimeDeploymentStatus(args: {
   enabled: boolean;
   envelope: Record<string, unknown> | null;
   currentCellId: string | null;
-}): ScalpV4DeploymentStatus {
+}): ScalpRegimeDeploymentStatus {
   const envelope = isRecord(args.envelope) ? args.envelope : null;
   const eligible = Boolean(envelope?.eligible);
   const envelopeStatus = String(envelope?.status || "");

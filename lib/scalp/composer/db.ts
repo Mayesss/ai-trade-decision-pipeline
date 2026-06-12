@@ -2,7 +2,7 @@ import crypto from "crypto";
 
 import { isScalpPgConfigured, join, scalpPrisma, sql } from "./pg";
 
-import { applyScalpV2FixedSeedScope, getScalpV2RuntimeConfig } from "./config";
+import { applyScalpComposerFixedSeedScope, getScalpComposerRuntimeConfig } from "./config";
 import {
   deriveCloseTypeFromReasonCodes,
   normalizeReasonCodes,
@@ -11,29 +11,29 @@ import {
 } from "./logic";
 import type { ScalpJournalEntry, ScalpSessionState } from "../types";
 import type {
-  ScalpV2PatternEdge,
-  ScalpV2PatternTradeVector,
+  ScalpComposerPatternEdge,
+  ScalpComposerPatternTradeVector,
 } from "./patternEvidence";
 import type {
-  ScalpV2Candidate,
-  ScalpV2CandidateStatus,
-  ScalpV2CloseType,
-  ScalpV2Deployment,
-  ScalpV2EventType,
-  ScalpV2ExecutionEvent,
-  ScalpV2JobKind,
-  ScalpV2JobResult,
-  ScalpV2JobStatus,
-  ScalpV2LiveMode,
-  ScalpV2ResearchCursor,
-  ScalpV2ResearchHighlight,
-  ScalpV2RuntimeConfig,
-  ScalpV2RiskProfile,
-  ScalpV2Session,
-  ScalpV2SourceOfTruth,
-  ScalpV2Venue,
-  ScalpV2WorkerStageId,
-  ScalpV2WorkerStageWeeklyMetrics,
+  ScalpComposerCandidate,
+  ScalpComposerCandidateStatus,
+  ScalpComposerCloseType,
+  ScalpComposerDeployment,
+  ScalpComposerEventType,
+  ScalpComposerExecutionEvent,
+  ScalpComposerJobKind,
+  ScalpComposerJobResult,
+  ScalpComposerJobStatus,
+  ScalpComposerLiveMode,
+  ScalpComposerResearchCursor,
+  ScalpComposerResearchHighlight,
+  ScalpComposerRuntimeConfig,
+  ScalpComposerRiskProfile,
+  ScalpComposerSession,
+  ScalpComposerSourceOfTruth,
+  ScalpComposerVenue,
+  ScalpComposerWorkerStageId,
+  ScalpComposerWorkerStageWeeklyMetrics,
 } from "./types";
 
 const RETIRED_LEGACY_COMPOSER_STRATEGY_ID = "model_guided_composer_v2";
@@ -165,7 +165,7 @@ async function ensureCandidateResearchLeaseColumns(): Promise<boolean> {
   }
 }
 
-function resolveScalpV2JobLockStaleMinutes(): number {
+function resolveScalpComposerJobLockStaleMinutes(): number {
   return Math.max(
     2,
     Math.min(
@@ -184,14 +184,14 @@ function normalizeJobDedupeScope(value: unknown): string {
   return normalized || "singleton";
 }
 
-function normalizeVenue(value: unknown): ScalpV2Venue {
+function normalizeVenue(value: unknown): ScalpComposerVenue {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
   return normalized === "capital" ? "capital" : "bitget";
 }
 
-function normalizeSession(value: unknown): ScalpV2Session {
+function normalizeSession(value: unknown): ScalpComposerSession {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -202,7 +202,7 @@ function normalizeSession(value: unknown): ScalpV2Session {
   return "berlin";
 }
 
-function normalizeOptionalSession(value: unknown): ScalpV2Session | null {
+function normalizeOptionalSession(value: unknown): ScalpComposerSession | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -214,7 +214,7 @@ function normalizeOptionalSession(value: unknown): ScalpV2Session | null {
   return null;
 }
 
-function normalizeOptionalVenue(value: unknown): ScalpV2Venue | null {
+function normalizeOptionalVenue(value: unknown): ScalpComposerVenue | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -223,11 +223,11 @@ function normalizeOptionalVenue(value: unknown): ScalpV2Venue | null {
   return null;
 }
 
-function normalizeLiveMode(value: unknown): ScalpV2LiveMode {
+function normalizeLiveMode(value: unknown): ScalpComposerLiveMode {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "shadow";
 }
 
-function normalizeResearchPhase(value: unknown): ScalpV2ResearchCursor["phase"] {
+function normalizeResearchPhase(value: unknown): ScalpComposerResearchCursor["phase"] {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -237,7 +237,7 @@ function normalizeResearchPhase(value: unknown): ScalpV2ResearchCursor["phase"] 
   return "scan";
 }
 
-function normalizeCandidateStatus(value: unknown): ScalpV2CandidateStatus {
+function normalizeCandidateStatus(value: unknown): ScalpComposerCandidateStatus {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -247,7 +247,7 @@ function normalizeCandidateStatus(value: unknown): ScalpV2CandidateStatus {
   return "discovered";
 }
 
-function normalizeEventType(value: unknown): ScalpV2EventType {
+function normalizeEventType(value: unknown): ScalpComposerEventType {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -262,7 +262,7 @@ function normalizeEventType(value: unknown): ScalpV2EventType {
   return "position_snapshot";
 }
 
-function normalizeSourceOfTruth(value: unknown): ScalpV2SourceOfTruth {
+function normalizeSourceOfTruth(value: unknown): ScalpComposerSourceOfTruth {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -282,7 +282,7 @@ function normalizeJournalType(value: unknown): ScalpJournalEntry["type"] {
   return "execution";
 }
 
-function normalizeRiskProfile(value: unknown): ScalpV2RiskProfile {
+function normalizeRiskProfile(value: unknown): ScalpComposerRiskProfile {
   const row = asRecord(value);
   const riskPerTradePct = Number(row.riskPerTradePct);
   const maxOpenPositionsPerSymbol = Number(row.maxOpenPositionsPerSymbol);
@@ -298,13 +298,13 @@ function normalizeRiskProfile(value: unknown): ScalpV2RiskProfile {
   };
 }
 
-function parseRuntimeConfigRow(raw: unknown): ScalpV2RuntimeConfig | null {
+function parseRuntimeConfigRow(raw: unknown): ScalpComposerRuntimeConfig | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
-  const defaults = getScalpV2RuntimeConfig();
+  const defaults = getScalpComposerRuntimeConfig();
   const config = asRecord(row.configJson);
 
-  const merged: ScalpV2RuntimeConfig = {
+  const merged: ScalpComposerRuntimeConfig = {
     ...defaults,
     ...config,
     budgets: {
@@ -318,24 +318,24 @@ function parseRuntimeConfigRow(raw: unknown): ScalpV2RuntimeConfig | null {
     seedSymbolsByVenue: {
       ...defaults.seedSymbolsByVenue,
       ...asRecord(config.seedSymbolsByVenue),
-    } as ScalpV2RuntimeConfig["seedSymbolsByVenue"],
+    } as ScalpComposerRuntimeConfig["seedSymbolsByVenue"],
     seedLiveSymbolsByVenue: {
       ...defaults.seedLiveSymbolsByVenue,
       ...asRecord(config.seedLiveSymbolsByVenue),
-    } as ScalpV2RuntimeConfig["seedLiveSymbolsByVenue"],
+    } as ScalpComposerRuntimeConfig["seedLiveSymbolsByVenue"],
   };
 
-  const runtime: ScalpV2RuntimeConfig = {
+  const runtime: ScalpComposerRuntimeConfig = {
     ...merged,
     enabled: Boolean(merged.enabled),
     liveEnabled: Boolean(merged.liveEnabled),
     dryRunDefault: Boolean(merged.dryRunDefault),
   };
-  return applyScalpV2FixedSeedScope(runtime);
+  return applyScalpComposerFixedSeedScope(runtime);
 }
 
-export async function loadScalpV2RuntimeConfig(): Promise<ScalpV2RuntimeConfig> {
-  const defaults = getScalpV2RuntimeConfig();
+export async function loadScalpComposerRuntimeConfig(): Promise<ScalpComposerRuntimeConfig> {
+  const defaults = getScalpComposerRuntimeConfig();
   if (!isScalpPgConfigured()) return defaults;
   try {
     const db = scalpPrisma();
@@ -352,9 +352,9 @@ export async function loadScalpV2RuntimeConfig(): Promise<ScalpV2RuntimeConfig> 
   }
 }
 
-export async function upsertScalpV2RuntimeConfig(
-  config: ScalpV2RuntimeConfig,
-): Promise<ScalpV2RuntimeConfig> {
+export async function upsertScalpComposerRuntimeConfig(
+  config: ScalpComposerRuntimeConfig,
+): Promise<ScalpComposerRuntimeConfig> {
   if (!isScalpPgConfigured()) return config;
   const db = scalpPrisma();
   await db.$executeRaw(sql`
@@ -365,11 +365,11 @@ export async function upsertScalpV2RuntimeConfig(
       config_json = EXCLUDED.config_json,
       updated_at = NOW();
   `);
-  return loadScalpV2RuntimeConfig();
+  return loadScalpComposerRuntimeConfig();
 }
 
-export async function claimScalpV2Job(params: {
-  jobKind: ScalpV2JobKind;
+export async function claimScalpComposerJob(params: {
+  jobKind: ScalpComposerJobKind;
   lockOwner: string;
   dedupeScope?: string;
   allowSucceededRetry?: boolean;
@@ -377,7 +377,7 @@ export async function claimScalpV2Job(params: {
   if (!isScalpPgConfigured()) return true;
   const db = scalpPrisma();
   const dedupeKey = `${params.jobKind}:${normalizeJobDedupeScope(params.dedupeScope)}`;
-  const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
+  const staleLockMinutes = resolveScalpComposerJobLockStaleMinutes();
   const allowSucceededRetry = params.allowSucceededRetry !== false;
   await db.$executeRaw(sql`
     INSERT INTO scalp_v2_jobs(
@@ -424,8 +424,8 @@ export async function claimScalpV2Job(params: {
   return rows.length > 0;
 }
 
-export async function heartbeatScalpV2Job(params: {
-  jobKind: ScalpV2JobKind;
+export async function heartbeatScalpComposerJob(params: {
+  jobKind: ScalpComposerJobKind;
   lockOwner: string;
   dedupeScope?: string;
   details?: Record<string, unknown>;
@@ -448,8 +448,8 @@ export async function heartbeatScalpV2Job(params: {
   return rows.length > 0;
 }
 
-export async function finalizeScalpV2Job(params: {
-  jobKind: ScalpV2JobKind;
+export async function finalizeScalpComposerJob(params: {
+  jobKind: ScalpComposerJobKind;
   lockOwner: string;
   ok: boolean;
   dedupeScope?: string;
@@ -475,15 +475,15 @@ export async function finalizeScalpV2Job(params: {
 
 const UPSERT_CANDIDATE_BATCH_SIZE = 500;
 
-export async function upsertScalpV2Candidates(params: {
+export async function upsertScalpComposerCandidates(params: {
   rows: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    entrySessionProfile: ScalpV2Session;
+    entrySessionProfile: ScalpComposerSession;
     score: number;
-    status: ScalpV2CandidateStatus;
+    status: ScalpComposerCandidateStatus;
     reasonCodes?: string[];
     metadata?: Record<string, unknown>;
   }>;
@@ -500,7 +500,7 @@ export async function upsertScalpV2Candidates(params: {
       if (!isRetiredComposer || row.status !== "discovered") return row;
       return {
         ...row,
-        status: "rejected" as ScalpV2CandidateStatus,
+        status: "rejected" as ScalpComposerCandidateStatus,
         reasonCodes: normalizeReasonCodes([
           ...(row.reasonCodes || []),
           "COMPOSER_RETIRED_DISCOVERY_BLOCKED",
@@ -610,13 +610,13 @@ export async function upsertScalpV2Candidates(params: {
   return params.rows.length;
 }
 
-export async function listScalpV2Candidates(params: {
-  status?: ScalpV2CandidateStatus;
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
+export async function listScalpComposerCandidates(params: {
+  status?: ScalpComposerCandidateStatus;
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
   symbols?: string[];
   limit?: number;
-} = {}): Promise<ScalpV2Candidate[]> {
+} = {}): Promise<ScalpComposerCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
@@ -733,7 +733,7 @@ export async function listScalpV2Candidates(params: {
   }));
 }
 
-export async function claimScalpV2ResearchCandidateLeases(params: {
+export async function claimScalpComposerResearchCandidateLeases(params: {
   candidateIds: number[];
   lockOwner: string;
   limit: number;
@@ -788,14 +788,14 @@ export async function claimScalpV2ResearchCandidateLeases(params: {
   return new Set(rows.map((row) => Math.floor(Number(row.id) || 0)).filter((id) => id > 0));
 }
 
-export async function paginateScalpV2Candidates(params: {
-  session?: ScalpV2Session;
-  venue?: ScalpV2Venue;
-  status?: ScalpV2CandidateStatus;
+export async function paginateScalpComposerCandidates(params: {
+  session?: ScalpComposerSession;
+  venue?: ScalpComposerVenue;
+  status?: ScalpComposerCandidateStatus;
   deploymentEnabled?: boolean | null;
   offset?: number;
   limit?: number;
-}): Promise<{ rows: ScalpV2Candidate[]; total: number }> {
+}): Promise<{ rows: ScalpComposerCandidate[]; total: number }> {
   if (!isScalpPgConfigured()) return { rows: [], total: 0 };
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(500, Math.floor(params.limit || 100)));
@@ -976,14 +976,14 @@ export async function paginateScalpV2Candidates(params: {
   };
 }
 
-export async function paginateScalpV2CandidatesForBackfill(params: {
-  statuses: ScalpV2CandidateStatus[];
+export async function paginateScalpComposerCandidatesForBackfill(params: {
+  statuses: ScalpComposerCandidateStatus[];
   symbols?: string[];
-  session?: ScalpV2Session | null;
-  venue?: ScalpV2Venue | null;
+  session?: ScalpComposerSession | null;
+  venue?: ScalpComposerVenue | null;
   offset?: number;
   limit?: number;
-}): Promise<{ rows: ScalpV2Candidate[]; total: number }> {
+}): Promise<{ rows: ScalpComposerCandidate[]; total: number }> {
   if (!isScalpPgConfigured()) return { rows: [], total: 0 };
   const db = scalpPrisma();
   const statuses = Array.from(
@@ -1092,7 +1092,7 @@ export async function paginateScalpV2CandidatesForBackfill(params: {
  * These are exact cache hits — no need to re-run at all.
  */
 /** Check if warm-up was completed for the given window. */
-export async function loadScalpV2WarmUpState(params: {
+export async function loadScalpComposerWarmUpState(params: {
   windowToTs: number;
 }): Promise<{ scopeHash: string; candidateCount: number } | null> {
   if (!isScalpPgConfigured()) return null;
@@ -1109,7 +1109,7 @@ export async function loadScalpV2WarmUpState(params: {
 }
 
 /** Persist warm-up completion state. */
-export async function upsertScalpV2WarmUpState(params: {
+export async function upsertScalpComposerWarmUpState(params: {
   windowToTs: number;
   scopeHash: string;
   candidateCount: number;
@@ -1125,7 +1125,7 @@ export async function upsertScalpV2WarmUpState(params: {
 }
 
 /** Distinct symbols that still have "discovered" candidates (not yet backtested). */
-export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
+export async function listScalpComposerDiscoveredSymbols(): Promise<string[]> {
   if (!isScalpPgConfigured()) return [];
   await ensureCandidateResearchLeaseColumns().catch(() => false);
   const db = scalpPrisma();
@@ -1166,8 +1166,8 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
   return rows.map((r) => r.symbol);
 }
 
-export async function countScalpV2CandidatesByStatus(params: {
-  status: ScalpV2CandidateStatus;
+export async function countScalpComposerCandidatesByStatus(params: {
+  status: ScalpComposerCandidateStatus;
   symbols?: string[];
 }): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
@@ -1219,7 +1219,7 @@ export async function countScalpV2CandidatesByStatus(params: {
   return Math.max(0, Math.floor(Number(row?.cnt || 0)));
 }
 
-export async function loadScalpV2EvaluatedCandidateKeys(params: {
+export async function loadScalpComposerEvaluatedCandidateKeys(params: {
   windowToTs: number;
 }): Promise<Set<string>> {
   if (!isScalpPgConfigured()) return new Set();
@@ -1264,11 +1264,11 @@ export interface PreviousStageResult {
   stageAWeeklyNetR: Record<string, number>;
 }
 
-export interface ScalpV2ScopeWindowStageStats {
+export interface ScalpComposerScopeWindowStageStats {
   windowToTs: number;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   total: number;
   stageAPass: number;
   stageCPass: number;
@@ -1279,7 +1279,7 @@ export interface ScalpV2ScopeWindowStageStats {
  * DIFFERENT windowToTs (prior week). Used for smart-skip decisions and
  * the weeklyNetR pre-filter. Only fetches the fields actually needed.
  */
-export async function loadScalpV2PreviousWeekResults(params: {
+export async function loadScalpComposerPreviousWeekResults(params: {
   currentWindowToTs: number;
   symbols?: string[];
   tuneIds?: string[];
@@ -1434,7 +1434,7 @@ async function ensurePatternEdgeTable(): Promise<boolean> {
   return exists;
 }
 
-function normalizeStageId(value: unknown): ScalpV2WorkerStageId | null {
+function normalizeStageId(value: unknown): ScalpComposerWorkerStageId | null {
   const s = String(value || "").trim().toLowerCase();
   if (s === "a" || s === "b" || s === "c") return s;
   return null;
@@ -1442,7 +1442,7 @@ function normalizeStageId(value: unknown): ScalpV2WorkerStageId | null {
 
 function normalizeWeeklyCacheMetrics(
   value: unknown,
-): ScalpV2WorkerStageWeeklyMetrics {
+): ScalpComposerWorkerStageWeeklyMetrics {
   const r = asRecord(value);
   const fin = (v: unknown, fb = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fb; };
   const nat = (v: unknown) => Math.max(0, Math.floor(fin(v)));
@@ -1467,19 +1467,19 @@ function normalizeWeeklyCacheMetrics(
  * Load cached per-week metrics for a set of candidate+stage keys.
  * Returns Map<cacheKey, Map<weekStartTs, metrics>>.
  */
-export async function loadScalpV2WeeklyCache(params: {
+export async function loadScalpComposerWeeklyCache(params: {
   keys: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    session: ScalpV2Session;
-    stageId: ScalpV2WorkerStageId;
+    session: ScalpComposerSession;
+    stageId: ScalpComposerWorkerStageId;
   }>;
   fromWeekStartTs: number;
   toWeekStartTs: number;
-}): Promise<Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>> {
-  const out = new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
+}): Promise<Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>> {
+  const out = new Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>();
   if (!isScalpPgConfigured() || !params.keys.length) return out;
   if (!(await ensureWeeklyCacheTable())) return out;
   const fromTs = Math.floor(Number(params.fromWeekStartTs) || 0);
@@ -1565,18 +1565,18 @@ export async function loadScalpV2WeeklyCache(params: {
  * the existing table with stage_id='a' as the canonical row, while this reader
  * can still fall back to older duplicated stage rows.
  */
-export async function loadScalpV2CandidateWeeklyCache(params: {
+export async function loadScalpComposerCandidateWeeklyCache(params: {
   keys: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    session: ScalpV2Session;
+    session: ScalpComposerSession;
   }>;
   fromWeekStartTs: number;
   toWeekStartTs: number;
-}): Promise<Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>> {
-  const out = new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
+}): Promise<Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>> {
+  const out = new Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>();
   if (!isScalpPgConfigured() || !params.keys.length) return out;
   if (!(await ensureWeeklyCacheTable())) return out;
   const fromTs = Math.floor(Number(params.fromWeekStartTs) || 0);
@@ -1674,17 +1674,17 @@ export async function loadScalpV2CandidateWeeklyCache(params: {
 /**
  * Persist per-week metrics to the cache table (upsert).
  */
-export async function upsertScalpV2WeeklyCache(params: {
+export async function upsertScalpComposerWeeklyCache(params: {
   rows: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    session: ScalpV2Session;
-    stageId: ScalpV2WorkerStageId;
+    session: ScalpComposerSession;
+    stageId: ScalpComposerWorkerStageId;
     weekStartTs: number;
     weekToTs: number;
-    metrics: ScalpV2WorkerStageWeeklyMetrics;
+    metrics: ScalpComposerWorkerStageWeeklyMetrics;
   }>;
 }): Promise<number> {
   if (!isScalpPgConfigured() || !params.rows.length) return 0;
@@ -1725,19 +1725,19 @@ export async function upsertScalpV2WeeklyCache(params: {
   return written;
 }
 
-export async function upsertScalpV2CandidateWeeklyCache(params: {
+export async function upsertScalpComposerCandidateWeeklyCache(params: {
   rows: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    session: ScalpV2Session;
+    session: ScalpComposerSession;
     weekStartTs: number;
     weekToTs: number;
-    metrics: ScalpV2WorkerStageWeeklyMetrics;
+    metrics: ScalpComposerWorkerStageWeeklyMetrics;
   }>;
 }): Promise<number> {
-  return upsertScalpV2WeeklyCache({
+  return upsertScalpComposerWeeklyCache({
     rows: params.rows.map((row) => ({
       ...row,
       stageId: "a",
@@ -1745,10 +1745,10 @@ export async function upsertScalpV2CandidateWeeklyCache(params: {
   });
 }
 
-export async function listScalpV2PatternEvidenceBackfillCandidates(params: {
+export async function listScalpComposerPatternEvidenceBackfillCandidates(params: {
   windowToTs?: number | "latest" | null;
   limit?: number;
-} = {}): Promise<ScalpV2Candidate[]> {
+} = {}): Promise<ScalpComposerCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(50_000, Math.floor(Number(params.limit) || 1_000)));
@@ -1840,17 +1840,17 @@ export async function listScalpV2PatternEvidenceBackfillCandidates(params: {
   }));
 }
 
-export async function replaceScalpV2PatternTradeVectors(params: {
+export async function replaceScalpComposerPatternTradeVectors(params: {
   identity: {
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    session: ScalpV2Session;
+    session: ScalpComposerSession;
     windowToTs: number;
     stageId: "c";
   };
-  rows: ScalpV2PatternTradeVector[];
+  rows: ScalpComposerPatternTradeVector[];
 }): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
   if (!(await ensurePatternTradeVectorTable())) return 0;
@@ -1960,11 +1960,11 @@ export async function replaceScalpV2PatternTradeVectors(params: {
   return written;
 }
 
-export async function loadScalpV2PatternTradeVectors(params: {
+export async function loadScalpComposerPatternTradeVectors(params: {
   windowToTs: number;
   bucketMinutes: number;
   populationScope: string;
-}): Promise<ScalpV2PatternTradeVector[]> {
+}): Promise<ScalpComposerPatternTradeVector[]> {
   if (!isScalpPgConfigured()) return [];
   if (!(await ensurePatternTradeVectorTable())) return [];
   const windowToTs = Math.floor(Number(params.windowToTs) || 0);
@@ -2043,8 +2043,8 @@ export async function loadScalpV2PatternTradeVectors(params: {
   }));
 }
 
-export async function upsertScalpV2PatternEdges(params: {
-  edges: ScalpV2PatternEdge[];
+export async function upsertScalpComposerPatternEdges(params: {
+  edges: ScalpComposerPatternEdge[];
 }): Promise<number> {
   if (!isScalpPgConfigured() || !params.edges.length) return 0;
   if (!(await ensurePatternEdgeTable())) return 0;
@@ -2151,7 +2151,7 @@ export async function upsertScalpV2PatternEdges(params: {
 /**
  * Delete cache rows with week_start_ts older than the given timestamp.
  */
-export async function pruneScalpV2WeeklyCache(params: {
+export async function pruneScalpComposerWeeklyCache(params: {
   olderThanTs: number;
 }): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
@@ -2166,9 +2166,9 @@ export async function pruneScalpV2WeeklyCache(params: {
   return typeof result === "number" ? result : 0;
 }
 
-export async function loadScalpV2ScopeWindowStageStats(params: {
+export async function loadScalpComposerScopeWindowStageStats(params: {
   latestWindowCount?: number;
-} = {}): Promise<ScalpV2ScopeWindowStageStats[]> {
+} = {}): Promise<ScalpComposerScopeWindowStageStats[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const latestWindowCount = Math.max(
@@ -2226,9 +2226,9 @@ export async function loadScalpV2ScopeWindowStageStats(params: {
   }));
 }
 
-export async function updateScalpV2CandidateStatuses(params: {
+export async function updateScalpComposerCandidateStatuses(params: {
   ids: number[];
-  status: ScalpV2CandidateStatus;
+  status: ScalpComposerCandidateStatus;
   metadataPatch?: Record<string, unknown>;
 }): Promise<number> {
   if (!isScalpPgConfigured() || params.ids.length === 0) return 0;
@@ -2278,7 +2278,7 @@ export async function updateScalpV2CandidateStatuses(params: {
   return Math.max(0, Number(updatedRows[0]?.count || 0));
 }
 
-export async function backfillScalpV2DeploymentHoldout(params: {
+export async function backfillScalpComposerDeploymentHoldout(params: {
   rows: Array<{
     deploymentId: string;
     candidateId: number | null;
@@ -2330,7 +2330,7 @@ const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * This moves stale deployment candidates back to "discovered" so research
  * can re-evaluate them for the current completed week window.
  */
-export async function requeueScalpV2DeploymentCandidatesForWindow(params: {
+export async function requeueScalpComposerDeploymentCandidatesForWindow(params: {
   windowToTs: number;
   previousWindowOnly?: boolean;
   includeDisabledDeployments?: boolean;
@@ -2423,18 +2423,18 @@ const UPSERT_DEPLOYMENT_BATCH_SIZE = 400;
 // strategy_id, tune_id, entry_session_profile) tuple that has been retired
 // can NEVER be resurrected through any code path that flows through this
 // function. Manual reset requires clearing retired_at directly in SQL.
-export async function upsertScalpV2Deployments(params: {
+export async function upsertScalpComposerDeployments(params: {
   rows: Array<{
     candidateId: number | null;
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    entrySessionProfile: ScalpV2Session;
+    entrySessionProfile: ScalpComposerSession;
     enabled: boolean;
-    liveMode: ScalpV2LiveMode;
+    liveMode: ScalpComposerLiveMode;
     promotionGate?: Record<string, unknown>;
-    riskProfile: ScalpV2RiskProfile;
+    riskProfile: ScalpComposerRiskProfile;
   }>;
 }): Promise<number> {
   if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
@@ -2596,15 +2596,15 @@ export async function orphanRetiredLegacyComposerDeployments(params: {
   };
 }
 
-export async function listScalpV2Deployments(params: {
+export async function listScalpComposerDeployments(params: {
   enabledOnly?: boolean;
   liveOnly?: boolean;
   includeRetired?: boolean;
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
   compactPromotionGate?: boolean;
   limit?: number;
-} = {}): Promise<ScalpV2Deployment[]> {
+} = {}): Promise<ScalpComposerDeployment[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
@@ -2725,9 +2725,9 @@ export async function listScalpV2Deployments(params: {
   }));
 }
 
-export async function loadScalpV2DeploymentById(
+export async function loadScalpComposerDeploymentById(
   deploymentIdRaw: string,
-): Promise<ScalpV2Deployment | null> {
+): Promise<ScalpComposerDeployment | null> {
   const deploymentId = String(deploymentIdRaw || "").trim();
   if (!deploymentId || !isScalpPgConfigured()) return null;
   const db = scalpPrisma();
@@ -2787,10 +2787,10 @@ export async function loadScalpV2DeploymentById(
   };
 }
 
-export async function setScalpV2DeploymentEnabled(params: {
+export async function setScalpComposerDeploymentEnabled(params: {
   deploymentId: string;
   enabled: boolean;
-  liveMode?: ScalpV2LiveMode;
+  liveMode?: ScalpComposerLiveMode;
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
@@ -2805,8 +2805,8 @@ export async function setScalpV2DeploymentEnabled(params: {
   `);
 }
 
-export async function appendScalpV2ExecutionEvent(
-  event: ScalpV2ExecutionEvent,
+export async function appendScalpComposerExecutionEvent(
+  event: ScalpComposerExecutionEvent,
 ): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
@@ -2850,7 +2850,7 @@ export async function appendScalpV2ExecutionEvent(
   if (!closeType) return;
 
   const rawPnlUsd = event.rawPayload.pnlUsd;
-  await appendScalpV2LedgerRow({
+  await appendScalpComposerLedgerRow({
     id: crypto.randomUUID(),
     tsExitMs: event.tsMs,
     deploymentId: event.deploymentId,
@@ -2876,21 +2876,21 @@ export async function appendScalpV2ExecutionEvent(
   });
 }
 
-export async function appendScalpV2LedgerRow(row: {
+export async function appendScalpComposerLedgerRow(row: {
   id: string;
   tsExitMs: number;
   deploymentId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   entryRef: string | null;
   exitRef: string | null;
-  closeType: ScalpV2CloseType;
+  closeType: ScalpComposerCloseType;
   rMultiple: number;
   pnlUsd: number | null;
-  sourceOfTruth: ScalpV2SourceOfTruth;
+  sourceOfTruth: ScalpComposerSourceOfTruth;
   reasonCodes: string[];
   rawPayload: Record<string, unknown>;
 }): Promise<boolean> {
@@ -2940,14 +2940,14 @@ export async function appendScalpV2LedgerRow(row: {
   `);
   const wasInserted = inserted.length > 0;
   if (wasInserted) {
-    await snapshotScalpV2DailyMetrics({ dayKey: utcDayKeyFromMs(row.tsExitMs) }).catch(
+    await snapshotScalpComposerDailyMetrics({ dayKey: utcDayKeyFromMs(row.tsExitMs) }).catch(
       () => undefined,
     );
   }
   return wasInserted;
 }
 
-export async function listScalpV2LedgerRows(params: {
+export async function listScalpComposerLedgerRows(params: {
   deploymentIds: string[];
   fromTsMs: number;
   toTsMs: number;
@@ -2956,13 +2956,13 @@ export async function listScalpV2LedgerRows(params: {
   Array<{
     deploymentId: string;
     tsExitMs: number;
-    entrySessionProfile: ScalpV2Session;
-    venue: ScalpV2Venue;
+    entrySessionProfile: ScalpComposerSession;
+    venue: ScalpComposerVenue;
     symbol: string;
-    closeType: ScalpV2CloseType;
+    closeType: ScalpComposerCloseType;
     rMultiple: number;
     pnlUsd: number | null;
-    sourceOfTruth: ScalpV2SourceOfTruth;
+    sourceOfTruth: ScalpComposerSourceOfTruth;
     reasonCodes: string[];
   }>
 > {
@@ -3020,7 +3020,7 @@ export async function listScalpV2LedgerRows(params: {
     entrySessionProfile: normalizeSession(row.entrySessionProfile),
     venue: normalizeVenue(row.venue),
     symbol: String(row.symbol || "").trim().toUpperCase(),
-    closeType: (String(row.closeType || "manual_close").trim().toLowerCase() as ScalpV2CloseType),
+    closeType: (String(row.closeType || "manual_close").trim().toLowerCase() as ScalpComposerCloseType),
     rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
     pnlUsd:
       row.pnlUsd === null || row.pnlUsd === undefined
@@ -3033,9 +3033,9 @@ export async function listScalpV2LedgerRows(params: {
   }));
 }
 
-export async function upsertScalpV2PositionSnapshot(params: {
+export async function upsertScalpComposerPositionSnapshot(params: {
   deploymentId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   side: "long" | "short" | null;
   entryPrice: number | null;
@@ -3096,14 +3096,14 @@ export async function upsertScalpV2PositionSnapshot(params: {
   `);
 }
 
-export async function listScalpV2OpenPositions(): Promise<
+export async function listScalpComposerOpenPositions(): Promise<
   Array<{
     deploymentId: string;
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    entrySessionProfile: ScalpV2Session;
+    entrySessionProfile: ScalpComposerSession;
     side: "long" | "short" | null;
     dealId: string | null;
     dealReference: string | null;
@@ -3157,12 +3157,12 @@ export async function listScalpV2OpenPositions(): Promise<
   }));
 }
 
-export async function listScalpV2ExecutionEvents(params: {
+export async function listScalpComposerExecutionEvents(params: {
   limit?: number;
   deploymentId?: string;
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
-} = {}): Promise<ScalpV2ExecutionEvent[]> {
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
+} = {}): Promise<ScalpComposerExecutionEvent[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 300)));
@@ -3241,19 +3241,19 @@ export async function listScalpV2ExecutionEvents(params: {
   }));
 }
 
-export async function listScalpV2SessionSnapshots(params: {
+export async function listScalpComposerSessionSnapshots(params: {
   deploymentIds?: string[];
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
   limit?: number;
 } = {}): Promise<
   Array<{
     deploymentId: string;
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
-    entrySessionProfile: ScalpV2Session;
+    entrySessionProfile: ScalpComposerSession;
     dayKey: string;
     state: ScalpSessionState | null;
     lastReasonCodes: string[];
@@ -3344,20 +3344,20 @@ export async function listScalpV2SessionSnapshots(params: {
   });
 }
 
-export async function listScalpV2JournalRows(params: {
+export async function listScalpComposerJournalRows(params: {
   limit?: number;
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
 } = {}): Promise<
   Array<{
     id: string;
     tsMs: number;
     deploymentId: string | null;
-    venue: ScalpV2Venue | null;
+    venue: ScalpComposerVenue | null;
     symbol: string | null;
     strategyId: string | null;
     tuneId: string | null;
-    entrySessionProfile: ScalpV2Session | null;
+    entrySessionProfile: ScalpComposerSession | null;
     dayKey: string | null;
     level: "info" | "warn" | "error";
     type: "execution" | "state" | "risk" | "error";
@@ -3446,7 +3446,7 @@ export async function listScalpV2JournalRows(params: {
   }));
 }
 
-export async function loadScalpV2SessionState(params: {
+export async function loadScalpComposerSessionState(params: {
   deploymentId: string;
   dayKey: string;
 }): Promise<ScalpSessionState | null> {
@@ -3473,7 +3473,7 @@ export async function loadScalpV2SessionState(params: {
   };
 }
 
-export async function upsertScalpV2SessionState(
+export async function upsertScalpComposerSessionState(
   state: ScalpSessionState,
 ): Promise<void> {
   if (!isScalpPgConfigured()) return;
@@ -3504,13 +3504,13 @@ export async function upsertScalpV2SessionState(
   `);
 }
 
-export async function appendScalpV2JournalEntry(params: {
+export async function appendScalpComposerJournalEntry(params: {
   entry: ScalpJournalEntry;
   deploymentId?: string | null;
-  venue?: ScalpV2Venue | null;
+  venue?: ScalpComposerVenue | null;
   strategyId?: string | null;
   tuneId?: string | null;
-  entrySessionProfile?: ScalpV2Session | null;
+  entrySessionProfile?: ScalpComposerSession | null;
 }): Promise<boolean> {
   if (!isScalpPgConfigured()) return false;
   const entry = params.entry;
@@ -3570,7 +3570,7 @@ export async function appendScalpV2JournalEntry(params: {
   return Boolean(row?.id);
 }
 
-export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
+export async function loadScalpComposerSummary(): Promise<Record<string, unknown>> {
   if (!isScalpPgConfigured()) {
     return {
       pgConfigured: false,
@@ -3793,12 +3793,12 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
   };
 }
 
-export async function listScalpV2Jobs(params: {
+export async function listScalpComposerJobs(params: {
   limit?: number;
 } = {}): Promise<
   Array<{
-    jobKind: ScalpV2JobKind;
-    status: ScalpV2JobStatus;
+    jobKind: ScalpComposerJobKind;
+    status: ScalpComposerJobStatus;
     attempts: number;
     nextRunAtMs: number;
     lockedBy: string | null;
@@ -3840,7 +3840,7 @@ export async function listScalpV2Jobs(params: {
     const statusRaw = String(row.status || "")
       .trim()
       .toLowerCase();
-    const status: ScalpV2JobStatus =
+    const status: ScalpComposerJobStatus =
       statusRaw === "running"
         ? "running"
         : statusRaw === "succeeded"
@@ -3876,9 +3876,9 @@ export async function listScalpV2Jobs(params: {
   });
 }
 
-export async function loadScalpV2ResearchCursor(params: {
+export async function loadScalpComposerResearchCursor(params: {
   cursorKey: string;
-}): Promise<ScalpV2ResearchCursor | null> {
+}): Promise<ScalpComposerResearchCursor | null> {
   const cursorKey = String(params.cursorKey || "").trim();
   if (!cursorKey || !isScalpPgConfigured()) return null;
   const db = scalpPrisma();
@@ -3929,16 +3929,16 @@ export async function loadScalpV2ResearchCursor(params: {
   };
 }
 
-export async function upsertScalpV2ResearchCursor(params: {
+export async function upsertScalpComposerResearchCursor(params: {
   cursorKey: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
-  phase?: ScalpV2ResearchCursor["phase"];
+  entrySessionProfile: ScalpComposerSession;
+  phase?: ScalpComposerResearchCursor["phase"];
   lastCandidateOffset?: number;
   lastWeekStartMs?: number | null;
   progress?: Record<string, unknown>;
-}): Promise<ScalpV2ResearchCursor | null> {
+}): Promise<ScalpComposerResearchCursor | null> {
   const cursorKey = String(params.cursorKey || "").trim();
   if (!cursorKey || !isScalpPgConfigured()) return null;
   const db = scalpPrisma();
@@ -3979,15 +3979,15 @@ export async function upsertScalpV2ResearchCursor(params: {
       progress_json = EXCLUDED.progress_json,
       updated_at = NOW();
   `);
-  return loadScalpV2ResearchCursor({ cursorKey });
+  return loadScalpComposerResearchCursor({ cursorKey });
 }
 
-export async function listScalpV2ResearchCursors(params: {
-  venue?: ScalpV2Venue;
+export async function listScalpComposerResearchCursors(params: {
+  venue?: ScalpComposerVenue;
   symbol?: string;
-  entrySessionProfile?: ScalpV2Session;
+  entrySessionProfile?: ScalpComposerSession;
   limit?: number;
-} = {}): Promise<ScalpV2ResearchCursor[]> {
+} = {}): Promise<ScalpComposerResearchCursor[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 200)));
@@ -4063,12 +4063,12 @@ export async function listScalpV2ResearchCursors(params: {
   }));
 }
 
-export async function upsertScalpV2ResearchHighlights(params: {
+export async function upsertScalpComposerResearchHighlights(params: {
   rows: Array<{
     candidateId: string;
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
-    entrySessionProfile: ScalpV2Session;
+    entrySessionProfile: ScalpComposerSession;
     score: number;
     trades12w?: number;
     winningWeeks12w?: number;
@@ -4155,13 +4155,13 @@ export async function upsertScalpV2ResearchHighlights(params: {
   return values.length;
 }
 
-export async function listScalpV2ResearchHighlights(params: {
-  venue?: ScalpV2Venue;
+export async function listScalpComposerResearchHighlights(params: {
+  venue?: ScalpComposerVenue;
   symbol?: string;
-  entrySessionProfile?: ScalpV2Session;
+  entrySessionProfile?: ScalpComposerSession;
   remarkableOnly?: boolean;
   limit?: number;
-} = {}): Promise<ScalpV2ResearchHighlight[]> {
+} = {}): Promise<ScalpComposerResearchHighlight[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 200)));
@@ -4256,7 +4256,7 @@ export async function listScalpV2ResearchHighlights(params: {
   }));
 }
 
-export async function importV1LedgerIntoScalpV2(params: {
+export async function importV1LedgerIntoScalpComposer(params: {
   limit?: number;
 } = {}): Promise<{
   processed: number;
@@ -4308,7 +4308,7 @@ export async function importV1LedgerIntoScalpV2(params: {
   );
   const deploymentById = new Map<
     string,
-    { venue: ScalpV2Venue; entrySessionProfile: ScalpV2Session }
+    { venue: ScalpComposerVenue; entrySessionProfile: ScalpComposerSession }
   >();
   if (deploymentIds.length) {
     const deploymentRows = await db.$queryRaw<
@@ -4331,7 +4331,7 @@ export async function importV1LedgerIntoScalpV2(params: {
     }
   }
 
-  const inferSessionFromDeploymentId = (deploymentIdRaw: string): ScalpV2Session => {
+  const inferSessionFromDeploymentId = (deploymentIdRaw: string): ScalpComposerSession => {
     const deploymentId = String(deploymentIdRaw || "").trim().toLowerCase();
     const match = deploymentId.match(/__sp_([a-z]+)/);
     if (!match?.[1]) return "berlin";
@@ -4355,7 +4355,7 @@ export async function importV1LedgerIntoScalpV2(params: {
     const closeType = deriveCloseTypeFromReasonCodes(reasonCodes);
 
     try {
-      const wasInserted = await appendScalpV2LedgerRow({
+      const wasInserted = await appendScalpComposerLedgerRow({
         id: row.id,
         tsExitMs: Number(row.exitAtMs || Date.now()),
         deploymentId,
@@ -4388,19 +4388,19 @@ export async function importV1LedgerIntoScalpV2(params: {
   };
 }
 
-type ScalpV2DeploymentIdentity = {
+type ScalpComposerDeploymentIdentity = {
   deploymentId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
 };
 
-async function loadScalpV2DeploymentIdentityMap(): Promise<
-  Map<string, ScalpV2DeploymentIdentity>
+async function loadScalpComposerDeploymentIdentityMap(): Promise<
+  Map<string, ScalpComposerDeploymentIdentity>
 > {
-  const map = new Map<string, ScalpV2DeploymentIdentity>();
+  const map = new Map<string, ScalpComposerDeploymentIdentity>();
   if (!isScalpPgConfigured()) return map;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
@@ -4437,7 +4437,7 @@ async function loadScalpV2DeploymentIdentityMap(): Promise<
   return map;
 }
 
-function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpV2Session {
+function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpComposerSession {
   const raw = String(value || "")
     .trim()
     .toLowerCase();
@@ -4449,7 +4449,7 @@ function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpV2Session {
 
 function resolveMappedDeploymentId(params: {
   candidates: string[];
-  deploymentMap: Map<string, ScalpV2DeploymentIdentity>;
+  deploymentMap: Map<string, ScalpComposerDeploymentIdentity>;
   venueHint?: unknown;
   symbolHint?: unknown;
   strategyIdHint?: unknown;
@@ -4475,7 +4475,7 @@ function resolveMappedDeploymentId(params: {
   const venueHint = String(params.venueHint || "")
     .trim()
     .toLowerCase();
-  const venue: ScalpV2Venue = venueHint === "capital" ? "capital" : "bitget";
+  const venue: ScalpComposerVenue = venueHint === "capital" ? "capital" : "bitget";
   const session = normalizeSession(
     params.sessionHint || inferSessionFromTuneOrDeploymentId(tuneId),
   );
@@ -4489,7 +4489,7 @@ function resolveMappedDeploymentId(params: {
   return params.deploymentMap.has(inferred) ? inferred : null;
 }
 
-export async function importV1SessionsIntoScalpV2(params: {
+export async function importV1SessionsIntoScalpComposer(params: {
   limit?: number;
 } = {}): Promise<{
   processed: number;
@@ -4505,7 +4505,7 @@ export async function importV1SessionsIntoScalpV2(params: {
     return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
   }
   const limit = Math.max(1, Math.min(200_000, Math.floor(params.limit || 50_000)));
-  const deploymentMap = await loadScalpV2DeploymentIdentityMap();
+  const deploymentMap = await loadScalpComposerDeploymentIdentityMap();
 
   const rows = await db.$queryRaw<
     Array<{
@@ -4605,7 +4605,7 @@ export async function importV1SessionsIntoScalpV2(params: {
   };
 }
 
-export async function importV1JournalIntoScalpV2(params: {
+export async function importV1JournalIntoScalpComposer(params: {
   limit?: number;
 } = {}): Promise<{
   processed: number;
@@ -4621,7 +4621,7 @@ export async function importV1JournalIntoScalpV2(params: {
     return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
   }
   const limit = Math.max(1, Math.min(500_000, Math.floor(params.limit || 100_000)));
-  const deploymentMap = await loadScalpV2DeploymentIdentityMap();
+  const deploymentMap = await loadScalpComposerDeploymentIdentityMap();
 
   const rows = await db.$queryRaw<
     Array<{
@@ -4729,15 +4729,15 @@ export async function importV1JournalIntoScalpV2(params: {
   };
 }
 
-export function buildScalpV2JobResult(params: {
-  jobKind: ScalpV2JobKind;
+export function buildScalpComposerJobResult(params: {
+  jobKind: ScalpComposerJobKind;
   processed: number;
   succeeded: number;
   failed: number;
   pendingAfter?: number;
   busy?: boolean;
   details?: Record<string, unknown>;
-}): ScalpV2JobResult {
+}): ScalpComposerJobResult {
   return {
     ok: params.failed <= 0,
     busy: Boolean(params.busy),
@@ -4750,7 +4750,7 @@ export function buildScalpV2JobResult(params: {
   };
 }
 
-export async function trimScalpV2CandidatesByBudget(params: {
+export async function trimScalpComposerCandidatesByBudget(params: {
   maxCandidatesTotal: number;
   maxCandidatesPerSymbol: number;
 }): Promise<{
@@ -4794,7 +4794,7 @@ export async function trimScalpV2CandidatesByBudget(params: {
   return { deleted: deletedPerSymbol + deletedGlobal };
 }
 
-export async function enforceScalpV2EnabledCap(params: {
+export async function enforceScalpComposerEnabledCap(params: {
   maxEnabledDeployments: number;
 }): Promise<{ demoted: number }> {
   if (!isScalpPgConfigured()) return { demoted: 0 };
@@ -4826,7 +4826,7 @@ export async function enforceScalpV2EnabledCap(params: {
   return { demoted };
 }
 
-export async function snapshotScalpV2DailyMetrics(params: {
+export async function snapshotScalpComposerDailyMetrics(params: {
   dayKey?: string;
 } = {}): Promise<void> {
   if (!isScalpPgConfigured()) return;
@@ -4926,19 +4926,19 @@ export async function snapshotScalpV2DailyMetrics(params: {
   `);
 }
 
-export async function listScalpV2RecentLedger(params: {
+export async function listScalpComposerRecentLedger(params: {
   limit?: number;
 } = {}): Promise<
   Array<{
     id: string;
     tsExitMs: number;
     deploymentId: string;
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
-    closeType: ScalpV2CloseType;
+    closeType: ScalpComposerCloseType;
     rMultiple: number;
     reasonCodes: string[];
-    sourceOfTruth: ScalpV2SourceOfTruth;
+    sourceOfTruth: ScalpComposerSourceOfTruth;
   }>
 > {
   if (!isScalpPgConfigured()) return [];
@@ -4978,14 +4978,14 @@ export async function listScalpV2RecentLedger(params: {
     deploymentId: String(row.deploymentId || "").trim(),
     venue: normalizeVenue(row.venue),
     symbol: String(row.symbol || "").trim().toUpperCase(),
-    closeType: (String(row.closeType || "manual_close").trim().toLowerCase() as ScalpV2CloseType),
+    closeType: (String(row.closeType || "manual_close").trim().toLowerCase() as ScalpComposerCloseType),
     rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
     reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
     sourceOfTruth: normalizeSourceOfTruth(row.sourceOfTruth),
   }));
 }
 
-export async function aggregateScalpV2CutoverParityWindow(params: {
+export async function aggregateScalpComposerCutoverParityWindow(params: {
   sinceDays: number;
   journalLimit?: number;
   mismatchLimit?: number;
@@ -5314,7 +5314,7 @@ export async function aggregateScalpV2CutoverParityWindow(params: {
   };
 }
 
-export async function aggregateScalpV2ParityWindow(params: {
+export async function aggregateScalpComposerParityWindow(params: {
   sinceDays: number;
 }): Promise<{
   v1Trades: number;
@@ -5322,7 +5322,7 @@ export async function aggregateScalpV2ParityWindow(params: {
   v2Trades: number;
   v2NetR: number;
 }> {
-  const parity = await aggregateScalpV2CutoverParityWindow({
+  const parity = await aggregateScalpComposerCutoverParityWindow({
     sinceDays: params.sinceDays,
     journalLimit: 100,
     mismatchLimit: 20,

@@ -9,7 +9,7 @@ import {
   parseVenue,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpV2ExecuteJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpComposerExecuteJob } from "../../../../../lib/scalp/composer/pipeline";
 
 export default async function handler(
   req: NextApiRequest,
@@ -27,7 +27,7 @@ export default async function handler(
   const venue = parseVenue(req.query.venue);
   const session = parseSession(req.query.session);
 
-  const job = await runScalpV2ExecuteJob({
+  const job = await runScalpComposerExecuteJob({
     dryRun,
     venue,
     session,

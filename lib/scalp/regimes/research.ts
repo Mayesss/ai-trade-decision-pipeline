@@ -1,15 +1,15 @@
 import {
-  ensureScalpV4WeeklyRegimesBuilt,
-  type ScalpV4WeeklyBuildResult,
+  ensureScalpRegimeWeeklyRegimesBuilt,
+  type ScalpRegimeWeeklyBuildResult,
 } from "./build";
 import {
-  runScalpV4WalkforwardSweep,
-  type ScalpV4WalkforwardProgressEvent,
-  type ScalpV4WalkforwardSweepResult,
+  runScalpRegimeWalkforwardSweep,
+  type ScalpRegimeWalkforwardProgressEvent,
+  type ScalpRegimeWalkforwardSweepResult,
 } from "./walkforwardSweep";
 import type { ScalpCandle } from "../types";
 
-export interface ScalpV4ResearchJobResult {
+export interface ScalpRegimeResearchJobResult {
   ok: boolean;
   busy: false;
   jobKind: "v4_research";
@@ -21,13 +21,13 @@ export interface ScalpV4ResearchJobResult {
     weeklyBuild: {
       skipped: boolean;
       reason: string;
-      result?: ScalpV4WeeklyBuildResult;
+      result?: ScalpRegimeWeeklyBuildResult;
     };
-    walkforward: ScalpV4WalkforwardSweepResult;
+    walkforward: ScalpRegimeWalkforwardSweepResult;
   };
 }
 
-export async function runScalpV4ResearchJob(params: {
+export async function runScalpRegimeResearchJob(params: {
   classifierVersion?: string;
   forceValidity?: boolean;
   maxCandidatesPerCall?: number;
@@ -43,14 +43,14 @@ export async function runScalpV4ResearchJob(params: {
   workClaimLeaseMs?: number;
   progressIntervalMs?: number;
   runWalkforward?: boolean;
-  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
-} = {}): Promise<ScalpV4ResearchJobResult> {
-  const weeklyBuild = await ensureScalpV4WeeklyRegimesBuilt({
+  onProgress?: (event: ScalpRegimeWalkforwardProgressEvent) => void;
+} = {}): Promise<ScalpRegimeResearchJobResult> {
+  const weeklyBuild = await ensureScalpRegimeWeeklyRegimesBuilt({
     classifierVersion: params.classifierVersion,
     forceValidity: params.forceValidity,
   });
   const runWalkforward = params.runWalkforward !== false;
-  const walkforward = await runScalpV4WalkforwardSweep({
+  const walkforward = await runScalpRegimeWalkforwardSweep({
     classifierVersion: params.classifierVersion,
     forceValidity: params.forceValidity,
     maxCandidatesPerCall: runWalkforward ? params.maxCandidatesPerCall : 0,

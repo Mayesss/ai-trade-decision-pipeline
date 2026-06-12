@@ -10,7 +10,7 @@ import { fetchBitgetCandlesByEpicDateRange } from "../bitgetHistory";
 import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
 import { sql } from "../pg/sql";
 
-import type { ScalpV2Venue } from "./types";
+import type { ScalpComposerVenue } from "./types";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -39,12 +39,12 @@ function resolveLoadCandlesFetchUpperBoundMs(nowMs: number): number {
   return Math.max(0, dayStartMs - 1);
 }
 
-type ScalpV2LoadCandlesScope = {
-  venue: ScalpV2Venue;
+type ScalpComposerLoadCandlesScope = {
+  venue: ScalpComposerVenue;
   symbol: string;
 };
 
-type ScalpV2LoadCandlesResult = {
+type ScalpComposerLoadCandlesResult = {
   ok: boolean;
   busy: boolean;
   jobKind: "load_candles";
@@ -63,9 +63,9 @@ async function writeScalpCandleLoadAudit(params: {
   trigger?: string | null;
   startedAtMs: number;
   finishedAtMs: number;
-  scopes: ScalpV2LoadCandlesScope[];
+  scopes: ScalpComposerLoadCandlesScope[];
   jobParams: Record<string, unknown>;
-  result: ScalpV2LoadCandlesResult;
+  result: ScalpComposerLoadCandlesResult;
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
@@ -104,10 +104,10 @@ async function writeScalpCandleLoadAudit(params: {
 }
 
 function normalizeScopes(params: {
-  scopes?: ScalpV2LoadCandlesScope[];
+  scopes?: ScalpComposerLoadCandlesScope[];
   symbols?: string[];
-}): ScalpV2LoadCandlesScope[] {
-  const out = new Map<string, ScalpV2LoadCandlesScope>();
+}): ScalpComposerLoadCandlesScope[] {
+  const out = new Map<string, ScalpComposerLoadCandlesScope>();
   for (const scope of params.scopes || []) {
     const venue = scope.venue === "capital" ? "capital" : "bitget";
     const symbol = normalizeSymbol(scope.symbol);
@@ -123,15 +123,15 @@ function normalizeScopes(params: {
 }
 
 // V2-native load-candles job used by /api/scalp/v2/cron/load-candles.
-export async function runScalpV2LoadCandlesPipelineJob(params: {
+export async function runScalpComposerLoadCandlesPipelineJob(params: {
   batchSize?: number;
   maxAttempts?: number;
   offset?: number;
-  scopes?: ScalpV2LoadCandlesScope[];
+  scopes?: ScalpComposerLoadCandlesScope[];
   symbols?: string[];
   auditSource?: string;
   auditTrigger?: string | null;
-}): Promise<ScalpV2LoadCandlesResult> {
+}): Promise<ScalpComposerLoadCandlesResult> {
   const startedAtMs = Date.now();
   const scopes = normalizeScopes(params);
   const batchSize = toPositiveInt(params.batchSize, 6, 200);
@@ -322,7 +322,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
   }
 
   const nextOffset = offset + processed;
-  const result: ScalpV2LoadCandlesResult = {
+  const result: ScalpComposerLoadCandlesResult = {
     ok: failed <= 0,
     busy: false,
     jobKind: "load_candles",

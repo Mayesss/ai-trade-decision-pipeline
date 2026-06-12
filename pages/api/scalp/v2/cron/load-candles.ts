@@ -8,20 +8,20 @@ import {
   type ScalpCandleHistoryStatsLoadResult,
 } from "../../../../../lib/scalp/candleHistory";
 import {
-  invokeScalpV2CronEndpointDetached,
-  type ScalpV2CronInvokeResult,
+  invokeScalpComposerCronEndpointDetached,
+  type ScalpComposerCronInvokeResult,
 } from "../../../../../lib/scalp/composer/cronChaining";
 import {
-  clampScalpV2HardCap,
-  resolveScalpV2ResearchHardCaps,
+  clampScalpComposerHardCap,
+  resolveScalpComposerResearchHardCaps,
 } from "../../../../../lib/scalp/composer/costControls";
-import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp/composer/db";
+import { loadScalpComposerRuntimeConfig } from "../../../../../lib/scalp/composer/db";
 import {
-  shouldContinueScalpV2LoadCandles,
-  shouldTriggerScalpV2LoadCandlesSuccessor,
+  shouldContinueScalpComposerLoadCandles,
+  shouldTriggerScalpComposerLoadCandlesSuccessor,
 } from "../../../../../lib/scalp/composer/loadCandlesChaining";
-import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../../../../../lib/scalp/composer/types";
+import { runScalpComposerLoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
+import type { ScalpComposerVenue } from "../../../../../lib/scalp/composer/types";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -106,11 +106,11 @@ function normalizeSymbol(value: unknown): string {
 }
 
 function collectRuntimeScopes(params: {
-  supportedVenues: ScalpV2Venue[];
-  seedSymbolsByVenue: Record<ScalpV2Venue, string[]>;
-  seedLiveSymbolsByVenue: Record<ScalpV2Venue, string[]>;
-}): Array<{ venue: ScalpV2Venue; symbol: string }> {
-  const out = new Map<string, { venue: ScalpV2Venue; symbol: string }>();
+  supportedVenues: ScalpComposerVenue[];
+  seedSymbolsByVenue: Record<ScalpComposerVenue, string[]>;
+  seedLiveSymbolsByVenue: Record<ScalpComposerVenue, string[]>;
+}): Array<{ venue: ScalpComposerVenue; symbol: string }> {
+  const out = new Map<string, { venue: ScalpComposerVenue; symbol: string }>();
   for (const venue of params.supportedVenues) {
     const seedSymbols = params.seedSymbolsByVenue[venue] || [];
     const liveSymbols = params.seedLiveSymbolsByVenue[venue] || [];
@@ -156,7 +156,7 @@ function statsBySymbol(
 }
 
 function buildDebugScopeStats(params: {
-  scopes: Array<{ venue: ScalpV2Venue; symbol: string }>;
+  scopes: Array<{ venue: ScalpComposerVenue; symbol: string }>;
   beforeRows: ScalpCandleHistoryStatsLoadResult[];
   afterRows: ScalpCandleHistoryStatsLoadResult[];
 }) {
@@ -209,12 +209,12 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const hardCaps = resolveScalpV2ResearchHardCaps();
-  const batchSize = clampScalpV2HardCap(
+  const hardCaps = resolveScalpComposerResearchHardCaps();
+  const batchSize = clampScalpComposerHardCap(
     parseIntBounded(req.query.batchSize, 1, 1, 120),
     hardCaps.maxBatchSizeLoad,
   );
-  const maxAttempts = clampScalpV2HardCap(
+  const maxAttempts = clampScalpComposerHardCap(
     parseIntBounded(req.query.maxAttempts, 5, 1, 20),
     hardCaps.maxAttempts,
   );
@@ -259,7 +259,7 @@ export default async function handler(
   );
   const handlerStartedAtMs = Date.now();
   const runtime = await withTimeout(
-    loadScalpV2RuntimeConfig(),
+    loadScalpComposerRuntimeConfig(),
     Math.max(1_000, Math.min(20_000, Math.floor(routeTimeoutMs * 0.35))),
     "load_runtime_config",
   );
@@ -286,10 +286,10 @@ export default async function handler(
       : [];
   const loadStartedAtMs = Date.now();
 
-  let result: Awaited<ReturnType<typeof runScalpV2LoadCandlesPipelineJob>>;
+  let result: Awaited<ReturnType<typeof runScalpComposerLoadCandlesPipelineJob>>;
   try {
     result = await withTimeout(
-      runScalpV2LoadCandlesPipelineJob({
+      runScalpComposerLoadCandlesPipelineJob({
         batchSize,
         maxAttempts,
         offset,
@@ -306,13 +306,13 @@ export default async function handler(
     // slow symbol doesn't strand the remaining offsets until the next cron
     // tick. Skip past this batch by jumping `offset + batchSize`.
     const skipNextOffset = Math.min(scope.length, offset + batchSize);
-    let timeoutSelfRecall: ScalpV2CronInvokeResult | null = null;
+    let timeoutSelfRecall: ScalpComposerCronInvokeResult | null = null;
     if (
       autoContinue &&
       skipNextOffset < scope.length &&
       selfHop < selfMaxHops
     ) {
-      timeoutSelfRecall = await invokeScalpV2CronEndpointDetached(
+      timeoutSelfRecall = await invokeScalpComposerCronEndpointDetached(
         req,
         "/api/scalp/v2/cron/load-candles",
         {
@@ -385,11 +385,11 @@ export default async function handler(
         )
       : [];
 
-  let downstream: ScalpV2CronInvokeResult | null = null;
-  let selfRecall: ScalpV2CronInvokeResult | null = null;
+  let downstream: ScalpComposerCronInvokeResult | null = null;
+  let selfRecall: ScalpComposerCronInvokeResult | null = null;
 
   if (
-    shouldContinueScalpV2LoadCandles({
+    shouldContinueScalpComposerLoadCandles({
       busy: result.busy,
       autoContinue,
       pendingAfter: result.pendingAfter,
@@ -397,7 +397,7 @@ export default async function handler(
       selfMaxHops,
     })
   ) {
-    selfRecall = await invokeScalpV2CronEndpointDetached(
+    selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
       "/api/scalp/v2/cron/load-candles",
       {
@@ -416,7 +416,7 @@ export default async function handler(
   }
 
   if (
-    shouldTriggerScalpV2LoadCandlesSuccessor({
+    shouldTriggerScalpComposerLoadCandlesSuccessor({
       ok: result.ok,
       busy: result.busy,
       autoSuccessor,
@@ -424,7 +424,7 @@ export default async function handler(
     })
   ) {
     if (successor === "discover") {
-      downstream = await invokeScalpV2CronEndpointDetached(
+      downstream = await invokeScalpComposerCronEndpointDetached(
         req,
         "/api/scalp/v2/cron/discover",
         {
@@ -434,7 +434,7 @@ export default async function handler(
         downstreamInvokeTimeoutMs,
       );
     } else {
-      downstream = await invokeScalpV2CronEndpointDetached(
+      downstream = await invokeScalpComposerCronEndpointDetached(
         req,
         "/api/scalp/v2/cron/cycle",
         {

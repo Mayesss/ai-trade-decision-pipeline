@@ -3,14 +3,14 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { listScalpV2Deployments } from "../../../../lib/scalp/composer/db";
+import { listScalpComposerDeployments } from "../../../../lib/scalp/composer/db";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
-  classifyScalpV4DeploymentStatus,
-  resolveScalpV4FailClosedStaleMs,
+  classifyScalpRegimeDeploymentStatus,
+  resolveScalpRegimeFailClosedStaleMs,
   SCALP_V4_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
-  type ScalpV4DeploymentStatus,
+  type ScalpRegimeDeploymentStatus,
 } from "../../../../lib/scalp/regimes";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
@@ -31,7 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const nowMs = Date.now();
 
     // Deployment list (compact). Filter to enabled OR envelope-bearing.
-    const deployments = await listScalpV2Deployments({
+    const deployments = await listScalpComposerDeployments({
       limit: 1000,
       compactPromotionGate: true,
     });
@@ -44,7 +44,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // One bulk SELECT for current-week regime cells.
     const db = scalpPrisma();
     const currentWeekStartMs = startOfUtcWeekMondayMs(nowMs);
-    const failClosedStaleMs = resolveScalpV4FailClosedStaleMs();
+    const failClosedStaleMs = resolveScalpRegimeFailClosedStaleMs();
     const currentRegimeByKey = new Map<string, { cellId: string | null; stale: boolean; updatedAtMs: number | null }>();
     const venueSymbolPairs = interesting.map((row) => `${row.venue}:${row.symbol}`);
     if (venueSymbolPairs.length > 0) {
@@ -170,7 +170,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const lastEntryAtMs = lastEntryByDeployment.get(row.deploymentId) ?? null;
       const openPositionCount = openPositionByDeployment.get(row.deploymentId) ?? 0;
       const weeksInCurrentCell = weeksInCellByVenueSymbol.get(`${row.venue}:${row.symbol}`) ?? null;
-      const v4Status = classifyScalpV4DeploymentStatus({
+      const v4Status = classifyScalpRegimeDeploymentStatus({
         enabled: row.enabled,
         envelope: Object.keys(envelope).length > 0 ? envelope : null,
         currentCellId: current.cellId,
@@ -237,7 +237,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       };
     });
 
-    const histogram: Record<ScalpV4DeploymentStatus, number> = {
+    const histogram: Record<ScalpRegimeDeploymentStatus, number> = {
       trading: 0,
       dormant_wrong_regime: 0,
       dormant_no_regime: 0,

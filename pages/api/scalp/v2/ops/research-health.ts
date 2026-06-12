@@ -4,17 +4,17 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  countScalpV2CandidatesByStatus,
-  listScalpV2Jobs,
+  countScalpComposerCandidatesByStatus,
+  listScalpComposerJobs,
 } from "../../../../../lib/scalp/composer/db";
 import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp/composer/sessionStructureComposer";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
 import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp/composer/pg";
-import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp/composer/types";
+import type { ScalpComposerCandidateStatus } from "../../../../../lib/scalp/composer/types";
 
 type HintTone = "ok" | "warn" | "critical" | "info";
 
-const CANDIDATE_STATUSES: ScalpV2CandidateStatus[] = [
+const CANDIDATE_STATUSES: ScalpComposerCandidateStatus[] = [
   "discovered",
   "evaluated",
   "promoted",
@@ -27,7 +27,7 @@ function toPositiveInt(value: unknown, fallback: number, max: number): number {
   return Math.max(1, Math.min(max, n));
 }
 
-function resolveScalpV2JobLockStaleMinutes(): number {
+function resolveScalpComposerJobLockStaleMinutes(): number {
   return Math.max(
     2,
     Math.min(
@@ -191,16 +191,16 @@ export default async function handler(
 
   try {
     const nowMs = Date.now();
-    const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
+    const staleLockMinutes = resolveScalpComposerJobLockStaleMinutes();
     const staleThresholdMs = staleLockMinutes * 60_000;
     const [jobs, robustness, ...candidateCounts] = await Promise.all([
-      listScalpV2Jobs({ limit: 50 }),
+      listScalpComposerJobs({ limit: 50 }),
       loadDayRobustnessQueue(),
       ...CANDIDATE_STATUSES.map((status) =>
-        countScalpV2CandidatesByStatus({ status }),
+        countScalpComposerCandidatesByStatus({ status }),
       ),
     ]);
-    const statusCounts = CANDIDATE_STATUSES.reduce<Record<ScalpV2CandidateStatus, number>>(
+    const statusCounts = CANDIDATE_STATUSES.reduce<Record<ScalpComposerCandidateStatus, number>>(
       (acc, status, idx) => {
         acc[status] = Math.max(0, Math.floor(Number(candidateCounts[idx] || 0)));
         return acc;

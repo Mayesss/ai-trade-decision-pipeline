@@ -36,7 +36,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { autoPromoteScalpV5WinnersToEnabled } from "../../../../../lib/scalp/research/pg";
+import { autoPromoteScalpResearchWinnersToEnabled } from "../../../../../lib/scalp/research/pg";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
@@ -127,7 +127,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const result = await autoPromoteScalpV5WinnersToEnabled({
+    const result = await autoPromoteScalpResearchWinnersToEnabled({
       staleOlderThanMs: staleOlderThanHours * 60 * 60_000,
       dryRun,
       minTotalNetR,

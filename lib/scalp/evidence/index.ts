@@ -8,12 +8,12 @@ import {
 import type { ScalpReplayTrade } from "../replay/types";
 import type { ScalpEntrySessionProfile } from "../types";
 
-import type { ScalpV2Deployment, ScalpV2Session, ScalpV2Venue } from "../composer/types";
+import type { ScalpComposerDeployment, ScalpComposerSession, ScalpComposerVenue } from "../composer/types";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 
-const SESSION_TIME_ZONE: Record<ScalpV2Session, string> = {
+const SESSION_TIME_ZONE: Record<ScalpComposerSession, string> = {
   tokyo: "Asia/Tokyo",
   berlin: "Europe/Berlin",
   newyork: "America/New_York",
@@ -21,7 +21,7 @@ const SESSION_TIME_ZONE: Record<ScalpV2Session, string> = {
   sydney: "Australia/Sydney",
 };
 
-const SESSION_START_MINUTE: Record<ScalpV2Session, number> = {
+const SESSION_START_MINUTE: Record<ScalpComposerSession, number> = {
   tokyo: 9 * 60,
   berlin: 8 * 60,
   newyork: 8 * 60,
@@ -29,7 +29,7 @@ const SESSION_START_MINUTE: Record<ScalpV2Session, number> = {
   sydney: 8 * 60,
 };
 
-export type ScalpV2V3TemporalFilter = {
+export type ScalpComposerV3TemporalFilter = {
   variantId?: string;
   variantKind?: "baseline" | "session_slot" | "weekday" | "utc_hour" | "slot_weekday";
   sessionSlotMinutes?: number;
@@ -38,7 +38,7 @@ export type ScalpV2V3TemporalFilter = {
   allowedUtcHours?: number[];
 };
 
-export type ScalpV2V3Ranking = {
+export type ScalpComposerV3Ranking = {
   version: "scalp_v2_v3_r1";
   priorScore: number;
   supportRegularizer: number;
@@ -49,7 +49,7 @@ export type ScalpV2V3Ranking = {
   stats?: Record<string, number | null>;
 };
 
-export type ScalpV2V3Bootstrap = {
+export type ScalpComposerV3Bootstrap = {
   version: "scalp_v2_v3_bootstrap_r1";
   resamples: number;
   expectancyPositivePct: number;
@@ -57,7 +57,7 @@ export type ScalpV2V3Bootstrap = {
   seed: string;
 };
 
-export type ScalpV2V3Holdout = {
+export type ScalpComposerV3Holdout = {
   version: "scalp_v2_v3_holdout_r1";
   weeks: number;
   fromTs: number;
@@ -74,7 +74,7 @@ export type ScalpV2V3Holdout = {
   reason: string | null;
 };
 
-export type ScalpV2V3Drift = {
+export type ScalpComposerV3Drift = {
   version: "scalp_v2_v3_drift_r1";
   status: "healthy" | "low_sample" | "drifting";
   checkedAtMs: number;
@@ -89,7 +89,7 @@ export type ScalpV2V3Drift = {
   reason: string | null;
 };
 
-export type ScalpV2V3NewsBlackout = {
+export type ScalpComposerV3NewsBlackout = {
   blocked: boolean;
   reasonCodes: string[];
   tier: "tier1" | "tier2" | null;
@@ -97,9 +97,9 @@ export type ScalpV2V3NewsBlackout = {
   activeEvents: ForexCompactEvent[];
 };
 
-export type ScalpV2V3EntryWindowSpec = {
-  session: ScalpV2Session;
-  filter?: ScalpV2V3TemporalFilter | null;
+export type ScalpComposerV3EntryWindowSpec = {
+  session: ScalpComposerSession;
+  filter?: ScalpComposerV3TemporalFilter | null;
 };
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -122,13 +122,13 @@ function envNumber(name: string, fallback: number, min: number, max: number): nu
   return Math.max(min, Math.min(max, n));
 }
 
-export function isScalpV2V3ResearchEnabled(): boolean {
+export function isScalpComposerV3ResearchEnabled(): boolean {
   return String(process.env.SCALP_V2_RESEARCH_VERSION || "v3").trim().toLowerCase() === "v3";
 }
 
-export function resolveScalpV2V3Config() {
+export function resolveScalpComposerV3Config() {
   return {
-    enabled: isScalpV2V3ResearchEnabled(),
+    enabled: isScalpComposerV3ResearchEnabled(),
     sessionSlotMinutes: envInt("SCALP_V2_V3_SESSION_SLOT_MINUTES", 30, 5, 240),
     temporalVariantQuotaPct: envNumber("SCALP_V2_V3_TEMPORAL_VARIANT_QUOTA_PCT", 0.35, 0, 1),
     minVariantTrades: envInt("SCALP_V2_V3_MIN_VARIANT_TRADES", 8, 1, 10_000),
@@ -197,13 +197,13 @@ function topPositiveNetConcentrationPct(weeklyNetR: number[]): number {
   return (Math.max(...positive) / total) * 100;
 }
 
-export function computeScalpV2V3PriorScore(params: {
+export function computeScalpComposerV3PriorScore(params: {
   compositeScore: number;
   confidence: number;
   supportScore: number;
   blocksByFamily?: Record<string, string[]>;
   seed?: string;
-}): ScalpV2V3Ranking {
+}): ScalpComposerV3Ranking {
   const supportRegularizer = clamp(finite(params.supportScore) / 12, 0, 1);
   const families = Object.values(params.blocksByFamily || {}).filter(
     (rows) => Array.isArray(rows) && rows.length > 0,
@@ -224,16 +224,16 @@ export function computeScalpV2V3PriorScore(params: {
     supportRegularizer,
     diversityScore,
     edgeScore: null,
-    minVariantTrades: resolveScalpV2V3Config().minVariantTrades,
+    minVariantTrades: resolveScalpComposerV3Config().minVariantTrades,
   };
 }
 
-export function computeScalpV2V3EdgeScore(params: {
+export function computeScalpComposerV3EdgeScore(params: {
   trades: ScalpReplayTrade[];
   weeklyNetR?: Record<string, number>;
   minVariantTrades?: number;
   isTemporalVariant?: boolean;
-}): ScalpV2V3Ranking {
+}): ScalpComposerV3Ranking {
   const r = (params.trades || []).map((row) => finite(row.rMultiple)).filter(Number.isFinite);
   const trades = r.length;
   const netR = r.reduce((acc, row) => acc + row, 0);
@@ -248,7 +248,7 @@ export function computeScalpV2V3EdgeScore(params: {
   const worstWeeklyNetR = weeklyRows.length ? Math.min(...weeklyRows) : 0;
   const topWeekPenalty = Math.min(1, Math.max(0, (topWeekPnlConcentrationPct - 45) / 55));
   const worstWeekPenalty = Math.min(1, Math.max(0, -worstWeeklyNetR / Math.max(1, Math.abs(netR))));
-  const minVariantTrades = Math.max(1, Math.floor(params.minVariantTrades || resolveScalpV2V3Config().minVariantTrades));
+  const minVariantTrades = Math.max(1, Math.floor(params.minVariantTrades || resolveScalpComposerV3Config().minVariantTrades));
   const variantTradeFloorPassed = !params.isTemporalVariant || trades >= minVariantTrades;
   const edgeScore = variantTradeFloorPassed
     ? lowerBoundR * Math.sqrt(Math.max(1, trades)) + 0.25 * calmarR - topWeekPenalty - worstWeekPenalty
@@ -280,13 +280,13 @@ export function computeScalpV2V3EdgeScore(params: {
   };
 }
 
-export function computeScalpV2V3Bootstrap(params: {
+export function computeScalpComposerV3Bootstrap(params: {
   trades: ScalpReplayTrade[];
   resamples?: number;
   seed?: string;
-}): ScalpV2V3Bootstrap | null {
+}): ScalpComposerV3Bootstrap | null {
   const r = (params.trades || []).map((row) => finite(row.rMultiple)).filter(Number.isFinite);
-  const resamples = Math.max(0, Math.floor(params.resamples ?? resolveScalpV2V3Config().bootstrapResamples));
+  const resamples = Math.max(0, Math.floor(params.resamples ?? resolveScalpComposerV3Config().bootstrapResamples));
   if (r.length < 2 || resamples <= 0) return null;
   let seed = crypto
     .createHash("sha1")
@@ -318,7 +318,7 @@ export function computeScalpV2V3Bootstrap(params: {
   };
 }
 
-export function synthesizeScalpV2V3HoldoutFromStages(params: {
+export function synthesizeScalpComposerV3HoldoutFromStages(params: {
   stageB: {
     netR: number;
     trades: number;
@@ -331,7 +331,7 @@ export function synthesizeScalpV2V3HoldoutFromStages(params: {
   } | null;
   stageC: { netR: number; trades: number } | null;
   minHoldoutTrades?: number;
-}): (ScalpV2V3Holdout & { source: "v2_backfill"; trainingTrades: number }) | null {
+}): (ScalpComposerV3Holdout & { source: "v2_backfill"; trainingTrades: number }) | null {
   const stageB = params.stageB;
   const stageC = params.stageC;
   if (!stageB || !stageC) return null;
@@ -377,15 +377,15 @@ export function synthesizeScalpV2V3HoldoutFromStages(params: {
   };
 }
 
-export function computeScalpV2V3Holdout(params: {
+export function computeScalpComposerV3Holdout(params: {
   trades: ScalpReplayTrade[];
   windowToTs: number;
   holdoutWeeks?: number;
   trainingNetR: number;
   trainingExpectancyR: number;
   minTrades: number;
-}): ScalpV2V3Holdout {
-  const weeks = Math.max(1, Math.floor(params.holdoutWeeks || resolveScalpV2V3Config().holdoutWeeks));
+}): ScalpComposerV3Holdout {
+  const weeks = Math.max(1, Math.floor(params.holdoutWeeks || resolveScalpComposerV3Config().holdoutWeeks));
   const toTs = Math.floor(params.windowToTs);
   const fromTs = toTs - weeks * ONE_WEEK_MS;
   const scoped = (params.trades || []).filter((row) => {
@@ -438,16 +438,16 @@ function localParts(tsMs: number, timeZone: string): { weekday: number; minuteOf
   return { weekday: wdMap[rawWeekday] ?? 1, minuteOfDay: (hh === 24 ? 0 : hh) * 60 + mm };
 }
 
-export function evaluateScalpV2V3TemporalFilter(params: {
+export function evaluateScalpComposerV3TemporalFilter(params: {
   nowMs: number;
   session: ScalpEntrySessionProfile;
-  filter?: ScalpV2V3TemporalFilter | null;
+  filter?: ScalpComposerV3TemporalFilter | null;
 }): { allowed: boolean; reasonCodes: string[]; slotIndex: number | null; weekdayLocal: number; utcHour: number } {
   const filter = params.filter || {};
-  const session = String(params.session || "berlin") as ScalpV2Session;
+  const session = String(params.session || "berlin") as ScalpComposerSession;
   const timeZone = SESSION_TIME_ZONE[session] || "Europe/Berlin";
   const local = localParts(params.nowMs, timeZone);
-  const slotMinutes = Math.max(5, Math.floor(filter.sessionSlotMinutes || resolveScalpV2V3Config().sessionSlotMinutes));
+  const slotMinutes = Math.max(5, Math.floor(filter.sessionSlotMinutes || resolveScalpComposerV3Config().sessionSlotMinutes));
   const sessionStart = SESSION_START_MINUTE[session] ?? 8 * 60;
   const minuteOffset = local.minuteOfDay - sessionStart;
   const slotIndex = minuteOffset >= 0 ? Math.floor(minuteOffset / slotMinutes) : null;
@@ -486,7 +486,7 @@ export function evaluateScalpV2V3TemporalFilter(params: {
 
 function isInsideSessionWindow(params: {
   nowMs: number;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
 }): boolean {
   const timeZone = SESSION_TIME_ZONE[params.session] || "Europe/Berlin";
   const local = localParts(params.nowMs, timeZone);
@@ -495,15 +495,15 @@ function isInsideSessionWindow(params: {
   return minuteOffset >= 0 && minuteOffset < 4 * 60;
 }
 
-function sessionSlotMinutes(filter?: ScalpV2V3TemporalFilter | null): number {
+function sessionSlotMinutes(filter?: ScalpComposerV3TemporalFilter | null): number {
   return Math.max(
     5,
-    Math.floor(filter?.sessionSlotMinutes || resolveScalpV2V3Config().sessionSlotMinutes),
+    Math.floor(filter?.sessionSlotMinutes || resolveScalpComposerV3Config().sessionSlotMinutes),
   );
 }
 
 function buildEntryWindowCells(params: {
-  spec: ScalpV2V3EntryWindowSpec;
+  spec: ScalpComposerV3EntryWindowSpec;
   nowMs: number;
   granularityMinutes: number;
 }): Set<number> {
@@ -512,7 +512,7 @@ function buildEntryWindowCells(params: {
   const cells = new Set<number>();
   for (let ts = start; ts < start + 14 * ONE_DAY_MS; ts += stepMs) {
     if (!isInsideSessionWindow({ nowMs: ts, session: params.spec.session })) continue;
-    const temporal = evaluateScalpV2V3TemporalFilter({
+    const temporal = evaluateScalpComposerV3TemporalFilter({
       nowMs: ts,
       session: params.spec.session,
       filter: params.spec.filter || null,
@@ -523,9 +523,9 @@ function buildEntryWindowCells(params: {
   return cells;
 }
 
-export function scalpV2V3EntryWindowsOverlap(params: {
-  a: ScalpV2V3EntryWindowSpec;
-  b: ScalpV2V3EntryWindowSpec;
+export function scalpComposerV3EntryWindowsOverlap(params: {
+  a: ScalpComposerV3EntryWindowSpec;
+  b: ScalpComposerV3EntryWindowSpec;
   nowMs?: number;
 }): boolean {
   const granularityMinutes = Math.min(
@@ -551,20 +551,20 @@ export function scalpV2V3EntryWindowsOverlap(params: {
   return false;
 }
 
-export function buildScalpV2V3TemporalVariants(params: {
+export function buildScalpComposerV3TemporalVariants(params: {
   baseTuneId: string;
-  session: ScalpV2Session;
-  venue: ScalpV2Venue;
+  session: ScalpComposerSession;
+  venue: ScalpComposerVenue;
   symbol: string;
   maxVariants: number;
   includeUtcHours?: boolean;
   includeSlotWeekdayCombos?: boolean;
   variantOffset?: number;
-}): Array<{ tuneDigestSeed: string; filter: ScalpV2V3TemporalFilter }> {
-  const cfg = resolveScalpV2V3Config();
+}): Array<{ tuneDigestSeed: string; filter: ScalpComposerV3TemporalFilter }> {
+  const cfg = resolveScalpComposerV3Config();
   const slots = Math.max(1, Math.floor((4 * 60) / cfg.sessionSlotMinutes));
-  const all: Array<{ tuneDigestSeed: string; filter: ScalpV2V3TemporalFilter }> = [];
-  const push = (kind: ScalpV2V3TemporalFilter["variantKind"], suffix: string, filter: ScalpV2V3TemporalFilter) => {
+  const all: Array<{ tuneDigestSeed: string; filter: ScalpComposerV3TemporalFilter }> = [];
+  const push = (kind: ScalpComposerV3TemporalFilter["variantKind"], suffix: string, filter: ScalpComposerV3TemporalFilter) => {
     all.push({
       tuneDigestSeed: `${params.baseTuneId}:${suffix}`,
       filter: {
@@ -643,7 +643,7 @@ function recurringTier1FallbackActive(nowMs: number): boolean {
   return false;
 }
 
-export function resolveScalpV2V3StaleNewsBlackout(nowMs: number): ScalpV2V3NewsBlackout {
+export function resolveScalpComposerV3StaleNewsBlackout(nowMs: number): ScalpComposerV3NewsBlackout {
   if (recurringTier1FallbackActive(nowMs)) {
     return {
       blocked: true,
@@ -662,19 +662,19 @@ export function resolveScalpV2V3StaleNewsBlackout(nowMs: number): ScalpV2V3NewsB
   };
 }
 
-export async function evaluateScalpV2V3NewsBlackout(params: {
-  venue: ScalpV2Venue;
+export async function evaluateScalpComposerV3NewsBlackout(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
   nowMs?: number;
-}): Promise<ScalpV2V3NewsBlackout> {
-  const cfg = resolveScalpV2V3Config();
+}): Promise<ScalpComposerV3NewsBlackout> {
+  const cfg = resolveScalpComposerV3Config();
   const nowMs = Math.floor(Number(params.nowMs) || Date.now());
   if (!cfg.newsBlackoutEnabled || params.venue !== "capital") {
     return { blocked: false, reasonCodes: [], tier: null, staleData: false, activeEvents: [] };
   }
   const state = await ensureForexEventsState(nowMs).catch(() => null);
   if (!state || state.stale) {
-    const fallback = resolveScalpV2V3StaleNewsBlackout(nowMs);
+    const fallback = resolveScalpComposerV3StaleNewsBlackout(nowMs);
     return state?.stale && !fallback.blocked
       ? { ...fallback, reasonCodes: ["V3_NEWS_BLACKOUT_DATA_STALE"] }
       : fallback;
@@ -703,12 +703,12 @@ export async function evaluateScalpV2V3NewsBlackout(params: {
   return { blocked: false, reasonCodes: context.reasonCodes, tier: null, staleData: false, activeEvents: [] };
 }
 
-export function computeScalpV2V3Drift(params: {
-  deployment: ScalpV2Deployment;
+export function computeScalpComposerV3Drift(params: {
+  deployment: ScalpComposerDeployment;
   ledgerRows: Array<{ tsExitMs: number; rMultiple: number }>;
   nowMs: number;
-}): ScalpV2V3Drift {
-  const cfg = resolveScalpV2V3Config();
+}): ScalpComposerV3Drift {
+  const cfg = resolveScalpComposerV3Config();
   const since = params.nowMs - 30 * ONE_DAY_MS;
   const scoped = params.ledgerRows
     .filter((row) => finite(row.tsExitMs) >= since && finite(row.tsExitMs) <= params.nowMs)
@@ -728,7 +728,7 @@ export function computeScalpV2V3Drift(params: {
     researchExpectancyR !== null && Math.abs(researchExpectancyR) > 1e-9
       ? liveExpectancyR / researchExpectancyR
       : null;
-  let status: ScalpV2V3Drift["status"] = "healthy";
+  let status: ScalpComposerV3Drift["status"] = "healthy";
   let reason: string | null = null;
   if (liveTrades < cfg.driftMinTrades || weeks < cfg.driftMinWeeks) {
     status = "low_sample";

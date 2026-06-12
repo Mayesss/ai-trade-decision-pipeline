@@ -14,23 +14,23 @@ import type {
 } from "../types";
 
 import {
-  appendScalpV2JournalEntry,
-  appendScalpV2LedgerRow,
-  loadScalpV2DeploymentById,
-  loadScalpV2SessionState,
-  upsertScalpV2SessionState,
+  appendScalpComposerJournalEntry,
+  appendScalpComposerLedgerRow,
+  loadScalpComposerDeploymentById,
+  loadScalpComposerSessionState,
+  upsertScalpComposerSessionState,
 } from "./db";
 import { deriveCloseTypeFromReasonCodes, toDeploymentId } from "./logic";
 import { resolveBitgetBrokerCloseLedger } from "./bitgetCloseHistory";
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
-function inferVenueFromDeploymentId(value: unknown): ScalpV2Venue {
+function inferVenueFromDeploymentId(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase().startsWith("capital:")
     ? "capital"
     : "bitget";
 }
 
-function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpV2Session {
+function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpComposerSession {
   const raw = String(value || "")
     .trim()
     .toLowerCase();
@@ -77,19 +77,19 @@ function resolveDeploymentId(
   });
 }
 
-export function createScalpV2ExecutionPersistenceAdapter(params: {
+export function createScalpComposerExecutionPersistenceAdapter(params: {
   runtimeSnapshot?: ScalpStrategyRuntimeSnapshot;
 } = {}): ScalpExecutionPersistenceAdapter {
   const deploymentCache = new Map<
     string,
-    Awaited<ReturnType<typeof loadScalpV2DeploymentById>>
+    Awaited<ReturnType<typeof loadScalpComposerDeploymentById>>
   >();
 
   async function loadDeploymentCached(deploymentId: string) {
     const key = String(deploymentId || "").trim();
     if (!key) return null;
     if (deploymentCache.has(key)) return deploymentCache.get(key) || null;
-    const row = await loadScalpV2DeploymentById(key);
+    const row = await loadScalpComposerDeploymentById(key);
     deploymentCache.set(key, row);
     return row;
   }
@@ -113,13 +113,13 @@ export function createScalpV2ExecutionPersistenceAdapter(params: {
     ): Promise<ScalpSessionState | null> => {
       const deploymentId = resolveDeploymentId(symbol, strategyId, opts);
       if (!deploymentId) return null;
-      return loadScalpV2SessionState({
+      return loadScalpComposerSessionState({
         deploymentId,
         dayKey,
       });
     },
     saveSessionState: async (state: ScalpSessionState): Promise<void> => {
-      await upsertScalpV2SessionState({
+      await upsertScalpComposerSessionState({
         ...state,
         version: 2,
       });
@@ -130,7 +130,7 @@ export function createScalpV2ExecutionPersistenceAdapter(params: {
       const deployment = deploymentId
         ? await loadDeploymentCached(deploymentId)
         : null;
-      await appendScalpV2JournalEntry({
+      await appendScalpComposerJournalEntry({
         entry,
         deploymentId,
         venue: deployment?.venue || null,
@@ -185,7 +185,7 @@ export function createScalpV2ExecutionPersistenceAdapter(params: {
           riskUsd: entry.riskUsd,
         });
         if (!brokerClose.found) {
-          await appendScalpV2JournalEntry({
+          await appendScalpComposerJournalEntry({
             entry: {
               id: `ledger-pending-${entry.id || Date.now()}`,
               timestampMs: Date.now(),
@@ -226,7 +226,7 @@ export function createScalpV2ExecutionPersistenceAdapter(params: {
         };
       }
 
-      const inserted = await appendScalpV2LedgerRow({
+      const inserted = await appendScalpComposerLedgerRow({
         id: String(entry.id || "").trim(),
         tsExitMs,
         deploymentId,

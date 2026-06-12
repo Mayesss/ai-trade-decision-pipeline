@@ -1,18 +1,18 @@
 import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
 import { sql } from "../pg/sql";
-import { runScalpV2LoadCandlesPipelineJob } from "../composer/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../composer/types";
+import { runScalpComposerLoadCandlesPipelineJob } from "../composer/pipelineJobsAdapter";
+import type { ScalpComposerVenue } from "../composer/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
-import { resolveScalpV5Config } from "./index";
+import { resolveScalpResearchConfig } from "./index";
 
 const WEEK_MS = 7 * 24 * 60 * 60_000;
 
-export type ScalpV5CandlePreflightScope = {
-  venue: ScalpV2Venue;
+export type ScalpResearchCandlePreflightScope = {
+  venue: ScalpComposerVenue;
   symbol: string;
 };
 
-export type ScalpV5CandlePreflightFailure = ScalpV5CandlePreflightScope & {
+export type ScalpResearchCandlePreflightFailure = ScalpResearchCandlePreflightScope & {
   reason: "missing_week_bucket" | "insufficient_week_candles";
   candles: number;
   minCandles: number;
@@ -20,18 +20,18 @@ export type ScalpV5CandlePreflightFailure = ScalpV5CandlePreflightScope & {
   lastTsMs: number | null;
 };
 
-export type ScalpV5CandlePreflightResult = {
+export type ScalpResearchCandlePreflightResult = {
   ready: boolean;
   checked: number;
-  staleBefore: ScalpV5CandlePreflightFailure[];
+  staleBefore: ScalpResearchCandlePreflightFailure[];
   loaded: {
     processed: number;
     succeeded: number;
     failed: number;
   };
-  staleAfter: ScalpV5CandlePreflightFailure[];
-  removedSymbols: ScalpV5CandlePreflightScope[];
-  blockingFailures: ScalpV5CandlePreflightFailure[];
+  staleAfter: ScalpResearchCandlePreflightFailure[];
+  removedSymbols: ScalpResearchCandlePreflightScope[];
+  blockingFailures: ScalpResearchCandlePreflightFailure[];
   targetWeekStartMs: number;
   targetWeekEndMs: number;
   minCandles: {
@@ -40,12 +40,12 @@ export type ScalpV5CandlePreflightResult = {
   };
 };
 
-export function resolveScalpV5PreflightWeek(params: {
+export function resolveScalpResearchPreflightWeek(params: {
   nowMs?: number;
   holdoutWeeks?: number;
 } = {}): { targetWeekStartMs: number; targetWeekEndMs: number; holdoutFromMs: number; holdoutToMs: number } {
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
-  const holdoutWeeks = Math.max(1, Math.floor(Number(params.holdoutWeeks || resolveScalpV5Config().holdoutWeeks)));
+  const holdoutWeeks = Math.max(1, Math.floor(Number(params.holdoutWeeks || resolveScalpResearchConfig().holdoutWeeks)));
   const weekStart = startOfUtcWeekMondayMs(nowMs);
   const holdoutToMs = new Date(nowMs).getUTCDay() === 0 ? weekStart + WEEK_MS : weekStart;
   const holdoutFromMs = holdoutToMs - holdoutWeeks * WEEK_MS;
@@ -57,12 +57,12 @@ export function resolveScalpV5PreflightWeek(params: {
   };
 }
 
-export function isScalpV5RemovedBitgetSymbolError(message: unknown): boolean {
+export function isScalpResearchRemovedBitgetSymbolError(message: unknown): boolean {
   const normalized = String(message || "").toLowerCase();
   return normalized.includes("bitget") && normalized.includes("40309") && normalized.includes("symbol has been removed");
 }
 
-function normalizeVenue(value: unknown): ScalpV2Venue {
+function normalizeVenue(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
@@ -73,12 +73,12 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
-function minCandlesForVenue(venue: ScalpV2Venue, params: { bitget: number; capital: number }): number {
+function minCandlesForVenue(venue: ScalpComposerVenue, params: { bitget: number; capital: number }): number {
   return venue === "capital" ? params.capital : params.bitget;
 }
 
-export function summarizeScalpV5CandleCoverage(params: {
-  scopes: ScalpV5CandlePreflightScope[];
+export function summarizeScalpResearchCandleCoverage(params: {
+  scopes: ScalpResearchCandlePreflightScope[];
   coverageRows: Array<{
     symbol: string;
     candleCount: number | bigint | null;
@@ -86,7 +86,7 @@ export function summarizeScalpV5CandleCoverage(params: {
     lastTsMs: number | bigint | null;
   }>;
   minCandles: { bitget: number; capital: number };
-}): ScalpV5CandlePreflightFailure[] {
+}): ScalpResearchCandlePreflightFailure[] {
   const bySymbol = new Map<string, { candleCount: number; firstTsMs: number | null; lastTsMs: number | null }>();
   for (const row of params.coverageRows || []) {
     const symbol = normalizeSymbol(row.symbol);
@@ -97,7 +97,7 @@ export function summarizeScalpV5CandleCoverage(params: {
       lastTsMs: Number.isFinite(Number(row.lastTsMs)) ? Math.floor(Number(row.lastTsMs)) : null,
     });
   }
-  const failures: ScalpV5CandlePreflightFailure[] = [];
+  const failures: ScalpResearchCandlePreflightFailure[] = [];
   for (const scopeRaw of params.scopes) {
     const venue = normalizeVenue(scopeRaw.venue);
     const symbol = normalizeSymbol(scopeRaw.symbol);
@@ -132,7 +132,7 @@ export function summarizeScalpV5CandleCoverage(params: {
   return failures;
 }
 
-async function loadActiveV5CandleScopes(): Promise<ScalpV5CandlePreflightScope[]> {
+async function loadActiveV5CandleScopes(): Promise<ScalpResearchCandlePreflightScope[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
@@ -155,7 +155,7 @@ async function loadActiveV5CandleScopes(): Promise<ScalpV5CandlePreflightScope[]
 }
 
 async function loadWeekCoverage(params: {
-  scopes: ScalpV5CandlePreflightScope[];
+  scopes: ScalpResearchCandlePreflightScope[];
   targetWeekStartMs: number;
 }): Promise<Array<{ symbol: string; candleCount: number | bigint | null; firstTsMs: number | bigint | null; lastTsMs: number | bigint | null }>> {
   if (!isScalpPgConfigured() || params.scopes.length === 0) return [];
@@ -177,9 +177,9 @@ async function loadWeekCoverage(params: {
 }
 
 async function markRemovedBitgetSymbols(params: {
-  scopes: ScalpV5CandlePreflightScope[];
+  scopes: ScalpResearchCandlePreflightScope[];
   source: string;
-}): Promise<ScalpV5CandlePreflightScope[]> {
+}): Promise<ScalpResearchCandlePreflightScope[]> {
   const removed = params.scopes
     .map((scope) => ({ venue: normalizeVenue(scope.venue), symbol: normalizeSymbol(scope.symbol) }))
     .filter((scope) => scope.venue === "bitget" && scope.symbol.length > 0);
@@ -232,29 +232,29 @@ async function markRemovedBitgetSymbols(params: {
   return removed;
 }
 
-export async function runScalpV5CandlePreflight(params: {
+export async function runScalpResearchCandlePreflight(params: {
   nowMs?: number;
   batchSize?: number;
   maxAttempts?: number;
   minBitgetWeekCandles?: number;
   minCapitalWeekCandles?: number;
   auditTrigger?: string | null;
-} = {}): Promise<ScalpV5CandlePreflightResult> {
-  const cfg = resolveScalpV5Config();
-  const week = resolveScalpV5PreflightWeek({ nowMs: params.nowMs, holdoutWeeks: cfg.holdoutWeeks });
+} = {}): Promise<ScalpResearchCandlePreflightResult> {
+  const cfg = resolveScalpResearchConfig();
+  const week = resolveScalpResearchPreflightWeek({ nowMs: params.nowMs, holdoutWeeks: cfg.holdoutWeeks });
   const minCandles = {
     bitget: Math.max(0, Math.floor(Number(params.minBitgetWeekCandles ?? 8_000))),
     capital: Math.max(0, Math.floor(Number(params.minCapitalWeekCandles ?? 6_000))),
   };
   let scopes = await loadActiveV5CandleScopes();
   let coverage = await loadWeekCoverage({ scopes, targetWeekStartMs: week.targetWeekStartMs });
-  const staleBefore = summarizeScalpV5CandleCoverage({ scopes, coverageRows: coverage, minCandles });
+  const staleBefore = summarizeScalpResearchCandleCoverage({ scopes, coverageRows: coverage, minCandles });
   let loaded = { processed: 0, succeeded: 0, failed: 0 };
-  let removedSymbols: ScalpV5CandlePreflightScope[] = [];
+  let removedSymbols: ScalpResearchCandlePreflightScope[] = [];
 
   if (staleBefore.length > 0) {
     const staleScopes = staleBefore.map((row) => ({ venue: row.venue, symbol: row.symbol }));
-    const loadResult = await runScalpV2LoadCandlesPipelineJob({
+    const loadResult = await runScalpComposerLoadCandlesPipelineJob({
       scopes: staleScopes,
       batchSize: Math.max(1, Math.min(200, Math.floor(Number(params.batchSize ?? 200)))),
       maxAttempts: Math.max(1, Math.min(30, Math.floor(Number(params.maxAttempts ?? 10)))),
@@ -269,7 +269,7 @@ export async function runScalpV5CandlePreflight(params: {
     const details = (loadResult.details || {}) as Record<string, unknown>;
     const errors = Array.isArray(details.errors) ? details.errors as Array<Record<string, unknown>> : [];
     const removed = errors
-      .filter((error) => normalizeVenue(error.venue) === "bitget" && isScalpV5RemovedBitgetSymbolError(error.message))
+      .filter((error) => normalizeVenue(error.venue) === "bitget" && isScalpResearchRemovedBitgetSymbolError(error.message))
       .map((error) => ({ venue: "bitget" as const, symbol: normalizeSymbol(error.symbol) }))
       .filter((scope) => scope.symbol.length > 0);
     removedSymbols = await markRemovedBitgetSymbols({ scopes: removed, source: "v5_candle_preflight" });
@@ -277,7 +277,7 @@ export async function runScalpV5CandlePreflight(params: {
 
   scopes = await loadActiveV5CandleScopes();
   coverage = await loadWeekCoverage({ scopes, targetWeekStartMs: week.targetWeekStartMs });
-  const staleAfter = summarizeScalpV5CandleCoverage({ scopes, coverageRows: coverage, minCandles });
+  const staleAfter = summarizeScalpResearchCandleCoverage({ scopes, coverageRows: coverage, minCandles });
 
   return {
     ready: staleAfter.length === 0,

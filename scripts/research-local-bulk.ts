@@ -33,18 +33,18 @@ import nextEnv from '@next/env';
 import os from 'node:os';
 
 import {
-  claimScalpV2Job,
-  countScalpV2CandidatesByStatus,
-  finalizeScalpV2Job,
-  heartbeatScalpV2Job,
-  loadScalpV2WarmUpState,
+  claimScalpComposerJob,
+  countScalpComposerCandidatesByStatus,
+  finalizeScalpComposerJob,
+  heartbeatScalpComposerJob,
+  loadScalpComposerWarmUpState,
 } from '../lib/scalp/composer/db';
 import { isScalpPgConfigured } from '../lib/scalp/composer/pg';
 import type { ScalpReplayCandle } from '../lib/scalp/replay/types';
 import type { ScalpCandle } from '../lib/scalp/types';
-import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp/composer/weekWindows';
-import type { ScalpV4ResearchJobResult } from '../lib/scalp/regimes';
-import type { ScalpV4WalkforwardProgressEvent } from '../lib/scalp/regimes/walkforwardSweep';
+import { resolveScalpComposerCompletedWeekWindowToUtc } from '../lib/scalp/composer/weekWindows';
+import type { ScalpRegimeResearchJobResult } from '../lib/scalp/regimes';
+import type { ScalpRegimeWalkforwardProgressEvent } from '../lib/scalp/regimes/walkforwardSweep';
 
 const { loadEnvConfig } = nextEnv;
 
@@ -229,7 +229,7 @@ const BULK_V4_PROGRESS_LOG_SECONDS = Math.max(
 );
 const persistentV4CandleCache = new Map<string, ScalpCandle[]>();
 
-let runScalpV2ResearchJob: ((params: {
+let runScalpComposerResearchJob: ((params: {
   batchSize?: number;
   lockScope?: string;
   candleCacheRef?: Map<string, ScalpReplayCandle[]>;
@@ -243,7 +243,7 @@ let runScalpV2ResearchJob: ((params: {
   details?: Record<string, unknown>;
 }>) | null = null;
 
-let runScalpV4ResearchJob: ((params?: {
+let runScalpRegimeResearchJob: ((params?: {
   classifierVersion?: string;
   forceValidity?: boolean;
   maxCandidatesPerCall?: number;
@@ -259,23 +259,23 @@ let runScalpV4ResearchJob: ((params?: {
   workClaimLeaseMs?: number;
   progressIntervalMs?: number;
   runWalkforward?: boolean;
-  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
-}) => Promise<ScalpV4ResearchJobResult>) | null = null;
+  onProgress?: (event: ScalpRegimeWalkforwardProgressEvent) => void;
+}) => Promise<ScalpRegimeResearchJobResult>) | null = null;
 
-async function getRunScalpV2ResearchJob() {
-  if (!runScalpV2ResearchJob) {
+async function getRunScalpComposerResearchJob() {
+  if (!runScalpComposerResearchJob) {
     const mod = await import('../lib/scalp/composer/pipeline');
-    runScalpV2ResearchJob = mod.runScalpV2ResearchJob;
+    runScalpComposerResearchJob = mod.runScalpComposerResearchJob;
   }
-  return runScalpV2ResearchJob;
+  return runScalpComposerResearchJob;
 }
 
-async function getRunScalpV4ResearchJob() {
-  if (!runScalpV4ResearchJob) {
+async function getRunScalpRegimeResearchJob() {
+  if (!runScalpRegimeResearchJob) {
     const mod = await import('../lib/scalp/regimes/research');
-    runScalpV4ResearchJob = mod.runScalpV4ResearchJob;
+    runScalpRegimeResearchJob = mod.runScalpRegimeResearchJob;
   }
-  return runScalpV4ResearchJob;
+  return runScalpRegimeResearchJob;
 }
 
 const BULK_V5_LIMIT = Math.max(1, Math.min(500, Math.floor(envNumber('BULK_V5_LIMIT', 25))));
@@ -299,20 +299,20 @@ const BULK_V5_SHARD_INDEX = Math.max(
   ),
 );
 
-let runScalpV5EvaluationBatch: ((params?: {
+let runScalpResearchEvaluationBatch: ((params?: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
   shardCount?: number;
   shardIndex?: number;
-}) => Promise<import('../lib/scalp/research/evaluator').ScalpV5BulkResult>) | null = null;
+}) => Promise<import('../lib/scalp/research/evaluator').ScalpResearchBulkResult>) | null = null;
 
-async function getRunScalpV5EvaluationBatch() {
-  if (!runScalpV5EvaluationBatch) {
+async function getRunScalpResearchEvaluationBatch() {
+  if (!runScalpResearchEvaluationBatch) {
     const mod = await import('../lib/scalp/research/evaluator');
-    runScalpV5EvaluationBatch = mod.runScalpV5EvaluationBatch;
+    runScalpResearchEvaluationBatch = mod.runScalpResearchEvaluationBatch;
   }
-  return runScalpV5EvaluationBatch;
+  return runScalpResearchEvaluationBatch;
 }
 
 let dayRobustnessModule: typeof import('../lib/scalp/composer/dayRobustness') | null = null;
@@ -325,7 +325,7 @@ async function getDayRobustnessModule() {
 }
 
 function currentWindowToTs(): number {
-  return resolveScalpV2CompletedWeekWindowToUtc(Date.now());
+  return resolveScalpComposerCompletedWeekWindowToUtc(Date.now());
 }
 
 function summarizeCounts(
@@ -348,7 +348,7 @@ function formatDuration(ms: number | null | undefined): string {
   return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
 }
 
-function logV4Progress(event: ScalpV4WalkforwardProgressEvent): void {
+function logV4Progress(event: ScalpRegimeWalkforwardProgressEvent): void {
   const prefix = `  progress: ${event.symbol} ${event.phase.replace('candidate_', '')}`;
   const counts = `processed=${event.processed}/${event.maxCandidatesPerCall} eligible=${event.eligible} ineligible=${event.ineligible} skipped=${event.skipped} claimSkipped=${event.claimSkipped}`;
   if (event.phase === 'candidate_start') {
@@ -383,7 +383,7 @@ async function runPostBulkDayRobustnessOnce(): Promise<void> {
   const windowToTs = currentWindowToTs();
   const dedupeScope = String(windowToTs);
   const owner = `bulk-day-robustness:${process.pid}:${Date.now().toString(36)}`;
-  const claimed = await claimScalpV2Job({
+  const claimed = await claimScalpComposerJob({
     jobKind: 'robustness',
     lockOwner: owner,
     dedupeScope,
@@ -454,7 +454,7 @@ async function runPostBulkDayRobustnessOnce(): Promise<void> {
       failed += result.failed;
       errors += result.errors;
 
-      await heartbeatScalpV2Job({
+      await heartbeatScalpComposerJob({
         jobKind: 'robustness',
         lockOwner: owner,
         dedupeScope,
@@ -477,7 +477,7 @@ async function runPostBulkDayRobustnessOnce(): Promise<void> {
       if (result.selected === 0) break;
     }
 
-    await finalizeScalpV2Job({
+    await finalizeScalpComposerJob({
       jobKind: 'robustness',
       lockOwner: owner,
       dedupeScope,
@@ -500,7 +500,7 @@ async function runPostBulkDayRobustnessOnce(): Promise<void> {
       `\nDay finalist robustness complete: batches=${batches} selected=${selected} processed=${processed} passed=${passed} failed=${failed} errors=${errors}`,
     );
   } catch (err) {
-    await finalizeScalpV2Job({
+    await finalizeScalpComposerJob({
       jobKind: 'robustness',
       lockOwner: owner,
       dedupeScope,
@@ -534,7 +534,7 @@ async function runBatch(): Promise<boolean> {
   console.log(`\n--- Batch ${batchCount} (${batchLabel}, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
 
   if (BULK_RESEARCH_VERSION === 'v5') {
-    const runEval = await getRunScalpV5EvaluationBatch();
+    const runEval = await getRunScalpResearchEvaluationBatch();
     const result = await runEval({
       limit: BULK_V5_LIMIT,
       staleOlderThanMs: BULK_V5_STALE_OLDER_THAN_HOURS * 60 * 60 * 1000,
@@ -582,7 +582,7 @@ async function runBatch(): Promise<boolean> {
   }
 
   if (BULK_RESEARCH_VERSION === 'v4') {
-    const runResearch = await getRunScalpV4ResearchJob();
+    const runResearch = await getRunScalpRegimeResearchJob();
     const result = await runResearch({
       maxCandidatesPerCall: candidateBatchSize,
       candidateFetchLimit: BULK_V4_CANDIDATE_FETCH_LIMIT,
@@ -658,7 +658,7 @@ async function runBatch(): Promise<boolean> {
     return true;
   }
 
-  const runResearch = await getRunScalpV2ResearchJob();
+  const runResearch = await getRunScalpComposerResearchJob();
   const result = await runResearch({
     batchSize: candidateBatchSize,
     lockScope:
@@ -817,8 +817,8 @@ async function runBatch(): Promise<boolean> {
   }
   if (reason === 'warm_up_complete') {
     const windowToTs = currentWindowToTs();
-    const warmUpState = await loadScalpV2WarmUpState({ windowToTs }).catch(() => null);
-    const discovered = await countScalpV2CandidatesByStatus({
+    const warmUpState = await loadScalpComposerWarmUpState({ windowToTs }).catch(() => null);
+    const discovered = await countScalpComposerCandidatesByStatus({
       status: 'discovered',
     }).catch(() => -1);
     console.log(
@@ -862,12 +862,12 @@ async function main() {
   }
 
   const warmUpBefore = BULK_RESEARCH_VERSION === 'v2'
-    ? await loadScalpV2WarmUpState({
+    ? await loadScalpComposerWarmUpState({
       windowToTs: currentWindowToTs(),
     }).catch(() => null)
     : null;
   const discoveredBefore = BULK_RESEARCH_VERSION === 'v2'
-    ? await countScalpV2CandidatesByStatus({
+    ? await countScalpComposerCandidatesByStatus({
       status: 'discovered',
     }).catch(() => -1)
     : -1;

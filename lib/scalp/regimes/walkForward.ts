@@ -1,34 +1,34 @@
 import { SCALP_V4_ONE_WEEK_MS } from "./week";
-import { buildScalpV4RegimeEnvelope } from "./envelope";
+import { buildScalpRegimeEnvelope } from "./envelope";
 import type {
-  ScalpV4RegimeEnvelope,
-  ScalpV4RegimeSnapshot,
-  ScalpV4TradeLike,
-  ScalpV4WindowResult,
+  ScalpRegimeEnvelope,
+  ScalpRegimeSnapshot,
+  ScalpRegimeTradeLike,
+  ScalpRegimeWindowResult,
 } from "./types";
 
-export interface ScalpV4WalkForwardRunnerParams {
+export interface ScalpRegimeWalkForwardRunnerParams {
   classifierVersion: string;
-  snapshots: ScalpV4RegimeSnapshot[];
+  snapshots: ScalpRegimeSnapshot[];
   windowFromMs: number;
   windowToMs: number;
   selectionWeeks?: number;
   stepWeeks?: number;
   effectiveTrials: number;
-  runWindow(params: { windowStartMs: number; windowEndMs: number }): Promise<ScalpV4TradeLike[]>;
+  runWindow(params: { windowStartMs: number; windowEndMs: number }): Promise<ScalpRegimeTradeLike[]>;
 }
 
-export interface ScalpV4WalkForwardRunResult {
-  windows: ScalpV4WindowResult[];
-  envelope: ScalpV4RegimeEnvelope;
+export interface ScalpRegimeWalkForwardRunResult {
+  windows: ScalpRegimeWindowResult[];
+  envelope: ScalpRegimeEnvelope;
 }
 
-export async function runScalpV4WalkForward(params: ScalpV4WalkForwardRunnerParams): Promise<ScalpV4WalkForwardRunResult> {
+export async function runScalpRegimeWalkForward(params: ScalpRegimeWalkForwardRunnerParams): Promise<ScalpRegimeWalkForwardRunResult> {
   const selectionWeeks = Math.max(1, Math.floor(params.selectionWeeks || 12));
   const stepWeeks = Math.max(1, Math.floor(params.stepWeeks || 1));
   const windowSpanMs = selectionWeeks * SCALP_V4_ONE_WEEK_MS;
   const stepMs = stepWeeks * SCALP_V4_ONE_WEEK_MS;
-  const windows: ScalpV4WindowResult[] = [];
+  const windows: ScalpRegimeWindowResult[] = [];
   for (
     let windowStartMs = params.windowFromMs;
     windowStartMs + windowSpanMs <= params.windowToMs;
@@ -40,7 +40,7 @@ export async function runScalpV4WalkForward(params: ScalpV4WalkForwardRunnerPara
   }
   return {
     windows,
-    envelope: buildScalpV4RegimeEnvelope({
+    envelope: buildScalpRegimeEnvelope({
       classifierVersion: params.classifierVersion,
       snapshots: params.snapshots,
       windows,

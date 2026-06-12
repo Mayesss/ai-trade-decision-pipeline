@@ -3,18 +3,18 @@ import nextEnv from "@next/env";
 
 import { isScalpPgConfigured } from "../lib/scalp/composer/pg";
 import {
-  loadScalpV4DeploymentSymbols,
-  runScalpV4WeeklyRegimeBuild,
+  loadScalpRegimeDeploymentSymbols,
+  runScalpRegimeWeeklyRegimeBuild,
 } from "../lib/scalp/regimes";
-import { runScalpV5CandlePreflight } from "../lib/scalp/research/candlePreflight";
-import { runScalpV5EvaluationBatch } from "../lib/scalp/research/evaluator";
+import { runScalpResearchCandlePreflight } from "../lib/scalp/research/candlePreflight";
+import { runScalpResearchEvaluationBatch } from "../lib/scalp/research/evaluator";
 import {
-  autoPromoteScalpV5WinnersToEnabled,
-  cullBottomPerformersScalpV5Deployments,
-  getScalpV5EvaluationQueueStats,
-  refillScalpV5DeploymentsMixed,
-  retireConsistentlyFailingScalpV5Deployments,
-  selectScalpV5DeploymentsNeedingAdvancement,
+  autoPromoteScalpResearchWinnersToEnabled,
+  cullBottomPerformersScalpResearchDeployments,
+  getScalpResearchEvaluationQueueStats,
+  refillScalpResearchDeploymentsMixed,
+  retireConsistentlyFailingScalpResearchDeployments,
+  selectScalpResearchDeploymentsNeedingAdvancement,
 } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
@@ -166,7 +166,7 @@ async function drainV5Evaluation(params: {
   while (params.maxEvalBatches <= 0 || totals.batches < params.maxEvalBatches) {
     if (remaining && remaining.size === 0) break;
     totals.batches += 1;
-    const result = await runScalpV5EvaluationBatch({
+    const result = await runScalpResearchEvaluationBatch({
       limit: params.evalLimit,
       staleOlderThanMs: params.staleOlderThanMs,
       preflightCandles: false,
@@ -252,16 +252,16 @@ async function main() {
     },
   };
 
-  summary.queueBefore = await getScalpV5EvaluationQueueStats({ staleOlderThanMs });
+  summary.queueBefore = await getScalpResearchEvaluationQueueStats({ staleOlderThanMs });
 
   let mainEvalDeploymentIds: string[] | undefined;
   if (dryRun) {
     summary.preflight = { skipped: true, reason: "dry_run" };
     summary.regimes = { skipped: true, reason: "dry_run" };
   } else {
-    let preflight = null as Awaited<ReturnType<typeof runScalpV5CandlePreflight>> | null;
+    let preflight = null as Awaited<ReturnType<typeof runScalpResearchCandlePreflight>> | null;
     for (let round = 1; round <= preflightMaxRounds; round += 1) {
-      preflight = await runScalpV5CandlePreflight({
+      preflight = await runScalpResearchCandlePreflight({
         batchSize: 200,
         maxAttempts: 10,
         auditTrigger: "local_v5_sunday",
@@ -279,8 +279,8 @@ async function main() {
       process.exit(1);
     }
 
-    const regimeSymbols = await loadScalpV4DeploymentSymbols();
-    const regimes = await runScalpV4WeeklyRegimeBuild({
+    const regimeSymbols = await loadScalpRegimeDeploymentSymbols();
+    const regimes = await runScalpRegimeWeeklyRegimeBuild({
       symbols: regimeSymbols,
       forceValidity: true,
     });
@@ -297,7 +297,7 @@ async function main() {
   // ("how much work is actually left right now?"). On a fresh Sunday it
   // should show ~all rows needing advancement; on a re-run it should show
   // ~all rows already-fresh.
-  const advancement = await selectScalpV5DeploymentsNeedingAdvancement({});
+  const advancement = await selectScalpResearchDeploymentsNeedingAdvancement({});
   summary.advancementQueue = {
     newHoldoutToMs: advancement.newHoldoutToMs,
     newHoldoutFromMs: advancement.newHoldoutFromMs,
@@ -323,15 +323,15 @@ async function main() {
           deploymentIds: mainEvalDeploymentIds,
         });
 
-  summary.firstPromote = await autoPromoteScalpV5WinnersToEnabled({ dryRun });
+  summary.firstPromote = await autoPromoteScalpResearchWinnersToEnabled({ dryRun });
   console.log(`[promote:first] ${JSON.stringify(summary.firstPromote)}`);
 
   if (cleanup) {
-    const trimTail = await retireConsistentlyFailingScalpV5Deployments({
+    const trimTail = await retireConsistentlyFailingScalpResearchDeployments({
       stalenessDays: 28,
       dryRun,
     });
-    const cullBottom = await cullBottomPerformersScalpV5Deployments({
+    const cullBottom = await cullBottomPerformersScalpResearchDeployments({
       percentToRetire: 0.15,
       graceDays: 28,
       minTrades: 30,
@@ -355,7 +355,7 @@ async function main() {
   // exploration (globally-marginal candidates that may be regime-cell
   // winners). Each refilled deployment is tagged with promotion_gate.refill.bucket
   // so per-bucket survival/promotion rate can be measured over future Sundays.
-  const refill = await refillScalpV5DeploymentsMixed({
+  const refill = await refillScalpResearchDeploymentsMixed({
     targetNewSeats,
     minStageCNetR,
     minStageCTrades,
@@ -384,7 +384,7 @@ async function main() {
           deploymentIds: refill.deploymentIds,
         });
 
-  summary.finalPromote = await autoPromoteScalpV5WinnersToEnabled({ dryRun });
+  summary.finalPromote = await autoPromoteScalpResearchWinnersToEnabled({ dryRun });
 
   // Loop mode: continue refilling in small batches until the deadline.
   // Disabled in dryRun (the whole point is to commit incremental seats).
@@ -430,7 +430,7 @@ async function main() {
           break;
         }
         const iterStart = Date.now();
-        const batchRefill = await refillScalpV5DeploymentsMixed({
+        const batchRefill = await refillScalpResearchDeploymentsMixed({
           targetNewSeats: loopBatchSeats,
           minStageCNetR,
           minStageCTrades,
@@ -454,7 +454,7 @@ async function main() {
           maxEvalBatches,
           deploymentIds: batchRefill.deploymentIds,
         });
-        const batchPromote = await autoPromoteScalpV5WinnersToEnabled({});
+        const batchPromote = await autoPromoteScalpResearchWinnersToEnabled({});
         cumulative.refilled += batchRefill.upserted;
         cumulative.evaluated += batchDrain.succeeded;
         cumulative.v5Enabled += batchDrain.enabled;
@@ -500,7 +500,7 @@ async function main() {
     }
   }
 
-  summary.queueAfter = await getScalpV5EvaluationQueueStats({ staleOlderThanMs });
+  summary.queueAfter = await getScalpResearchEvaluationQueueStats({ staleOlderThanMs });
 
   console.log("\n=== scalp-research-sunday summary ===");
   console.log(JSON.stringify(summary, null, 2));
