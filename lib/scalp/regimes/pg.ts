@@ -1,5 +1,5 @@
-import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
-import { join, sql } from "../scalp/pg/sql";
+import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
+import { join, sql } from "../pg/sql";
 import type {
   ScalpV4CellId,
   ScalpV4IncrementalState,

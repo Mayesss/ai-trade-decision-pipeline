@@ -1,13 +1,13 @@
-import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
-import { resolveScalpDeployment } from "../scalp/deployments";
-import { pipSizeForScalpSymbol } from "../scalp/marketData";
-import { runScalpReplay } from "../scalp/replay/harness";
-import { buildScalpReplayRuntimeFromDeployment } from "../scalp/replay/runtimeConfig";
-import type { ScalpReplayCandle } from "../scalp/replay/types";
-import { ensureScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadataSync";
-import { scalpPrisma } from "../scalp/pg/client";
-import { sql } from "../scalp/pg/sql";
-import type { ScalpCandle } from "../scalp/types";
+import { loadScalpCandleHistoryInRange } from "../candleHistory";
+import { resolveScalpDeployment } from "../deployments";
+import { pipSizeForScalpSymbol } from "../marketData";
+import { runScalpReplay } from "../replay/harness";
+import { buildScalpReplayRuntimeFromDeployment } from "../replay/runtimeConfig";
+import type { ScalpReplayCandle } from "../replay/types";
+import { ensureScalpSymbolMarketMetadata } from "../symbolMarketMetadataSync";
+import { scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
+import type { ScalpCandle } from "../types";
 import {
   assessScalpV4CandleCoverage,
   ensureScalpV4CandleCoverage,

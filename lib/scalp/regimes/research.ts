@@ -7,7 +7,7 @@ import {
   type ScalpV4WalkforwardProgressEvent,
   type ScalpV4WalkforwardSweepResult,
 } from "./walkforwardSweep";
-import type { ScalpCandle } from "../scalp/types";
+import type { ScalpCandle } from "../types";
 
 export interface ScalpV4ResearchJobResult {
   ok: boolean;

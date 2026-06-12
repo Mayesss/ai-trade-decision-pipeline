@@ -3,13 +3,13 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
   isScalpV4Enabled,
   isScalpV4HardGateEnabled,
   SCALP_V4_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
-} from "../../../../lib/scalp-v4";
+} from "../../../../lib/scalp/regimes";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
 

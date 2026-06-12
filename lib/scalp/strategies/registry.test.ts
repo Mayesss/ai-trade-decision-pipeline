@@ -17,8 +17,8 @@ import { RELATIVE_VALUE_SPREAD_PROXY_M15_M3_STRATEGY_ID } from './relativeValueS
 import { SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID } from './sessionSeasonalityBiasM15M3';
 import { TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID } from './trendDayReaccelerationM15M3';
 import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
-import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from '../../scalp-v2/dayComposer';
-import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from '../../scalp-v2/sessionStructureComposer';
+import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from '../composer/dayComposer';
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from '../composer/sessionStructureComposer';
 import {
     DEFAULT_SCALP_STRATEGY_ID,
     getDefaultScalpStrategy,

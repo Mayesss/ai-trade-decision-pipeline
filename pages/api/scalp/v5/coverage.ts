@@ -7,13 +7,13 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
-import { startOfUtcDayMs } from "../../../../lib/scalp-v4/week";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
+import { startOfUtcDayMs } from "../../../../lib/scalp/regimes/week";
 import {
   isScalpV5Enabled,
   isScalpV5HardGateEnabled,
   resolveScalpV5Config,
-} from "../../../../lib/scalp-v5";
+} from "../../../../lib/scalp/research";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
 

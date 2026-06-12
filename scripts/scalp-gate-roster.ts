@@ -24,11 +24,11 @@ import { runScalpReplay } from "../lib/scalp/replay/harness";
 import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
-import { loadScalpV4RegimeSnapshotsBulk } from "../lib/scalp-v4/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../lib/scalp-v4/types";
-import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp-v5/evaluator";
-import { buildScalpV5CellEvidence, resolveScalpV5Config, tagTradesWithCells } from "../lib/scalp-v5/index";
-import type { ScalpV5DeploymentRow } from "../lib/scalp-v5/pg";
+import { loadScalpV4RegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
+import type { ScalpV4CellId, ScalpV4Venue } from "../lib/scalp/regimes/types";
+import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
+import { buildScalpV5CellEvidence, resolveScalpV5Config, tagTradesWithCells } from "../lib/scalp/research";
+import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

@@ -4,28 +4,28 @@
 // deployment row. Replaces v4's 104-week sweep for live-deployment
 // kill-switch purposes.
 
-import { ensureScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadataSync";
-import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
-import { resolveScalpDeployment } from "../scalp/deployments";
-import { pipSizeForScalpSymbol } from "../scalp/marketData";
-import { computeReplayConfigHash, runScalpReplay } from "../scalp/replay/harness";
-import { buildScalpReplayRuntimeFromDeployment } from "../scalp/replay/runtimeConfig";
+import { ensureScalpSymbolMarketMetadata } from "../symbolMarketMetadataSync";
+import { loadScalpCandleHistoryInRange } from "../candleHistory";
+import { resolveScalpDeployment } from "../deployments";
+import { pipSizeForScalpSymbol } from "../marketData";
+import { computeReplayConfigHash, runScalpReplay } from "../replay/harness";
+import { buildScalpReplayRuntimeFromDeployment } from "../replay/runtimeConfig";
 import type {
   ScalpReplayCandle,
   ScalpReplayCheckpoint,
   ScalpReplayRuntimeConfig,
-} from "../scalp/replay/types";
-import type { ScalpCandle, ScalpDeploymentRef } from "../scalp/types";
-import { resolveEntryTriggerOverrides } from "../scalp-v2/entryTriggerPresets";
-import { buildScalpV2ExecuteConfigOverride } from "../scalp-v2/executeConfigOverride";
-import { resolveExitRuleOverrides } from "../scalp-v2/exitRulePresets";
-import { resolveRiskRuleReplayOverrides } from "../scalp-v2/riskRulePresets";
-import { resolveStateMachineOverrides } from "../scalp-v2/stateMachinePresets";
-import type { ScalpV2Session } from "../scalp-v2/types";
-import type { ScalpV2V3TemporalFilter } from "../scalp-v3";
-import { loadScalpV4RegimeSnapshotsBulk } from "../scalp-v4/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../scalp-v4/types";
-import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
+} from "../replay/types";
+import type { ScalpCandle, ScalpDeploymentRef } from "../types";
+import { resolveEntryTriggerOverrides } from "../composer/entryTriggerPresets";
+import { buildScalpV2ExecuteConfigOverride } from "../composer/executeConfigOverride";
+import { resolveExitRuleOverrides } from "../composer/exitRulePresets";
+import { resolveRiskRuleReplayOverrides } from "../composer/riskRulePresets";
+import { resolveStateMachineOverrides } from "../composer/stateMachinePresets";
+import type { ScalpV2Session } from "../composer/types";
+import type { ScalpV2V3TemporalFilter } from "../evidence";
+import { loadScalpV4RegimeSnapshotsBulk } from "../regimes/pg";
+import type { ScalpV4CellId, ScalpV4Venue } from "../regimes/types";
+import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
   SCALP_V5_VERSION,
   buildScalpV5CellEvidence,

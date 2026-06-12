@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildModelGuidedComposerTuneId } from "../../scalp-v2/composerExecution";
+import { buildModelGuidedComposerTuneId } from "../composer/composerExecution";
 import { getScalpStrategyConfig } from "../config";
 import { buildScalpSessionWindows } from "../sessions";
 import { createInitialScalpSessionState, deriveScalpDayKey } from "../stateMachine";

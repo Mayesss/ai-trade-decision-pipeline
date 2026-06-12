@@ -1,8 +1,8 @@
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { resolveBitgetBrokerCloseLedger } from "../lib/scalp-v2/bitgetCloseHistory";
-import { snapshotScalpV2DailyMetrics } from "../lib/scalp-v2/db";
-import { deriveCloseTypeFromReasonCodes } from "../lib/scalp-v2/logic";
+import { resolveBitgetBrokerCloseLedger } from "../lib/scalp/composer/bitgetCloseHistory";
+import { snapshotScalpV2DailyMetrics } from "../lib/scalp/composer/db";
+import { deriveCloseTypeFromReasonCodes } from "../lib/scalp/composer/logic";
 
 const APPLY = process.argv.includes("--apply");
 

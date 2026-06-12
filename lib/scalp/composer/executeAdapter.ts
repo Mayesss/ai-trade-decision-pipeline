@@ -1,4 +1,4 @@
-import { runScalpExecuteCycle } from "../scalp/engine";
+import { runScalpExecuteCycle } from "../engine";
 
 type RunScalpExecuteCycleParams = Parameters<typeof runScalpExecuteCycle>[0];
 

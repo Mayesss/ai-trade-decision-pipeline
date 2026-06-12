@@ -9,7 +9,7 @@ import {
   toDeploymentId,
   toLedgerCloseTypeFromEvent,
 } from "./logic";
-import type { ScalpJournalEntry, ScalpSessionState } from "../scalp/types";
+import type { ScalpJournalEntry, ScalpSessionState } from "../types";
 import type {
   ScalpV2PatternEdge,
   ScalpV2PatternTradeVector,

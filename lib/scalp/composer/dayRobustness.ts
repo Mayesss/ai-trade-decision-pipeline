@@ -1,17 +1,17 @@
 import os from "node:os";
 
-import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
-import { pipSizeForScalpSymbol } from "../scalp/marketData";
+import { loadScalpCandleHistoryInRange } from "../candleHistory";
+import { pipSizeForScalpSymbol } from "../marketData";
 import {
   defaultScalpReplayConfig,
   runScalpReplay,
-} from "../scalp/replay/harness";
+} from "../replay/harness";
 import type {
   ScalpReplayCandle,
   ScalpReplayTrade,
-} from "../scalp/replay/types";
-import type { ScalpCandle } from "../scalp/types";
-import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
+} from "../replay/types";
+import type { ScalpCandle } from "../types";
+import { loadScalpSymbolMarketMetadataBulk } from "../symbolMarketMetadataStore";
 import {
   SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
   parseSessionStructureComposerTuneId,

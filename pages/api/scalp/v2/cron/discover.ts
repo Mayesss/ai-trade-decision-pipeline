@@ -6,12 +6,12 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   invokeScalpV2CronEndpointDetached,
   type ScalpV2CronInvokeResult,
-} from "../../../../../lib/scalp-v2/cronChaining";
+} from "../../../../../lib/scalp/composer/cronChaining";
 import {
   clampScalpV2HardCap,
   resolveScalpV2ResearchHardCaps,
-} from "../../../../../lib/scalp-v2/costControls";
-import { runScalpV2DiscoverJob } from "../../../../../lib/scalp-v2/pipeline";
+} from "../../../../../lib/scalp/composer/costControls";
+import { runScalpV2DiscoverJob } from "../../../../../lib/scalp/composer/pipeline";
 
 function firstQueryValue(
   value: string | string[] | undefined,

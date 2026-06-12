@@ -1,8 +1,8 @@
-import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
-import { sql } from "../scalp/pg/sql";
-import { runScalpV2LoadCandlesPipelineJob } from "../scalp-v2/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../scalp-v2/types";
-import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
+import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
+import { runScalpV2LoadCandlesPipelineJob } from "../composer/pipelineJobsAdapter";
+import type { ScalpV2Venue } from "../composer/types";
+import { startOfUtcWeekMondayMs } from "../regimes/week";
 import { resolveScalpV5Config } from "./index";
 
 const WEEK_MS = 7 * 24 * 60 * 60_000;

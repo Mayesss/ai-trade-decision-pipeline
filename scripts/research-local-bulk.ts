@@ -38,13 +38,13 @@ import {
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
   loadScalpV2WarmUpState,
-} from '../lib/scalp-v2/db';
-import { isScalpPgConfigured } from '../lib/scalp-v2/pg';
+} from '../lib/scalp/composer/db';
+import { isScalpPgConfigured } from '../lib/scalp/composer/pg';
 import type { ScalpReplayCandle } from '../lib/scalp/replay/types';
 import type { ScalpCandle } from '../lib/scalp/types';
-import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp-v2/weekWindows';
-import type { ScalpV4ResearchJobResult } from '../lib/scalp-v4';
-import type { ScalpV4WalkforwardProgressEvent } from '../lib/scalp-v4/walkforwardSweep';
+import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp/composer/weekWindows';
+import type { ScalpV4ResearchJobResult } from '../lib/scalp/regimes';
+import type { ScalpV4WalkforwardProgressEvent } from '../lib/scalp/regimes/walkforwardSweep';
 
 const { loadEnvConfig } = nextEnv;
 
@@ -264,7 +264,7 @@ let runScalpV4ResearchJob: ((params?: {
 
 async function getRunScalpV2ResearchJob() {
   if (!runScalpV2ResearchJob) {
-    const mod = await import('../lib/scalp-v2/pipeline');
+    const mod = await import('../lib/scalp/composer/pipeline');
     runScalpV2ResearchJob = mod.runScalpV2ResearchJob;
   }
   return runScalpV2ResearchJob;
@@ -272,7 +272,7 @@ async function getRunScalpV2ResearchJob() {
 
 async function getRunScalpV4ResearchJob() {
   if (!runScalpV4ResearchJob) {
-    const mod = await import('../lib/scalp-v4/research');
+    const mod = await import('../lib/scalp/regimes/research');
     runScalpV4ResearchJob = mod.runScalpV4ResearchJob;
   }
   return runScalpV4ResearchJob;
@@ -305,21 +305,21 @@ let runScalpV5EvaluationBatch: ((params?: {
   nowMs?: number;
   shardCount?: number;
   shardIndex?: number;
-}) => Promise<import('../lib/scalp-v5/evaluator').ScalpV5BulkResult>) | null = null;
+}) => Promise<import('../lib/scalp/research/evaluator').ScalpV5BulkResult>) | null = null;
 
 async function getRunScalpV5EvaluationBatch() {
   if (!runScalpV5EvaluationBatch) {
-    const mod = await import('../lib/scalp-v5/evaluator');
+    const mod = await import('../lib/scalp/research/evaluator');
     runScalpV5EvaluationBatch = mod.runScalpV5EvaluationBatch;
   }
   return runScalpV5EvaluationBatch;
 }
 
-let dayRobustnessModule: typeof import('../lib/scalp-v2/dayRobustness') | null = null;
+let dayRobustnessModule: typeof import('../lib/scalp/composer/dayRobustness') | null = null;
 
 async function getDayRobustnessModule() {
   if (!dayRobustnessModule) {
-    dayRobustnessModule = await import('../lib/scalp-v2/dayRobustness');
+    dayRobustnessModule = await import('../lib/scalp/composer/dayRobustness');
   }
   return dayRobustnessModule;
 }

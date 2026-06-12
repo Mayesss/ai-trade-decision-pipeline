@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ScalpReplayTrade } from "../scalp/replay/types";
+import type { ScalpReplayTrade } from "../replay/types";
 import {
   buildScalpV5CellEvidence,
   evaluateScalpV5PromotionEvidence,

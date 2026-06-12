@@ -27,7 +27,7 @@ process.env.SCALP_PG_USE_HTTP = "1";
 
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { SCALP_V4_CLASSIFIER_VERSION } from "../lib/scalp-v4/classifier";
+import { SCALP_V4_CLASSIFIER_VERSION } from "../lib/scalp/regimes/classifier";
 
 interface CellSplit {
   deploymentId: string;

@@ -9,7 +9,7 @@ import {
 } from "./dayRobustness";
 import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "./dayComposer";
 import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "./sessionStructureComposer";
-import type { ScalpReplayTrade } from "../scalp/replay/types";
+import type { ScalpReplayTrade } from "../replay/types";
 
 const policy: DayRobustnessPolicy = {
   enabled: true,

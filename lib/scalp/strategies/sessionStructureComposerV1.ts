@@ -4,7 +4,7 @@ import {
   type SessionStructureLevelBlockId,
   type SessionStructureManagementBlockId,
   type SessionStructureTriggerBlockId,
-} from "../../scalp-v2/sessionStructureComposer";
+} from "../composer/sessionStructureComposer";
 import {
   inScalpEntrySessionProfileWindow,
   normalizeScalpEntrySessionProfile,

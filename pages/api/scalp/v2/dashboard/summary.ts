@@ -12,15 +12,15 @@ import {
   listScalpV2SessionSnapshots,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
-} from "../../../../../lib/scalp-v2/db";
+} from "../../../../../lib/scalp/composer/db";
 import {
   parseBool,
   parseSession,
   parseVenue,
   parseIntBounded,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
-import { isScalpV4Enabled, loadScalpV4CurrentRegimeSnapshot } from "../../../../../lib/scalp-v4";
+} from "../../../../../lib/scalp/composer/http";
+import { isScalpV4Enabled, loadScalpV4CurrentRegimeSnapshot } from "../../../../../lib/scalp/regimes";
 
 // In-memory cache — avoids hammering Neon on every dashboard refresh
 let summaryCache: { data: Record<string, unknown>; ts: number; key: string } | null = null;

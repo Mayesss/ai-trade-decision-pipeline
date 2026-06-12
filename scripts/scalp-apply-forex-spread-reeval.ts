@@ -13,7 +13,7 @@ import nextEnv from "@next/env";
 
 import { isScalpPgConfigured, scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { runScalpV5EvaluationBatch } from "../lib/scalp-v5/evaluator";
+import { runScalpV5EvaluationBatch } from "../lib/scalp/research/evaluator";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

@@ -7,11 +7,11 @@
 // returns everything callers need to render a section without redoing the DB
 // work.
 
-import { loadScalpV4RegimeSnapshotsBulk, resolveScalpV4FailClosedStaleMs } from "../scalp-v4/pg";
-import type { ScalpV4Venue } from "../scalp-v4/types";
-import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
-import { scalpPrisma } from "../scalp/pg/client";
-import { sql } from "../scalp/pg/sql";
+import { loadScalpV4RegimeSnapshotsBulk, resolveScalpV4FailClosedStaleMs } from "../regimes/pg";
+import type { ScalpV4Venue } from "../regimes/types";
+import { startOfUtcWeekMondayMs } from "../regimes/week";
+import { scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
 import {
   resolveScalpV5Config,
   type ScalpV5CellEvidence,

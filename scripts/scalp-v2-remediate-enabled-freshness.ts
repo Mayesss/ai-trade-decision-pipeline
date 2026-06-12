@@ -2,14 +2,14 @@ import {
   listScalpV2Deployments,
   updateScalpV2CandidateStatuses,
   upsertScalpV2Deployments,
-} from "../lib/scalp-v2/db";
-import { scalpPrisma } from "../lib/scalp-v2/pg";
+} from "../lib/scalp/composer/db";
+import { scalpPrisma } from "../lib/scalp/composer/pg";
 import type {
   ScalpV2RiskProfile,
   ScalpV2Session,
   ScalpV2Venue,
-} from "../lib/scalp-v2/types";
-import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp-v2/weekWindows";
+} from "../lib/scalp/composer/types";
+import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
 
 type Options = {
   apply: boolean;

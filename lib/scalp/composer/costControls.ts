@@ -1,7 +1,7 @@
 import {
   clampScalpV1HardCap,
   resolveScalpV1ResearchHardCaps,
-} from "../scalp/v1CostBrake";
+} from "../v1CostBrake";
 
 export function clampScalpV2HardCap(value: number, hardCap: number): number {
   return clampScalpV1HardCap(value, hardCap);

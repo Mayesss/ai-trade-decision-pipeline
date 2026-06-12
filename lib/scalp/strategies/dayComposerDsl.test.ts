@@ -8,7 +8,7 @@ import {
   isDayModelGuidedComposerStrategyId,
   parseDayComposerTuneId,
   validateDayComposerCompatibility,
-} from "../../scalp-v2/dayComposer";
+} from "../composer/dayComposer";
 
 test("day composer tune id build/parse round-trips", () => {
   const tuneId = buildDayComposerTuneId({

@@ -5,8 +5,8 @@ import nextEnv from "@next/env";
 import {
   runDayRobustnessBatch,
   resolveDayRobustnessPolicy,
-} from "../lib/scalp-v2/dayRobustness";
-import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp-v2/weekWindows";
+} from "../lib/scalp/composer/dayRobustness";
+import { resolveScalpV2CompletedWeekWindowToUtc } from "../lib/scalp/composer/weekWindows";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

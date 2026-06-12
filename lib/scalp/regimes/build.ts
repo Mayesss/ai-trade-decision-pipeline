@@ -1,4 +1,4 @@
-import { loadScalpCandleHistoryWeeklyBars } from "../scalp/candleHistory";
+import { loadScalpCandleHistoryWeeklyBars } from "../candleHistory";
 import {
   applyScalpV4Hysteresis,
   buildScalpV4WeeklyBars,

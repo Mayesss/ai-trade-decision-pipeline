@@ -3,8 +3,8 @@ export const config = { runtime: "nodejs", maxDuration: 800 };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { runScalpV2PromoteJob } from "../../../../../lib/scalp-v2/pipeline";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { runScalpV2PromoteJob } from "../../../../../lib/scalp/composer/pipeline";
 
 export default async function handler(
   req: NextApiRequest,

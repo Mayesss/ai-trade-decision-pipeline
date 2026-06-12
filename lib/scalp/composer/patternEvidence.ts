@@ -1,4 +1,4 @@
-import type { ScalpReplayTrade } from "../scalp/replay/types";
+import type { ScalpReplayTrade } from "../replay/types";
 import type { ScalpV2Session, ScalpV2Venue } from "./types";
 
 export const SCALP_V2_PATTERN_EVIDENCE_VERSION = "scalp_v2_pattern_evidence_r1";

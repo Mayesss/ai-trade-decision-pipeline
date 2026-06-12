@@ -1,20 +1,20 @@
-import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
-import { sql } from "../scalp/pg/sql";
-import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../scalp-v2/sessionStructureComposer";
+import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../composer/sessionStructureComposer";
 import {
   evaluateDayRobustnessForPromotion,
   resolveDayRobustnessPolicy,
-} from "../scalp-v2/dayRobustness";
+} from "../composer/dayRobustness";
 import {
   getScalpV2DefaultRiskProfile,
   getScalpV2RuntimeConfig,
   isScalpV2RuntimeSymbolInScope,
-} from "../scalp-v2/config";
-import { loadScalpV2RuntimeConfig, upsertScalpV2Deployments } from "../scalp-v2/db";
-import { toDeploymentId } from "../scalp-v2/logic";
-import type { ScalpV2CandidateStatus, ScalpV2RiskProfile, ScalpV2Session, ScalpV2Venue } from "../scalp-v2/types";
-import type { ScalpReplayCheckpoint } from "../scalp/replay/types";
-import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
+} from "../composer/config";
+import { loadScalpV2RuntimeConfig, upsertScalpV2Deployments } from "../composer/db";
+import { toDeploymentId } from "../composer/logic";
+import type { ScalpV2CandidateStatus, ScalpV2RiskProfile, ScalpV2Session, ScalpV2Venue } from "../composer/types";
+import type { ScalpReplayCheckpoint } from "../replay/types";
+import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
   evaluateScalpV5PromotionEvidence,
   resolveScalpV5Config,

@@ -1,4 +1,4 @@
-import { bitgetFetch, resolveProductType } from "../bitget";
+import { bitgetFetch, resolveProductType } from "../../bitget";
 
 function toFinite(value: unknown, fallback = NaN): number {
   const n = Number(value);

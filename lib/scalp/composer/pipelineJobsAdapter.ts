@@ -1,14 +1,14 @@
 import {
   fetchCapitalCandlesByEpicDateRange,
   resolveCapitalEpicRuntime,
-} from "../capital";
+} from "../../capital";
 import {
   loadScalpCandleHistoryStatsBulk,
   saveScalpCandleHistory,
-} from "../scalp/candleHistory";
-import { fetchBitgetCandlesByEpicDateRange } from "../scalp/bitgetHistory";
-import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
-import { sql } from "../scalp/pg/sql";
+} from "../candleHistory";
+import { fetchBitgetCandlesByEpicDateRange } from "../bitgetHistory";
+import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
 
 import type { ScalpV2Venue } from "./types";
 

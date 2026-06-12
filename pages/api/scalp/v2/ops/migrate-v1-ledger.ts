@@ -6,8 +6,8 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   parseIntBounded,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
-import { runScalpV2CutoverMigration } from "../../../../../lib/scalp-v2/migration";
+} from "../../../../../lib/scalp/composer/http";
+import { runScalpV2CutoverMigration } from "../../../../../lib/scalp/composer/migration";
 
 export default async function handler(
   req: NextApiRequest,

@@ -9,20 +9,20 @@ import {
   loadScalpV2ResearchCursor,
   upsertScalpV2ResearchCursor,
   upsertScalpV2ResearchHighlights,
-} from "../../../../../lib/scalp-v2/db";
+} from "../../../../../lib/scalp/composer/db";
 import {
   firstQueryValue,
   parseIntBounded,
   parseSession,
   parseVenue,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
-import { toScalpV2ResearchCursorKey } from "../../../../../lib/scalp-v2/research";
+} from "../../../../../lib/scalp/composer/http";
+import { toScalpV2ResearchCursorKey } from "../../../../../lib/scalp/composer/research";
 import type {
   ScalpV2ResearchCursor,
   ScalpV2Session,
   ScalpV2Venue,
-} from "../../../../../lib/scalp-v2/types";
+} from "../../../../../lib/scalp/composer/types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};

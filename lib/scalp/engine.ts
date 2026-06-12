@@ -17,7 +17,7 @@ import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from './sessions'
 import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferredTimeframes } from './strategies/registry';
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
-import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
+import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from './composer/composerExecution';
 import type { ScalpExecutionPersistenceAdapter } from './persistence';
 import { appendScalpAdaptiveSelectorDecisions, getScalpAdaptiveActiveSnapshot } from './pg/adaptive';
 import type { ScalpStrategyRuntimeSnapshot } from './store';

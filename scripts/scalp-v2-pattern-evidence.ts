@@ -17,23 +17,23 @@ import {
   SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
   selectScalpV2PatternRepresentativeCandidates,
   type ScalpV2PatternCandidateSummary,
-} from "../lib/scalp-v2/patternEvidence";
+} from "../lib/scalp/composer/patternEvidence";
 import {
   listScalpV2PatternEvidenceBackfillCandidates,
   loadScalpV2PatternTradeVectors,
   replaceScalpV2PatternTradeVectors,
   upsertScalpV2PatternEdges,
-} from "../lib/scalp-v2/db";
-import { resolveEntryTriggerOverrides } from "../lib/scalp-v2/entryTriggerPresets";
-import { resolveExitRuleOverrides } from "../lib/scalp-v2/exitRulePresets";
-import { toDeploymentId } from "../lib/scalp-v2/logic";
-import { isScalpPgConfigured } from "../lib/scalp-v2/pg";
-import { resolveRiskRuleReplayOverrides } from "../lib/scalp-v2/riskRulePresets";
-import { parseSessionStructureComposerTuneId } from "../lib/scalp-v2/sessionStructureComposer";
-import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "../lib/scalp-v2/symbolInfo";
-import { resolveStateMachineReplayOverrides } from "../lib/scalp-v2/stateMachinePresets";
-import type { ScalpV2Candidate, ScalpV2Session, ScalpV2Venue } from "../lib/scalp-v2/types";
-import { startOfScalpV2WeekMondayUtc } from "../lib/scalp-v2/weekWindows";
+} from "../lib/scalp/composer/db";
+import { resolveEntryTriggerOverrides } from "../lib/scalp/composer/entryTriggerPresets";
+import { resolveExitRuleOverrides } from "../lib/scalp/composer/exitRulePresets";
+import { toDeploymentId } from "../lib/scalp/composer/logic";
+import { isScalpPgConfigured } from "../lib/scalp/composer/pg";
+import { resolveRiskRuleReplayOverrides } from "../lib/scalp/composer/riskRulePresets";
+import { parseSessionStructureComposerTuneId } from "../lib/scalp/composer/sessionStructureComposer";
+import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "../lib/scalp/composer/symbolInfo";
+import { resolveStateMachineReplayOverrides } from "../lib/scalp/composer/stateMachinePresets";
+import type { ScalpV2Candidate, ScalpV2Session, ScalpV2Venue } from "../lib/scalp/composer/types";
+import { startOfScalpV2WeekMondayUtc } from "../lib/scalp/composer/weekWindows";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

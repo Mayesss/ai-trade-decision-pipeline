@@ -40,9 +40,9 @@ test("production cron paths avoid direct full candle-history reads", async () =>
   const root = process.cwd();
   const checkedFiles = [
     "pages/api/scalp/v2/cron/execute.ts",
-    "lib/scalp-v2/pipeline.ts",
+    "lib/scalp/composer/pipeline.ts",
     "pages/api/scalp/v4/cron/build-regimes.ts",
-    "lib/scalp-v4/build.ts",
+    "lib/scalp/regimes/build.ts",
   ];
 
   for (const relativePath of checkedFiles) {

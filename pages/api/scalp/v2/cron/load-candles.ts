@@ -10,18 +10,18 @@ import {
 import {
   invokeScalpV2CronEndpointDetached,
   type ScalpV2CronInvokeResult,
-} from "../../../../../lib/scalp-v2/cronChaining";
+} from "../../../../../lib/scalp/composer/cronChaining";
 import {
   clampScalpV2HardCap,
   resolveScalpV2ResearchHardCaps,
-} from "../../../../../lib/scalp-v2/costControls";
-import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp-v2/db";
+} from "../../../../../lib/scalp/composer/costControls";
+import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp/composer/db";
 import {
   shouldContinueScalpV2LoadCandles,
   shouldTriggerScalpV2LoadCandlesSuccessor,
-} from "../../../../../lib/scalp-v2/loadCandlesChaining";
-import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp-v2/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../../../../../lib/scalp-v2/types";
+} from "../../../../../lib/scalp/composer/loadCandlesChaining";
+import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
+import type { ScalpV2Venue } from "../../../../../lib/scalp/composer/types";
 
 function firstQueryValue(
   value: string | string[] | undefined,

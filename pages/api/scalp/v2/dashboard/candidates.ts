@@ -3,15 +3,15 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { paginateScalpV2Candidates } from "../../../../../lib/scalp-v2/db";
-import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
+import { paginateScalpV2Candidates } from "../../../../../lib/scalp/composer/db";
+import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp/composer/types";
 import {
   firstQueryValue,
   parseSession,
   parseVenue,
   parseIntBounded,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
+} from "../../../../../lib/scalp/composer/http";
 
 function parseCandidateStatus(
   value: string | string[] | undefined,

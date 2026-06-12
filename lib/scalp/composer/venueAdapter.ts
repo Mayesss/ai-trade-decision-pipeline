@@ -1,7 +1,7 @@
 import {
   getScalpVenueAdapter,
   type ScalpVenueAdapter,
-} from "../scalp/adapters";
+} from "../adapters";
 
 import type { ScalpV2Venue } from "./types";
 

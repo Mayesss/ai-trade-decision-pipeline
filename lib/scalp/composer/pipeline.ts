@@ -3,26 +3,26 @@ import crypto from "crypto";
 import {
   fetchCapitalDealActivityHistory,
   fetchCapitalOpenPositionSnapshots,
-} from "../capital";
-import { bitgetFetch, resolveProductType } from "../bitget";
+} from "../../capital";
+import { bitgetFetch, resolveProductType } from "../../bitget";
 import {
   loadScalpCandleHistoryFreshnessStats,
   loadScalpCandleHistoryInRange,
-} from "../scalp/candleHistory";
-import { pipSizeForScalpSymbol } from "../scalp/marketData";
-import { inScalpEntrySessionProfileWindow } from "../scalp/sessions";
-import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
-import type { ScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadata";
-import type { ScalpStrategyRuntimeSnapshot } from "../scalp/store";
-import type { ScalpMarketSnapshot } from "../scalp/types";
+} from "../candleHistory";
+import { pipSizeForScalpSymbol } from "../marketData";
+import { inScalpEntrySessionProfileWindow } from "../sessions";
+import { loadScalpSymbolMarketMetadataBulk } from "../symbolMarketMetadataStore";
+import type { ScalpSymbolMarketMetadata } from "../symbolMarketMetadata";
+import type { ScalpStrategyRuntimeSnapshot } from "../store";
+import type { ScalpMarketSnapshot } from "../types";
 import {
   defaultScalpReplayConfig,
   runScalpReplay,
-} from "../scalp/replay/harness";
+} from "../replay/harness";
 import type {
   ScalpReplayCandle,
   ScalpReplayTrade,
-} from "../scalp/replay/types";
+} from "../replay/types";
 
 import {
   getScalpV2RuntimeConfig,
@@ -99,13 +99,13 @@ import {
   scalpV2V3EntryWindowsOverlap,
   synthesizeScalpV2V3HoldoutFromStages,
   type ScalpV2V3TemporalFilter,
-} from "../scalp-v3";
+} from "../evidence";
 import {
   isScalpV4Enabled,
   isScalpV4HardGateEnabled,
   loadScalpV4CurrentRegimeSnapshot,
   resolveScalpV4EnvelopeBlock,
-} from "../scalp-v4";
+} from "../regimes";
 import {
   isScalpV5Enabled,
   isScalpV5HardGateEnabled,
@@ -113,8 +113,8 @@ import {
   resolveScalpV5Config,
   resolveScalpV5EntryBlock,
   resolveScalpV5SundayBlock,
-} from "../scalp-v5";
-import { loadScalpV5DeploymentEvidence } from "../scalp-v5/pg";
+} from "../research";
+import { loadScalpV5DeploymentEvidence } from "../research/pg";
 import {
   appendScalpV2ExecutionEvent,
   backfillScalpV2DeploymentHoldout,

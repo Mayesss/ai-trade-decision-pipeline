@@ -3,25 +3,25 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp-v2/db";
+import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp/composer/db";
 import {
   firstQueryValue,
   parseIntBounded,
   parseSession,
   parseVenue,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
+} from "../../../../../lib/scalp/composer/http";
 import {
   buildScalpV2CandidateDslGrid,
   buildScalpV2ModelGuidedComposerGrid,
   buildScalpV2PrimitiveCatalogByFamily,
   listScalpV2StrategyPrimitiveReferences,
   strategyPrimitiveCoverageSummary,
-} from "../../../../../lib/scalp-v2/research";
+} from "../../../../../lib/scalp/composer/research";
 import type {
   ScalpV2Session,
   ScalpV2Venue,
-} from "../../../../../lib/scalp-v2/types";
+} from "../../../../../lib/scalp/composer/types";
 
 function normalizeSymbol(value: unknown): string {
   return String(value || "")

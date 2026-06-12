@@ -3,7 +3,7 @@ export const config = { runtime: "nodejs", maxDuration: 800 };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { runScalpV4ResearchJob } from "../../../../../lib/scalp-v4";
+import { runScalpV4ResearchJob } from "../../../../../lib/scalp/regimes";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

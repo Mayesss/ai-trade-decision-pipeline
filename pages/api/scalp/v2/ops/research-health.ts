@@ -6,11 +6,11 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   countScalpV2CandidatesByStatus,
   listScalpV2Jobs,
-} from "../../../../../lib/scalp-v2/db";
-import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp-v2/sessionStructureComposer";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp-v2/pg";
-import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
+} from "../../../../../lib/scalp/composer/db";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp/composer/sessionStructureComposer";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp/composer/pg";
+import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp/composer/types";
 
 type HintTone = "ok" | "warn" | "critical" | "info";
 

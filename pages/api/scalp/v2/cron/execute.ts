@@ -8,8 +8,8 @@ import {
   parseSession,
   parseVenue,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
-import { runScalpV2ExecuteJob } from "../../../../../lib/scalp-v2/pipeline";
+} from "../../../../../lib/scalp/composer/http";
+import { runScalpV2ExecuteJob } from "../../../../../lib/scalp/composer/pipeline";
 
 export default async function handler(
   req: NextApiRequest,

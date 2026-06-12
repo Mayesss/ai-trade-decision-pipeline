@@ -8,9 +8,9 @@
 // and gate live entries on "current cell matches a profitable historic
 // cell." Same negative-screen behavior, fresher data, no 2-year compute.
 
-import type { ScalpReplayTrade } from "../scalp/replay/types";
-import type { ScalpV4CellId } from "../scalp-v4/types";
-import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
+import type { ScalpReplayTrade } from "../replay/types";
+import type { ScalpV4CellId } from "../regimes/types";
+import { startOfUtcWeekMondayMs } from "../regimes/week";
 
 // r3 added the parallel per-week trade-count / win / loss arrays so the
 // incremental evaluator can subtract the oldest week's contribution from

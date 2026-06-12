@@ -4,11 +4,11 @@ import {
   buildForexEventContext,
   ensureForexEventsState,
   type ForexCompactEvent,
-} from "../swing/forexEvents";
-import type { ScalpReplayTrade } from "../scalp/replay/types";
-import type { ScalpEntrySessionProfile } from "../scalp/types";
+} from "../../swing/forexEvents";
+import type { ScalpReplayTrade } from "../replay/types";
+import type { ScalpEntrySessionProfile } from "../types";
 
-import type { ScalpV2Deployment, ScalpV2Session, ScalpV2Venue } from "../scalp-v2/types";
+import type { ScalpV2Deployment, ScalpV2Session, ScalpV2Venue } from "../composer/types";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;

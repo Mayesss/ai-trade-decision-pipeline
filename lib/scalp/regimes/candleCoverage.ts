@@ -1,14 +1,14 @@
 import {
   fetchCapitalCandlesByEpicDateRange,
   resolveCapitalEpicRuntime,
-} from "../capital";
-import { fetchBitgetCandlesByEpicDateRange } from "../scalp/bitgetHistory";
+} from "../../capital";
+import { fetchBitgetCandlesByEpicDateRange } from "../bitgetHistory";
 import {
   loadScalpCandleHistoryInRange,
   saveScalpCandleHistory,
-} from "../scalp/candleHistory";
-import { ensureScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadataSync";
-import type { ScalpCandle } from "../scalp/types";
+} from "../candleHistory";
+import { ensureScalpSymbolMarketMetadata } from "../symbolMarketMetadataSync";
+import type { ScalpCandle } from "../types";
 import type { ScalpV4Venue } from "./types";
 
 const ONE_MINUTE_MS = 60_000;

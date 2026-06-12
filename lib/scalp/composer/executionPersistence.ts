@@ -1,17 +1,17 @@
 import {
   defaultScalpExecutionPersistenceAdapter,
   type ScalpExecutionPersistenceAdapter,
-} from "../scalp/persistence";
+} from "../persistence";
 import type {
   ScalpDeploymentKeyOptions,
   ScalpStrategyRuntimeSnapshot,
-} from "../scalp/store";
+} from "../store";
 import type {
   ScalpJournalEntry,
   ScalpSessionState,
   ScalpTradeLedgerAppendResult,
   ScalpTradeLedgerEntry,
-} from "../scalp/types";
+} from "../types";
 
 import {
   appendScalpV2JournalEntry,

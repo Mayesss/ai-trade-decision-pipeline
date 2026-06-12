@@ -8,8 +8,8 @@ import {
   isSessionStructureComposerStrategyId,
   parseSessionStructureComposerTuneId,
   validateSessionStructureCompatibility,
-} from "../../scalp-v2/sessionStructureComposer";
-import { buildSessionStructureAdaptivePriorsFromRows } from "../../scalp-v2/sessionStructureAdaptiveSearch";
+} from "../composer/sessionStructureComposer";
+import { buildSessionStructureAdaptivePriorsFromRows } from "../composer/sessionStructureAdaptiveSearch";
 
 function composerFamilyKey(row: ReturnType<typeof buildScalpV2SessionStructureComposerGrid>[number]): string {
   const level = row.sessionComposerPlan.levelId.startsWith("opening_range_")

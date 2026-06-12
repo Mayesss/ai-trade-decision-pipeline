@@ -8,7 +8,7 @@ import {
   resolveScalpV4EnvelopeThresholds,
   SCALP_V4_CLASSIFIER_VERSION,
   type ScalpV4RegimeEnvelope,
-} from "../lib/scalp-v4";
+} from "../lib/scalp/regimes";
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
 
