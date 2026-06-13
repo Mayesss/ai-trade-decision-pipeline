@@ -17,6 +17,7 @@ import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
 import { dayModelGuidedComposerV1Strategy } from './dayModelGuidedComposerV1';
 import { sessionStructureComposerV1Strategy } from './sessionStructureComposerV1';
 import { TIMEFRAME_VARIANT_STRATEGIES } from './timeframeVariants';
+import type { ScalpBaseTimeframe, ScalpConfirmTimeframe } from '../types';
 import type { ScalpStrategyDefinition } from './types';
 
 export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
@@ -71,8 +72,8 @@ export function getScalpStrategyById(id: string): ScalpStrategyDefinition | null
 }
 
 export function getScalpStrategyPreferredTimeframes(id: string): {
-    asiaBaseTf: 'M1' | 'M3' | 'M5' | 'M15';
-    confirmTf: 'M1' | 'M3';
+    asiaBaseTf: ScalpBaseTimeframe;
+    confirmTf: ScalpConfirmTimeframe;
 } | null {
     const strategy = getScalpStrategyById(id);
     if (!strategy) return null;

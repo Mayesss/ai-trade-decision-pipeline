@@ -2,7 +2,7 @@ import crypto from "crypto";
 
 import {
   buildModelGuidedComposerTuneId,
-  COMPOSER_TIMEFRAME_VARIANTS,
+  COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS,
   resolveBaseArmFromPatternBlock,
   resolveModelGuidedComposerExecutionPlanFromBlocks,
   type ModelGuidedComposerArmId,
@@ -1576,7 +1576,7 @@ export function buildScalpComposerModelGuidedComposerGrid(params: {
       rowIdx < regimeGateTopBaseArms
         ? [null, ...REGIME_GATE_RESEARCH_PROFILES]
         : [null];
-    for (const tfVariant of COMPOSER_TIMEFRAME_VARIANTS) {
+    for (const tfVariant of COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS) {
       for (const exitRuleId of EXIT_RULE_RESEARCH_PROFILES) {
         for (const regimeGateId of regimeGateVariants) {
           const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;

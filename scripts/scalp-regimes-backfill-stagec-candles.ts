@@ -221,7 +221,20 @@ async function main() {
     Math.min(5000, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_MAX_REQUESTS_PER_CHUNK", 1200))),
   );
   const limit = Math.max(0, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_LIMIT", 0)));
-  const scopes = await loadStageCScopes();
+  // Explicit-symbol override: backfill a specific list (e.g. shallow symbols
+  // not yet in the stage-C scope) instead of querying stage-C-passing scopes.
+  // SCALP_REGIME_STAGEC_BACKFILL_SYMBOLS="PEPEUSDT,EURJPY", _VENUE=bitget|capital
+  const explicitSymbols = String(process.env.SCALP_REGIME_STAGEC_BACKFILL_SYMBOLS || "")
+    .split(",")
+    .map((s) => normalizeSymbol(s))
+    .filter(Boolean);
+  const scopes = explicitSymbols.length
+    ? explicitSymbols.map((symbol) => ({
+        venue: normalizeVenue(process.env.SCALP_REGIME_STAGEC_BACKFILL_VENUE),
+        symbol,
+        candidates: 0,
+      }))
+    : await loadStageCScopes();
   const selected = limit > 0 ? scopes.slice(0, limit) : scopes;
   console.log(JSON.stringify({
     event: "start",

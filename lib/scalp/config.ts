@@ -93,14 +93,17 @@ function normalizeClockLabel(value: string | undefined, fallback: string): strin
     return `${hh}:${mm}`;
 }
 
+const SCALP_BASE_TIMEFRAMES: readonly ScalpBaseTimeframe[] = ['M1', 'M3', 'M5', 'M15', 'M30', 'H1'];
+const SCALP_CONFIRM_TIMEFRAMES: readonly ScalpConfirmTimeframe[] = ['M1', 'M3', 'M5', 'M15'];
+
 function parseAsiaTf(value: string | undefined): ScalpBaseTimeframe {
-    void value;
-    return 'M15';
+    const normalized = String(value || '').trim().toUpperCase() as ScalpBaseTimeframe;
+    return SCALP_BASE_TIMEFRAMES.includes(normalized) ? normalized : 'M15';
 }
 
 function parseConfirmTf(value: string | undefined): ScalpConfirmTimeframe {
-    void value;
-    return 'M3';
+    const normalized = String(value || '').trim().toUpperCase() as ScalpConfirmTimeframe;
+    return SCALP_CONFIRM_TIMEFRAMES.includes(normalized) ? normalized : 'M3';
 }
 
 function parseFvgEntryMode(value: string | undefined): ScalpFvgEntryMode {

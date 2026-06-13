@@ -29,6 +29,7 @@ import {
   isScalpComposerRuntimeSymbolInScope,
 } from "./config";
 import {
+  COMPOSER_DISCOVERY_STAGE_WEEK_MULTIPLIER,
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
   buildModelGuidedComposerTuneId,
   parseExitRuleFromTuneId,
@@ -36,6 +37,12 @@ import {
   resolveModelGuidedComposerExecutionPlanFromBlocks,
   resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
+import {
+  combineStageStats,
+  composerCohortKey,
+  type PooledStageStats,
+  type StageStatGroup,
+} from "./pooledSignificance";
 import {
   DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
   isDayModelGuidedComposerStrategyId,
@@ -1063,6 +1070,24 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
 }
 
 function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
+  // Stage windows are calibrated for the legacy M15 trade frequency. Discovery
+  // now emits a higher-timeframe band (M30/H1), which produces ~Nx fewer trades
+  // per calendar week, so each stage's CALENDAR window is multiplied by the
+  // band factor (H1 -> 4) to accumulate a comparable TRADE count. The
+  // trade-count / netR / significance thresholds below are intentionally
+  // unchanged — every stage still demands the same statistical evidence, just
+  // over proportionally more time. Override with SCALP_COMPOSER_STAGE_WEEK_MULT.
+  const stageWeekMult = Math.max(
+    1,
+    Math.min(
+      8,
+      toPositiveInt(
+        process.env.SCALP_COMPOSER_STAGE_WEEK_MULT,
+        COMPOSER_DISCOVERY_STAGE_WEEK_MULTIPLIER,
+        8,
+      ),
+    ),
+  );
   return {
     allowSunday: envBool("SCALP_COMPOSER_ALLOW_SUNDAY_WORKER", false),
     maxBatchSize: Math.max(
@@ -1085,7 +1110,7 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
     ),
     stageA: {
       id: "a",
-      weeks: 4,
+      weeks: 4 * stageWeekMult,
       minTrades: Math.max(
         0,
         Math.min(
@@ -1119,7 +1144,7 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
     },
     stageB: {
       id: "b",
-      weeks: 6,
+      weeks: 6 * stageWeekMult,
       minTrades: Math.max(
         0,
         Math.min(
@@ -1153,7 +1178,7 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
     },
     stageC: {
       id: "c",
-      weeks: 12,
+      weeks: 12 * stageWeekMult,
       minTrades: Math.max(
         0,
         Math.min(
@@ -1217,7 +1242,14 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
     stage0Enabled: envBool("SCALP_COMPOSER_WORKER_STAGE0_ENABLED", true),
     stage0Weeks: Math.max(
       1,
-      Math.min(4, toPositiveInt(process.env.SCALP_COMPOSER_WORKER_STAGE0_WEEKS, 1, 4)),
+      Math.min(
+        16,
+        toPositiveInt(
+          process.env.SCALP_COMPOSER_WORKER_STAGE0_WEEKS,
+          1 * stageWeekMult,
+          16,
+        ),
+      ),
     ),
     stage0ClearFailNetRMult: Math.min(
       0,
@@ -6132,6 +6164,58 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
         row.status === "promoted" ||
         row.status === "rejected",
     );
+    // --- Cross-symbol pooled significance ---
+    // At higher timeframes a single symbol rarely reaches the promotion trade
+    // floor / lowerBoundR, so we pool each strategy's stage-C trades across its
+    // sibling symbols (same venue+session+arm+modelVersion) and gate on the
+    // pooled sample. Built once from the full pool; the gate below looks up the
+    // candidate's cohort. See lib/scalp/composer/pooledSignificance.ts.
+    const pooledSignificanceEnabled = envBool(
+      "SCALP_COMPOSER_POOLED_SIGNIFICANCE_ENABLED",
+      true,
+    );
+    type CohortKeyable = {
+      tuneId?: unknown;
+      venue?: unknown;
+      entrySessionProfile?: unknown;
+      metadata?: unknown;
+    };
+    const cohortKeyForCandidate = (cand: CohortKeyable | null): string | null => {
+      if (!cand) return null;
+      const armId = resolveModelGuidedComposerExecutionPlanFromTuneId(
+        String(cand.tuneId || ""),
+      ).armId;
+      if (!armId) return null;
+      return composerCohortKey({
+        venue: String(cand.venue || ""),
+        session: String(cand.entrySessionProfile || ""),
+        armId,
+        modelVersion: String(asRecord(asRecord(cand.metadata).model).version || ""),
+      });
+    };
+    const stageStatGroupForCandidate = (
+      cand: CohortKeyable | null,
+    ): StageStatGroup | null => {
+      const stats = asRecord(
+        asRecord(asRecord(asRecord(cand?.metadata || {}).v3Ranking).stageC).stats,
+      );
+      const n = Number(stats.trades);
+      const meanR = Number(stats.meanR);
+      const stdR = Number(stats.stdR);
+      if (!Number.isFinite(n) || n < 1 || !Number.isFinite(meanR)) return null;
+      return { n, meanR, stdR: Number.isFinite(stdR) ? stdR : 0 };
+    };
+    const cohortStatGroups = new Map<string, StageStatGroup[]>();
+    if (pooledSignificanceEnabled) {
+      for (const cand of promotionPool) {
+        const key = cohortKeyForCandidate(cand);
+        const grp = stageStatGroupForCandidate(cand);
+        if (!key || !grp) continue;
+        const list = cohortStatGroups.get(key);
+        if (list) list.push(grp);
+        else cohortStatGroups.set(key, [grp]);
+      }
+    }
 	    const existingDeploymentsRaw = await listScalpComposerDeployments({
 	      limit: 10_000,
 	      compactPromotionGate: true,
@@ -6555,16 +6639,25 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	        asRecord(asRecord(asRecord(candidate?.metadata || {}).worker).stageC)
 	          .trades,
 	      );
+	      // Pool stage-C trades across this candidate's cross-symbol cohort and
+	      // gate on the POOLED sample; fall back to single-symbol when disabled
+	      // or the cohort is empty.
+	      const pooledStageStats: PooledStageStats | null = pooledSignificanceEnabled
+	        ? combineStageStats(cohortStatGroups.get(cohortKeyForCandidate(candidate) || "") || [])
+	        : null;
+	      const effStageCTrades = pooledStageStats ? pooledStageStats.n : stageCTrades;
+	      const effStageCLowerBoundR = pooledStageStats ? pooledStageStats.lowerBoundR : stageCLowerBoundR;
+
 	      const edgeSignificancePassed =
 	        !v3Enabled ||
-	        !Number.isFinite(stageCLowerBoundR) ||
-	        stageCLowerBoundR >= policy.minStageCLowerBoundR;
+	        !Number.isFinite(effStageCLowerBoundR) ||
+	        effStageCLowerBoundR >= policy.minStageCLowerBoundR;
 	      // The relaxed lower-bound bar is only trustworthy with enough samples;
 	      // require the higher promotion trade count before accepting it.
 	      const edgeSampleSizePassed =
 	        !v3Enabled ||
-	        !Number.isFinite(stageCTrades) ||
-	        stageCTrades >= policy.minStageCTradesForPromotion;
+	        !Number.isFinite(effStageCTrades) ||
+	        effStageCTrades >= policy.minStageCTradesForPromotion;
 	      const drift = existing
 	        ? computeScalpComposerV3Drift({
 	            deployment: existing,

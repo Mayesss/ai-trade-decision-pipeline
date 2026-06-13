@@ -37,19 +37,28 @@ const TF_VARIANTS: TfVariant[] = [
   { label: "m15_m3", baseTf: "M15", confirmTf: "M3" },
   { label: "m5_m1", baseTf: "M5", confirmTf: "M1" },
   { label: "m5_m3", baseTf: "M5", confirmTf: "M3" },
+  // Intraday-lite higher timeframes: larger 1R relative to fixed fees + less
+  // microstructure noise. Confirm TF scales with base so confirmation windows
+  // remain a sane fraction of the base bar.
+  { label: "m30_m5", baseTf: "M30", confirmTf: "M5" },
+  { label: "h1_m15", baseTf: "H1", confirmTf: "M15" },
 ];
 
 function tfStrategyId(baseId: string, variant: TfVariant): string {
-  const tfSuffix = `m${tfNum(variant.baseTf)}_m${tfNum(variant.confirmTf)}`;
+  // Lowercase full-label tokens keep minute-TF ids identical to before
+  // ("M15"->"m15", "M3"->"m3") while emitting case-consistent hour ids
+  // ("H1"->"h1"); ids are looked up lowercased, so a stray uppercase letter
+  // would silently break resolution.
+  const tfSuffix = `${tfToken(variant.baseTf)}_${tfToken(variant.confirmTf)}`;
   // Replace the TF portion in-place (preserves trailing suffixes like "_guarded")
-  if (/_m\d+_m\d+/.test(baseId)) {
-    return baseId.replace(/_m\d+_m\d+/, `_${tfSuffix}`);
+  if (/_[mh]\d+_[mh]\d+/.test(baseId)) {
+    return baseId.replace(/_[mh]\d+_[mh]\d+/, `_${tfSuffix}`);
   }
   return `${baseId}_${tfSuffix}`;
 }
 
-function tfNum(tf: string): string {
-  return tf.replace(/^M/i, "");
+function tfToken(tf: string): string {
+  return tf.toLowerCase();
 }
 
 function wrapStrategy(

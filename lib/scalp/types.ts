@@ -8,8 +8,8 @@ export type ScalpEntrySessionProfile =
   | "newyork"
   | "pacific"
   | "sydney";
-export type ScalpBaseTimeframe = "M1" | "M3" | "M5" | "M15";
-export type ScalpConfirmTimeframe = "M1" | "M3";
+export type ScalpBaseTimeframe = "M1" | "M3" | "M5" | "M15" | "M30" | "H1";
+export type ScalpConfirmTimeframe = "M1" | "M3" | "M5" | "M15";
 export type ScalpFvgEntryMode = "first_touch" | "midline_touch" | "full_fill";
 export type ScalpDirectionalBias = "BULLISH" | "BEARISH";
 export type ScalpCandle = [number, number, number, number, number, number];

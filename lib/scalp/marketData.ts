@@ -21,6 +21,8 @@ export function timeframeMinutes(
   if (tf === "M1") return 1;
   if (tf === "M3") return 3;
   if (tf === "M5") return 5;
+  if (tf === "M30") return 30;
+  if (tf === "H1") return 60;
   return 15;
 }
 
@@ -31,6 +33,8 @@ function toScalpTfSpec(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe): {
   if (tf === "M1") return { apiTf: "1m", sourceMinutes: 1 };
   if (tf === "M3") return { apiTf: "3m", sourceMinutes: 3 };
   if (tf === "M5") return { apiTf: "5m", sourceMinutes: 5 };
+  if (tf === "M30") return { apiTf: "30m", sourceMinutes: 30 };
+  if (tf === "H1") return { apiTf: "1h", sourceMinutes: 60 };
   return { apiTf: "15m", sourceMinutes: 15 };
 }
 

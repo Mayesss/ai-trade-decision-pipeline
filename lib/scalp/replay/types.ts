@@ -1,4 +1,10 @@
-import type { ScalpCandle, ScalpEntrySessionProfile, ScalpSessionState } from '../types';
+import type {
+    ScalpBaseTimeframe,
+    ScalpCandle,
+    ScalpConfirmTimeframe,
+    ScalpEntrySessionProfile,
+    ScalpSessionState,
+} from '../types';
 import type { ScalpStrategyConfigOverride } from '../config';
 
 // Open-position bookkeeping inside the replay loop. Defined here (not in
@@ -71,8 +77,8 @@ export interface ScalpReplayRuntimeConfig {
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
         blockedBerlinEntryHours: number[];
-        asiaBaseTf: 'M1' | 'M3' | 'M5' | 'M15';
-        confirmTf: 'M1' | 'M3';
+        asiaBaseTf: ScalpBaseTimeframe;
+        confirmTf: ScalpConfirmTimeframe;
         maxTradesPerDay: number;
         riskPerTradePct: number;
         referenceEquityUsd: number;

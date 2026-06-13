@@ -42,20 +42,65 @@ export type ModelGuidedComposerBaseArm =
   | "hss"
   | "adaptive";
 
-export type ModelGuidedComposerTimeframeVariant = "m15_m3" | "m5_m1" | "m5_m3";
+export type ModelGuidedComposerTimeframeVariant =
+  | "m15_m3"
+  | "m5_m1"
+  | "m5_m3"
+  | "m30_m5"
+  | "h1_m15";
 
 export type ModelGuidedComposerArmId =
   `${ModelGuidedComposerBaseArm}_${ModelGuidedComposerTimeframeVariant}`;
 
+// Full variant table — used to PARSE/RESOLVE any arm id (incl. legacy M15/M5
+// deployments still in the pool). Discovery does not necessarily emit all of
+// these; see COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS.
 export const COMPOSER_TIMEFRAME_VARIANTS: readonly {
   readonly label: ModelGuidedComposerTimeframeVariant;
-  readonly baseTf: "M15" | "M5";
-  readonly confirmTf: "M3" | "M1";
+  readonly baseTf: "M15" | "M5" | "M30" | "H1";
+  readonly confirmTf: "M3" | "M1" | "M5" | "M15";
 }[] = Object.freeze([
   { label: "m15_m3" as const, baseTf: "M15" as const, confirmTf: "M3" as const },
   { label: "m5_m1" as const, baseTf: "M5" as const, confirmTf: "M1" as const },
   { label: "m5_m3" as const, baseTf: "M5" as const, confirmTf: "M3" as const },
+  { label: "m30_m5" as const, baseTf: "M30" as const, confirmTf: "M5" as const },
+  { label: "h1_m15" as const, baseTf: "H1" as const, confirmTf: "M15" as const },
 ]);
+
+// Cutover band: NEW discovery generates ONLY these higher-timeframe variants.
+// The M15/M5 scalp band is fee-dominated (round-trip fee ~0.35R at M15 vs
+// ~0.14R at H1; see scripts/scalp-tf-probe.ts), so the grid no longer spends
+// compute on it. Existing M15/M5 deployments keep running and retire naturally.
+export const COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS: readonly {
+  readonly label: ModelGuidedComposerTimeframeVariant;
+  readonly baseTf: "M15" | "M5" | "M30" | "H1";
+  readonly confirmTf: "M3" | "M1" | "M5" | "M15";
+}[] = Object.freeze(
+  COMPOSER_TIMEFRAME_VARIANTS.filter((v) => v.label === "m30_m5" || v.label === "h1_m15"),
+);
+
+// Base-bar minutes per variant, used to scale stage windows by timeframe so
+// each stage accumulates a comparable number of *trades* at any TF.
+const TF_VARIANT_BASE_MINUTES: Record<ModelGuidedComposerTimeframeVariant, number> = {
+  m15_m3: 15,
+  m5_m1: 5,
+  m5_m3: 5,
+  m30_m5: 30,
+  h1_m15: 60,
+};
+
+// Stage-window multiplier (relative to the legacy M15 calibration) for the
+// COARSEST timeframe discovery currently emits. H1 -> 60/15 = 4, so stage
+// windows quadruple (C: 12w -> 48w) while trade-count/significance thresholds
+// stay fixed. Derived from the discovery band so it tracks any band change.
+export const COMPOSER_DISCOVERY_STAGE_WEEK_MULTIPLIER: number = Math.max(
+  1,
+  Math.round(
+    Math.max(
+      ...COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS.map((v) => TF_VARIANT_BASE_MINUTES[v.label]),
+    ) / 15,
+  ),
+);
 
 export interface ModelGuidedComposerExecutionPlan {
   armId: ModelGuidedComposerArmId;
@@ -103,8 +148,10 @@ const STRATEGY_ID_TEMPLATES: Partial<Record<ModelGuidedComposerBaseArm, string>>
   });
 
 function strategyIdForArm(baseArm: ModelGuidedComposerBaseArm, tfVariant: ModelGuidedComposerTimeframeVariant): string {
-  const [baseTfNum, confirmTfNum] = tfVariantToNums(tfVariant);
-  const tfSuffix = `m${baseTfNum}_m${confirmTfNum}`;
+  // The variant label IS the canonical TF suffix used by the strategy registry
+  // (e.g. "h1_m15" -> regime_pullback_h1_m15). Deriving it from minutes would
+  // produce "m60_m15" for hour timeframes and silently fail registry lookup.
+  const tfSuffix = tfVariant;
 
   // Use explicit template if defined
   const template = STRATEGY_ID_TEMPLATES[baseArm];
@@ -113,13 +160,15 @@ function strategyIdForArm(baseArm: ModelGuidedComposerBaseArm, tfVariant: ModelG
   // Default: strip original TF suffix and append the new one
   const base = BASE_STRATEGY_IDS[baseArm];
   if (!base) return BASE_STRATEGY_IDS[DEFAULT_BASE_ARM];
-  const stripped = base.replace(/_m\d+_m\d+/, "");
+  const stripped = base.replace(/_[mh]\d+_[mh]\d+/, "");
   return `${stripped}_${tfSuffix}`;
 }
 
 function tfVariantToNums(v: ModelGuidedComposerTimeframeVariant): [number, number] {
   if (v === "m5_m1") return [5, 1];
   if (v === "m5_m3") return [5, 3];
+  if (v === "m30_m5") return [30, 5];
+  if (v === "h1_m15") return [60, 15];
   return [15, 3];
 }
 
@@ -187,7 +236,7 @@ const ALL_BASE_ARMS: readonly ModelGuidedComposerBaseArm[] = Object.freeze(
 );
 
 const ALL_TF_VARIANTS: readonly ModelGuidedComposerTimeframeVariant[] =
-  Object.freeze(["m15_m3", "m5_m1", "m5_m3"] as const);
+  Object.freeze(COMPOSER_TIMEFRAME_VARIANTS.map((v) => v.label));
 
 const VALID_ARM_IDS: ReadonlySet<string> = new Set(
   ALL_BASE_ARMS.flatMap((b) => ALL_TF_VARIANTS.map((t) => `${b}_${t}`)),
@@ -300,7 +349,7 @@ function parseTuneIdSegments(tuneId: unknown): {
   if (!normalized) return empty;
 
   // Extract arm and TF first
-  const baseMatch = normalized.match(/^mdl_([a-z]+)_(m\d+_m\d+)(?:_(.+))?$/);
+  const baseMatch = normalized.match(/^mdl_([a-z]+)_([mh]\d+_[mh]\d+)(?:_(.+))?$/);
   if (baseMatch) {
     const baseArm = normalizeBaseArm(baseMatch[1]);
     const tfVar = normalizeTfVariant(baseMatch[2]);
