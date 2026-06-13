@@ -616,10 +616,33 @@ export async function listScalpComposerCandidates(params: {
   session?: ScalpComposerSession;
   symbols?: string[];
   limit?: number;
+  // When true, project ONLY the metadata sub-objects the promotion gate +
+  // cross-symbol pooling read, instead of the full metadata_json blob. The
+  // full blob (~5-6 KB/candidate, incl. a duplicate `previousWorker`) blows
+  // past Neon's 64 MB HTTP response cap once the pool is large, and re-reading
+  // it every 15 min (promote cron) is needless egress. Keeps whole sub-objects
+  // (not leaves) so gate behavior is unchanged. Mirrors `compactPromotionGate`
+  // on listScalpComposerDeployments.
+  compactPromotionGate?: boolean;
 } = {}): Promise<ScalpComposerCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
-  const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
+  // Compact reads are ~half the size, so a larger cap is safe and lets the
+  // promote job load the full pool (the prior 10_000 cap silently truncated it).
+  const limit = Math.max(1, Math.min(50_000, Math.floor(params.limit || 500)));
+  // Every top-level metadata key the promote path reads (worker, v3Ranking,
+  // v3Holdout, v3TemporalFilter, model, researchDsl). If a future gate read
+  // adds a key, add it here too or it will be missing in compact mode.
+  const metadataSelectSql = params.compactPromotionGate
+    ? `jsonb_build_object(
+        'worker', c.metadata_json->'worker',
+        'v3Ranking', c.metadata_json->'v3Ranking',
+        'v3Holdout', c.metadata_json->'v3Holdout',
+        'v3TemporalFilter', c.metadata_json->'v3TemporalFilter',
+        'model', c.metadata_json->'model',
+        'researchDsl', c.metadata_json->'researchDsl'
+      )`
+    : `c.metadata_json`;
   const where: string[] = [];
   const values: unknown[] = [];
   const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
@@ -646,7 +669,6 @@ export async function listScalpComposerCandidates(params: {
     values.push(params.symbols);
     where.push(`c.symbol = ANY($${values.length})`);
   }
-  values.push(limit);
   const orderBySql = discoveredOnly
     ? `ORDER BY
         COALESCE((c.metadata_json->'previousWorker'->'stageC'->>'passed')::boolean, false) DESC,
@@ -660,27 +682,24 @@ export async function listScalpComposerCandidates(params: {
         c.score DESC,
         c.updated_at DESC`
     : `ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC`;
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const rows = await db.$queryRawUnsafe<
-    Array<{
-      id: number;
-      venue: string;
-      symbol: string;
-      strategyId: string;
-      tuneId: string;
-      entrySessionProfile: string;
-      score: number;
-      status: string;
-      reasonCodes: string[];
-      metadataJson: unknown;
-      researchAttempts: number;
-      deploymentId: string | null;
-      deploymentEnabled: boolean | null;
-      createdAt: Date;
-      updatedAt: Date;
-    }>
-  >(
-    `
+  type CandidateRow = {
+    id: number;
+    venue: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: string;
+    score: number;
+    status: string;
+    reasonCodes: string[];
+    metadataJson: unknown;
+    researchAttempts: number;
+    deploymentId: string | null;
+    deploymentEnabled: boolean | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  const buildSql = (whereArr: string[], orderSql: string, limitIdx: number): string => `
       SELECT
         c.id,
         c.venue,
@@ -691,7 +710,7 @@ export async function listScalpComposerCandidates(params: {
         c.score::double precision AS score,
         c.status,
         c.reason_codes AS "reasonCodes",
-        c.metadata_json AS "metadataJson",
+        ${metadataSelectSql} AS "metadataJson",
         COALESCE(c.research_attempts, 0)::int AS "researchAttempts",
         d.deployment_id AS "deploymentId",
         d.enabled AS "deploymentEnabled",
@@ -704,12 +723,38 @@ export async function listScalpComposerCandidates(params: {
        AND d.strategy_id = c.strategy_id
        AND d.tune_id = c.tune_id
        AND d.entry_session_profile = c.entry_session_profile
-      ${whereSql}
-      ${orderBySql}
-      LIMIT $${values.length};
-    `,
-    ...values,
-  );
+      ${whereArr.length ? `WHERE ${whereArr.join(" AND ")}` : ""}
+      ${orderSql}
+      LIMIT $${limitIdx};
+    `;
+  let rows: CandidateRow[];
+  if (params.compactPromotionGate) {
+    // Keyset-paginate by id so no single Neon HTTP response approaches the
+    // 64 MB cap (the worker.* weekly maps stay heavy even after projection).
+    // Order is irrelevant to the promotion gate, which builds maps + iterates
+    // deployments, so we override to id-ascending for a stable cursor.
+    const pageSize = 2000;
+    rows = [];
+    let afterId = 0;
+    while (rows.length < limit) {
+      const pageWhere = [...where, `c.id > $${values.length + 1}`];
+      const remaining = Math.min(pageSize, limit - rows.length);
+      const pageValues = [...values, afterId, remaining];
+      const page = await db.$queryRawUnsafe<CandidateRow[]>(
+        buildSql(pageWhere, "ORDER BY c.id ASC", pageValues.length),
+        ...pageValues,
+      );
+      rows.push(...page);
+      if (page.length < remaining) break;
+      afterId = Number(page[page.length - 1]!.id);
+    }
+  } else {
+    const singleValues = [...values, limit];
+    rows = await db.$queryRawUnsafe<CandidateRow[]>(
+      buildSql(where, orderBySql, singleValues.length),
+      ...singleValues,
+    );
+  }
 
   return rows.map((row) => ({
     id: Number(row.id),
@@ -2335,6 +2380,15 @@ export async function requeueScalpComposerDeploymentCandidatesForWindow(params: 
   previousWindowOnly?: boolean;
   includeDisabledDeployments?: boolean;
   reasonCode?: string;
+  // Restrict to candidates whose worker stage C passed — used to refresh just
+  // the promote-eligible (stale) passers rather than the whole deployment pool.
+  stageCPassedOnly?: boolean;
+  // When false, requeue candidates directly without requiring a linked
+  // deployment row. Stage-C passers that never promoted have no deployment
+  // (candidate_id), so the default deployment-join would miss them.
+  requireDeployment?: boolean;
+  // Count-only: return how many rows WOULD be requeued without mutating them.
+  dryRun?: boolean;
 }): Promise<number> {
   if (!isScalpPgConfigured()) return 0;
   const db = scalpPrisma();
@@ -2349,10 +2403,16 @@ export async function requeueScalpComposerDeploymentCandidatesForWindow(params: 
     .trim()
     .toUpperCase();
   const nowTs = Date.now();
+  const requireDeployment = params.requireDeployment !== false;
 
-  const enabledFilter = includeDisabledDeployments
-    ? sql``
-    : sql`AND d.enabled = TRUE`;
+  const deploymentJoin = requireDeployment
+    ? sql`INNER JOIN scalp_v2_deployments d ON d.candidate_id = c.id`
+    : sql``;
+  // d.enabled is only available when joined; skip the filter otherwise.
+  const enabledFilter =
+    requireDeployment && !includeDisabledDeployments
+      ? sql`AND d.enabled = TRUE`
+      : sql``;
   const previousWindowFilter = previousWindowOnly
     ? sql`
         AND (
@@ -2361,13 +2421,20 @@ export async function requeueScalpComposerDeploymentCandidatesForWindow(params: 
         )
       `
     : sql``;
+  const stageCPassedFilter = params.stageCPassedOnly
+    ? sql`
+        AND COALESCE(
+          (c.metadata_json->'worker'->'stageC'->>'passed')::boolean,
+          FALSE
+        ) = TRUE
+      `
+    : sql``;
 
-  const rows = await db.$queryRaw<Array<{ id: bigint | number }>>(sql`
-    WITH target AS (
-      SELECT c.id
+  if (params.dryRun) {
+    const countRows = await db.$queryRaw<Array<{ n: bigint | number }>>(sql`
+      SELECT COUNT(*)::int AS n
       FROM scalp_v2_candidates c
-      INNER JOIN scalp_v2_deployments d
-        ON d.candidate_id = c.id
+      ${deploymentJoin}
       WHERE c.status <> 'discovered'
         AND c.strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
         AND (
@@ -2375,6 +2442,25 @@ export async function requeueScalpComposerDeploymentCandidatesForWindow(params: 
           OR (c.metadata_json->'worker'->>'windowToTs')::bigint <> ${windowToTs}
         )
         ${previousWindowFilter}
+        ${stageCPassedFilter}
+        ${enabledFilter}
+    `);
+    return Number(countRows[0]?.n || 0);
+  }
+
+  const rows = await db.$queryRaw<Array<{ id: bigint | number }>>(sql`
+    WITH target AS (
+      SELECT c.id
+      FROM scalp_v2_candidates c
+      ${deploymentJoin}
+      WHERE c.status <> 'discovered'
+        AND c.strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
+        AND (
+          (c.metadata_json->'worker'->>'windowToTs') IS NULL
+          OR (c.metadata_json->'worker'->>'windowToTs')::bigint <> ${windowToTs}
+        )
+        ${previousWindowFilter}
+        ${stageCPassedFilter}
         ${enabledFilter}
     )
     UPDATE scalp_v2_candidates c

@@ -435,6 +435,22 @@ function deterministicScore(seed: string): number {
   return digest.readUInt32BE(0) / 0xffffffff;
 }
 
+// Generation-time score nudge for higher-timeframe blocks (see scoreCombo).
+// Tunable via env; modest relative to the ~0.13–0.22 per-dimension weights so
+// it reshapes the ranked top-N without crowding out lower-TF combos entirely.
+function envScoreBoost(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 && n <= 0.5 ? n : fallback;
+}
+const SESSION_STRUCTURE_H1_SCORE_BOOST = envScoreBoost(
+  "SCALP_SSC_H1_SCORE_BOOST",
+  0.06,
+);
+const SESSION_STRUCTURE_M30_SCORE_BOOST = envScoreBoost(
+  "SCALP_SSC_M30_SCORE_BOOST",
+  0.03,
+);
+
 function scoreCombo(params: {
   venue: ScalpComposerVenue;
   symbol: string;
@@ -528,6 +544,20 @@ function scoreCombo(params: {
     confirmationId: params.confirmationId,
     managementId: params.managementId,
   });
+  // Tilt the score-ranked, capped generation toward higher timeframes. The
+  // H1/M30 bands clear stage C at a far higher rate with positive net edge once
+  // fee drag is removed (see scripts/scalp-tf-probe.ts + the band funnel), but
+  // the static block weights above mildly disfavor them. This is an explicit
+  // nudge; the adaptive priors then reinforce it as those bands keep passing.
+  const higherTimeframeBoost =
+    params.contextId === "h1_directional_bias"
+      ? SESSION_STRUCTURE_H1_SCORE_BOOST
+      : (isSessionStructureOpeningRangeLevel(params.levelId) &&
+          params.levelId !== "opening_range_15m") ||
+        params.confirmationId === "m30_close_acceptance" ||
+        params.contextId === "m30_session_momentum"
+      ? SESSION_STRUCTURE_M30_SCORE_BOOST
+      : 0;
   return (
     contextWeight[params.contextId] +
     levelWeight[params.levelId] +
@@ -535,6 +565,7 @@ function scoreCombo(params: {
     confirmationWeight[params.confirmationId] +
     managementWeight[params.managementId] +
     preferredPairBonus +
+    higherTimeframeBoost +
     -duplicateClusterPenalty +
     (adaptive?.adjustment || 0) +
     deterministicScore(seed) * 0.02

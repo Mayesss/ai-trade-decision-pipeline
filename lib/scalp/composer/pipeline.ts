@@ -224,7 +224,11 @@ function hashScoreSeed(value: string): number {
   return positive % 1000;
 }
 
-const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_3_adaptive_novelty_sha256_r1";
+// Bump to invalidate the weekly warm-up candidate cache. The scope hash does
+// not include the discovery timeframe band, so the M30/H1 cutover
+// (COMPOSER_DISCOVERY_TIMEFRAME_VARIANTS) is otherwise invisible — without this
+// bump the worker keeps reusing the cached M15/M5 candidate universe.
+const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_5_h1_tilt_sha256_r1";
 
 function isRetiredComposerStrategyId(strategyId: unknown): boolean {
   const normalized = String(strategyId || "").trim().toLowerCase();
@@ -1611,21 +1615,42 @@ function shouldDeferWorkerStageForCoverage(
   ].includes(String(stageResult.reason || "").trim().toLowerCase());
 }
 
+// Trade-frequency divisor by discovery timeframe band, inferred from the tune
+// id. Higher timeframes fire ~Nx fewer trades, so per-candidate trade-count /
+// netR significance is meaningless at the early per-symbol stages — they get
+// scaled down by this factor and real significance is deferred to the
+// cross-symbol POOLED promotion gate. h1 ≈ 4× fewer trades than m15; m30 ≈ 2×.
+function composerTfTradeDivisor(tuneId: unknown): number {
+  const id = String(tuneId || "").toLowerCase();
+  if (/(h1bias|h1acc|h1td1|_h1_)/.test(id)) return 4;
+  if (/(orb30|m30acc|m30mom|_m30_)/.test(id)) return 2;
+  return 1;
+}
+
 function evaluateWorkerStageGate(params: {
   stage: ScalpComposerWorkerStagePolicy;
   stageResult: ScalpComposerWorkerStageResult;
+  tradeDivisor?: number;
 }): { passed: boolean; reason: string | null } {
   const { stageResult, stage } = params;
+  // Scale the per-candidate trade-count / netR floors down for higher
+  // timeframes (sparse trades). Significance is re-imposed across symbols at
+  // the pooled promotion gate; the structural gates (drawdown, profit factor,
+  // consecutive winning weeks) are NOT scaled.
+  const divisor = Math.max(1, Math.floor(params.tradeDivisor || 1));
+  const minTrades =
+    divisor > 1 ? Math.max(2, Math.ceil(stage.minTrades / divisor)) : stage.minTrades;
+  const minNetR = divisor > 1 ? stage.minNetR / divisor : stage.minNetR;
   if (!stageResult.executed) {
     return { passed: false, reason: stageResult.reason || "stage_not_executed" };
   }
   if (stageResult.candles <= 0) {
     return { passed: false, reason: "stage_no_candles" };
   }
-  if (stageResult.trades < stage.minTrades) {
+  if (stageResult.trades < minTrades) {
     return { passed: false, reason: "stage_min_trades_not_met" };
   }
-  if (stageResult.netR < stage.minNetR) {
+  if (stageResult.netR < minNetR) {
     return { passed: false, reason: "stage_min_net_r_not_met" };
   }
   if (stageResult.consecutiveWinningWeeks < stage.minConsecutiveWinningWeeks) {
@@ -1715,6 +1740,10 @@ function resolveWorkerStageCPass(metadata: unknown): {
         stageC,
         finalPass: stageCPass,
         evaluatedAtMs: worker.evaluatedAtMs,
+        // The run window this evidence was computed for. stage C ends a holdout
+        // offset BEFORE this, so freshness uses windowToTs (not stageC.toTs) for
+        // the recency check.
+        windowToTs: worker.windowToTs,
       }
     : null;
 
@@ -1787,20 +1816,50 @@ function resolveWorkerStageCFreshness(params: {
       netR: Number.isFinite(netR) ? netR : 0,
     });
   }
-  const freshness = buildFreshness({
+  // Fill zero-trade weeks across the evaluated span. The stage-C replay only
+  // records weeks that produced trades, so sparse-trade timeframes (e.g. H1)
+  // leave gaps that would otherwise read as missing coverage.
+  const stageCToTs = Math.floor(Number(stageC.toTs) || 0);
+  const spanFromTs = weekStarts[0]!;
+  const spanToTs = Math.max(weekStarts[weekStarts.length - 1]!, stageCToTs);
+  for (let w = spanFromTs; w <= spanToTs; w += ONE_WEEK_MS) {
+    if (!weeklyByWeekStart.has(w)) {
+      weeklyByWeekStart.set(w, { trades: 0, netR: 0 });
+    }
+  }
+  // Coverage is anchored at stage C's OWN end, not "now". With v3 holdout
+  // active, stage C ends `holdoutWeeks` before the run window, so a now-anchored
+  // window can never be covered (the recent holdout weeks live in the separate
+  // holdout evidence). Recency is enforced below via the run window instead.
+  const coverage = buildFreshness({
     weeklyByWeekStart,
     requiredWeeks: params.requiredWeeks,
     nowTs: params.nowTs,
+    anchorToTs: stageCToTs > 0 ? stageCToTs : undefined,
   });
-  if (!freshness.ready) {
+  // Report the RUN window as windowToTs (not the stage-C-anchored coverage
+  // window) so downstream recency checks — promotion + the execute-side gate —
+  // compare the evaluation cycle to "now". Coverage flags (ready / completedWeeks)
+  // come from the stage-C-anchored computation above.
+  const currentWindowToTs = resolveScalpComposerCompletedWeekWindowToUtc(params.nowTs);
+  const workerWindowToTs = Math.floor(Number(workerStages.windowToTs) || 0);
+  const effectiveWindowToTs = workerWindowToTs > 0 ? workerWindowToTs : currentWindowToTs;
+  const freshness: PromotionFreshness = {
+    ...coverage,
+    windowToTs: effectiveWindowToTs,
+    windowFromTs: effectiveWindowToTs - coverage.requiredWeeks * ONE_WEEK_MS,
+  };
+  if (!coverage.ready) {
     return {
       freshness,
       ready: false,
       reason: "worker_stage_c_freshness_incomplete",
     };
   }
-  const stageCToTs = Math.floor(Number(stageC.toTs) || 0);
-  if (stageCToTs > 0 && stageCToTs !== freshness.windowToTs) {
+  // Recency: the evidence must have been computed for the current completed
+  // week. Compare the RUN window (worker.windowToTs) to now — NOT stageC.toTs,
+  // which is intentionally a holdout offset behind.
+  if (workerWindowToTs > 0 && workerWindowToTs !== currentWindowToTs) {
     return {
       freshness: { ...freshness, ready: false },
       ready: false,
@@ -1867,14 +1926,17 @@ function resolveExecuteDeploymentFreshnessGate(params: {
   } else if (completedWeeks < requiredWeeks) {
     reason = "execute_guard_freshness_weeks_incomplete";
   } else if (freshnessWindowToTs === null || freshnessWindowToTs !== expectedWindowToTs) {
+    // Recency: the evidence's RUN window must be the current completed week.
     reason = "execute_guard_window_stale";
-  } else if (stageCToTs !== null && stageCToTs !== expectedWindowToTs) {
-    reason = "execute_guard_stage_c_window_stale";
-  } else if (weeklyWeekCount < requiredWeeks) {
-    reason = "execute_guard_stage_c_weekly_missing";
   } else if (minNonZeroWeeks > 0 && nonZeroWeeks < minNonZeroWeeks) {
     reason = "execute_guard_stage_c_non_zero_weeks_below_threshold";
   }
+  // NOTE: the former `stageCToTs === expectedWindowToTs` and
+  // `weeklyWeekCount >= requiredWeeks` sub-checks were removed: with v3 holdout
+  // active, stage C ends a holdout offset BEFORE the run window (so stageC.toTs
+  // is never "now"), and sparse-trade timeframes legitimately have zero-trade
+  // weeks absent from weeklyNetR. Recency is enforced via freshnessWindowToTs
+  // (the run window) and coverage via the stage-C-anchored completedWeeks above.
 
   return {
     ready: reason === null,
@@ -2079,9 +2141,16 @@ function buildFreshness(params: {
   weeklyByWeekStart: Map<number, { trades: number; netR: number }>;
   requiredWeeks: number;
   nowTs: number;
+  // Anchor the coverage window here instead of the current completed week.
+  // Stage-C evidence ends `holdoutWeeks` before the run window, so coverage is
+  // checked against stage C's own end, not "now".
+  anchorToTs?: number;
 }): PromotionFreshness {
   const requiredWeeks = Math.max(1, Math.min(52, params.requiredWeeks));
-  const windowToTs = resolveScalpComposerCompletedWeekWindowToUtc(params.nowTs);
+  const windowToTs =
+    typeof params.anchorToTs === "number" && params.anchorToTs > 0
+      ? params.anchorToTs
+      : resolveScalpComposerCompletedWeekWindowToUtc(params.nowTs);
   const windowFromTs = windowToTs - requiredWeeks * ONE_WEEK_MS;
   let completedWeeks = 0;
   const missingWeekStarts: number[] = [];
@@ -5225,8 +5294,13 @@ export async function runScalpComposerResearchJob(params: {
             toTs: stageToTs,
           });
           if (stage0Candles.length >= workerPolicy.minCandles) {
+            // Loosen the stage-0 clear-fail for higher timeframes: a freshest-
+            // few-weeks window holds only a trade or two at H1, so the default
+            // threshold rejects sparse candidates on pure noise before stage A.
             const stage0ClearFailNetR =
-              stage.minNetR * workerPolicy.stage0ClearFailNetRMult;
+              stage.minNetR *
+              workerPolicy.stage0ClearFailNetRMult *
+              composerTfTradeDivisor(candidate.tuneId);
             const stage0Replay = await withTiming("research.replay_stage0", () =>
               runScalpReplay({
                 candles: stage0Candles,
@@ -5444,7 +5518,11 @@ export async function runScalpComposerResearchJob(params: {
 	        v3Bootstrap,
 	        v3Holdout,
 	      };
-      const gate = evaluateWorkerStageGate({ stage, stageResult });
+      const gate = evaluateWorkerStageGate({
+        stage,
+        stageResult,
+        tradeDivisor: composerTfTradeDivisor(candidate.tuneId),
+      });
       stageResult.passed = gate.passed;
       stageResult.reason = gate.reason || "stage_passed";
       if (stage.id === "c" && stageResult.passed && stagePatternTrades) {
@@ -6127,7 +6205,12 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
       "SCALP_COMPOSER_REQUIRE_WINNER_SHORTLIST",
       true,
     );
-    const allCandidatesRaw = await listScalpComposerCandidates({ limit: 10_000 });
+    const allCandidatesRaw = await listScalpComposerCandidates({
+      limit: 50_000,
+      // Project only gate/pooling metadata — avoids Neon's 64 MB response cap
+      // on the full pool and slashes promote-cron egress. See db.ts.
+      compactPromotionGate: true,
+    });
     const allCandidates = allCandidatesRaw.filter((row) => {
       if (
         !isScalpComposerRuntimeSymbolInScope({

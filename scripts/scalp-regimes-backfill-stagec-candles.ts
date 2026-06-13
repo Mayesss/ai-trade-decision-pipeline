@@ -207,7 +207,14 @@ async function backfillScope(params: {
 async function main() {
   const now = Date.now();
   const windowToMs = now - (now % WEEK);
-  const windowFromMs = windowToMs - 104 * WEEK;
+  // Backfill depth in weeks. Default 104 (legacy regime walk-forward sweep);
+  // the M30/H1 composer bulk only needs stageC(48w) + holdout(24w) = ~72w, so
+  // pass SCALP_REGIME_STAGEC_BACKFILL_WEEKS=76 for that scope.
+  const backfillWeeks = Math.max(
+    1,
+    Math.min(208, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_WEEKS", 104))),
+  );
+  const windowFromMs = windowToMs - backfillWeeks * WEEK;
   const targetCoverageRatio = Math.max(
     0.1,
     Math.min(1, envNumber("SCALP_REGIME_STAGEC_BACKFILL_TARGET_COVERAGE", 0.65)),
