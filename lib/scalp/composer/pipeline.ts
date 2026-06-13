@@ -132,6 +132,7 @@ import {
   enforceScalpComposerEnabledCap,
   finalizeScalpComposerJob,
   heartbeatScalpComposerJob,
+  pruneScalpComposerStaleLeaseJobs,
   listScalpComposerCandidates,
   loadScalpComposerEvaluatedCandidateKeys,
   listScalpComposerDiscoveredSymbols,
@@ -2856,6 +2857,11 @@ export async function runScalpComposerResearchJob(params: {
     lockOwner: owner,
     dedupeScope: researchLockScope,
   });
+  // Self-maintain: clear old finalized lease job rows so the table (and the UI
+  // job lookup) doesn't drown under one row per run. Fire-and-forget.
+  void pruneScalpComposerStaleLeaseJobs({ olderThanHours: 6, maxRows: 10_000 }).catch(
+    () => undefined,
+  );
   if (!claimed) {
     return buildScalpComposerJobResult({
       jobKind: "research",

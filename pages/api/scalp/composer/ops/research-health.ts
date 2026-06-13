@@ -194,7 +194,10 @@ export default async function handler(
     const staleLockMinutes = resolveScalpComposerJobLockStaleMinutes();
     const staleThresholdMs = staleLockMinutes * 60_000;
     const [jobs, robustness, ...candidateCounts] = await Promise.all([
-      listScalpComposerJobs({ limit: 50 }),
+      // Target the live research row directly. Work-leases mode writes a new
+      // research job row per run, so a global recent-N scan can return a stale
+      // succeeded row (or miss it behind execute/reconcile churn).
+      listScalpComposerJobs({ jobKind: "research", preferRunning: true, limit: 1 }),
       loadDayRobustnessQueue(),
       ...CANDIDATE_STATUSES.map((status) =>
         countScalpComposerCandidatesByStatus({ status }),

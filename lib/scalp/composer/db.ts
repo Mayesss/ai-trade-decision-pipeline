@@ -424,6 +424,36 @@ export async function claimScalpComposerJob(params: {
   return rows.length > 0;
 }
 
+/**
+ * Prune finalized work-lease job rows. Work-leases mode writes a NEW research
+ * job row per run (unique dedupe_key research:lease:*), none of which are ever
+ * reclaimed, so the table grows unbounded (64k+ observed) — bloating queries
+ * and burying the live row. Deletes only finalized lease rows past a retention
+ * window, bounded per call so a large backlog clears over a few runs.
+ */
+export async function pruneScalpComposerStaleLeaseJobs(params: {
+  olderThanHours?: number;
+  maxRows?: number;
+} = {}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  const db = scalpPrisma();
+  const olderThanHours = Math.max(1, Math.min(24 * 30, Math.floor(params.olderThanHours || 6)));
+  const maxRows = Math.max(1, Math.min(50_000, Math.floor(params.maxRows || 10_000)));
+  const rows = await db.$queryRaw<Array<{ id: bigint | number }>>(sql`
+    DELETE FROM scalp_v2_jobs
+    WHERE id IN (
+      SELECT id FROM scalp_v2_jobs
+      WHERE dedupe_key LIKE '%:lease:%'
+        AND status IN ('succeeded', 'failed')
+        AND updated_at < NOW() - (${olderThanHours} * INTERVAL '1 hour')
+      ORDER BY updated_at ASC
+      LIMIT ${maxRows}
+    )
+    RETURNING id;
+  `);
+  return rows.length;
+}
+
 export async function heartbeatScalpComposerJob(params: {
   jobKind: ScalpComposerJobKind;
   lockOwner: string;
@@ -3881,6 +3911,13 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
 
 export async function listScalpComposerJobs(params: {
   limit?: number;
+  // Filter to one job kind. Needed because work-leases mode writes a NEW
+  // research job row per run (unique dedupe_key), so a global recent-N scan can
+  // miss the live row behind churn from execute/reconcile crons.
+  jobKind?: ScalpComposerJobKind;
+  // Surface running rows first, so the live job is returned even if a just-
+  // finalized row was updated more recently.
+  preferRunning?: boolean;
 } = {}): Promise<
   Array<{
     jobKind: ScalpComposerJobKind;
@@ -3896,6 +3933,12 @@ export async function listScalpComposerJobs(params: {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(100, Math.floor(params.limit || 20)));
+  const jobKindFilter = params.jobKind
+    ? sql`WHERE job_kind = ${params.jobKind}`
+    : sql``;
+  const orderSql = params.preferRunning
+    ? sql`ORDER BY (status = 'running') DESC, updated_at DESC`
+    : sql`ORDER BY updated_at DESC`;
   const rows = await db.$queryRaw<
     Array<{
       jobKind: string;
@@ -3918,7 +3961,8 @@ export async function listScalpComposerJobs(params: {
       updated_at AS "updatedAt",
       payload
     FROM scalp_v2_jobs
-    ORDER BY updated_at DESC
+    ${jobKindFilter}
+    ${orderSql}
     LIMIT ${limit};
   `);
 
