@@ -2670,16 +2670,19 @@ export async function orphanRetiredLegacyComposerDeployments(params: {
 
 export async function listScalpComposerDeployments(params: {
   enabledOnly?: boolean;
+  disabledOnly?: boolean;
   liveOnly?: boolean;
   includeRetired?: boolean;
   venue?: ScalpComposerVenue;
   session?: ScalpComposerSession;
   compactPromotionGate?: boolean;
   limit?: number;
+  offset?: number;
 } = {}): Promise<ScalpComposerDeployment[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
+  const offset = Math.max(0, Math.floor(params.offset || 0));
   const where: string[] = [];
   const values: unknown[] = [];
 
@@ -2688,6 +2691,10 @@ export async function listScalpComposerDeployments(params: {
   }
   if (params.enabledOnly) {
     values.push(true);
+    where.push(`enabled = $${values.length}`);
+  }
+  if (params.disabledOnly) {
+    values.push(false);
     where.push(`enabled = $${values.length}`);
   }
   if (params.liveOnly) {
@@ -2704,6 +2711,9 @@ export async function listScalpComposerDeployments(params: {
   }
 
   values.push(limit);
+  const limitParam = values.length;
+  values.push(offset);
+  const offsetParam = values.length;
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const promotionGateSelect = params.compactPromotionGate
     ? `
@@ -2772,7 +2782,7 @@ export async function listScalpComposerDeployments(params: {
       FROM scalp_v2_deployments
       ${whereSql}
       ORDER BY enabled DESC, updated_at DESC
-      LIMIT $${values.length};
+      LIMIT $${limitParam} OFFSET $${offsetParam};
     `,
     ...values,
   );
@@ -3674,14 +3684,6 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
       events24h: bigint;
       ledgerRows30d: bigint;
       netR30d: number | null;
-      v3HoldoutCompletedCandidates: bigint;
-      v3TemporalCandidates: bigint;
-      v3TemporalFloorPassedCandidates: bigint;
-      v3SingleAxisTemporalResultCandidates: bigint;
-      v3EnabledValidatedDeployments: bigint;
-      v3PendingEnabledValidationDeployments: bigint;
-      v3DriftingDeployments: bigint;
-      v3LowSampleDriftDeployments: bigint;
       coverageJson: unknown;
     }>
   >(sql`
@@ -3707,47 +3709,10 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
             AND retired_d.retired_at IS NOT NULL
         )
     ),
-    v3_candidate_stats AS (
-      SELECT
-        (SELECT COUNT(*)::bigint
-         FROM scalp_v2_candidates
-         WHERE metadata_json->'worker'->'holdout' IS NOT NULL
-            OR metadata_json->'v3Holdout' IS NOT NULL
-        ) AS "v3HoldoutCompletedCandidates",
-        (SELECT COUNT(*)::bigint
-         FROM scalp_v2_candidates
-         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-        ) AS "v3TemporalCandidates",
-        (SELECT COUNT(*)::bigint
-         FROM scalp_v2_candidates
-         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-           AND COALESCE((metadata_json->'v3Ranking'->'stageA'->>'variantTradeFloorPassed')::boolean, false)
-        ) AS "v3TemporalFloorPassedCandidates",
-        (SELECT COUNT(*)::bigint
-         FROM scalp_v2_candidates
-         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-           AND metadata_json->'v3TemporalFilter'->>'variantKind' <> 'slot_weekday'
-           AND metadata_json->'v3Ranking'->'stageA' IS NOT NULL
-        ) AS "v3SingleAxisTemporalResultCandidates"
-    ),
     deployment_stats AS (
       SELECT
         COUNT(*)::bigint AS deployments,
-        COUNT(*) FILTER (WHERE enabled = TRUE)::bigint AS "enabledDeployments",
-        COUNT(*) FILTER (
-          WHERE enabled = TRUE
-            AND promotion_gate->>'v3ValidationStatus' = 'validated'
-        )::bigint AS "v3EnabledValidatedDeployments",
-        COUNT(*) FILTER (
-          WHERE enabled = TRUE
-            AND COALESCE(promotion_gate->>'v3ValidationStatus', 'pending') <> 'validated'
-        )::bigint AS "v3PendingEnabledValidationDeployments",
-        COUNT(*) FILTER (
-          WHERE promotion_gate->'drift'->>'status' = 'drifting'
-        )::bigint AS "v3DriftingDeployments",
-        COUNT(*) FILTER (
-          WHERE promotion_gate->'drift'->>'status' = 'low_sample'
-        )::bigint AS "v3LowSampleDriftDeployments"
+        COUNT(*) FILTER (WHERE enabled = TRUE)::bigint AS "enabledDeployments"
       FROM scalp_v2_deployments
     ),
     candidate_symbol_counts AS (
@@ -3780,19 +3745,10 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
       0::bigint AS "events24h",
       0::bigint AS "ledgerRows30d",
       0::double precision AS "netR30d",
-      v3s."v3HoldoutCompletedCandidates",
-      v3s."v3TemporalCandidates",
-      v3s."v3TemporalFloorPassedCandidates",
-      v3s."v3SingleAxisTemporalResultCandidates",
-      ds."v3EnabledValidatedDeployments",
-      ds."v3PendingEnabledValidationDeployments",
-      ds."v3DriftingDeployments",
-      ds."v3LowSampleDriftDeployments",
       (SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol', g.symbol, 'candidates', g.c, 'deployments', g.d)), '[]'::jsonb)
        FROM coverage g
       ) AS "coverageJson"
     FROM candidate_stats cs
-    CROSS JOIN v3_candidate_stats v3s
     CROSS JOIN deployment_stats ds
   `);
 
@@ -3801,17 +3757,6 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
     candidates: Number(r?.candidates || 0),
     deployments: Number(r?.deployments || 0),
   }));
-  const v3TemporalCandidates = Number(row?.v3TemporalCandidates || 0);
-  const v3TemporalFloorPassedCandidates = Number(row?.v3TemporalFloorPassedCandidates || 0);
-  const v3SingleAxisTemporalResultCandidates = Number(
-    row?.v3SingleAxisTemporalResultCandidates || 0,
-  );
-  const v3HardGateMinCandidates = toPositiveInt(
-    process.env.SCALP_EVIDENCE_HARD_GATE_MIN_CANDIDATES,
-    50,
-    10_000,
-  );
-
   return {
     pgConfigured: true,
     generatedAtMs: Date.now(),
@@ -3828,40 +3773,6 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
     ledgerRows30d: Number(row?.ledgerRows30d || 0),
     netR30d: Number.isFinite(Number(row?.netR30d)) ? Number(row?.netR30d) : 0,
     symbolCoverage,
-    v3: {
-      enabled:
-        String(process.env.SCALP_COMPOSER_RESEARCH_VERSION || "v3").trim().toLowerCase() ===
-        "v3",
-      holdoutCompletedCandidates: Number(row?.v3HoldoutCompletedCandidates || 0),
-      hardGateMinCandidates: v3HardGateMinCandidates,
-      holdoutHardGateReady:
-        Number(row?.v3HoldoutCompletedCandidates || 0) >= v3HardGateMinCandidates,
-      weekTwoComboReadinessCount: v3SingleAxisTemporalResultCandidates,
-      weekTwoComboThreshold: v3HardGateMinCandidates,
-      weekTwoCombosReady: v3SingleAxisTemporalResultCandidates >= v3HardGateMinCandidates,
-      temporalVariantCandidates: v3TemporalCandidates,
-      temporalVariantFloorPassedCandidates: v3TemporalFloorPassedCandidates,
-      temporalVariantSurvivalRatePct:
-        v3TemporalCandidates > 0
-          ? (v3TemporalFloorPassedCandidates / v3TemporalCandidates) * 100
-          : null,
-      enabledValidatedDeployments: Number(row?.v3EnabledValidatedDeployments || 0),
-      pendingEnabledValidationDeployments: Number(
-        row?.v3PendingEnabledValidationDeployments || 0,
-      ),
-      drift: {
-        driftingDeployments: Number(row?.v3DriftingDeployments || 0),
-        lowSampleDeployments: Number(row?.v3LowSampleDriftDeployments || 0),
-        minTrades: toPositiveInt(process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES, 20, 10_000),
-        minWeeks: toPositiveInt(process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS, 2, 520),
-        autoPause:
-          ["1", "true", "yes", "on"].includes(
-            String(process.env.SCALP_EVIDENCE_DRIFT_AUTO_PAUSE || "false")
-              .trim()
-              .toLowerCase(),
-          ),
-      },
-    },
   };
 }
 
