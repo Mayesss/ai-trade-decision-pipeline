@@ -2672,6 +2672,7 @@ export async function listScalpComposerDeployments(params: {
   enabledOnly?: boolean;
   disabledOnly?: boolean;
   liveOnly?: boolean;
+  stageCPassedOnly?: boolean;
   includeRetired?: boolean;
   venue?: ScalpComposerVenue;
   session?: ScalpComposerSession;
@@ -2709,6 +2710,9 @@ export async function listScalpComposerDeployments(params: {
     values.push(params.session);
     where.push(`entry_session_profile = $${values.length}`);
   }
+  if (params.stageCPassedOnly) {
+    where.push(`promotion_gate->'worker'->'stageC'->>'passed' = 'true'`);
+  }
 
   values.push(limit);
   const limitParam = values.length;
@@ -2727,15 +2731,14 @@ export async function listScalpComposerDeployments(params: {
           'reason', promotion_gate->'reason',
           'lifecycle', promotion_gate->'lifecycle',
           'forwardValidation', promotion_gate->'forwardValidation',
-          'holdout', promotion_gate->'holdout',
-          'drift', promotion_gate->'drift',
-          'v3ValidationStatus', promotion_gate->'v3ValidationStatus',
-          'regimeEnvelope', promotion_gate->'regimeEnvelope',
-          'worker', CASE
-            WHEN promotion_gate->'worker'->'holdout' IS NOT NULL
-              THEN jsonb_build_object('holdout', promotion_gate->'worker'->'holdout')
-            ELSE NULL
-          END,
+          'worker', jsonb_strip_nulls(jsonb_build_object(
+            'windowToTs', promotion_gate->'worker'->'windowToTs',
+            'stageC', jsonb_strip_nulls(jsonb_build_object(
+              'weeklyNetR', promotion_gate->'worker'->'stageC'->'weeklyNetR',
+              'netR', promotion_gate->'worker'->'stageC'->'netR',
+              'trades', promotion_gate->'worker'->'stageC'->'trades'
+            ))
+          )),
           'v3TemporalFilter', COALESCE(promotion_gate->'v3TemporalFilter', promotion_gate->'metadata'->'v3TemporalFilter'),
           'brokerSeat', COALESCE(promotion_gate->'brokerSeat', promotion_gate->'metadata'->'brokerSeat'),
           'entryBlockReasonCodes', COALESCE(promotion_gate->'entryBlockReasonCodes', promotion_gate->'metadata'->'entryBlockReasonCodes'),

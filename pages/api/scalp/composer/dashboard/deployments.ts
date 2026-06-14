@@ -5,6 +5,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { listScalpComposerDeployments } from "../../../../../lib/scalp/composer/db";
 import {
+  parseBool,
   parseIntBounded,
   parseSession,
   parseVenue,
@@ -42,12 +43,14 @@ export default async function handler(
     const session = parseSession(req.query.session);
     const limit = parseIntBounded(req.query.limit, 25, 1, 200);
     const offset = parseIntBounded(req.query.offset, 0, 0, 1_000_000);
+    const stageCPassed = parseBool(req.query.stageCPassed, false);
 
     // Fetch one extra row to know whether a next page exists without a COUNT.
     const rows = await listScalpComposerDeployments({
       enabledOnly: scope === "live" || scope === "enabled",
       liveOnly: scope === "live",
       disabledOnly: scope === "inactive",
+      stageCPassedOnly: stageCPassed,
       venue,
       session,
       compactPromotionGate: true,
@@ -61,6 +64,7 @@ export default async function handler(
     return res.status(200).json({
       ok: true,
       scope,
+      stageCPassed,
       venue: venue || null,
       session: session || null,
       limit,

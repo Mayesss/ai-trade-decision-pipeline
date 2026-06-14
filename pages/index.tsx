@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Head from "next/head";
+import { WeeklyNetRTrack } from "../components/scalp/WeeklyNetRTrack";
 import {
   AdminSecretPanel,
   DashboardHeader,
@@ -83,6 +84,25 @@ interface DeploymentsFeedResp {
 
 const DEPLOYMENT_SCOPES: DeploymentScope[] = ["live", "enabled", "inactive", "all"];
 const DEPLOYMENT_PAGE_SIZE = 25;
+
+// Stage-C backtest weekly netR lives at promotion_gate.worker.stageC.weeklyNetR
+// as a { weekStartMs: netR } map. Return values oldest→newest for the track.
+function weeklyNetRSeries(gate: unknown): { values: number[]; weeks: number[] } {
+  const map = (gate as { worker?: { stageC?: { weeklyNetR?: unknown } } } | null)?.worker?.stageC
+    ?.weeklyNetR;
+  if (!map || typeof map !== "object") return { values: [], weeks: [] };
+  const rec = map as Record<string, unknown>;
+  const weeks = Object.keys(rec)
+    .map((k) => Number(k))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  return { values: weeks.map((w) => Number(rec[String(w)]) || 0), weeks };
+}
+
+function fmtWeekDate(ms: number | undefined): string {
+  if (!ms || !Number.isFinite(ms)) return "—";
+  return new Date(ms).toISOString().slice(0, 10);
+}
 
 interface NeonUsageResp {
   ok: boolean;
@@ -225,11 +245,13 @@ export default function ScalpComposerDashboard() {
   // ─── lazy / paged / scoped deployments feed ─────────────────────────────────
   const [depScope, setDepScope] = useState<DeploymentScope>("live");
   const [depVenue, setDepVenue] = useState<"" | "bitget" | "capital">("");
+  const [depStageCOnly, setDepStageCOnly] = useState(false);
   const [depOffset, setDepOffset] = useState(0);
   const [depRows, setDepRows] = useState<DeploymentRow[]>([]);
   const [depHasMore, setDepHasMore] = useState(false);
   const [depLoading, setDepLoading] = useState(false);
   const [depError, setDepError] = useState<string | null>(null);
+  const [expandedDeployment, setExpandedDeployment] = useState<string | null>(null);
 
   useEffect(() => {
     if (!secretHydrated || unauthorized) return;
@@ -245,6 +267,7 @@ export default function ScalpComposerDashboard() {
         offset: String(depOffset),
       });
       if (depVenue) params.set("venue", depVenue);
+      if (depStageCOnly) params.set("stageCPassed", "1");
       try {
         const res = await fetch(`/api/scalp/composer/dashboard/deployments?${params.toString()}`, {
           headers,
@@ -276,7 +299,7 @@ export default function ScalpComposerDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [adminSecret, secretHydrated, unauthorized, depScope, depVenue, depOffset, setShowSecretPanel]);
+  }, [adminSecret, secretHydrated, unauthorized, depScope, depVenue, depStageCOnly, depOffset, setShowSecretPanel]);
 
   const setScope = (s: DeploymentScope) => {
     setDepScope(s);
@@ -284,6 +307,10 @@ export default function ScalpComposerDashboard() {
   };
   const setVenueFilter = (v: "" | "bitget" | "capital") => {
     setDepVenue(v);
+    setDepOffset(0);
+  };
+  const toggleStageC = () => {
+    setDepStageCOnly((v) => !v);
     setDepOffset(0);
   };
 
@@ -383,6 +410,14 @@ export default function ScalpComposerDashboard() {
             [{v || "all"}]
           </button>
         ))}
+        <span className="text-zinc-700">·</span>
+        <button
+          onClick={toggleStageC}
+          className={depStageCOnly ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-300"}
+          title="Only deployments whose stage-C backtest passed"
+        >
+          [{depStageCOnly ? "✓ " : ""}stageC pass]
+        </button>
         {depLoading ? <span className="text-sky-400">loading…</span> : null}
       </div>
       {depError ? <div className="pl-2 mt-1 text-rose-400">{depError}</div> : null}
@@ -407,34 +442,71 @@ export default function ScalpComposerDashboard() {
                 const reason = String(gate.reason || "—");
                 const scoreRaw = (gate as { score?: unknown }).score;
                 const liveMode = String(d.liveMode || "—");
+                const id = d.deploymentId || String(i);
+                const isOpen = expandedDeployment === id;
+                const series = weeklyNetRSeries(gate);
+                const sumR = series.values.reduce((a, b) => a + b, 0);
                 return (
-                  <tr key={d.deploymentId || i} className="border-t border-zinc-900">
-                    <td className="pr-3 text-zinc-100">{d.symbol || "—"}</td>
-                    <td className="pr-3 text-zinc-400">{d.entrySessionProfile || "—"}</td>
-                    <td className="pr-3 text-zinc-500">{d.venue || "—"}</td>
-                    <td className="pr-3">
-                      <span
-                        className={
-                          d.enabled && liveMode === "live"
-                            ? "text-emerald-400"
-                            : liveMode === "shadow"
-                              ? "text-sky-400"
-                              : "text-zinc-500"
-                        }
-                      >
-                        {d.enabled ? liveMode : "off"}
-                      </span>
-                    </td>
-                    <td className="pr-3 text-zinc-300">
-                      {scoreRaw === null || scoreRaw === undefined || !Number.isFinite(Number(scoreRaw))
-                        ? "—"
-                        : Number(scoreRaw).toFixed(1)}
-                    </td>
-                    <td className="pr-3">
-                      <span className={eligible ? "text-emerald-400" : "text-zinc-500"}>{reason}</span>
-                    </td>
-                    <td className="pr-3 text-zinc-500">{fmtAgo(d.updatedAtMs)}</td>
-                  </tr>
+                  <Fragment key={id}>
+                    <tr
+                      className="border-t border-zinc-900 cursor-pointer hover:bg-zinc-900/40"
+                      onClick={() => setExpandedDeployment(isOpen ? null : id)}
+                    >
+                      <td className="pr-3 text-zinc-100">
+                        <span className="text-zinc-600">{isOpen ? "▾ " : "▸ "}</span>
+                        {d.symbol || "—"}
+                      </td>
+                      <td className="pr-3 text-zinc-400">{d.entrySessionProfile || "—"}</td>
+                      <td className="pr-3 text-zinc-500">{d.venue || "—"}</td>
+                      <td className="pr-3">
+                        <span
+                          className={
+                            d.enabled && liveMode === "live"
+                              ? "text-emerald-400"
+                              : liveMode === "shadow"
+                                ? "text-sky-400"
+                                : "text-zinc-500"
+                          }
+                        >
+                          {d.enabled ? liveMode : "off"}
+                        </span>
+                      </td>
+                      <td className="pr-3 text-zinc-300">
+                        {scoreRaw === null || scoreRaw === undefined || !Number.isFinite(Number(scoreRaw))
+                          ? "—"
+                          : Number(scoreRaw).toFixed(1)}
+                      </td>
+                      <td className="pr-3">
+                        <span className={eligible ? "text-emerald-400" : "text-zinc-500"}>{reason}</span>
+                      </td>
+                      <td className="pr-3 text-zinc-500">{fmtAgo(d.updatedAtMs)}</td>
+                    </tr>
+                    {isOpen ? (
+                      <tr className="border-t border-zinc-900/40 bg-zinc-900/20">
+                        <td colSpan={7} className="px-3 py-2">
+                          <div className="text-zinc-500 mb-1">
+                            stage-C weekly netR
+                            {series.values.length > 0 ? (
+                              <span className="text-zinc-400">
+                                {" "}· Σ{" "}
+                                <span className={sumR >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                                  {sumR >= 0 ? "+" : ""}
+                                  {sumR.toFixed(2)}R
+                                </span>{" "}
+                                · {series.values.length}w
+                              </span>
+                            ) : null}
+                          </div>
+                          <WeeklyNetRTrack
+                            values={series.values}
+                            weekLabel={(idx, value) =>
+                              `${fmtWeekDate(series.weeks[idx])}: ${value >= 0 ? "+" : ""}${value.toFixed(2)}R`
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
