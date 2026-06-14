@@ -2,7 +2,6 @@ import crypto from 'crypto';
 
 import { getScalpVenueAdapter, type ScalpBrokerPositionSnapshot } from './adapters';
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
-import { ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID } from './adaptive/types';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
 import {
@@ -19,7 +18,6 @@ import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guard
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from './composer/composerExecution';
 import type { ScalpExecutionPersistenceAdapter } from './persistence';
-import { appendScalpAdaptiveSelectorDecisions, getScalpAdaptiveActiveSnapshot } from './pg/adaptive';
 import type { ScalpStrategyRuntimeSnapshot } from './store';
 import type {
     ScalpExecuteCycleResult,
@@ -80,47 +78,6 @@ async function safeAppendTradeLedgerEntry(
     }
 }
 
-async function safeAppendAdaptiveDecision(params: {
-    deploymentId: string;
-    symbol: string;
-    strategyId: string;
-    entrySessionProfile: 'tokyo' | 'berlin' | 'newyork' | 'pacific' | 'sydney';
-    nowMs: number;
-    selectedArmType: 'pattern' | 'incumbent' | 'none';
-    selectedArmId?: string | null;
-    confidence?: number | null;
-    skipReason?: string | null;
-    reasonCodes?: string[];
-    featuresHash?: string | null;
-    snapshotId?: string | null;
-    details?: Record<string, unknown> | null;
-}): Promise<void> {
-    try {
-        await appendScalpAdaptiveSelectorDecisions([
-            {
-                tsMs: params.nowMs,
-                deploymentId: params.deploymentId,
-                symbol: params.symbol,
-                strategyId: params.strategyId,
-                entrySessionProfile: params.entrySessionProfile,
-                snapshotId: params.snapshotId || null,
-                selectedArmId: params.selectedArmId || null,
-                selectedArmType: params.selectedArmType,
-                confidence:
-                    params.confidence === null || params.confidence === undefined
-                        ? null
-                        : Number(params.confidence),
-                skipReason: params.skipReason || null,
-                reasonCodes: params.reasonCodes || [],
-                featuresHash: params.featuresHash || null,
-                details: params.details || null,
-            },
-        ]);
-    } catch (err) {
-        console.warn('Failed to append scalp adaptive selector decision:', err);
-    }
-}
-
 function withRunContext(
     state: ScalpSessionState,
     params: { nowMs: number; runId: string; dryRun: boolean; reasonCodes: string[]; killSwitch: boolean },
@@ -140,11 +97,6 @@ function withRunContext(
 
 function dedupeReasonCodes(codes: string[]): string[] {
     return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    return value as Record<string, unknown>;
 }
 
 export function resolveScalpLiveRiskPctOfEquity(): number {
@@ -247,28 +199,6 @@ export async function runScalpExecuteCycle(opts: {
     if (opts.configOverride) {
         cfg = applyScalpStrategyConfigOverride(cfg, opts.configOverride);
     }
-    if (executionStrategyId === ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID) {
-        const adaptiveSnapshot = await getScalpAdaptiveActiveSnapshot({
-            symbol: deployment.symbol,
-            entrySessionProfile: cfg.sessions.entrySessionProfile,
-            strategyId: executionStrategyId,
-        });
-        if (adaptiveSnapshot) {
-            cfg = applyScalpStrategyConfigOverride(cfg, {
-                adaptive: {
-                    snapshotId: adaptiveSnapshot.snapshotId,
-                    incumbentArm: adaptiveSnapshot.catalog?.incumbentArm || null,
-                    thresholds: {
-                        minConfidence: Number.isFinite(Number(adaptiveSnapshot.catalog?.minConfidence))
-                            ? Number(adaptiveSnapshot.catalog?.minConfidence)
-                            : null,
-                    },
-                    catalog: adaptiveSnapshot.catalog || null,
-                },
-            });
-        }
-    }
-
     if (!strategyControl.enabled) {
         const reasonCodes = strategyControl.envEnabled
             ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
@@ -462,38 +392,6 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = phase.state;
                 phaseReasonCodes.push(...phase.reasonCodes);
-                if (deployment.strategyId === ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID) {
-                    const adaptiveDecision = asRecord(asRecord(phase.meta)?.adaptiveDecision);
-                    const selectedArmTypeRaw = String(adaptiveDecision?.selectedArmType || '').trim().toLowerCase();
-                    const selectedArmType =
-                        selectedArmTypeRaw === 'pattern' || selectedArmTypeRaw === 'incumbent'
-                            ? selectedArmTypeRaw
-                            : 'none';
-                    const selectedArmId = String(adaptiveDecision?.selectedArmId || '').trim() || null;
-                    const confidenceRaw = Number(adaptiveDecision?.confidence);
-                    const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : null;
-                    const skipReason = String(adaptiveDecision?.skipReason || '').trim() || null;
-                    const snapshotId =
-                        String(adaptiveDecision?.snapshotId || '').trim() ||
-                        String(cfg.adaptive?.snapshotId || '').trim() ||
-                        null;
-                    const featureHash = String(adaptiveDecision?.featureHash || '').trim() || null;
-                    await safeAppendAdaptiveDecision({
-                        deploymentId: deployment.deploymentId,
-                        symbol: deployment.symbol,
-                        strategyId: deployment.strategyId,
-                        entrySessionProfile: cfg.sessions.entrySessionProfile,
-                        nowMs,
-                        selectedArmType,
-                        selectedArmId,
-                        confidence,
-                        skipReason,
-                        reasonCodes: phase.reasonCodes,
-                        featuresHash: featureHash,
-                        snapshotId,
-                        details: adaptiveDecision,
-                    });
-                }
                 if (debug) {
                     const volCodes = phase.reasonCodes.filter((code) => String(code || '').includes('VOL_FILTER'));
                     console.info(

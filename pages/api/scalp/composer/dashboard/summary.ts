@@ -20,7 +20,6 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { isScalpRegimeEnabled, loadScalpRegimeCurrentRegimeSnapshot } from "../../../../../lib/scalp/regimes";
 
 // In-memory cache — avoids hammering Neon on every dashboard refresh
 let summaryCache: { data: Record<string, unknown>; ts: number; key: string } | null = null;
@@ -47,7 +46,6 @@ function compactPromotionGateForDashboard(
     "holdout",
     "drift",
     "v3ValidationStatus",
-    "regimeEnvelope",
   ]) {
     if (gate[key] !== undefined) out[key] = gate[key];
   }
@@ -78,7 +76,6 @@ function compactDeploymentForDashboard(row: Record<string, any>) {
     enabled: row.enabled,
     liveMode: row.liveMode,
     promotionGate: compactPromotionGateForDashboard(row.promotionGate),
-    v4Regime: row.v4Regime || null,
     createdAtMs: row.createdAtMs,
     updatedAtMs: row.updatedAtMs,
   };
@@ -132,39 +129,9 @@ export default async function handler(
       .map((row) => String(row.deploymentId || "").trim())
       .filter(Boolean)
       .slice(0, runtimeDeploymentLimit);
-    const v4RegimeByDeploymentId = new Map<string, Record<string, unknown>>();
-    if (isScalpRegimeEnabled()) {
-      for (const row of deploymentRows.filter((deployment) => deployment.enabled).slice(0, runtimeDeploymentLimit)) {
-        const current = await loadScalpRegimeCurrentRegimeSnapshot({
-          venue: row.venue,
-          symbol: row.symbol,
-          nowMs: Date.now(),
-        }).catch(() => ({ cellId: null, stale: true, snapshot: null }));
-        const envelope = asPlainRecord(asPlainRecord(row.promotionGate).regimeEnvelope);
-        const allowedCells = Array.isArray(envelope.allowedCells)
-          ? envelope.allowedCells.map((cell) => String(cell || "")).filter(Boolean)
-          : [];
-        const enabledDormantByRegime =
-          row.enabled &&
-          Boolean(envelope.eligible) &&
-          Boolean(current.cellId) &&
-          !allowedCells.includes(String(current.cellId));
-        v4RegimeByDeploymentId.set(String(row.deploymentId), {
-          currentCellId: current.cellId,
-          stale: current.stale,
-          enabledDormantByRegime,
-          envelopeStatus: envelope.status || null,
-          allowedCells,
-        });
-      }
-    }
-    const deploymentsWithV4 = deploymentRows.map((row) => ({
-      ...row,
-      v4Regime: v4RegimeByDeploymentId.get(String(row.deploymentId)) || null,
-    }));
     const deployments = compactDeployments
-      ? deploymentsWithV4.map((row) => compactDeploymentForDashboard(row))
-      : deploymentsWithV4;
+      ? deploymentRows.map((row) => compactDeploymentForDashboard(row))
+      : deploymentRows;
     const events = await listScalpComposerExecutionEvents({
       limit: eventLimit,
       venue,

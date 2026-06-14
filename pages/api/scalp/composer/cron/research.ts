@@ -17,7 +17,6 @@ import {
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
 import { runScalpComposerResearchJob } from "../../../../../lib/scalp/composer/pipeline";
-import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
   req: NextApiRequest,
@@ -40,46 +39,11 @@ export default async function handler(
   const debug = parseBool(req.query.debug, false);
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
-  const legacyV2 = parseBool(req.query.legacyV2, false);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
   const selfMaxHops = Math.min(
     parseIntBounded(req.query.selfMaxHops, 6, 0, 50),
     hardCaps.maxSelfHops,
   );
-
-  if (!legacyV2) {
-    const maxCandidatesPerCall = parseIntBounded(
-      req.query.maxCandidatesPerCall,
-      Math.max(0, Math.min(500, batchSize)),
-      0,
-      500,
-    );
-    const job = await runScalpRegimeResearchJob({
-      maxCandidatesPerCall,
-      candidateFetchLimit: Math.max(maxCandidatesPerCall * 4, 50),
-      forceValidity: parseBool(req.query.forceValidity, false),
-    });
-    return res.status(200).json({
-      ok: job.ok,
-      busy: job.busy,
-      job,
-      version: "v4",
-      legacyRoute: "/api/scalp/composer/cron/research",
-      message:
-        "v2 research is disabled by default; pass legacyV2=true to run the old v2/v3 research path.",
-      chaining: {
-        autoSuccessor: false,
-        autoContinue: false,
-        selfHop,
-        selfMaxHops,
-        debug,
-        batchSize,
-        batchSizeHardCap,
-        downstream: null,
-        selfRecall: null,
-      },
-    });
-  }
 
   const job = await runScalpComposerResearchJob({ batchSize, debugTiming: debug });
 

@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import { COMPRESSION_BREAKOUT_PULLBACK_M15_M3_STRATEGY_ID } from './compressionBreakoutPullbackM15M3';
 import { FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID } from './failedAuctionExtremeReversalM15M1';
-import { ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID } from './adaptiveMetaSelectorM15M3';
 import { ANCHORED_VWAP_REVERSION_M15_M3_STRATEGY_ID } from './anchoredVwapReversionM15M3';
 import { BASIS_DISLOCATION_REVERSION_PROXY_M15_M3_STRATEGY_ID } from './basisDislocationReversionProxyM15M3';
 import { FUNDING_OI_EXHAUSTION_PROXY_M15_M3_STRATEGY_ID } from './fundingOiExhaustionProxyM15M3';
@@ -16,7 +15,7 @@ import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3
 import { RELATIVE_VALUE_SPREAD_PROXY_M15_M3_STRATEGY_ID } from './relativeValueSpreadProxyM15M3';
 import { SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID } from './sessionSeasonalityBiasM15M3';
 import { TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID } from './trendDayReaccelerationM15M3';
-import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
+import { MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID } from '../composer/composerExecution';
 import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from '../composer/dayComposer';
 import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from '../composer/sessionStructureComposer';
 import {
@@ -53,10 +52,11 @@ test('strategy registry exposes unique ids and supports lookup', () => {
     assert.ok(ids.includes(BASIS_DISLOCATION_REVERSION_PROXY_M15_M3_STRATEGY_ID), 'expected basis proxy strategy in registry');
     assert.ok(ids.includes(RELATIVE_VALUE_SPREAD_PROXY_M15_M3_STRATEGY_ID), 'expected relative-value proxy strategy in registry');
     assert.ok(ids.includes(SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID), 'expected session-seasonality strategy in registry');
-    assert.ok(ids.includes(ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID), 'expected adaptive meta-selector strategy in registry');
-    assert.ok(ids.includes(modelGuidedComposerV2Strategy.id), 'expected model-guided composer strategy in registry');
-    assert.ok(ids.includes(DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID), 'expected day composer strategy in registry');
     assert.ok(ids.includes(SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID), 'expected session composer strategy in registry');
+    // Retired composers are no longer registered (their id constants survive for
+    // the live retired-composer guards); legacy open positions manage via cfg.
+    assert.ok(!ids.includes(MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID), 'expected retired model-guided composer removed from registry');
+    assert.ok(!ids.includes(DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID), 'expected retired day composer removed from registry');
     const uniqueIds = new Set(ids);
     assert.equal(ids.length, uniqueIds.size, 'strategy IDs must be unique');
     for (const id of ids) {

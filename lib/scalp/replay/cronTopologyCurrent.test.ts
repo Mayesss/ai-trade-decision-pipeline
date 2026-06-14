@@ -24,11 +24,14 @@ function requirePathByPrefix(paths: string[], prefix: string): string {
 test("vercel scalp cron topology keeps only live and lightweight maintenance crons", async () => {
   const cronPaths = await loadCronPaths();
 
+  // Post strip-down: live execute/reconcile + lightweight composer maintenance
+  // (candle ingestion + pooled-significance promote). The v3/v4/v5 regime +
+  // research crons were removed entirely; heavy discovery/eval runs from the
+  // local bulk runner, not prod cron.
   requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/execute?dryRun=false");
   requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/reconcile");
-  requirePathByPrefix(cronPaths, "/api/scalp/regimes/cron/build-regimes?liveOnly=true&forceValidity=true");
-  requirePathByPrefix(cronPaths, "/api/scalp/research/cron/load-live-candles");
-  requirePathByPrefix(cronPaths, "/api/scalp/research/cron/promote");
+  requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/load-candles");
+  requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/promote");
 
   const forbiddenPrefixes = [
     "/api/scalp/cron/execute-deployments",
@@ -39,13 +42,9 @@ test("vercel scalp cron topology keeps only live and lightweight maintenance cro
     "/api/scalp/composer/cron/evaluate",
     "/api/scalp/composer/cron/worker",
     "/api/scalp/composer/cron/research",
-    "/api/scalp/composer/cron/promote",
-    "/api/scalp/composer/cron/load-candles",
-    "/api/scalp/research/cron/evaluate",
-    "/api/scalp/research/cron/preflight-candles",
-    "/api/scalp/research/cron/sunday-rollover",
-    "/api/scalp/research/cron/trim-tail",
-    "/api/scalp/research/cron/cull-bottom",
+    // Entire v4 regime + v5 research cron surface removed in the strip-down.
+    "/api/scalp/regimes/",
+    "/api/scalp/research/",
   ];
   for (const prefix of forbiddenPrefixes) {
     assert.equal(

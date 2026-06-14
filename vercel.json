@@ -28,15 +28,11 @@
       "schedule": "*/2 * * * *"
     },
     {
-      "path": "/api/scalp/regimes/cron/build-regimes?liveOnly=true&forceValidity=true",
-      "schedule": "5 * * * *"
-    },
-    {
-      "path": "/api/scalp/research/cron/load-live-candles?batchSize=20&maxAttempts=10",
+      "path": "/api/scalp/composer/cron/load-candles?batchSize=20&maxAttempts=10",
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/scalp/research/cron/promote",
+      "path": "/api/scalp/composer/cron/promote",
       "schedule": "*/15 * * * *"
     }
   ]

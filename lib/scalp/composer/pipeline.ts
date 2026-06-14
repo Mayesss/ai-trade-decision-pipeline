@@ -57,18 +57,7 @@ import {
 import {
   fingerprintSessionStructureAdaptivePriors,
   loadSessionStructureAdaptivePriors,
-  predictSessionStructureStageAPass,
-  type SessionStructureStageAPrediction,
 } from "./sessionStructureAdaptiveSearch";
-import {
-  applySurrogatePrescreen,
-  resolveSessionStructureSurrogateConfig,
-} from "./sessionStructureSurrogate";
-import {
-  generateOffspring,
-  loadSessionStructureSurvivors,
-  resolveSessionStructureEvolutionConfig,
-} from "./sessionStructureEvolution";
 import {
   evaluateDayRobustnessForPromotion,
   resolveDayRobustnessPolicy,
@@ -94,37 +83,18 @@ import { buildScalpComposerExecuteConfigOverride } from "./executeConfigOverride
 import { runScalpComposerExecuteCycle } from "./executeAdapter";
 import { createScalpComposerExecutionPersistenceAdapter } from "./executionPersistence";
 import {
-  buildScalpComposerV3TemporalVariants,
-  computeScalpComposerV3Bootstrap,
-  computeScalpComposerV3Drift,
   computeScalpComposerV3EdgeScore,
-  computeScalpComposerV3Holdout,
-  computeScalpComposerV3PriorScore,
   evaluateScalpComposerV3NewsBlackout,
   isScalpComposerV3ResearchEnabled,
   resolveScalpComposerV3Config,
   scalpComposerV3EntryWindowsOverlap,
-  synthesizeScalpComposerV3HoldoutFromStages,
   type ScalpComposerV3TemporalFilter,
 } from "../evidence";
-import {
-  isScalpRegimeEnabled,
-  isScalpRegimeHardGateEnabled,
-  loadScalpRegimeCurrentRegimeSnapshot,
-  resolveScalpRegimeEnvelopeBlock,
-} from "../regimes";
-import {
-  isScalpResearchEnabled,
-  isScalpResearchHardGateEnabled,
-  resolveScalpResearchEvidenceFreshness,
-  resolveScalpResearchConfig,
-  resolveScalpResearchEntryBlock,
-  resolveScalpResearchSundayBlock,
-} from "../research";
-import { loadScalpResearchDeploymentEvidence } from "../research/pg";
+// STRIP-DOWN: the v4 regimes/ and v5 research/ modules were removed. Their only
+// remaining live use was the Sunday no-trade window, reimplemented locally as
+// resolveScalpComposerSundayBlock (see below).
 import {
   appendScalpComposerExecutionEvent,
-  backfillScalpComposerDeploymentHoldout,
   buildScalpComposerJobResult,
   claimScalpComposerResearchCandidateLeases,
   claimScalpComposerJob,
@@ -745,8 +715,6 @@ type ScalpComposerWorkerStageResult = {
 	  /** Exit reason counts. */
 	  exitReasons?: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
 	  v3Ranking?: Record<string, unknown> | null;
-	  v3Bootstrap?: Record<string, unknown> | null;
-	  v3Holdout?: Record<string, unknown> | null;
 	  /** Stage-0 cheap-gate stats (set on stage A when the gate ran). */
 	  stage0?: {
 	    weeks: number;
@@ -798,14 +766,11 @@ function isScalpComposerDeploymentUpsertNeeded(
     "reason",
     "shortlistIncluded",
     "droppedByBudget",
-    "v3ValidationStatus",
     "strictSessionEvidence",
   ]) {
     if (a[key] !== b[key]) return true;
   }
   if (Math.abs((Number(a.score) || 0) - (Number(b.score) || 0)) > 1e-6) return true;
-  if (asRecord(a.holdout).passed !== asRecord(b.holdout).passed) return true;
-  if (asRecord(a.drift).status !== asRecord(b.drift).status) return true;
   if (asRecord(a.brokerSeat).status !== asRecord(b.brokerSeat).status) return true;
   if (asRecord(a.lifecycle).state !== asRecord(b.lifecycle).state) return true;
   if (
@@ -871,6 +836,22 @@ function envBool(name: string, fallback: boolean): boolean {
 
 export function isScalpComposerPromoteEnabled(): boolean {
   return envBool("SCALP_COMPOSER_PROMOTE_ENABLED", false);
+}
+
+// Sunday UTC = rollover/evaluation day: no new entries (existing positions are
+// still managed/reconciled). Localized from the removed research/ module.
+// Disable with SCALP_RESEARCH_SUNDAY_NO_TRADE=0.
+function resolveScalpComposerSundayBlock(nowMs: number): {
+  blocked: boolean;
+  reasonCodes: string[];
+} {
+  const raw = String(process.env.SCALP_RESEARCH_SUNDAY_NO_TRADE ?? "").trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return { blocked: false, reasonCodes: [] };
+  }
+  return new Date(nowMs).getUTCDay() === 0
+    ? { blocked: true, reasonCodes: ["SUNDAY_EVALUATION_WINDOW"] }
+    : { blocked: false, reasonCodes: [] };
 }
 
 export function isScalpResearchOwnedPromotionGate(value: unknown): boolean {
@@ -1654,14 +1635,13 @@ function evaluateWorkerStageGate(params: {
   if (stageResult.netR < minNetR) {
     return { passed: false, reason: "stage_min_net_r_not_met" };
   }
-  if (stageResult.consecutiveWinningWeeks < stage.minConsecutiveWinningWeeks) {
-    return { passed: false, reason: "stage_consecutive_winning_weeks_not_met" };
-  }
+  // STRIP-DOWN: dropped the consecutive-winning-weeks and profit-factor
+  // sub-gates — both are collinear with netR (you can't clear netR with a
+  // sub-1 profit factor, and "hot streak" week counts add noise, not signal).
+  // Edge is gated by netR + minTrades; risk by maxDrawdownR; significance by
+  // the pooled lowerBoundR check at promotion.
   if (stageResult.maxDrawdownR > stage.maxDrawdownR) {
     return { passed: false, reason: "stage_max_drawdown_exceeded" };
-  }
-  if ((stageResult.profitFactor || 0) < stage.minProfitFactor) {
-    return { passed: false, reason: "stage_min_profit_factor_not_met" };
   }
   return { passed: true, reason: null };
 }
@@ -1741,9 +1721,9 @@ function resolveWorkerStageCPass(metadata: unknown): {
         stageC,
         finalPass: stageCPass,
         evaluatedAtMs: worker.evaluatedAtMs,
-        // The run window this evidence was computed for. stage C ends a holdout
-        // offset BEFORE this, so freshness uses windowToTs (not stageC.toTs) for
-        // the recency check.
+        // The run window this evidence was computed for. Freshness uses
+        // windowToTs for the recency check (stage C now ends at this same
+        // window — the v3 holdout offset was removed in the strip-down).
         windowToTs: worker.windowToTs,
       }
     : null;
@@ -1828,10 +1808,9 @@ function resolveWorkerStageCFreshness(params: {
       weeklyByWeekStart.set(w, { trades: 0, netR: 0 });
     }
   }
-  // Coverage is anchored at stage C's OWN end, not "now". With v3 holdout
-  // active, stage C ends `holdoutWeeks` before the run window, so a now-anchored
-  // window can never be covered (the recent holdout weeks live in the separate
-  // holdout evidence). Recency is enforced below via the run window instead.
+  // Coverage is anchored at stage C's OWN end (which now coincides with the
+  // run window — the v3 holdout offset was removed). Recency is enforced
+  // below via the run window.
   const coverage = buildFreshness({
     weeklyByWeekStart,
     requiredWeeks: params.requiredWeeks,
@@ -1858,8 +1837,7 @@ function resolveWorkerStageCFreshness(params: {
     };
   }
   // Recency: the evidence must have been computed for the current completed
-  // week. Compare the RUN window (worker.windowToTs) to now — NOT stageC.toTs,
-  // which is intentionally a holdout offset behind.
+  // week. Compare the RUN window (worker.windowToTs) to now.
   if (workerWindowToTs > 0 && workerWindowToTs !== currentWindowToTs) {
     return {
       freshness: { ...freshness, ready: false },
@@ -1933,11 +1911,11 @@ function resolveExecuteDeploymentFreshnessGate(params: {
     reason = "execute_guard_stage_c_non_zero_weeks_below_threshold";
   }
   // NOTE: the former `stageCToTs === expectedWindowToTs` and
-  // `weeklyWeekCount >= requiredWeeks` sub-checks were removed: with v3 holdout
-  // active, stage C ends a holdout offset BEFORE the run window (so stageC.toTs
-  // is never "now"), and sparse-trade timeframes legitimately have zero-trade
-  // weeks absent from weeklyNetR. Recency is enforced via freshnessWindowToTs
-  // (the run window) and coverage via the stage-C-anchored completedWeeks above.
+  // `weeklyWeekCount >= requiredWeeks` sub-checks are intentionally absent:
+  // sparse-trade timeframes legitimately have zero-trade weeks absent from
+  // weeklyNetR. Recency is enforced via freshnessWindowToTs (the run window)
+  // and coverage via the stage-C-anchored completedWeeks above. (Stage C now
+  // ends at the run window — the v3 holdout offset was removed.)
 
   return {
     ready: reason === null,
@@ -3230,9 +3208,9 @@ export async function runScalpComposerResearchJob(params: {
     ] as const;
     const v3Cfg = resolveScalpComposerV3Config();
     const v3Enabled = isScalpComposerV3ResearchEnabled();
-    const trainingWindowToTs = v3Enabled
-      ? windowToTs - v3Cfg.holdoutWeeks * ONE_WEEK_MS
-      : windowToTs;
+    // STRIP-DOWN: v3 holdout removed. Stage C now ends at the run window itself
+    // (no holdout offset), so the training window is simply windowToTs.
+    const trainingWindowToTs = windowToTs;
     const minWindowFromTs =
       trainingWindowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
     const enabledDeploymentsForWarmUp = await withTiming(
@@ -3283,25 +3261,6 @@ export async function runScalpComposerResearchJob(params: {
       const value = Number(raw);
       return Number.isFinite(value) ? value : fallback;
     };
-    // Evolutionary local-search: breed neighbours of high-fitness survivors so
-    // the grid search reaches good cells sooner. Fitness = lowerBoundR (the #4
-    // significance statistic). Offspring are ordinary grid cells (canonical
-    // deterministic tuneIds), prioritised — never new strategy identities.
-    const evolutionConfig = resolveSessionStructureEvolutionConfig();
-    const survivorPool =
-      evolutionConfig.enabled && adaptiveSearchEnabled
-        ? await withTiming("warmup.load_session_survivors", () =>
-            loadSessionStructureSurvivors({
-              windowToTs,
-              nowMs: nowTs,
-              limit: evolutionConfig.maxRows,
-              topKScoped: evolutionConfig.topKScoped,
-              topKGlobal: evolutionConfig.topKGlobal,
-              minFitness: evolutionConfig.minFitness,
-              minTrades: evolutionConfig.minTrades,
-            }).catch(() => null),
-          )
-        : null;
     const noveltyBudget = {
       enabled: envBool("SCALP_COMPOSER_SESSION_NOVELTY_BUDGET_ENABLED", true),
       exploitPct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
@@ -3321,18 +3280,7 @@ export async function runScalpComposerResearchJob(params: {
         "SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
         0.05,
       ),
-      // Evolution reserved slice (carved from explore) + explore floor. Env-only
-      // so the budget (and thus the warm-up hash) stays stable; when no offspring
-      // exist the reserved pass simply finds none and explore is untouched.
-      evolutionPct: evolutionConfig.enabled
-        ? envNumberOr("SCALP_COMPOSER_SESSION_EVOLUTION_PCT", 0.15)
-        : 0,
-      minExplorePct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
     };
-    const evolutionScoreBoost = envNumberOr(
-      "SCALP_COMPOSER_SESSION_EVOLUTION_SCORE_BOOST",
-      0.06,
-    );
     const noveltyBudgetFingerprint = JSON.stringify(noveltyBudget);
     const scopeHash = buildResearchWarmUpScopeHash({
       scopes,
@@ -3344,27 +3292,6 @@ export async function runScalpComposerResearchJob(params: {
       loadScalpComposerWarmUpState({ windowToTs }).catch(() => null),
     );
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
-    const v3SingleAxisTemporalResultCount = v3Enabled
-      ? (
-          await withTiming("warmup.load_v3_combo_readiness", () =>
-            listScalpComposerCandidates({ limit: 10_000 }).catch(
-              () => [] as Awaited<ReturnType<typeof listScalpComposerCandidates>>,
-            ),
-          )
-        ).filter((row) => {
-          const meta = asRecord(row.metadata);
-          const temporal = asRecord(meta.v3TemporalFilter);
-          const kind = String(temporal.variantKind || "");
-          const stageA = asRecord(asRecord(meta.v3Ranking).stageA);
-          return (
-            kind.length > 0 &&
-            kind !== "slot_weekday" &&
-            Object.keys(stageA).length > 0
-          );
-        }).length
-      : 0;
-    const v3SlotWeekdayCombosEnabled =
-      v3Enabled && v3SingleAxisTemporalResultCount >= v3Cfg.hardGateMinCandidates;
 
 	    type InMemoryCandidate = {
 	      rowId?: number;
@@ -3375,9 +3302,7 @@ export async function runScalpComposerResearchJob(params: {
 	      tuneId: string;
 	      candidateId: string;
 	      score: number;
-	      v3PriorScore?: number;
 	      v3TemporalFilter?: ScalpComposerV3TemporalFilter | null;
-	      v3Ranking?: Record<string, unknown> | null;
 	      researchAttempts?: number;
 	      dsl: any;
 	    };
@@ -3385,7 +3310,6 @@ export async function runScalpComposerResearchJob(params: {
 	    let allCandidates: InMemoryCandidate[] = [];
 	    let poolSizeTotal = 0;
 	    let deploymentVariantsGenerated = 0;
-	    let v3TemporalVariantsGenerated = 0;
     if (!warmUpComplete) {
       // --- WARM-UP RUN: generate all candidates, persist, save fingerprint ---
       await emitResearchHeartbeat({ phase: "warm_up_generate", force: true });
@@ -3393,22 +3317,7 @@ export async function runScalpComposerResearchJob(params: {
 
 	      for (const scope of scopes) {
 	        generatedScopeCount += 1;
-	        const v3TemporalBudget = 0;
-	        const baseCandidateBudget = Math.max(
-	          1,
-	          maxCandidatesPerSession - v3TemporalBudget,
-	        );
-	        const scopeKeyStr = `${scope.venue}:${String(scope.symbol).toUpperCase()}:${scope.session}`;
-	        const offspring = survivorPool
-	          ? generateOffspring({
-	              scopedSurvivors: survivorPool.scoped[scopeKeyStr] || [],
-	              globalSurvivors: survivorPool.global,
-	              evaluatedFingerprints: new Set(
-	                survivorPool.evaluatedByScope[scopeKeyStr] || [],
-	              ),
-	              config: evolutionConfig,
-	            })
-	          : null;
+	        const baseCandidateBudget = Math.max(1, maxCandidatesPerSession);
 	        const composerCandidates = buildScalpComposerSessionStructureComposerGrid({
 	          venue: scope.venue,
 	          symbol: scope.symbol,
@@ -3423,8 +3332,6 @@ export async function runScalpComposerResearchJob(params: {
 	          ),
 	          adaptivePriors,
 	          noveltyBudget,
-	          offspring,
-	          evolutionScoreBoost,
 	        });
 	        poolSizeTotal += composerCandidates.length;
 	        const scopeCandidates: InMemoryCandidate[] = [];
@@ -3435,24 +3342,14 @@ export async function runScalpComposerResearchJob(params: {
 	            ? Number(dsl.supportScore)
 	            : 0;
 	          const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
-	          const v3Ranking = v3Enabled
-	            ? computeScalpComposerV3PriorScore({
-	                compositeScore: model.compositeScore,
-	                confidence: model.confidence,
-	                supportScore,
-	                blocksByFamily: dsl.blocksByFamily,
-	                seed: `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
-	              })
-	            : null;
-	          const score = v3Ranking
-	            ? v3Ranking.priorScore
-	            : 12 +
-	              model.compositeScore * 66 +
-	              model.confidence * 14 +
-	              supportNorm * 8 +
-	              hashScoreSeed(
-	                `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
-	              ) / 1000;
+	          const score =
+	            12 +
+	            model.compositeScore * 66 +
+	            model.confidence * 14 +
+	            supportNorm * 8 +
+	            hashScoreSeed(
+	              `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
+	            ) / 1000;
 
 	          scopeCandidates.push({
 	            venue: scope.venue,
@@ -3462,73 +3359,11 @@ export async function runScalpComposerResearchJob(params: {
 	            tuneId: dsl.tuneId,
 	            candidateId: dsl.candidateId,
 	            score,
-	            v3PriorScore: v3Ranking?.priorScore,
 	            v3TemporalFilter: null,
-	            v3Ranking,
 	            dsl,
 	          });
 	        }
 	        allCandidates.push(...scopeCandidates);
-	        if (v3Enabled && v3TemporalBudget > 0 && scopeCandidates.length > 0) {
-	          const variantsPerBase = Math.max(
-	            1,
-	            Math.ceil(v3TemporalBudget / Math.max(1, scopeCandidates.length)),
-	          );
-	          for (const baseCandidate of scopeCandidates) {
-	            if (v3TemporalVariantsGenerated >= v3TemporalBudget * generatedScopeCount) break;
-	            const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(baseCandidate.tuneId);
-	            const variants = buildScalpComposerV3TemporalVariants({
-	              baseTuneId: baseCandidate.tuneId,
-	              session: scope.session,
-	              venue: scope.venue,
-	              symbol: scope.symbol,
-	              maxVariants: variantsPerBase,
-	              includeSlotWeekdayCombos: v3SlotWeekdayCombosEnabled,
-	              variantOffset: v3TemporalVariantsGenerated,
-	            });
-	            for (const variant of variants) {
-	              const digest = crypto
-	                .createHash("sha1")
-	                .update(variant.tuneDigestSeed)
-	                .digest("hex");
-	              const tuneId = buildModelGuidedComposerTuneId({
-	                armId: plan.armId,
-	                digest,
-	                exitRuleId: plan.exitRuleBlockId,
-	                entryTriggerId: plan.entryTriggerBlockId,
-	                riskRuleId: plan.riskRuleBlockId,
-	                stateMachineId: plan.stateMachineBlockId,
-	                regimeGateId: plan.regimeGateBlockId,
-	              });
-	              const seed = `${scope.venue}:${scope.symbol}:${scope.session}:${tuneId}`;
-	              const model = baseCandidate.dsl.model;
-	              const supportScore = Number(baseCandidate.dsl.supportScore) || 0;
-	              const v3Ranking = computeScalpComposerV3PriorScore({
-	                compositeScore: model.compositeScore,
-	                confidence: model.confidence,
-	                supportScore,
-	                blocksByFamily: baseCandidate.dsl.blocksByFamily,
-	                seed,
-	              });
-	              allCandidates.push({
-	                ...baseCandidate,
-	                tuneId,
-	                candidateId: `v3_${variant.filter.variantId}_${baseCandidate.candidateId}`,
-	                score: v3Ranking.priorScore - 0.01,
-	                v3PriorScore: v3Ranking.priorScore,
-	                v3TemporalFilter: variant.filter,
-	                v3Ranking,
-	                dsl: {
-	                  ...baseCandidate.dsl,
-	                  tuneId,
-	                  candidateId: `v3_${variant.filter.variantId}_${baseCandidate.dsl.candidateId}`,
-	                },
-	              });
-	              v3TemporalVariantsGenerated += 1;
-	              if (v3TemporalVariantsGenerated >= v3TemporalBudget * generatedScopeCount) break;
-	            }
-	          }
-	        }
 	        if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
           await emitResearchHeartbeat({
             phase: "warm_up_generate",
@@ -3669,17 +3504,11 @@ export async function runScalpComposerResearchJob(params: {
                 budget: noveltyBudget,
               }
             : null,
-          sessionComposerEvolution: c.dsl.evolution
-            ? {
-                ...c.dsl.evolution,
-                source: "session_structure_composer_evolutionary",
-              }
-            : null,
           researchReferences: c.dsl.referenceStrategyIds,
 	          researchSupportScore: c.dsl.supportScore,
 	          researchRegimeGateId: c.dsl.regimeGateId || null,
 	          composerModel: c.dsl.model,
-	          v3Ranking: c.v3Ranking || null,
+	          v3Ranking: null,
 	          v3TemporalFilter: c.v3TemporalFilter || null,
 	        },
 	      }));
@@ -3702,9 +3531,6 @@ export async function runScalpComposerResearchJob(params: {
         poolSizeTotal,
         persisted: allCandidates.length,
 	        deploymentVariantsGenerated,
-	        v3TemporalVariantsGenerated,
-	        v3SingleAxisTemporalResultCount,
-	        v3SlotWeekdayCombosEnabled,
 	        adaptiveSearch: adaptivePriors
 	          ? {
 	              enabled: adaptiveSearchEnabled,
@@ -3898,14 +3724,9 @@ export async function runScalpComposerResearchJob(params: {
 	          tuneId: row.tuneId,
 	          candidateId: String(meta.researchCandidateId || row.tuneId),
 	          score: row.score,
-	          v3PriorScore: Number(asRecord(meta.v3Ranking).priorScore) || undefined,
 	          v3TemporalFilter:
 	            Object.keys(asRecord(meta.v3TemporalFilter)).length > 0
 	              ? (asRecord(meta.v3TemporalFilter) as ScalpComposerV3TemporalFilter)
-	              : null,
-	          v3Ranking:
-	            Object.keys(asRecord(meta.v3Ranking)).length > 0
-	              ? asRecord(meta.v3Ranking)
 	              : null,
 	          researchAttempts: Math.max(0, Math.floor(Number(row.researchAttempts) || 0)),
 	          dsl: {
@@ -4046,14 +3867,6 @@ export async function runScalpComposerResearchJob(params: {
     };
     const smartSkipped: SmartSkipEntry[] = [];
     let smartSkippedPersisted = 0;
-    type SurrogateSkipEntry = {
-      candidate: InMemoryCandidate;
-      probability: number;
-      samples: number;
-      source: string;
-    };
-    const surrogateSkipped: SurrogateSkipEntry[] = [];
-    let surrogateSkippedPersisted = 0;
 
     // Pre-compute stage A week starts for the weeklyNetR pre-filter.
     const stageAFromTs = trainingWindowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
@@ -4239,7 +4052,7 @@ export async function runScalpComposerResearchJob(params: {
 	            researchSupportScore: c.dsl.supportScore,
 	            researchRegimeGateId: c.dsl.regimeGateId || null,
 	            composerModel: c.dsl.model,
-	            v3Ranking: c.v3Ranking || null,
+	            v3Ranking: null,
 	            v3TemporalFilter: c.v3TemporalFilter || null,
 	          },
 	        };
@@ -4255,93 +4068,6 @@ export async function runScalpComposerResearchJob(params: {
         for (const row of rows) {
           try {
             await withTiming("research.persist_smart_skip_single", () =>
-              upsertScalpComposerCandidates({ rows: [row] }),
-            );
-            persisted += 1;
-          } catch {
-            // Leave the row discovered; a later batch can retry the skip.
-          }
-        }
-        return persisted;
-      }
-    }
-
-    // Surrogate pre-screen rejects (status→rejected, freshness-windowed like
-    // smart-skip — re-eligible in future windows). Distinct metadata block so
-    // the reason is auditable; no prior stage-A replay exists for these.
-    async function persistSurrogateSkippedCandidates(): Promise<number> {
-      if (!surrogateSkipped.length) return 0;
-      const stageBSkeleton = buildWorkerStageSkeleton({
-        stage: workerPolicy.stageB,
-        fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS,
-        toTs: windowToTs,
-        reason: "blocked_surrogate_skip",
-      });
-      const stageCSkeleton = buildWorkerStageSkeleton({
-        stage: workerPolicy.stageC,
-        fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS,
-        toTs: windowToTs,
-        reason: "blocked_surrogate_skip",
-      });
-      const rows = surrogateSkipped.map((entry) => {
-        const c = entry.candidate;
-        const stageA = buildWorkerStageSkeleton({
-          stage: workerPolicy.stageA,
-          fromTs: stageAFromTs,
-          toTs: windowToTs,
-          reason: "surrogate_skip_low_pass_prob",
-        });
-        const workerMeta = {
-          version: "v2_research_surrogate_skip_r1",
-          evaluatedAtMs: nowTs,
-          windowToTs,
-          surrogateSkip: {
-            probability: entry.probability,
-            samples: entry.samples,
-            source: entry.source,
-          },
-          stageA,
-          stageB: stageBSkeleton,
-          stageC: stageCSkeleton,
-          finalPass: false,
-        };
-        return {
-          venue: c.venue,
-          symbol: c.symbol,
-          strategyId: c.strategyId,
-          tuneId: c.tuneId,
-          entrySessionProfile: c.session,
-          score: c.score,
-          status: "rejected" as const,
-          reasonCodes: [
-            "SCALP_COMPOSER_RESEARCH_INLINE",
-            "SCALP_COMPOSER_SURROGATE_SKIP_LOW_PASS_PROB",
-          ],
-          metadata: {
-            evaluatedAtMs: nowTs,
-            evaluator: "v2_research_inline",
-            worker: workerMeta,
-            researchCandidateId: c.candidateId,
-            researchDsl: c.dsl.blocksByFamily,
-            researchReferences: c.dsl.referenceStrategyIds,
-            researchSupportScore: c.dsl.supportScore,
-            researchRegimeGateId: c.dsl.regimeGateId || null,
-            composerModel: c.dsl.model,
-            v3Ranking: c.v3Ranking || null,
-            v3TemporalFilter: c.v3TemporalFilter || null,
-          },
-        };
-      });
-      try {
-        await withTiming("research.persist_surrogate_skips", () =>
-          upsertScalpComposerCandidates({ rows }),
-        );
-        return rows.length;
-      } catch {
-        let persisted = 0;
-        for (const row of rows) {
-          try {
-            await withTiming("research.persist_surrogate_skip_single", () =>
               upsertScalpComposerCandidates({ rows: [row] }),
             );
             persisted += 1;
@@ -4398,80 +4124,6 @@ export async function runScalpComposerResearchJob(params: {
 
     smartSkippedPersisted = await persistSmartSkippedCandidates();
 
-    // --- Surrogate pre-screen (#1): predict P(stage-A pass) from block plan,
-    // evidence-gated skip the hopeless (capped, never exploration offspring),
-    // and prioritise survivors so promising candidates backtest first. Reuses
-    // the already-loaded adaptive priors — no extra DB load. ---
-    const surrogateConfig = resolveSessionStructureSurrogateConfig();
-    let surrogateSkippedThisRun = 0;
-    if (surrogateConfig.enabled && adaptivePriors && selected.length > 0) {
-      const surrogatePredictions = new Map<
-        InMemoryCandidate,
-        SessionStructureStageAPrediction
-      >();
-      const predict = (c: InMemoryCandidate): SessionStructureStageAPrediction => {
-        const cached = surrogatePredictions.get(c);
-        if (cached) return cached;
-        const plan = asRecord(c.dsl?.sessionComposerPlan);
-        const prediction =
-          plan.contextId && plan.levelId && plan.triggerId
-            ? predictSessionStructureStageAPass({
-                plan: plan as any,
-                venue: c.venue,
-                symbol: c.symbol,
-                session: c.session,
-                priors: adaptivePriors,
-              })
-            : {
-                probability: adaptivePriors?.stageABaseRate ?? 0,
-                samples: 0,
-                source: "base" as const,
-              };
-        surrogatePredictions.set(c, prediction);
-        return prediction;
-      };
-      const tieBreak = (a: InMemoryCandidate, b: InMemoryCandidate) =>
-        a.symbol.localeCompare(b.symbol) || a.tuneId.localeCompare(b.tuneId);
-      // Use the helper only for the gated/capped SKIP decision (prioritise off);
-      // the pipeline owns ordering so it can keep proven passers ahead of P.
-      const surrogateOutcome = applySurrogatePrescreen({
-        candidates: selected,
-        predict,
-        config: { ...surrogateConfig, prioritize: false },
-        isExploration: (c) => Boolean(c.dsl?.evolution),
-        tieBreak,
-      });
-      if (surrogateOutcome.skipped.length > 0) {
-        const skipSet = new Set(surrogateOutcome.skipped.map((s) => s.candidate));
-        for (const s of surrogateOutcome.skipped) {
-          surrogateSkipped.push({
-            candidate: s.candidate,
-            probability: s.prediction.probability,
-            samples: s.prediction.samples,
-            source: s.prediction.source,
-          });
-        }
-        selected = selected.filter((c) => !skipSet.has(c));
-        surrogateSkippedPersisted = await persistSurrogateSkippedCandidates();
-        surrogateSkippedThisRun = surrogateOutcome.skipped.length;
-      }
-      // Prioritise: proven passers first (passRank), then surrogate P(pass) for
-      // the never-tested majority, then the existing netR/score tiebreaks.
-      if (surrogateConfig.prioritize) {
-        selected.sort((a, b) => {
-          const la = previousPriority(a);
-          const lb = previousPriority(b);
-          return (
-            lb.passRank - la.passRank ||
-            predict(b).probability - predict(a).probability ||
-            lb.netR - la.netR ||
-            lb.score - la.score ||
-            tieBreak(a, b)
-          );
-        });
-      }
-    }
-
     // --- Backtest remaining candidates in one pass ---
     await emitResearchHeartbeat({
       phase: "selection_complete",
@@ -4483,8 +4135,6 @@ export async function runScalpComposerResearchJob(params: {
         skippedByClearFail,
         skippedByNetRPreFilter,
         smartSkippedPersisted,
-        surrogateSkippedPersisted,
-        surrogateSkippedThisRun,
       },
     });
     const claimPool = selected.slice(
@@ -5271,8 +4921,6 @@ export async function runScalpComposerResearchJob(params: {
 
 	      let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
 	      let v3StageRanking: Record<string, unknown> | null = null;
-	      let v3Bootstrap: Record<string, unknown> | null = null;
-	      let v3Holdout: Record<string, unknown> | null = null;
 	      let stagePatternTrades: ScalpReplayTrade[] | null = null;
 
       if (missingPriorWeeks) {
@@ -5383,80 +5031,6 @@ export async function runScalpComposerResearchJob(params: {
 	            isTemporalVariant: Boolean(candidate.v3TemporalFilter?.variantKind),
 	          });
 	          v3StageRanking = ranking as unknown as Record<string, unknown>;
-	          if (
-	            stage.id === "a" &&
-	            aggregate.trades >= Math.max(1, Math.floor(stage.minTrades * 0.75)) &&
-	            aggregate.netR >= stage.minNetR * 0.5
-	          ) {
-	            v3Bootstrap =
-	              (computeScalpComposerV3Bootstrap({
-	                trades: fullReplay.trades,
-	                resamples: v3Cfg.bootstrapResamples,
-	                seed: `${candidate.symbol}:${candidate.tuneId}:${windowToTs}`,
-	              }) as unknown as Record<string, unknown> | null) || null;
-	          }
-	          if (stage.id === "c") {
-	            let holdoutCandles = getCachedCandleWindow({
-	              symbol: candidate.symbol,
-	              candles: symbolCandles,
-	              fromTs,
-	              toTs: windowToTs,
-	            });
-	            const hasHoldoutCandles =
-	              holdoutCandles.length > 0 &&
-	              holdoutCandles[holdoutCandles.length - 1]!.ts >= windowToTs - ONE_DAY_MS;
-	            if (!hasHoldoutCandles) {
-	              const extended = await withTiming("research.load_candles_holdout", () =>
-	                loadScalpCandleHistoryInRange(
-	                  candidate.symbol,
-	                  "1m",
-	                  fromTs,
-	                  windowToTs,
-	                ).catch(() => null),
-	              );
-	              if (extended?.record?.candles) {
-	                const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
-	                const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
-	                const cat = inferScalpComposerAssetCategory(candidate.symbol);
-	                const floor = minSpreadPipsForCategory(cat);
-	                const base = defaultScalpReplayConfig(candidate.symbol);
-	                const tick = meta?.tickSize ? meta.tickSize / pip : 0;
-	                const spread = Math.max(base.defaultSpreadPips, floor, tick);
-	                symbolCandles = filterSundayReplayCandles(
-	                  toReplayCandlesFromHistory(
-	                    extended.record.candles as Array<
-	                      [number, number, number, number, number, number]
-	                    >,
-	                    spread,
-	                  ),
-	                );
-	                candleCache.set(candidate.symbol, symbolCandles);
-	                holdoutCandles = getCachedCandleWindow({
-	                  symbol: candidate.symbol,
-	                  candles: symbolCandles,
-	                  fromTs,
-	                  toTs: windowToTs,
-	                });
-	              }
-	            }
-	            const holdoutReplay = await withTiming("research.replay_holdout_stage", () =>
-	              runScalpReplay({
-	                candles: holdoutCandles,
-	                pipSize: runtime.symbolPipSize,
-	                config: runtime.replayConfig,
-	                captureTimeline: false,
-	              }),
-	            );
-	            const holdout = computeScalpComposerV3Holdout({
-	              trades: holdoutReplay.trades,
-	              windowToTs,
-	              holdoutWeeks: v3Cfg.holdoutWeeks,
-	              trainingNetR: aggregate.netR,
-	              trainingExpectancyR: aggregate.expectancyR,
-	              minTrades: Math.max(1, Math.min(stage.minTrades, v3Cfg.minVariantTrades)),
-	            });
-	            v3Holdout = holdout as unknown as Record<string, unknown>;
-	          }
 	        }
 	        if (!fullReplayEarlyAborted) {
           for (const [ws, metrics] of weeklyByStart.entries()) {
@@ -5521,8 +5095,6 @@ export async function runScalpComposerResearchJob(params: {
         largestTradeR: aggregate.largestTradeR,
 	        exitReasons: aggregate.exitReasons,
 	        v3Ranking: v3StageRanking,
-	        v3Bootstrap,
-	        v3Holdout,
 	      };
       const gate = evaluateWorkerStageGate({
         stage,
@@ -5573,23 +5145,20 @@ export async function runScalpComposerResearchJob(params: {
 	        stageA: stageAResult,
 	        stageB: stageBResult,
 	        stageC: stageCResult,
-	        holdout: stageCResult.v3Holdout || null,
-	        bootstrap: stageAResult.v3Bootstrap || null,
 	        finalPass,
 	      };
 	      const stageAEdge = Number(asRecord(stageAResult.v3Ranking).edgeScore);
 	      const finalScore =
 	        v3Enabled && Number.isFinite(stageAEdge)
-	          ? stageAEdge * 100 + (candidate.v3PriorScore || candidate.score) / 1_000
+	          ? stageAEdge * 100 + candidate.score / 1_000
 	          : candidate.score;
 	      const mergedV3Ranking = v3Enabled
 	        ? {
-	            ...(candidate.v3Ranking || {}),
 	            stageA: stageAResult.v3Ranking || null,
 	            stageC: stageCResult.v3Ranking || null,
 	            edgeScore: Number.isFinite(stageAEdge) ? stageAEdge : null,
 	          }
-	        : candidate.v3Ranking || null;
+	        : null;
 
       if (!meetsMinStage) {
         droppedBelowMinStage += 1;
@@ -6012,7 +5581,6 @@ export async function runScalpComposerResearchJob(params: {
       skippedByClearFail,
       skippedByNetRPreFilter,
       smartSkippedPersisted,
-      surrogateSkippedPersisted,
       candidatesWithPreviousResults: previousResults.size,
       backtested: chunked.length,
       deferredToNextRun: deferredCount,
@@ -6087,7 +5655,7 @@ export async function runScalpComposerResearchJob(params: {
 
     return buildScalpComposerJobResult({
       jobKind: "research",
-      processed: processed + smartSkippedPersisted + surrogateSkippedPersisted,
+      processed: processed + smartSkippedPersisted,
       succeeded,
       failed,
       pendingAfter,
@@ -6333,80 +5901,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	    );
 	    const v3Cfg = resolveScalpComposerV3Config();
 	    const v3Enabled = isScalpComposerV3ResearchEnabled();
-	    const v3HoldoutCompletedCandidates = allCandidates.filter((row) =>
-	      Boolean(asRecord(asRecord(row.metadata).worker).holdout),
-	    ).length;
-	    const v3HoldoutHardGateActive =
-	      v3Enabled && v3HoldoutCompletedCandidates >= v3Cfg.hardGateMinCandidates;
-	    const hasV3Validation = (gateRaw: unknown): boolean => {
-	      const gate = asRecord(gateRaw);
-	      if (String(gate.v3ValidationStatus || "") === "validated") return true;
-	      if (Object.keys(asRecord(gate.holdout)).length > 0) return true;
-	      if (Object.keys(asRecord(gate.worker)).length > 0 && Object.keys(asRecord(asRecord(gate.worker).holdout)).length > 0) {
-	        return true;
-	      }
-	      return false;
-	    };
-	    let v3HoldoutBackfilled = 0;
-	    if (v3Enabled) {
-	      const backfillRows: Array<{
-	        deploymentId: string;
-	        candidateId: number | null;
-	        holdout: Record<string, unknown>;
-	      }> = [];
-	      for (const row of existingDeployments) {
-	        if (!row.enabled) continue;
-	        if (hasV3Validation(row.promotionGate)) continue;
-	        const gate = asRecord(row.promotionGate);
-	        const worker = asRecord(gate.worker);
-	        const stageB = asRecord(worker.stageB);
-	        const stageC = asRecord(worker.stageC);
-	        if (!Object.keys(stageB).length || !Object.keys(stageC).length) continue;
-	        const synthesized = synthesizeScalpComposerV3HoldoutFromStages({
-	          stageB: {
-	            netR: Number(stageB.netR) || 0,
-	            trades: Number(stageB.trades) || 0,
-	            expectancyR: Number(stageB.expectancyR) || 0,
-	            maxDrawdownR: Number(stageB.maxDrawdownR) || 0,
-	            profitFactor:
-	              stageB.profitFactor != null
-	                ? Number(stageB.profitFactor)
-	                : null,
-	            fromTs: Number(stageB.fromTs) || 0,
-	            toTs: Number(stageB.toTs) || 0,
-	            weeks: Number(stageB.weeks) || 6,
-	          },
-	          stageC: {
-	            netR: Number(stageC.netR) || 0,
-	            trades: Number(stageC.trades) || 0,
-	          },
-	        });
-	        if (!synthesized) continue;
-	        const holdoutRecord = synthesized as unknown as Record<string, unknown>;
-	        row.promotionGate = {
-	          ...gate,
-	          worker: { ...worker, holdout: holdoutRecord },
-	          v3ValidationStatus: "validated",
-	        };
-	        backfillRows.push({
-	          deploymentId: row.deploymentId,
-	          candidateId: row.candidateId,
-	          holdout: holdoutRecord,
-	        });
-	      }
-	      if (backfillRows.length > 0) {
-	        v3HoldoutBackfilled = await backfillScalpComposerDeploymentHoldout({
-	          rows: backfillRows,
-	        });
-	      }
-	    }
-	    const v3PendingEnabledDeployments = existingDeployments.filter(
-	      (row) => row.enabled && !hasV3Validation(row.promotionGate),
-	    );
-	    const v3PromotionFreezeActive =
-	      v3Enabled &&
-	      v3PendingEnabledDeployments.length > 0 &&
-	      !v3Cfg.promotionFreezeBypass;
     if (offScopeEnabledDeployments.length > 0) {
       await upsertScalpComposerDeployments({
         rows: offScopeEnabledDeployments.map((row) => ({
@@ -6558,9 +6052,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
       dayRobustness: Record<string, unknown> | null;
 	      workerStages: Record<string, unknown> | null;
 	      v3TemporalFilter: ScalpComposerV3TemporalFilter | null;
-	      v3Holdout: Record<string, unknown> | null;
-	      v3Drift: Record<string, unknown> | null;
-	      v3ValidationStatus: "validated" | "stale" | "pending";
 	      entryBlockReasonCodes: string[];
 	      brokerSeat: Record<string, unknown> | null;
 	      eligible: boolean;
@@ -6705,13 +6196,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	          : Object.keys(existingTemporalFilter).length > 0
 	            ? (existingTemporalFilter as ScalpComposerV3TemporalFilter)
 	            : null;
-	      const v3Holdout = asRecord(asRecord(candidate?.metadata || {}).worker).holdout
-	        ? asRecord(asRecord(candidate?.metadata || {}).worker).holdout as Record<string, unknown>
-	        : asRecord(asRecord(candidate?.metadata || {}).v3Holdout);
-	      const holdoutPassed =
-	        !v3Enabled ||
-	        !v3HoldoutHardGateActive ||
-	        Boolean(asRecord(v3Holdout).passed);
 	      // Stage-C edge significance: meanR - 1.64*stderrR (95% one-sided
 	      // lower bound on per-trade expectancy). Computed but previously
 	      // unused as a gate — only fed ranking. A candidate can clear the
@@ -6747,31 +6231,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	        !v3Enabled ||
 	        !Number.isFinite(effStageCTrades) ||
 	        effStageCTrades >= policy.minStageCTradesForPromotion;
-	      const drift = existing
-	        ? computeScalpComposerV3Drift({
-	            deployment: existing,
-	            ledgerRows: ledgerRows
-	              .filter((row) => row.deploymentId === deploymentId)
-	              .map((row) => ({
-	                tsExitMs: row.tsExitMs,
-	                rMultiple: row.rMultiple,
-	              })),
-	            nowMs: nowTs,
-	          })
-	        : null;
-	      const driftBlocksNewPromotion =
-	        v3Enabled &&
-	        drift &&
-	        drift.status === "drifting" &&
-	        !currentlyEnabled;
-	      const v3ValidationStatus =
-	        v3Enabled && Object.keys(asRecord(v3Holdout)).length > 0
-	          ? "validated"
-	          : v3Enabled
-	            ? currentlyEnabled
-	              ? "stale"
-	              : "pending"
-	            : "validated";
 
       // Direct promotion: backtest stage C pass is sufficient for live
       // deployment. Backtests mirror live conditions so no shadow probation
@@ -6801,31 +6260,16 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
         reason = workerFreshness.reason || "worker_stage_c_freshness_incomplete";
 	      } else if (backtestFourWeekGateFailed) {
 	        reason = "backtest_4w_net_r_below_threshold";
-	      } else if (!holdoutPassed) {
-	        reason = "v3_holdout_gate_failed";
 	      } else if (!edgeSampleSizePassed) {
 	        reason = "v3_stage_c_trades_below_promotion_floor";
 	      } else if (!edgeSignificancePassed) {
 	        reason = "v3_stage_c_edge_not_significant";
-	      } else if (driftBlocksNewPromotion) {
-	        reason = "v3_drift_gate_failed";
-	      } else if (v3PromotionFreezeActive && !currentlyEnabled) {
-	        reason = "v3_promotion_freeze_pending_validation";
 	      } else {
 	        // Stage C passed with acceptable 4-week rolling netR —
 	        // promote directly to live.
 	        eligible = true;
 	        shadowEligible = true;
 	        reason = "stage_c_passed";
-	      }
-	      if (
-	        v3PromotionFreezeActive &&
-	        currentlyEnabled &&
-	        v3ValidationStatus === "stale"
-	      ) {
-	        eligible = true;
-	        shadowEligible = true;
-	        reason = "v3_existing_deployment_pending_validation";
 	      }
 
       const promotedAtMs = Number(
@@ -6865,9 +6309,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	          : null,
 	        workerStages: workerStagesRecord,
 	        v3TemporalFilter,
-	        v3Holdout: Object.keys(asRecord(v3Holdout)).length > 0 ? v3Holdout : null,
-	        v3Drift: drift as unknown as Record<string, unknown> | null,
-	        v3ValidationStatus,
 	        entryBlockReasonCodes: [],
 	        brokerSeat: null,
         eligible,
@@ -7138,21 +6579,11 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	          weekly: row.weeklyMetrics,
 	          worker: row.workerStages,
 	          dayRobustness: row.dayRobustness,
-	          holdout: row.v3Holdout,
-	          drift: row.v3Drift,
-	          v3ValidationStatus: row.v3ValidationStatus,
 	          v3TemporalFilter: row.v3TemporalFilter || {},
 	          entryBlockReasonCodes: row.entryBlockReasonCodes,
 	          brokerSeat: row.brokerSeat,
 	          v3: {
 	            enabled: v3Enabled,
-	            holdoutHardGateActive: v3HoldoutHardGateActive,
-	            holdoutCompletedCandidates: v3HoldoutCompletedCandidates,
-	            hardGateMinCandidates: v3Cfg.hardGateMinCandidates,
-	            promotionFreezeActive: v3PromotionFreezeActive,
-	            pendingEnabledValidation: v3PendingEnabledDeployments.length,
-	            promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
-	            holdoutBackfilledThisCycle: v3HoldoutBackfilled,
 	          },
 	          lifecycle: row.lifecycle,
           thresholds: {
@@ -7171,9 +6602,6 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
             fourWeekGroupCount: policy.fourWeekGroupCount,
 	            fourWeekGroupSize: policy.fourWeekGroupSize,
 	            v3MinVariantTrades: v3Cfg.minVariantTrades,
-	            v3HoldoutWeeks: v3Cfg.holdoutWeeks,
-	            v3DriftMinTrades: v3Cfg.driftMinTrades,
-	            v3DriftMinWeeks: v3Cfg.driftMinWeeks,
 	          },
           shortlistIncluded: row.shortlistIncluded,
           dsl: asRecord(
@@ -7417,18 +6845,7 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	      highlightsUpserted,
 	      v3: {
 	        enabled: v3Enabled,
-	        holdoutCompletedCandidates: v3HoldoutCompletedCandidates,
-	        hardGateMinCandidates: v3Cfg.hardGateMinCandidates,
-	        holdoutHardGateActive: v3HoldoutHardGateActive,
-	        promotionFreezeActive: v3PromotionFreezeActive,
-	        promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
-	        pendingEnabledValidation: v3PendingEnabledDeployments.length,
-	        holdoutBackfilledThisCycle: v3HoldoutBackfilled,
-	        driftMinTrades: v3Cfg.driftMinTrades,
-	        driftMinWeeks: v3Cfg.driftMinWeeks,
-	        driftingDeployments: drafts.filter(
-	          (row) => String(asRecord(row.v3Drift).status) === "drifting",
-	        ).length,
+	        minVariantTrades: v3Cfg.minVariantTrades,
 	      },
 	      workerStageFailedCount: drafts.filter(
         (row) => row.reason === "worker_stage_c_failed",
@@ -7616,7 +7033,7 @@ export async function runScalpComposerExecuteJob(params: {
     // entry session is currently open should be considered for entry work.
     // Open-position deployments bypass this filter so exits/trailing/reconcile
     // still run outside the entry window.
-    const sundayBlock = resolveScalpResearchSundayBlock(nowTs);
+    const sundayBlock = resolveScalpComposerSundayBlock(nowTs);
     const cheapSkipReasonCounts: Record<string, number> = {};
     const sessionScopedDeployments = scopedDeployments.filter((deployment) => {
       if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
@@ -7678,7 +7095,7 @@ export async function runScalpComposerExecuteJob(params: {
     const executeRequiredWeeks = resolvePromotionPolicy().minCompletedWeeks;
     const freshnessChecks = sessionScopedDeployments.map((deployment) => ({
       deployment,
-      v5Owned: isScalpResearchOwnedPromotionGate(deployment.promotionGate),
+      v5Owned: false,
       freshness: resolveExecuteDeploymentFreshnessGate({
         deployment,
         nowTs,
@@ -7890,16 +7307,14 @@ export async function runScalpComposerExecuteJob(params: {
     // v4Enabled / v5Enabled are env-derived, so we hoist them out of the
     // loop alongside `needsRegimeSnapshot` — they were being re-read on
     // every iteration for no reason.
-    const v4Enabled = isScalpRegimeEnabled();
-    const v5Enabled = isScalpResearchEnabled();
-    const needsRegimeSnapshot = v4Enabled || v5Enabled;
+    // STRIP-DOWN: v4 regime + v5 cell-evidence entry gating removed. Live
+    // entries are gated by: promotion-gate block list, forex news blackout,
+    // retired-composer block, Sunday no-trade, and the engine's risk controls
+    // (kill switch / daily-loss / session window / cooldowns). News blackout is
+    // still deduped per (venue, symbol) within a tick.
     const newsBlackoutCache = new Map<
       string,
       Promise<Awaited<ReturnType<typeof evaluateScalpComposerV3NewsBlackout>>>
-    >();
-    const v4RegimeCache = new Map<
-      string,
-      Promise<Awaited<ReturnType<typeof loadScalpRegimeCurrentRegimeSnapshot>>>
     >();
     const symbolCacheKey = (venue: ScalpComposerVenue, symbol: string): string =>
       `${venue}:${symbol}`;
@@ -7922,21 +7337,6 @@ export async function runScalpComposerExecuteJob(params: {
       }
       return pending;
     };
-    const getCachedV4Regime = (venue: ScalpComposerVenue, symbol: string) => {
-      const key = symbolCacheKey(venue, symbol);
-      let pending = v4RegimeCache.get(key);
-      if (!pending) {
-        pending = loadScalpRegimeCurrentRegimeSnapshot({
-          venue,
-          symbol,
-          nowMs: nowTs,
-        }).catch(() => ({ cellId: null, stale: true, snapshot: null })) as Promise<
-          Awaited<ReturnType<typeof loadScalpRegimeCurrentRegimeSnapshot>>
-        >;
-        v4RegimeCache.set(key, pending);
-      }
-      return pending;
-    };
 
     let executedCycleDeployments = 0;
     let skippedEntryBlockedDeployments = 0;
@@ -7944,7 +7344,9 @@ export async function runScalpComposerExecuteJob(params: {
 
     for (const deployment of eligibleAfterCheapFilter) {
       processed += 1;
-      const v5Owned = isScalpResearchOwnedPromotionGate(deployment.promotionGate);
+      // STRIP-DOWN: v5 removed — no deployment is "v5-owned" anymore, so dry-run
+      // resolution falls back to normal v2 live-enabled logic.
+      const v5Owned = false;
       const deploymentDryRun = resolveScalpComposerExecuteDryRunForDeployment({
         effectiveDryRun,
         runtimeLiveEnabled: runtime.liveEnabled,
@@ -7979,40 +7381,6 @@ export async function runScalpComposerExecuteJob(params: {
 	          deployment.venue,
 	          deployment.symbol,
 	        );
-	        const v4CurrentRegime = needsRegimeSnapshot
-	          ? await getCachedV4Regime(deployment.venue, deployment.symbol)
-	          : { cellId: null, stale: false, snapshot: null };
-	        const v4RegimeGate = resolveScalpRegimeEnvelopeBlock({
-	          enabled: v4Enabled && !v5Owned,
-	          hardGate: isScalpRegimeHardGateEnabled(),
-	          envelope: asRecord(deployment.promotionGate).regimeEnvelope,
-	          currentCellId: v4CurrentRegime.cellId,
-	          stale: Boolean(v4CurrentRegime.stale),
-	        });
-	        const v5Cfg = resolveScalpResearchConfig();
-	        const v5Stored = v5Enabled
-	          ? await loadScalpResearchDeploymentEvidence({
-	              deploymentId: deployment.deploymentId,
-	            }).catch(() => null)
-	          : null;
-	        const v5EvidenceFreshness = resolveScalpResearchEvidenceFreshness({
-	          evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
-	          nowMs: nowTs,
-	          staleOlderThanMs: 14 * 24 * 60 * 60_000,
-	        });
-	        const v5Gate = resolveScalpResearchEntryBlock({
-	          enabled: v5Enabled && Boolean(v5Stored?.v5Enabled),
-	          hardGate: isScalpResearchHardGateEnabled(),
-	          evidence: v5Stored?.evidence ?? null,
-	          currentCellId: v4CurrentRegime.cellId,
-	          stale: Boolean(v4CurrentRegime.stale) || v5EvidenceFreshness.stale,
-	          minTradesPerCell: v5Cfg.minTradesPerCell,
-	          allowThinPositiveCell: isScalpResearchConsistencyExceptionPromotionGate(deployment.promotionGate),
-	          minThinCellTrades: 3,
-	        });
-	        const v5OwnedMissingEvidenceReasonCodes = v5Owned && v5Enabled && !v5Stored?.evidence
-	          ? ["V5_CELL_EVIDENCE_MISSING"]
-	          : [];
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
@@ -8026,18 +7394,12 @@ export async function runScalpComposerExecuteJob(params: {
 	        const hardEntryBlocked = Boolean(
 	          promotionEntryBlockReasonCodes.length > 0 ||
 	          newsBlackout.blocked ||
-	          v4RegimeGate.blocked ||
-	          v5Gate.blocked ||
-	          v5OwnedMissingEvidenceReasonCodes.length > 0 ||
 	          legacyComposerRetired ||
 	          sundayBlock.blocked
 	        );
 	        const entryBlockReasonCodes = normalizeReasonCodes([
 	          ...promotionEntryBlockReasonCodes,
 	          ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
-	          ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
-	          ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
-	          ...v5OwnedMissingEvidenceReasonCodes,
 	          ...(legacyComposerRetired ? ["COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED"] : []),
 	          ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
 	        ]);
@@ -8138,18 +7500,6 @@ export async function runScalpComposerExecuteJob(params: {
               dryRun: result.dryRun,
               runLockAcquired: result.runLockAcquired,
               v3NewsBlackout: newsBlackout,
-              v4RegimeGate: {
-                ...v4RegimeGate,
-                currentCellId: v4CurrentRegime.cellId,
-                snapshot: v4CurrentRegime.snapshot,
-              },
-              v5CellGate: {
-                ...v5Gate,
-                evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
-                v5Enabled: Boolean(v5Stored?.v5Enabled),
-                v5Owned,
-                v5LiveBypassesV2LiveEnabled: v5Owned,
-              },
               v5SundayBlock: sundayBlock,
             },
           }),
@@ -8228,11 +7578,6 @@ export async function runScalpComposerExecuteJob(params: {
       newsBlackoutCacheReuses: Math.max(
         0,
         executedCycleDeployments - newsBlackoutCache.size,
-      ),
-      v4RegimeCacheUniqueSymbols: v4RegimeCache.size,
-      v4RegimeCacheReuses: Math.max(
-        0,
-        (needsRegimeSnapshot ? executedCycleDeployments : 0) - v4RegimeCache.size,
       ),
       skippedEntryBlockedDeployments,
       skippedEntryBlockReasonCounts,
