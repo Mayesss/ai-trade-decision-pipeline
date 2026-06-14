@@ -17,7 +17,6 @@ import {
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
 import { runScalpComposerFullAutoCycle } from "../../../../../lib/scalp/composer/pipeline";
-import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
   req: NextApiRequest,
@@ -44,43 +43,6 @@ export default async function handler(
     hardCaps.maxSelfHops,
   );
   const dryRun = parseBool(req.query.dryRun, false);
-  const legacyV2 = parseBool(req.query.legacyV2, false);
-
-  if (!legacyV2) {
-    const maxCandidatesPerCall = parseIntBounded(
-      req.query.maxCandidatesPerCall,
-      Math.max(0, Math.min(500, batchSize)),
-      0,
-      500,
-    );
-    const job = await runScalpRegimeResearchJob({
-      maxCandidatesPerCall,
-      candidateFetchLimit: Math.max(maxCandidatesPerCall * 4, 50),
-      forceValidity: parseBool(req.query.forceValidity, false),
-    });
-    return res.status(200).json({
-      ok: job.ok,
-      out: {
-        discover: { ok: true, skipped: true, reason: "v4_only_mode" },
-        evaluate: job,
-        worker: { ok: true, skipped: true, reason: "v4_only_mode" },
-        promote: { ok: true, skipped: true, reason: "v4_only_mode" },
-      },
-      version: "v4",
-      legacyRoute: "/api/scalp/composer/cron/cycle",
-      message:
-        "v2 cycle is disabled by default; pass legacyV2=true to run the old v2/v3 cycle.",
-      chaining: {
-        autoContinue: false,
-        selfHop,
-        selfMaxHops,
-        batchSize,
-        batchSizeHardCap,
-        selfRecall: null,
-        dryRun,
-      },
-    });
-  }
 
   const out = await runScalpComposerFullAutoCycle({
     researchBatchSize: batchSize,

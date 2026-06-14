@@ -1,5 +1,3 @@
-import crypto from "crypto";
-
 import {
   buildForexEventContext,
   ensureForexEventsState,
@@ -8,7 +6,7 @@ import {
 import type { ScalpReplayTrade } from "../replay/types";
 import type { ScalpEntrySessionProfile } from "../types";
 
-import type { ScalpComposerDeployment, ScalpComposerSession, ScalpComposerVenue } from "../composer/types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "../composer/types";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
@@ -47,46 +45,6 @@ export type ScalpComposerV3Ranking = {
   minVariantTrades: number;
   variantTradeFloorPassed?: boolean;
   stats?: Record<string, number | null>;
-};
-
-export type ScalpComposerV3Bootstrap = {
-  version: "scalp_v2_v3_bootstrap_r1";
-  resamples: number;
-  expectancyPositivePct: number;
-  lowerP05R: number;
-  seed: string;
-};
-
-export type ScalpComposerV3Holdout = {
-  version: "scalp_v2_v3_holdout_r1";
-  weeks: number;
-  fromTs: number;
-  toTs: number;
-  trades: number;
-  netR: number;
-  expectancyR: number;
-  maxDrawdownR: number;
-  profitFactor: number | null;
-  trainingNetR: number;
-  trainingExpectancyR: number;
-  holdoutToTrainingExpectancyRatio: number | null;
-  passed: boolean;
-  reason: string | null;
-};
-
-export type ScalpComposerV3Drift = {
-  version: "scalp_v2_v3_drift_r1";
-  status: "healthy" | "low_sample" | "drifting";
-  checkedAtMs: number;
-  liveTrades: number;
-  liveWeeks: number;
-  liveNetR: number;
-  liveExpectancyR: number;
-  liveMaxDrawdownR: number;
-  researchExpectancyR: number | null;
-  researchMaxDrawdownR: number | null;
-  expectancyRatio: number | null;
-  reason: string | null;
 };
 
 export type ScalpComposerV3NewsBlackout = {
@@ -197,37 +155,6 @@ function topPositiveNetConcentrationPct(weeklyNetR: number[]): number {
   return (Math.max(...positive) / total) * 100;
 }
 
-export function computeScalpComposerV3PriorScore(params: {
-  compositeScore: number;
-  confidence: number;
-  supportScore: number;
-  blocksByFamily?: Record<string, string[]>;
-  seed?: string;
-}): ScalpComposerV3Ranking {
-  const supportRegularizer = clamp(finite(params.supportScore) / 12, 0, 1);
-  const families = Object.values(params.blocksByFamily || {}).filter(
-    (rows) => Array.isArray(rows) && rows.length > 0,
-  ).length;
-  const uniqueBlocks = new Set(Object.values(params.blocksByFamily || {}).flat()).size;
-  const diversityScore = clamp(families / 6, 0, 1) * 0.65 + clamp(uniqueBlocks / 10, 0, 1) * 0.35;
-  const hashBump =
-    crypto.createHash("sha1").update(String(params.seed || "")).digest().readUInt32BE(0) / 0xffffffff / 1000;
-  const priorScore =
-    clamp(finite(params.compositeScore), 0, 1) * 70 +
-    clamp(finite(params.confidence), 0, 1) * 12 +
-    diversityScore * 12 +
-    supportRegularizer * 6 +
-    hashBump;
-  return {
-    version: "scalp_v2_v3_r1",
-    priorScore,
-    supportRegularizer,
-    diversityScore,
-    edgeScore: null,
-    minVariantTrades: resolveScalpComposerV3Config().minVariantTrades,
-  };
-}
-
 export function computeScalpComposerV3EdgeScore(params: {
   trades: ScalpReplayTrade[];
   weeklyNetR?: Record<string, number>;
@@ -277,148 +204,6 @@ export function computeScalpComposerV3EdgeScore(params: {
       worstWeekPenalty,
       profitFactor: profitFactor(r),
     },
-  };
-}
-
-export function computeScalpComposerV3Bootstrap(params: {
-  trades: ScalpReplayTrade[];
-  resamples?: number;
-  seed?: string;
-}): ScalpComposerV3Bootstrap | null {
-  const r = (params.trades || []).map((row) => finite(row.rMultiple)).filter(Number.isFinite);
-  const resamples = Math.max(0, Math.floor(params.resamples ?? resolveScalpComposerV3Config().bootstrapResamples));
-  if (r.length < 2 || resamples <= 0) return null;
-  let seed = crypto
-    .createHash("sha1")
-    .update(params.seed || JSON.stringify(r.slice(0, 64)))
-    .digest()
-    .readUInt32BE(0);
-  const rand = () => {
-    seed = (1664525 * seed + 1013904223) >>> 0;
-    return seed / 0x100000000;
-  };
-  const rows: number[] = [];
-  let positive = 0;
-  for (let i = 0; i < resamples; i += 1) {
-    let sum = 0;
-    for (let j = 0; j < r.length; j += 1) {
-      sum += r[Math.floor(rand() * r.length)] || 0;
-    }
-    const m = sum / r.length;
-    if (m > 0) positive += 1;
-    rows.push(m);
-  }
-  rows.sort((a, b) => a - b);
-  return {
-    version: "scalp_v2_v3_bootstrap_r1",
-    resamples,
-    expectancyPositivePct: (positive / resamples) * 100,
-    lowerP05R: rows[Math.max(0, Math.min(rows.length - 1, Math.floor(rows.length * 0.05)))] || 0,
-    seed: String(params.seed || ""),
-  };
-}
-
-export function synthesizeScalpComposerV3HoldoutFromStages(params: {
-  stageB: {
-    netR: number;
-    trades: number;
-    expectancyR?: number;
-    maxDrawdownR?: number;
-    profitFactor?: number | null;
-    fromTs?: number;
-    toTs?: number;
-    weeks?: number;
-  } | null;
-  stageC: { netR: number; trades: number } | null;
-  minHoldoutTrades?: number;
-}): (ScalpComposerV3Holdout & { source: "v2_backfill"; trainingTrades: number }) | null {
-  const stageB = params.stageB;
-  const stageC = params.stageC;
-  if (!stageB || !stageC) return null;
-  const holdoutTrades = Math.floor(stageB.trades || 0);
-  const totalTrades = Math.floor(stageC.trades || 0);
-  const trainingTrades = totalTrades - holdoutTrades;
-  if (holdoutTrades <= 0 || trainingTrades <= 0) return null;
-  const holdoutNetR = finite(stageB.netR);
-  const trainingNetR = finite(stageC.netR) - holdoutNetR;
-  const holdoutExpectancyR = holdoutNetR / holdoutTrades;
-  const trainingExpectancyR = trainingNetR / trainingTrades;
-  const ratio =
-    Math.abs(trainingExpectancyR) > 1e-9
-      ? holdoutExpectancyR / trainingExpectancyR
-      : null;
-  const minTrades = Math.max(1, Math.floor(params.minHoldoutTrades || 6));
-  let reason: string | null = null;
-  if (holdoutTrades < minTrades) reason = "holdout_min_trades_not_met";
-  else if (ratio === null || ratio < 0.5)
-    reason = "holdout_expectancy_ratio_below_threshold";
-  else if (holdoutNetR < -0.25 * Math.abs(trainingNetR))
-    reason = "holdout_net_r_materially_negative";
-  return {
-    version: "scalp_v2_v3_holdout_r1",
-    weeks: Math.max(1, Math.floor(stageB.weeks || 6)),
-    fromTs: Math.floor(stageB.fromTs || 0),
-    toTs: Math.floor(stageB.toTs || 0),
-    trades: holdoutTrades,
-    netR: holdoutNetR,
-    expectancyR: holdoutExpectancyR,
-    maxDrawdownR: finite(stageB.maxDrawdownR),
-    profitFactor:
-      stageB.profitFactor != null && Number.isFinite(Number(stageB.profitFactor))
-        ? finite(stageB.profitFactor)
-        : null,
-    trainingNetR,
-    trainingExpectancyR,
-    holdoutToTrainingExpectancyRatio: ratio,
-    passed: reason === null,
-    reason,
-    source: "v2_backfill",
-    trainingTrades,
-  };
-}
-
-export function computeScalpComposerV3Holdout(params: {
-  trades: ScalpReplayTrade[];
-  windowToTs: number;
-  holdoutWeeks?: number;
-  trainingNetR: number;
-  trainingExpectancyR: number;
-  minTrades: number;
-}): ScalpComposerV3Holdout {
-  const weeks = Math.max(1, Math.floor(params.holdoutWeeks || resolveScalpComposerV3Config().holdoutWeeks));
-  const toTs = Math.floor(params.windowToTs);
-  const fromTs = toTs - weeks * ONE_WEEK_MS;
-  const scoped = (params.trades || []).filter((row) => {
-    const ts = Math.floor(Number(row.exitTs) || 0);
-    return ts >= fromTs && ts < toTs;
-  });
-  const r = scoped.map((row) => finite(row.rMultiple)).filter(Number.isFinite);
-  const trades = r.length;
-  const netR = r.reduce((acc, row) => acc + row, 0);
-  const expectancyR = trades ? netR / trades : 0;
-  const maxDrawdownR = maxDrawdown(r);
-  const trainingExpectancyR = finite(params.trainingExpectancyR);
-  const ratio =
-    Math.abs(trainingExpectancyR) > 1e-9 ? expectancyR / trainingExpectancyR : null;
-  let reason: string | null = null;
-  if (trades < Math.max(1, Math.floor(params.minTrades || 1))) reason = "holdout_min_trades_not_met";
-  else if (ratio === null || ratio < 0.5) reason = "holdout_expectancy_ratio_below_threshold";
-  else if (netR < -0.25 * Math.abs(finite(params.trainingNetR))) reason = "holdout_net_r_materially_negative";
-  return {
-    version: "scalp_v2_v3_holdout_r1",
-    weeks,
-    fromTs,
-    toTs,
-    trades,
-    netR,
-    expectancyR,
-    maxDrawdownR,
-    profitFactor: profitFactor(r),
-    trainingNetR: finite(params.trainingNetR),
-    trainingExpectancyR,
-    holdoutToTrainingExpectancyRatio: ratio,
-    passed: reason === null,
-    reason,
   };
 }
 
@@ -551,61 +336,6 @@ export function scalpComposerV3EntryWindowsOverlap(params: {
   return false;
 }
 
-export function buildScalpComposerV3TemporalVariants(params: {
-  baseTuneId: string;
-  session: ScalpComposerSession;
-  venue: ScalpComposerVenue;
-  symbol: string;
-  maxVariants: number;
-  includeUtcHours?: boolean;
-  includeSlotWeekdayCombos?: boolean;
-  variantOffset?: number;
-}): Array<{ tuneDigestSeed: string; filter: ScalpComposerV3TemporalFilter }> {
-  const cfg = resolveScalpComposerV3Config();
-  const slots = Math.max(1, Math.floor((4 * 60) / cfg.sessionSlotMinutes));
-  const all: Array<{ tuneDigestSeed: string; filter: ScalpComposerV3TemporalFilter }> = [];
-  const push = (kind: ScalpComposerV3TemporalFilter["variantKind"], suffix: string, filter: ScalpComposerV3TemporalFilter) => {
-    all.push({
-      tuneDigestSeed: `${params.baseTuneId}:${suffix}`,
-      filter: {
-        sessionSlotMinutes: cfg.sessionSlotMinutes,
-        variantId: suffix,
-        variantKind: kind,
-        ...filter,
-      },
-    });
-  };
-  for (let slot = 0; slot < slots; slot += 1) {
-    push("session_slot", `v3sl${slot}`, { allowedSessionWindowSlots: [slot] });
-  }
-  const weekdays = params.venue === "bitget" ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5];
-  for (const weekday of weekdays) {
-    push("weekday", `v3wd${weekday}`, { allowedWeekdaysLocal: [weekday] });
-  }
-  if (params.includeUtcHours !== false) {
-    const utcHours = params.venue === "capital" ? [7, 8, 12, 13, 14, 15, 19] : [0, 7, 8, 13, 14, 15, 20, 21];
-    for (const hour of utcHours) {
-      push("utc_hour", `v3uh${hour}`, { allowedUtcHours: [hour] });
-    }
-  }
-  if (params.includeSlotWeekdayCombos) {
-    const topSlots = Array.from({ length: Math.min(3, slots) }, (_, idx) => idx);
-    const topWeekdays = params.venue === "bitget" ? [1, 2] : [1, 3];
-    for (const slot of topSlots) {
-      for (const weekday of topWeekdays) {
-        push("slot_weekday", `v3sw${slot}d${weekday}`, {
-          allowedSessionWindowSlots: [slot],
-          allowedWeekdaysLocal: [weekday],
-        });
-      }
-    }
-  }
-  const maxVariants = Math.max(0, Math.floor(params.maxVariants));
-  if (maxVariants <= 0 || all.length <= maxVariants) return all.slice(0, maxVariants);
-  const offset = Math.max(0, Math.floor(params.variantOffset || 0)) % all.length;
-  return Array.from({ length: maxVariants }, (_, idx) => all[(offset + idx) % all.length]!);
-}
-
 function isTier1EventName(name: string): boolean {
   const normalized = String(name || "").toLowerCase();
   return [
@@ -701,61 +431,4 @@ export async function evaluateScalpComposerV3NewsBlackout(params: {
     };
   }
   return { blocked: false, reasonCodes: context.reasonCodes, tier: null, staleData: false, activeEvents: [] };
-}
-
-export function computeScalpComposerV3Drift(params: {
-  deployment: ScalpComposerDeployment;
-  ledgerRows: Array<{ tsExitMs: number; rMultiple: number }>;
-  nowMs: number;
-}): ScalpComposerV3Drift {
-  const cfg = resolveScalpComposerV3Config();
-  const since = params.nowMs - 30 * ONE_DAY_MS;
-  const scoped = params.ledgerRows
-    .filter((row) => finite(row.tsExitMs) >= since && finite(row.tsExitMs) <= params.nowMs)
-    .sort((a, b) => finite(a.tsExitMs) - finite(b.tsExitMs));
-  const r = scoped.map((row) => finite(row.rMultiple)).filter(Number.isFinite);
-  const weeks = new Set(scoped.map((row) => startOfUtcWeekMonday(finite(row.tsExitMs)))).size;
-  const liveTrades = r.length;
-  const liveNetR = r.reduce((acc, row) => acc + row, 0);
-  const liveExpectancyR = liveTrades ? liveNetR / liveTrades : 0;
-  const liveMaxDrawdownR = maxDrawdown(r);
-  const gate = params.deployment.promotionGate || {};
-  const worker = (gate.worker && typeof gate.worker === "object" ? gate.worker : {}) as Record<string, any>;
-  const stageC = (worker.stageC && typeof worker.stageC === "object" ? worker.stageC : {}) as Record<string, unknown>;
-  const researchExpectancyR = Number.isFinite(Number(stageC.expectancyR)) ? Number(stageC.expectancyR) : null;
-  const researchMaxDrawdownR = Number.isFinite(Number(stageC.maxDrawdownR)) ? Number(stageC.maxDrawdownR) : null;
-  const expectancyRatio =
-    researchExpectancyR !== null && Math.abs(researchExpectancyR) > 1e-9
-      ? liveExpectancyR / researchExpectancyR
-      : null;
-  let status: ScalpComposerV3Drift["status"] = "healthy";
-  let reason: string | null = null;
-  if (liveTrades < cfg.driftMinTrades || weeks < cfg.driftMinWeeks) {
-    status = "low_sample";
-    reason = "drift_low_sample";
-  } else if (expectancyRatio !== null && expectancyRatio < 0.5) {
-    status = "drifting";
-    reason = "drift_expectancy_ratio_below_threshold";
-  } else if (
-    researchMaxDrawdownR !== null &&
-    researchMaxDrawdownR > 0 &&
-    liveMaxDrawdownR > researchMaxDrawdownR * 1.5
-  ) {
-    status = "drifting";
-    reason = "drift_drawdown_above_research_band";
-  }
-  return {
-    version: "scalp_v2_v3_drift_r1",
-    status,
-    checkedAtMs: params.nowMs,
-    liveTrades,
-    liveWeeks: weeks,
-    liveNetR,
-    liveExpectancyR,
-    liveMaxDrawdownR,
-    researchExpectancyR,
-    researchMaxDrawdownR,
-    expectancyRatio,
-    reason,
-  };
 }

@@ -1,6 +1,5 @@
 import { compressionBreakoutPullbackM15M3Strategy } from './compressionBreakoutPullbackM15M3';
 import { failedAuctionExtremeReversalM15M1Strategy } from './failedAuctionExtremeReversalM15M1';
-import { adaptiveMetaSelectorM15M3Strategy } from './adaptiveMetaSelectorM15M3';
 import { anchoredVwapReversionM15M3Strategy } from './anchoredVwapReversionM15M3';
 import { basisDislocationReversionProxyM15M3Strategy } from './basisDislocationReversionProxyM15M3';
 import { fundingOiExhaustionProxyM15M3Strategy } from './fundingOiExhaustionProxyM15M3';
@@ -13,10 +12,7 @@ import { pdhPdlReclaimM15M3Strategy } from './pdhPdlReclaimM15M3';
 import { relativeValueSpreadProxyM15M3Strategy } from './relativeValueSpreadProxyM15M3';
 import { sessionSeasonalityBiasM15M3Strategy } from './sessionSeasonalityBiasM15M3';
 import { trendDayReaccelerationM15M3Strategy } from './trendDayReaccelerationM15M3';
-import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
-import { dayModelGuidedComposerV1Strategy } from './dayModelGuidedComposerV1';
 import { sessionStructureComposerV1Strategy } from './sessionStructureComposerV1';
-import { TIMEFRAME_VARIANT_STRATEGIES } from './timeframeVariants';
 import type { ScalpBaseTimeframe, ScalpConfirmTimeframe } from '../types';
 import type { ScalpStrategyDefinition } from './types';
 
@@ -35,18 +31,8 @@ const BASE_REGISTRY: Record<string, ScalpStrategyDefinition> = {
     [basisDislocationReversionProxyM15M3Strategy.id]: basisDislocationReversionProxyM15M3Strategy,
     [relativeValueSpreadProxyM15M3Strategy.id]: relativeValueSpreadProxyM15M3Strategy,
     [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
-    [adaptiveMetaSelectorM15M3Strategy.id]: adaptiveMetaSelectorM15M3Strategy,
-    [modelGuidedComposerV2Strategy.id]: modelGuidedComposerV2Strategy,
-    [dayModelGuidedComposerV1Strategy.id]: dayModelGuidedComposerV1Strategy,
     [sessionStructureComposerV1Strategy.id]: sessionStructureComposerV1Strategy,
 };
-
-// Merge timeframe-variant strategies into the registry
-for (const variant of TIMEFRAME_VARIANT_STRATEGIES) {
-    if (!BASE_REGISTRY[variant.id]) {
-        BASE_REGISTRY[variant.id] = variant;
-    }
-}
 
 const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze(BASE_REGISTRY);
 

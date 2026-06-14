@@ -3,13 +3,10 @@ import test from 'node:test';
 
 import type { ScalpReplayTrade } from '../replay/types';
 import {
-    computeScalpComposerV3Drift,
     computeScalpComposerV3EdgeScore,
-    computeScalpComposerV3Holdout,
     evaluateScalpComposerV3TemporalFilter,
     resolveScalpComposerV3StaleNewsBlackout,
     scalpComposerV3EntryWindowsOverlap,
-    synthesizeScalpComposerV3HoldoutFromStages,
 } from './index';
 
 function trade(rMultiple: number, index: number, exitTs = Date.UTC(2026, 0, 5) + index * 60_000): ScalpReplayTrade {
@@ -110,25 +107,6 @@ test('V3 edge score prefers stable lower-bound quality over lucky high mean', ()
     assert.ok(Number(stable.edgeScore) > Number(lucky.edgeScore));
 });
 
-test('V3 holdout catches train-only curve fit', () => {
-    const windowToTs = Date.UTC(2026, 4, 4);
-    const holdoutStart = windowToTs - 6 * 7 * 24 * 60 * 60 * 1000;
-    const trades = [
-        ...Array.from({ length: 16 }, (_, i) => trade(0.7, i, holdoutStart - (i + 1) * 24 * 60 * 60 * 1000)),
-        ...Array.from({ length: 8 }, (_, i) => trade(-0.4, i + 100, holdoutStart + i * 24 * 60 * 60 * 1000)),
-    ];
-    const holdout = computeScalpComposerV3Holdout({
-        trades,
-        windowToTs,
-        holdoutWeeks: 6,
-        trainingNetR: 11.2,
-        trainingExpectancyR: 0.7,
-        minTrades: 8,
-    });
-    assert.equal(holdout.passed, false);
-    assert.equal(holdout.reason, 'holdout_expectancy_ratio_below_threshold');
-});
-
 test('V3 stale news blackout fail-closes recurring tier-1 window and otherwise fails open', () => {
     const firstFridayNfp = Date.UTC(2026, 4, 1, 13, 30);
     const tier1 = resolveScalpComposerV3StaleNewsBlackout(firstFridayNfp);
@@ -140,60 +118,6 @@ test('V3 stale news blackout fail-closes recurring tier-1 window and otherwise f
     const tier2Fallback = resolveScalpComposerV3StaleNewsBlackout(quietTime);
     assert.equal(tier2Fallback.blocked, false);
     assert.equal(tier2Fallback.staleData, true);
-});
-
-test('V3 drift monitor flags live expectancy below 50 percent after sample threshold', () => {
-    const previous = {
-        trades: process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES,
-        weeks: process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS,
-    };
-    process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES = '20';
-    process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS = '2';
-    try {
-        const nowMs = Date.UTC(2026, 4, 6);
-        const drift = computeScalpComposerV3Drift({
-            deployment: {
-                deploymentId: 'd1',
-                candidateId: 1,
-                venue: 'capital',
-                symbol: 'EURUSD',
-                strategyId: 's',
-                tuneId: 't',
-                entrySessionProfile: 'berlin',
-                enabled: true,
-                liveMode: 'live',
-                promotionGate: {
-                    worker: {
-                        stageC: {
-                            expectancyR: 0.3,
-                            maxDrawdownR: 3,
-                        },
-                    },
-                },
-                riskProfile: {
-                    riskPerTradePct: 1,
-                    maxOpenPositionsPerSymbol: 1,
-                    autoPauseDailyR: -3,
-                    autoPause30dR: -6,
-                },
-                createdAtMs: nowMs,
-                updatedAtMs: nowMs,
-            },
-            ledgerRows: Array.from({ length: 20 }, (_, i) => ({
-                tsExitMs: nowMs - (i < 10 ? i : i + 7) * 24 * 60 * 60 * 1000,
-                rMultiple: 0.1,
-            })),
-            nowMs,
-        });
-        assert.equal(drift.status, 'drifting');
-        assert.equal(drift.reason, 'drift_expectancy_ratio_below_threshold');
-        assert.ok(Number(drift.expectancyRatio) < 0.5);
-    } finally {
-        if (previous.trades === undefined) delete process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES;
-        else process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES = previous.trades;
-        if (previous.weeks === undefined) delete process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS;
-        else process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS = previous.weeks;
-    }
 });
 
 test('V3 broker entry-window overlap detects same-venue temporal conflicts', () => {
@@ -275,34 +199,5 @@ test('V3 broker entry-window overlap treats full-session candidates as overlappi
             },
         }),
         true,
-    );
-});
-
-test('synthesizeScalpComposerV3HoldoutFromStages splits stage-C minus stage-B and applies pass criteria', () => {
-    const passing = synthesizeScalpComposerV3HoldoutFromStages({
-        stageB: { netR: 14.9, trades: 20, fromTs: 1, toTs: 2, weeks: 6, maxDrawdownR: 1, profitFactor: 8.4 },
-        stageC: { netR: 23.0, trades: 30 },
-    });
-    assert.ok(passing);
-    assert.equal(passing!.trades, 20);
-    assert.equal(passing!.trainingTrades, 10);
-    assert.ok(Math.abs(passing!.trainingNetR - 8.1) < 1e-6);
-    assert.equal(passing!.passed, true);
-    assert.equal(passing!.source, 'v2_backfill');
-
-    const failing = synthesizeScalpComposerV3HoldoutFromStages({
-        stageB: { netR: 5.7, trades: 47, fromTs: 1, toTs: 2, weeks: 6, maxDrawdownR: 4.6, profitFactor: 1.3 },
-        stageC: { netR: 20.5, trades: 100 },
-    });
-    assert.ok(failing);
-    assert.equal(failing!.passed, false);
-    assert.equal(failing!.reason, 'holdout_expectancy_ratio_below_threshold');
-
-    assert.equal(
-        synthesizeScalpComposerV3HoldoutFromStages({
-            stageB: { netR: 5, trades: 10 },
-            stageC: { netR: 5, trades: 10 },
-        }),
-        null,
     );
 });
