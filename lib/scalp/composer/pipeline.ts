@@ -215,6 +215,41 @@ function sessionStructureTimeStopBars(managementId: string): number {
   return 16;
 }
 
+// Weekly-stability check on a stage-C backtest's per-week netR series. A real
+// edge shows up across weeks; a lucky one is concentrated in a few. Guards
+// against the failure mode where per-trade lowerBoundR passes but the netR is
+// carried by 2 of 12 weeks. Disabled when minWeeks <= 0.
+function evaluateScalpComposerStageCWeeklyStability(params: {
+  weeklyNetR: number[];
+  minWeeks: number;
+  minPositiveWeekPct: number;
+  maxWeekConcentrationPct: number;
+}): {
+  passed: boolean;
+  reason: "insufficient_weeks" | "low_positive_weeks" | "week_concentrated" | null;
+  weeks: number;
+  positiveWeekPct: number;
+  topWeekConcentrationPct: number;
+} {
+  if (params.minWeeks <= 0) {
+    return { passed: true, reason: null, weeks: 0, positiveWeekPct: 0, topWeekConcentrationPct: 0 };
+  }
+  const vals = (params.weeklyNetR || []).filter((v) => Number.isFinite(v));
+  const weeks = vals.length;
+  if (weeks < params.minWeeks) {
+    return { passed: false, reason: "insufficient_weeks", weeks, positiveWeekPct: 0, topWeekConcentrationPct: 1 };
+  }
+  const posWeeks = vals.filter((v) => v > 0).length;
+  const positiveWeekPct = posWeeks / weeks;
+  const grossProfit = vals.reduce((acc, v) => acc + Math.max(0, v), 0);
+  const maxWeek = vals.reduce((acc, v) => Math.max(acc, Math.max(0, v)), 0);
+  const topWeekConcentrationPct = grossProfit > 0 ? maxWeek / grossProfit : 1;
+  let reason: "low_positive_weeks" | "week_concentrated" | null = null;
+  if (positiveWeekPct < params.minPositiveWeekPct) reason = "low_positive_weeks";
+  else if (topWeekConcentrationPct > params.maxWeekConcentrationPct) reason = "week_concentrated";
+  return { passed: reason === null, reason, weeks, positiveWeekPct, topWeekConcentrationPct };
+}
+
 function buildResearchWarmUpScopeHash(params: {
   scopes: Array<{
     venue: ScalpComposerVenue;
@@ -616,6 +651,14 @@ interface ScalpComposerPromotionPolicy {
   minFourWeekNetR: number;
   minStageCLowerBoundR: number;
   minStageCTradesForPromotion: number;
+  // Weekly-stability gate on the stage-C backtest's per-week netR series.
+  // Rejects edges concentrated in a few lucky weeks (high per-trade lowerBoundR
+  // can still hide a 2-good-weeks-out-of-12 profile). Requires the netR to be
+  // spread across weeks: enough weeks of data, a positive-week hit-rate floor,
+  // and a cap on any single week's share of gross profit.
+  minStageCStabilityWeeks: number;
+  minStageCPositiveWeekPct: number;
+  maxStageCWeekConcentrationPct: number;
   fourWeekGroupCount: number;
   fourWeekGroupSize: number;
   exactLoserSuspendMs: number;
@@ -994,6 +1037,22 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
       Math.floor(
         toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_STAGE_C_TRADES, 40),
       ),
+    ),
+    // Stability gate: weeks of data needed to judge, positive-week hit-rate
+    // floor, and the cap on any single week's share of gross profit. Defaults
+    // are permissive vs the observed stable winners (~10/12 +weeks, top-week
+    // share ~0.2) but reject the lucky-spike profiles. Set weeks=0 to disable.
+    minStageCStabilityWeeks: Math.max(
+      0,
+      Math.floor(toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_STABILITY_WEEKS, 6)),
+    ),
+    minStageCPositiveWeekPct: Math.max(
+      0,
+      Math.min(1, toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_POSITIVE_WEEK_PCT, 0.6)),
+    ),
+    maxStageCWeekConcentrationPct: Math.max(
+      0,
+      Math.min(1, toFinite(process.env.SCALP_COMPOSER_PROMOTION_MAX_WEEK_CONCENTRATION_PCT, 0.5)),
     ),
     fourWeekGroupCount: Math.max(
       1,
@@ -3121,7 +3180,14 @@ export async function runScalpComposerResearchJob(params: {
     // Research runs on Sundays (after new week candles are loaded).
     // Only execution is blocked on Sunday UTC.
 
-    const maxCandidatesPerSession = 840;
+    // Per-(venue,symbol,session) generation budget. Default 840; env-tunable up
+    // to the grid builder's 2000 ceiling so a focused few-symbol run can search
+    // the full block space rather than a diversity-selected subset.
+    const maxCandidatesPerSession = toPositiveInt(
+      process.env.SCALP_COMPOSER_RESEARCH_MAX_CANDIDATES_PER_SESSION,
+      840,
+      2_000,
+    );
     const minPersistStageRaw = String(
       process.env.SCALP_COMPOSER_RESEARCH_MIN_PERSIST_STAGE || "a",
     ).trim().toLowerCase();
@@ -6232,6 +6298,21 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	        !Number.isFinite(effStageCTrades) ||
 	        effStageCTrades >= policy.minStageCTradesForPromotion;
 
+      // Weekly-stability gate: reject edges concentrated in a few lucky weeks.
+      const stageCWeeklyNetRRaw = asRecord(
+        asRecord(asRecord(candidate?.metadata || {}).worker).stageC,
+      ).weeklyNetR;
+      const stageCWeeklyValues =
+        stageCWeeklyNetRRaw && typeof stageCWeeklyNetRRaw === "object"
+          ? Object.values(stageCWeeklyNetRRaw as Record<string, unknown>).map((v) => Number(v))
+          : [];
+      const stageCStability = evaluateScalpComposerStageCWeeklyStability({
+        weeklyNetR: stageCWeeklyValues,
+        minWeeks: policy.minStageCStabilityWeeks,
+        minPositiveWeekPct: policy.minStageCPositiveWeekPct,
+        maxWeekConcentrationPct: policy.maxStageCWeekConcentrationPct,
+      });
+
       // Direct promotion: backtest stage C pass is sufficient for live
       // deployment. Backtests mirror live conditions so no shadow probation
       // period is needed — stage C already validates 12 weeks of data.
@@ -6264,6 +6345,8 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
 	        reason = "v3_stage_c_trades_below_promotion_floor";
 	      } else if (!edgeSignificancePassed) {
 	        reason = "v3_stage_c_edge_not_significant";
+	      } else if (!stageCStability.passed) {
+	        reason = `stage_c_weekly_unstable_${stageCStability.reason}`;
 	      } else {
 	        // Stage C passed with acceptable 4-week rolling netR —
 	        // promote directly to live.

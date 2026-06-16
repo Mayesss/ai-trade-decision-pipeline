@@ -867,6 +867,7 @@ export async function paginateScalpComposerCandidates(params: {
   session?: ScalpComposerSession;
   venue?: ScalpComposerVenue;
   status?: ScalpComposerCandidateStatus;
+  symbols?: string[];
   deploymentEnabled?: boolean | null;
   offset?: number;
   limit?: number;
@@ -885,6 +886,15 @@ export async function paginateScalpComposerCandidates(params: {
   if (params.venue) {
     values.push(params.venue);
     candidateWhere.push(`c.venue = $${values.length}`);
+  }
+  if (params.symbols && params.symbols.length > 0) {
+    const normalizedSymbols = Array.from(
+      new Set(params.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)),
+    );
+    if (normalizedSymbols.length > 0) {
+      values.push(normalizedSymbols);
+      candidateWhere.push(`c.symbol = ANY($${values.length}::text[])`);
+    }
   }
   if (params.status) {
     values.push(normalizeCandidateStatus(params.status));
@@ -2676,6 +2686,10 @@ export async function listScalpComposerDeployments(params: {
   includeRetired?: boolean;
   venue?: ScalpComposerVenue;
   session?: ScalpComposerSession;
+  // Restrict to an explicit symbol allowlist (e.g. the current runtime scope).
+  symbols?: string[];
+  // Sort by stage-C backtest netR DESC instead of (enabled, updated_at).
+  orderByNetR?: boolean;
   compactPromotionGate?: boolean;
   limit?: number;
   offset?: number;
@@ -2709,6 +2723,15 @@ export async function listScalpComposerDeployments(params: {
   if (params.session) {
     values.push(params.session);
     where.push(`entry_session_profile = $${values.length}`);
+  }
+  if (params.symbols && params.symbols.length > 0) {
+    const normalizedSymbols = Array.from(
+      new Set(params.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean)),
+    );
+    if (normalizedSymbols.length > 0) {
+      values.push(normalizedSymbols);
+      where.push(`symbol = ANY($${values.length}::text[])`);
+    }
   }
   if (params.stageCPassedOnly) {
     where.push(`promotion_gate->'worker'->'stageC'->>'passed' = 'true'`);
@@ -2784,7 +2807,11 @@ export async function listScalpComposerDeployments(params: {
         updated_at AS "updatedAt"
       FROM scalp_v2_deployments
       ${whereSql}
-      ORDER BY enabled DESC, updated_at DESC
+      ORDER BY ${
+        params.orderByNetR
+          ? `(promotion_gate->'worker'->'stageC'->>'netR')::double precision DESC NULLS LAST,`
+          : `enabled DESC,`
+      } updated_at DESC
       LIMIT $${limitParam} OFFSET $${offsetParam};
     `,
     ...values,

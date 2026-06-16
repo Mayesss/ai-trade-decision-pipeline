@@ -3,7 +3,10 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { listScalpComposerDeployments } from "../../../../../lib/scalp/composer/db";
+import {
+  listScalpComposerDeployments,
+  loadScalpComposerRuntimeConfig,
+} from "../../../../../lib/scalp/composer/db";
 import {
   parseBool,
   parseIntBounded,
@@ -44,6 +47,27 @@ export default async function handler(
     const limit = parseIntBounded(req.query.limit, 25, 1, 200);
     const offset = parseIntBounded(req.query.offset, 0, 0, 1_000_000);
     const stageCPassed = parseBool(req.query.stageCPassed, false);
+    // Default ON: restrict to the current runtime symbol scope. Default sort:
+    // stage-C backtest netR DESC (best first).
+    const inScope = parseBool(req.query.inScope, true);
+    const orderByNetR = parseBool(req.query.sortNetR, true);
+
+    let scopeSymbols: string[] | undefined;
+    if (inScope) {
+      const runtime = await loadScalpComposerRuntimeConfig();
+      const seed = runtime.seedSymbolsByVenue || ({} as Record<string, string[]>);
+      const live = runtime.seedLiveSymbolsByVenue || ({} as Record<string, string[]>);
+      scopeSymbols = Array.from(
+        new Set(
+          [
+            ...(seed.bitget || []),
+            ...(seed.capital || []),
+            ...(live.bitget || []),
+            ...(live.capital || []),
+          ].map((s) => String(s || "").trim().toUpperCase()).filter(Boolean),
+        ),
+      );
+    }
 
     // Fetch one extra row to know whether a next page exists without a COUNT.
     const rows = await listScalpComposerDeployments({
@@ -53,6 +77,8 @@ export default async function handler(
       stageCPassedOnly: stageCPassed,
       venue,
       session,
+      symbols: scopeSymbols,
+      orderByNetR,
       compactPromotionGate: true,
       limit: limit + 1,
       offset,
@@ -65,6 +91,9 @@ export default async function handler(
       ok: true,
       scope,
       stageCPassed,
+      inScope,
+      sortNetR: orderByNetR,
+      scopeSymbols: scopeSymbols || null,
       venue: venue || null,
       session: session || null,
       limit,

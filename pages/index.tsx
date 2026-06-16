@@ -85,6 +85,45 @@ interface DeploymentsFeedResp {
 const DEPLOYMENT_SCOPES: DeploymentScope[] = ["live", "enabled", "inactive", "all"];
 const DEPLOYMENT_PAGE_SIZE = 25;
 
+type CandidateState = "all" | "evaluated" | "promoted" | "rejected";
+const CANDIDATE_STATES: CandidateState[] = ["all", "evaluated", "promoted", "rejected"];
+const CANDIDATE_PAGE_SIZE = 25;
+
+interface CandidateRow {
+  id?: number;
+  venue?: string;
+  symbol?: string;
+  entrySessionProfile?: string;
+  status?: string;
+  score?: number;
+  updatedAtMs?: number;
+  metadata?: Record<string, unknown> | null;
+}
+
+interface CandidatesResp {
+  ok: boolean;
+  rows: CandidateRow[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+function candidateLowerBoundR(meta: unknown): number | null {
+  const lb = (
+    meta as { v3Ranking?: { stageC?: { stats?: { lowerBoundR?: unknown } } } } | null
+  )?.v3Ranking?.stageC?.stats?.lowerBoundR;
+  return Number.isFinite(Number(lb)) ? Number(lb) : null;
+}
+
+function candidateStageC(meta: unknown): { netR: number | null; trades: number | null } {
+  const sc = (meta as { worker?: { stageC?: { netR?: unknown; trades?: unknown } } } | null)?.worker
+    ?.stageC;
+  return {
+    netR: Number.isFinite(Number(sc?.netR)) ? Number(sc?.netR) : null,
+    trades: Number.isFinite(Number(sc?.trades)) ? Number(sc?.trades) : null,
+  };
+}
+
 // Stage-C backtest weekly netR lives at promotion_gate.worker.stageC.weeklyNetR
 // as a { weekStartMs: netR } map. Return values oldest→newest for the track.
 function weeklyNetRSeries(gate: unknown): { values: number[]; weeks: number[] } {
@@ -246,6 +285,7 @@ export default function ScalpComposerDashboard() {
   const [depScope, setDepScope] = useState<DeploymentScope>("live");
   const [depVenue, setDepVenue] = useState<"" | "bitget" | "capital">("");
   const [depStageCOnly, setDepStageCOnly] = useState(false);
+  const [depInScope, setDepInScope] = useState(true);
   const [depOffset, setDepOffset] = useState(0);
   const [depRows, setDepRows] = useState<DeploymentRow[]>([]);
   const [depHasMore, setDepHasMore] = useState(false);
@@ -268,6 +308,7 @@ export default function ScalpComposerDashboard() {
       });
       if (depVenue) params.set("venue", depVenue);
       if (depStageCOnly) params.set("stageCPassed", "1");
+      if (!depInScope) params.set("inScope", "0");
       try {
         const res = await fetch(`/api/scalp/composer/dashboard/deployments?${params.toString()}`, {
           headers,
@@ -299,7 +340,7 @@ export default function ScalpComposerDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [adminSecret, secretHydrated, unauthorized, depScope, depVenue, depStageCOnly, depOffset, setShowSecretPanel]);
+  }, [adminSecret, secretHydrated, unauthorized, depScope, depVenue, depStageCOnly, depInScope, depOffset, setShowSecretPanel]);
 
   const setScope = (s: DeploymentScope) => {
     setDepScope(s);
@@ -312,6 +353,76 @@ export default function ScalpComposerDashboard() {
   const toggleStageC = () => {
     setDepStageCOnly((v) => !v);
     setDepOffset(0);
+  };
+  const toggleInScope = () => {
+    setDepInScope((v) => !v);
+    setDepOffset(0);
+  };
+
+  // ─── live research candidates feed (raw stage-C output, pre-promote) ─────────
+  const [candStatus, setCandStatus] = useState<CandidateState>("all");
+  const [candInScope, setCandInScope] = useState(true);
+  const [candOffset, setCandOffset] = useState(0);
+  const [candRows, setCandRows] = useState<CandidateRow[]>([]);
+  const [candTotal, setCandTotal] = useState(0);
+  const [candLoading, setCandLoading] = useState(false);
+  const [candError, setCandError] = useState<string | null>(null);
+  const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!secretHydrated || unauthorized) return;
+    let cancelled = false;
+    const run = async () => {
+      setCandLoading(true);
+      setCandError(null);
+      const headers: Record<string, string> = {};
+      if (adminSecret) headers["x-admin-access-secret"] = adminSecret;
+      const params = new URLSearchParams({
+        state: candStatus,
+        limit: String(CANDIDATE_PAGE_SIZE),
+        offset: String(candOffset),
+      });
+      if (!candInScope) params.set("inScope", "0");
+      try {
+        const res = await fetch(`/api/scalp/composer/dashboard/candidates?${params.toString()}`, {
+          headers,
+          credentials: "include",
+        });
+        if (res.status === 401) {
+          if (!cancelled) {
+            setShowSecretPanel(true);
+            setCandError("Unauthorized — admin secret missing or invalid.");
+          }
+          return;
+        }
+        const data = (await res.json()) as CandidatesResp & { error?: string };
+        if (!res.ok || !data.ok) {
+          if (!cancelled) setCandError(data.error || `HTTP ${res.status}`);
+          return;
+        }
+        if (!cancelled) {
+          setCandRows(data.rows || []);
+          setCandTotal(Number(data.total) || 0);
+        }
+      } catch (e) {
+        if (!cancelled) setCandError((e as Error)?.message || String(e));
+      } finally {
+        if (!cancelled) setCandLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [adminSecret, secretHydrated, unauthorized, candStatus, candInScope, candOffset, setShowSecretPanel]);
+
+  const setCandStatusFilter = (s: CandidateState) => {
+    setCandStatus(s);
+    setCandOffset(0);
+  };
+  const toggleCandInScope = () => {
+    setCandInScope((v) => !v);
+    setCandOffset(0);
   };
 
   return (
@@ -418,6 +529,14 @@ export default function ScalpComposerDashboard() {
         >
           [{depStageCOnly ? "✓ " : ""}stageC pass]
         </button>
+        <button
+          onClick={toggleInScope}
+          className={depInScope ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-300"}
+          title="Restrict to the current runtime symbol scope"
+        >
+          [{depInScope ? "✓ " : ""}in scope]
+        </button>
+        <span className="text-zinc-600">sorted by netR ↓</span>
         {depLoading ? <span className="text-sky-400">loading…</span> : null}
       </div>
       {depError ? <div className="pl-2 mt-1 text-rose-400">{depError}</div> : null}
@@ -430,6 +549,7 @@ export default function ScalpComposerDashboard() {
                 <th className="pr-3 font-normal">session</th>
                 <th className="pr-3 font-normal">venue</th>
                 <th className="pr-3 font-normal">mode</th>
+                <th className="pr-3 font-normal">netR (C)</th>
                 <th className="pr-3 font-normal">score</th>
                 <th className="pr-3 font-normal">gate</th>
                 <th className="pr-3 font-normal">updated</th>
@@ -446,6 +566,8 @@ export default function ScalpComposerDashboard() {
                 const isOpen = expandedDeployment === id;
                 const series = weeklyNetRSeries(gate);
                 const sumR = series.values.reduce((a, b) => a + b, 0);
+                const stageCNetRRaw = (((gate as { worker?: { stageC?: { netR?: unknown } } }).worker || {}).stageC || {}).netR;
+                const stageCNetR = Number.isFinite(Number(stageCNetRRaw)) ? Number(stageCNetRRaw) : null;
                 return (
                   <Fragment key={id}>
                     <tr
@@ -471,6 +593,16 @@ export default function ScalpComposerDashboard() {
                           {d.enabled ? liveMode : "off"}
                         </span>
                       </td>
+                      <td className="pr-3">
+                        {stageCNetR === null ? (
+                          <span className="text-zinc-600">—</span>
+                        ) : (
+                          <span className={stageCNetR >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                            {stageCNetR >= 0 ? "+" : ""}
+                            {stageCNetR.toFixed(1)}
+                          </span>
+                        )}
+                      </td>
                       <td className="pr-3 text-zinc-300">
                         {scoreRaw === null || scoreRaw === undefined || !Number.isFinite(Number(scoreRaw))
                           ? "—"
@@ -483,7 +615,7 @@ export default function ScalpComposerDashboard() {
                     </tr>
                     {isOpen ? (
                       <tr className="border-t border-zinc-900/40 bg-zinc-900/20">
-                        <td colSpan={7} className="px-3 py-2">
+                        <td colSpan={8} className="px-3 py-2">
                           <div className="text-zinc-500 mb-1">
                             stage-C weekly netR
                             {series.values.length > 0 ? (
@@ -533,6 +665,152 @@ export default function ScalpComposerDashboard() {
         </div>
       ) : (
         <div className="pl-2 mt-1 text-zinc-500">{depLoading ? "loading…" : `(no ${depScope} deployments)`}</div>
+      )}
+
+      <SectionHeader title="research candidates · live (raw stage-C, pre-promote)" />
+      <div className="mt-1 pl-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-zinc-500">
+        <span>status</span>
+        {CANDIDATE_STATES.map((s) => (
+          <button
+            key={s}
+            onClick={() => setCandStatusFilter(s)}
+            className={candStatus === s ? "text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}
+          >
+            [{s}]
+          </button>
+        ))}
+        <button
+          onClick={toggleCandInScope}
+          className={candInScope ? "text-emerald-400" : "text-zinc-500 hover:text-zinc-300"}
+          title="Restrict to the current runtime symbol scope"
+        >
+          [{candInScope ? "✓ " : ""}in scope]
+        </button>
+        <span className="text-zinc-600">sorted by netR ↓</span>
+        <span className="text-zinc-600">· {candTotal} total</span>
+        {candLoading ? <span className="text-sky-400">loading…</span> : null}
+      </div>
+      {candError ? <div className="pl-2 mt-1 text-rose-400">{candError}</div> : null}
+      {candRows.length > 0 ? (
+        <div className="mt-1 overflow-x-auto">
+          <table className="w-full text-left">
+            <thead className="text-zinc-500">
+              <tr>
+                <th className="pr-3 font-normal">symbol</th>
+                <th className="pr-3 font-normal">session</th>
+                <th className="pr-3 font-normal">venue</th>
+                <th className="pr-3 font-normal">status</th>
+                <th className="pr-3 font-normal">netR (C)</th>
+                <th className="pr-3 font-normal">lowerBoundR</th>
+                <th className="pr-3 font-normal">trades</th>
+                <th className="pr-3 font-normal">updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candRows.map((c, i) => {
+                const id = c.id != null ? String(c.id) : String(i);
+                const isOpen = expandedCandidate === id;
+                const series = weeklyNetRSeries(c.metadata);
+                const { netR, trades } = candidateStageC(c.metadata);
+                const lb = candidateLowerBoundR(c.metadata);
+                const status = String(c.status || "—");
+                return (
+                  <Fragment key={id}>
+                    <tr
+                      className="border-t border-zinc-900 cursor-pointer hover:bg-zinc-900/40"
+                      onClick={() => setExpandedCandidate(isOpen ? null : id)}
+                    >
+                      <td className="pr-3 text-zinc-100">
+                        <span className="text-zinc-600">{isOpen ? "▾ " : "▸ "}</span>
+                        {c.symbol || "—"}
+                      </td>
+                      <td className="pr-3 text-zinc-400">{c.entrySessionProfile || "—"}</td>
+                      <td className="pr-3 text-zinc-500">{c.venue || "—"}</td>
+                      <td className="pr-3">
+                        <span
+                          className={
+                            status === "promoted"
+                              ? "text-emerald-400"
+                              : status === "rejected"
+                                ? "text-rose-400"
+                                : status === "evaluated"
+                                  ? "text-sky-400"
+                                  : "text-zinc-500"
+                          }
+                        >
+                          {status}
+                        </span>
+                      </td>
+                      <td className="pr-3">
+                        {netR === null ? (
+                          <span className="text-zinc-600">—</span>
+                        ) : (
+                          <span className={netR >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                            {netR >= 0 ? "+" : ""}
+                            {netR.toFixed(1)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="pr-3">
+                        {lb === null ? (
+                          <span className="text-zinc-600">—</span>
+                        ) : (
+                          <span className={lb >= 0.05 ? "text-emerald-400" : lb >= 0 ? "text-zinc-300" : "text-rose-400"}>
+                            {lb >= 0 ? "+" : ""}
+                            {lb.toFixed(3)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="pr-3 text-zinc-300">{trades === null ? "—" : trades}</td>
+                      <td className="pr-3 text-zinc-500">{fmtAgo(c.updatedAtMs)}</td>
+                    </tr>
+                    {isOpen ? (
+                      <tr className="border-t border-zinc-900/40 bg-zinc-900/20">
+                        <td colSpan={8} className="px-3 py-2">
+                          <div className="text-zinc-500 mb-1">
+                            stage-C weekly netR
+                            {series.values.length > 0 ? (
+                              <span className="text-zinc-400">
+                                {" "}· {series.values.filter((v) => v > 0).length}/{series.values.length} +weeks
+                              </span>
+                            ) : null}
+                          </div>
+                          <WeeklyNetRTrack
+                            values={series.values}
+                            weekLabel={(idx, value) =>
+                              `${fmtWeekDate(series.weeks[idx])}: ${value >= 0 ? "+" : ""}${value.toFixed(2)}R`
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="pl-2 mt-1 flex items-center gap-3 text-zinc-500">
+            <button
+              onClick={() => setCandOffset((o) => Math.max(0, o - CANDIDATE_PAGE_SIZE))}
+              disabled={candOffset === 0}
+              className={candOffset === 0 ? "text-zinc-700" : "text-zinc-300 hover:text-white"}
+            >
+              [prev]
+            </button>
+            <span>
+              {candOffset + 1}–{candOffset + candRows.length} of {candTotal}
+            </span>
+            <button
+              onClick={() => setCandOffset((o) => o + CANDIDATE_PAGE_SIZE)}
+              disabled={candOffset + candRows.length >= candTotal}
+              className={candOffset + candRows.length >= candTotal ? "text-zinc-700" : "text-zinc-300 hover:text-white"}
+            >
+              [next]
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="pl-2 mt-1 text-zinc-500">{candLoading ? "loading…" : "(no candidates)"}</div>
       )}
 
       <SectionHeader title="recent execution events" />
