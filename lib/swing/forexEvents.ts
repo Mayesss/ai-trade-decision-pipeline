@@ -443,16 +443,54 @@ function pairCurrencies(pair: string): string[] {
   return [normalized.slice(0, 3), normalized.slice(3, 6)];
 }
 
-function listPairEventMatches(params: {
-  pair: string;
+// Non-FX instruments still key off a dominant macro currency for the economic
+// calendar: most commodities are USD-quoted (metals, oil), and each index tracks its
+// home economy. This gives metals/indices the same event awareness as FX pairs.
+const COMMODITY_USD_HINTS = [
+  'GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'CRUDE', 'OIL', 'NGAS', 'NATGAS', 'COPPER', 'PLATINUM', 'PALLADIUM',
+];
+const INDEX_CURRENCY_HINTS: Array<[string, string]> = [
+  ['US500', 'USD'], ['US100', 'USD'], ['NAS100', 'USD'], ['SPX', 'USD'], ['US30', 'USD'], ['DJ30', 'USD'], ['US2000', 'USD'], ['RUSSELL', 'USD'],
+  ['GER40', 'EUR'], ['GER30', 'EUR'], ['DAX', 'EUR'], ['FR40', 'EUR'], ['CAC', 'EUR'], ['EU50', 'EUR'], ['STOXX', 'EUR'], ['ESP35', 'EUR'], ['IT40', 'EUR'],
+  ['UK100', 'GBP'], ['FTSE', 'GBP'],
+  ['JP225', 'JPY'], ['NIKKEI', 'JPY'],
+  ['AUS200', 'AUD'], ['ASX', 'AUD'],
+  ['SWI20', 'CHF'], ['SMI', 'CHF'],
+];
+
+// Currencies whose calendar events are relevant to an instrument. FX pairs use both
+// legs; commodities/indices use their macro currency (by symbol hint, then category).
+export function resolveEventCurrencies(params: {
+  symbol: string;
+  instrumentId?: string | null;
+  category?: string | null;
+}): string[] {
+  const pair = resolveForexPair({ symbol: params.symbol, instrumentId: params.instrumentId });
+  if (pair) return pairCurrencies(pair);
+
+  // Non-FX resolution is OPT-IN via category, so callers that don't pass one
+  // (scalp evidence, dashboard) keep their original FX-pair-only behavior.
+  const category = String(params.category || '').trim().toLowerCase();
+  if (category !== 'commodity' && category !== 'index') return [];
+
+  const haystack = [params.instrumentId, params.symbol].map((v) => String(v || '').toUpperCase()).join(' ');
+  const indexHit = INDEX_CURRENCY_HINTS.find(([hint]) => haystack.includes(hint));
+  if (indexHit) return [indexHit[1]];
+  if (COMMODITY_USD_HINTS.some((hint) => haystack.includes(hint))) return ['USD'];
+
+  // Commodity/index with no recognizable hint → default to the USD macro calendar.
+  return ['USD'];
+}
+
+function listCurrencyEventMatches(params: {
+  currencies: string[];
   events: ForexEconomicEvent[];
   nowMs: number;
   blockedImpacts: string[];
   preEventBlockMinutes: number;
   postEventBlockMinutes: number;
 }): ForexEventMatch[] {
-  const pair = toComparable(params.pair);
-  const currencies = new Set(pairCurrencies(pair));
+  const currencies = new Set(params.currencies.map((c) => String(c || '').toUpperCase()).filter(Boolean));
   if (!currencies.size) return [];
 
   const blocked = params.blockedImpacts.map((impact) => impact.toUpperCase());
@@ -488,14 +526,23 @@ function toCompactEvent(match: ForexEventMatch): ForexCompactEvent {
 export function buildForexEventContext(params: {
   symbol: string;
   instrumentId?: string | null;
+  category?: string | null;
   state: ForexEventsState;
   nowMs?: number;
 }): ForexEventContext {
   const cfg = getForexEventConfig();
   const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
   const pair = resolveForexPair({ symbol: params.symbol, instrumentId: params.instrumentId });
+  const currencies = resolveEventCurrencies({
+    symbol: params.symbol,
+    instrumentId: params.instrumentId,
+    category: params.category,
+  });
+  // Label the context with the FX pair when there is one, else the macro currency
+  // (e.g. "USD" for gold) so the prompt can see what calendar is being applied.
+  const label = pair ?? (currencies.length ? currencies.join('/') : null);
 
-  if (!pair) {
+  if (!currencies.length) {
     return {
       source: params.state.snapshot?.source ?? 'forexfactory',
       pair: null,
@@ -508,8 +555,8 @@ export function buildForexEventContext(params: {
     };
   }
 
-  const matches = listPairEventMatches({
-    pair,
+  const matches = listCurrencyEventMatches({
+    currencies,
     events: params.state.snapshot?.events ?? [],
     nowMs,
     blockedImpacts: cfg.blockImpacts,
@@ -528,7 +575,7 @@ export function buildForexEventContext(params: {
 
   return {
     source: params.state.snapshot?.source ?? 'forexfactory',
-    pair,
+    pair: label,
     status,
     staleData: params.state.stale,
     reasonCodes,
@@ -541,6 +588,7 @@ export function buildForexEventContext(params: {
 export async function loadForexEventContext(params: {
   symbol: string;
   instrumentId?: string | null;
+  category?: string | null;
   nowMs?: number;
 }): Promise<ForexEventContext> {
   const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
@@ -548,6 +596,7 @@ export async function loadForexEventContext(params: {
   return buildForexEventContext({
     symbol: params.symbol,
     instrumentId: params.instrumentId,
+    category: params.category,
     state,
     nowMs,
   });

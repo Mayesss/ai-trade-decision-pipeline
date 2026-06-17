@@ -26,7 +26,14 @@ import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
-import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
+import {
+    buildPrompt,
+    callAI,
+    computeMomentumSignals,
+    postprocessDecision,
+    resolveDecisionPolicy,
+    SWING_DECISION_SCHEMA,
+} from '../../lib/ai';
 import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
@@ -633,15 +640,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
             .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
             .filter((a) => a.action);
+        // Session/day/week levels and the macro-event calendar are both valuable for any
+        // session-traded, fiat-macro-sensitive Capital.com instrument (forex, metals,
+        // indices). Events resolve to the instrument's macro currency (e.g. USD for gold);
+        // crypto is excluded (24/7, no session boundaries, no fiat-macro calendar).
+        const SESSION_LEVEL_CATEGORIES = new Set(['forex', 'commodity', 'index']);
         const forexEventContext =
-            category === 'forex'
+            category && SESSION_LEVEL_CATEGORIES.has(category)
                 ? await loadForexEventContext({
                       symbol,
                       instrumentId,
+                      category,
                   })
                 : null;
         let forexSessionContext = null;
-        if (category === 'forex') {
+        if (category && SESSION_LEVEL_CATEGORIES.has(category)) {
             try {
                 const sessionBundle =
                     String(microTimeFrame) === String(timeFrame)
@@ -682,10 +695,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun,
             Number(gatesOut.metrics?.spreadBpsNow),
             decisionPolicy,
+            category,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
-        const decisionRaw = await callAI(system, user);
+        const decisionRaw = await callAI(system, user, SWING_DECISION_SCHEMA);
         const decision = postprocessDecision({
             decision: decisionRaw,
             context,

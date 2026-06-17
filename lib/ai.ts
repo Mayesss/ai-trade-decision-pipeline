@@ -207,6 +207,7 @@ export async function buildPrompt(
     dryRun?: boolean,
     spreadBpsOverride?: number,
     decisionPolicy?: DecisionPolicy,
+    category?: string | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -235,15 +236,6 @@ export async function buildPrompt(
             : 999;
     const bestBidRaw = Number(analytics?.bestBid);
     const bestAskRaw = Number(analytics?.bestAsk);
-    const bestBidLabel = Number.isFinite(bestBidRaw) ? bestBidRaw.toFixed(2) : 'n/a';
-    const bestAskLabel = Number.isFinite(bestAskRaw) ? bestAskRaw.toFixed(2) : 'n/a';
-
-    const market_data = `price=${price}, change24h=${Number.isFinite(change) ? change : 'n/a'}`;
-
-    const liquidity_data = `spread_bps=${spreadBpsCanonical.toFixed(6)}, best_bid=${bestBidLabel}, best_ask=${bestAskLabel}, top bid walls: ${JSON.stringify(
-        analytics.topWalls.bid,
-    )}, top ask walls: ${JSON.stringify(analytics.topWalls.ask)}`;
-
     const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
     const priceTrendPoints = candles
         .slice(-5)
@@ -270,40 +262,13 @@ export async function buildPrompt(
             };
         })
         .filter((p: any) => p !== null);
-    const priceTrendSeries = JSON.stringify(priceTrendPoints);
 
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
-    const newsSentimentBlock = normalizedNewsSentiment
-        ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
-        : '';
     const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
-    const newsHeadlinesBlock = normalizedHeadlines.length
-        ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
-        : '';
-    const forexEventContextBlock =
-        forex_event_context && typeof forex_event_context === 'object'
-            ? `- Forex macro events (advisory only; not hard-gated): ${JSON.stringify(forex_event_context)}\n`
-            : '';
-    const forexSessionContextBlock =
-        forex_session_context && typeof forex_session_context === 'object'
-            ? `- Forex session/liquidity context (advisory swing context, not a standalone entry trigger): ${JSON.stringify(forex_session_context)}\n`
-            : '';
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
     const actionsToShow = recentActionsExists ? Math.min(recentActions.length, 5) : 5;
-    const recentActionsBlock = recentActionsExists
-        ? `- Recent actions (last ${actionsToShow}): ${recentActions
-              .slice(-1 * actionsToShow)
-              .map((a) => `${a.action}@${new Date(a.timestamp).toISOString()}`)
-              .join(' | ')}\n`
-        : '';
-    const positionContextBlock = position_context
-        ? `- Position context (JSON): ${JSON.stringify(position_context)}\n`
-        : '';
-    const primaryIndicatorsBlock = indicators.primary
-        ? `- Primary timeframe (${primaryTimeframe}) indicators: ${indicators.primary.summary}\n`
-        : '';
     const sr = indicators.sr || {};
     const primarySR = sr[primaryTimeframe] ?? sr[indicators.primary?.timeframe || primaryTimeframe];
     const contextSR = sr[contextTimeframe] ?? sr[indicators.context?.timeframe || contextTimeframe];
@@ -314,38 +279,6 @@ export async function buildPrompt(
         : contextSummary.includes('trend=down')
           ? 'DOWN'
           : 'NEUTRAL';
-    const contextCandleDepthRaw = indicators.candleDepth?.[contextTimeframe];
-    const contextCandleDepth = Number.isFinite(contextCandleDepthRaw as number) ? Number(contextCandleDepthRaw) : null;
-    const contextDepthBlock =
-        contextCandleDepth !== null
-            ? `- Context candle depth (${contextTimeframe}): ${contextCandleDepth} candles loaded (requested up to 200)\n`
-            : '';
-    const contextIndicatorsBlock =
-        contextSummary && contextTimeframe
-            ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n`
-            : '';
-    const formatLevel = (lvl: any, kind: 'support' | 'resistance') =>
-        lvl
-            ? `${kind}_price=${lvl.price}, dist_in_atr=${lvl.dist_in_atr}, strength=${lvl.level_strength}, type=${lvl.level_type}, state=${lvl.level_state}`
-            : `${kind}=n/a`;
-    const contextSRBlock = contextSR
-        ? `- Context S/R (${contextTimeframe}): ${formatLevel(contextSR.support, 'support')} | ${formatLevel(
-              contextSR.resistance,
-              'resistance',
-          )}\n`
-        : '';
-    const primarySRBlock =
-        primarySR && primaryTimeframe
-            ? `- Primary S/R (${primaryTimeframe}): ${formatLevel(primarySR.support, 'support')} | ${formatLevel(
-                  primarySR.resistance,
-                  'resistance',
-              )}\n`
-            : '';
-
-    const vol_profile_str = (analytics.volume_profile || [])
-        .slice(0, 10)
-        .map((v: any) => `(${v.price.toFixed(2)} → ${v.volume})`)
-        .join(', ');
 
     // ---- Extract indicators for raw metrics (Micro, Macro, Primary) ----
     const micro = indicators.micro || '';
@@ -378,7 +311,6 @@ export async function buildPrompt(
     const htfBreakoutConfirmed = contextSR?.resistance?.level_state === 'broken';
 
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
-    const spread_bps = spreadBpsCanonical;
     const atr_pct_macro = last > 0 && atr_macro ? (atr_macro / last) * 100 : 0;
     const atr_pct_primary = last > 0 && atr_primary ? (atr_primary / last) * 100 : 0;
 
@@ -394,9 +326,6 @@ export async function buildPrompt(
             ? (last - (ema20_primary as number)) / (atr_primary as number)
             : 0;
 
-    const rsiMicroDisplay = Number.isFinite(rsi_micro as number) ? (rsi_micro as number).toFixed(1) : 'n/a';
-    const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
-    const rsiPrimaryDisplay = Number.isFinite(rsi_primary as number) ? (rsi_primary as number).toFixed(1) : 'n/a';
     const metricsByTf = indicators.metrics || {};
     const microMetrics = metricsByTf[microTimeframe] || {};
     const primaryMetrics = metricsByTf[primaryTimeframe] || {};
@@ -487,22 +416,6 @@ export async function buildPrompt(
     const primaryBreakoutConfirmed =
         structureBreakState4h === 'above' || (breakoutRetestOk4h && breakoutRetestDir4h === 'up');
 
-    const formatNum = (value: number | null | undefined, digits = 2) =>
-        Number.isFinite(value as number) ? Number(value).toFixed(digits) : 'n/a';
-
-    const microKey = microTimeframe.toLowerCase();
-    const primaryKey = primaryTimeframe.toLowerCase();
-    const macroKey = macroTimeframe.toLowerCase();
-
-    const key_metrics =
-        `spread_bps=${spread_bps.toFixed(6)}, ` +
-        `atr_pct_${macroKey}=${atr_pct_macro.toFixed(2)}%, atr_pct_${primaryKey}=${atr_pct_primary.toFixed(2)}%, ` +
-        `atr_pctile_${macroKey}=${formatNum(atrPctile1d, 0)}, atr_pctile_${primaryKey}=${formatNum(atrPctile4h, 0)}, ` +
-        `rsi_${microKey}=${rsiMicroDisplay}, rsi_${primaryKey}=${rsiPrimaryDisplay}, rsi_${macroKey}=${rsiMacroDisplay}, ` +
-        `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, ` +
-        `dist_from_ema20_${microKey}_in_atr=${distance_from_ema_atr.toFixed(2)}, dist_from_ema20_${primaryKey}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}, ` +
-        `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${String(bos4h)}, choch_${primaryKey}=${String(choch4h)}, ` +
-        `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -512,7 +425,6 @@ export async function buildPrompt(
     const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro >= 65;
     const reversalOpportunity = oversoldMicro ? 'oversold' : overboughtMicro ? 'overbought' : null;
 
-    const contextBiasDriver = contextBias === 'UP' ? 0.6 : contextBias === 'DOWN' ? -0.6 : 0;
     const supportProximity = typeof htfSupportDist === 'number' ? Math.max(0, 1 - Math.min(htfSupportDist, 2) / 2) : 0;
     const resistanceProximity =
         typeof htfResistanceDist === 'number' ? Math.max(0, 1 - Math.min(htfResistanceDist, 2) / 2) : 0;
@@ -572,76 +484,6 @@ export async function buildPrompt(
     const mediumActionReady =
         alignedDriverCount >= 4 && (momentumSignals.longMomentum || momentumSignals.shortMomentum) && !macroPenalty;
 
-    const signalDrivers: Record<string, any> = {
-        macro_trend_up: momentumSignals.macroTrendUp,
-        macro_trend_down: momentumSignals.macroTrendDown,
-        context_bias: contextBias,
-        context_bias_driver: clampNumber(contextBiasDriver, 3),
-        regime_alignment: clampNumber(regimeAlignment, 2),
-        micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
-        micro_bias: microBiasLabel,
-        micro_bias_calc: microBiasLabel,
-        micro_bias_source: microBiasSource,
-        micro_structure_state: microStructureState,
-        micro_structure_break_state: microStructureBreakState,
-        micro_bos: microBos,
-        micro_bos_dir: microBosDir,
-        micro_choch: microChoch,
-        micro_breakout_retest_ok: microBreakoutRetestOk,
-        micro_breakout_retest_dir: microBreakoutRetestDir,
-        primary_trend_up: primaryTrendUp,
-        primary_trend_down: primaryTrendDown,
-        primary_breakdown_confirmed: primaryBreakdownConfirmed,
-        primary_breakout_confirmed: primaryBreakoutConfirmed,
-
-        primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
-        micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
-
-        aligned_driver_count: alignedDriverCount,
-        aligned_driver_count_long: longAlignedDriverCount,
-        aligned_driver_count_short: shortAlignedDriverCount,
-        favored_side: favoredSide,
-
-        medium_action_ready: mediumActionReady,
-        long_momentum: momentumSignals.longMomentum,
-        short_momentum: momentumSignals.shortMomentum,
-        micro_extension_atr: clampNumber(momentumSignals.microExtensionInAtr ?? null, 3),
-        primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
-        location_confluence_score: clampNumber(locationConfluenceScore, 3),
-        location_score_long: clampNumber(locationScoreLong, 3),
-        location_score_short: clampNumber(locationScoreShort, 3),
-        into_context_support: intoContextSupport,
-        into_context_resistance: intoContextResistance,
-        chop_risk: chopRisk,
-        context_breakdown_confirmed: htfBreakdownConfirmed,
-        context_breakout_confirmed: htfBreakoutConfirmed,
-        context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
-        context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
-    };
-
-    signalDrivers[`rsi_${microKey}`] = rsi_micro;
-    signalDrivers[`rsi_${primaryKey}`] = rsi_primary;
-    signalDrivers[`rsi_${macroKey}`] = rsi_macro;
-
-    signalDrivers[`dist_from_ema20_${microKey}_in_atr`] = clampNumber(distance_from_ema_atr, 3);
-    signalDrivers[`dist_from_ema20_${primaryKey}_in_atr`] = clampNumber(distance_from_ema20_primary_atr, 3);
-
-    signalDrivers[`atr_pct_${macroKey}`] = clampNumber(atr_pct_macro, 3);
-    signalDrivers[`atr_pct_${primaryKey}`] = clampNumber(atr_pct_primary, 3);
-    signalDrivers[`atr_pctile_${macroKey}`] = clampNumber(atrPctile1d, 0);
-    signalDrivers[`atr_pctile_${primaryKey}`] = clampNumber(atrPctile4h, 0);
-
-    signalDrivers[`structure_${primaryKey}_state`] = structure4hState;
-    signalDrivers[`bos_${primaryKey}`] = bos4h;
-    signalDrivers[`bos_dir_${primaryKey}`] = bosDir4h;
-    signalDrivers[`choch_${primaryKey}`] = choch4h;
-    signalDrivers[`breakout_retest_ok_${primaryKey}`] = breakoutRetestOk4h;
-    signalDrivers[`breakout_retest_dir_${primaryKey}`] = breakoutRetestDir4h;
-    signalDrivers[`structure_break_state_${primaryKey}`] = structureBreakState4h;
-
-    signalDrivers[`rvol_${primaryKey}`] = clampNumber(rvol4h, 2);
-    signalDrivers[`rvol_${macroKey}`] = clampNumber(rvol1d, 2);
-    signalDrivers[`value_state_${macroKey}`] = valueState1d;
     const positionSide = position_context?.side;
     const priceVsBreakevenPctRaw =
         position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
@@ -678,220 +520,263 @@ export async function buildPrompt(
     const slippage_bps = 2;
     const total_cost_bps = Number((taker_round_trip_bps + slippage_bps).toFixed(1));
 
-    const tfToMinutes = (tf: string): number => {
-        const m = tf.match(/^(\d+)\s*(m|h|d)$/i);
-        if (!m) return 240;
-        const n = Number(m[1]);
-        const unit = m[2].toLowerCase();
-        if (!Number.isFinite(n) || n <= 0) return 240;
-        return unit === 'm' ? n : unit === 'h' ? n * 60 : n * 1440;
-    };
-    const time_stop_minutes = tfToMinutes(primaryTimeframe) * 3;
-
-    const risk_policy = `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, `;
-    // `stop=1.5xATR(${primaryTimeframe}), take_profit=2.5xATR(${primaryTimeframe}), ` +
-    //`time_stop=${time_stop_minutes} minutes (execution-layer timer)`;
-
-    // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
-    const base_gating_flags = `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
-
-    // We still pass the Regime for a strong trend bias signal
-    const regime_flags = `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
-
-    const realizedRoiLine =
-        realizedRoiPct !== undefined && realizedRoiPct !== null && Number.isFinite(realizedRoiPct)
-            ? `- Recent realized PnL (last closed): ${Number(realizedRoiPct).toFixed(2)}%`
-            : '';
     const resolvedDecisionPolicy = resolveDecisionPolicy(decisionPolicy);
     const strictPolicy = resolvedDecisionPolicy === 'strict';
     const decisionPolicyLabel = strictPolicy ? 'strict_guardrails' : 'balanced_guardrails';
-    const baseGatesRule = strictPolicy
-        ? '**Base gates**: when flat, if ANY spread_ok/liquidity_ok/atr_ok/slippage_ok is false -> action="HOLD". In a position, never block exits; if gates fail, prefer risk-off (CLOSE) over HOLD.'
-        : '**Base gates**: when flat, default to HOLD if spread/liquidity/ATR/slippage is poor. In a position, never add risk when gates fail; prefer HOLD/CLOSE and avoid REVERSE unless the invalidation is very clear.';
-    const microEntryRule = strictPolicy
-        ? 'If flat and micro_entry_ok=false -> HOLD unless signal_strength=HIGH and breakout_retest_ok_primary=true.'
-        : 'If flat and micro_entry_ok=false, treat as caution: favor HOLD unless setup quality is at least MEDIUM with clear structure confirmation (e.g., breakout/retest).';
-    const trendGuardHeading = strictPolicy
-        ? `**Hard trend guard (${microTimeframe}+${primaryTimeframe})**:`
-        : `**Trend guard (${microTimeframe}+${primaryTimeframe})**:`;
-    const trendGuardShortRule = strictPolicy
-        ? `If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), do NOT short.`
-        : `If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), strongly avoid shorts unless there is explicit structural invalidation.`;
-    const trendGuardLongRule = strictPolicy
-        ? `If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), do NOT long.`
-        : `If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), strongly avoid longs unless there is explicit structural invalidation.`;
-    const rangeHandlingRule = strictPolicy
-        ? `If structure_${primaryKey}=range, do NOT pick direction from ${macroTimeframe}/${contextTimeframe} trend alone. Favor edge trades (near ${primaryTimeframe} support/resistance with tight invalidation) or breakout + retest in the breakout direction.`
-        : `If structure_${primaryKey}=range, de-prioritize direction picks from ${macroTimeframe}/${contextTimeframe} trend alone. Prefer edge trades (near ${primaryTimeframe} support/resistance) or breakout + retest in the breakout direction.`;
-    const antiFlipRule = strictPolicy
-        ? '**Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.'
-        : '**Temporal inertia (anti-flip)**: avoid repeated CLOSE/REVERSE flips in back-to-back calls unless signal_strength is at least MEDIUM and invalidation keeps strengthening.';
-    const reversalLossRule = strictPolicy
-        ? 'Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime/structure change; if conditions fail, prefer CLOSE (risk-off) or HOLD (if still valid).'
-        : 'If unrealized_pnl_pct < -0.5%, be conservative on REVERSE unless there is a major regime/structure change; otherwise prefer CLOSE or HOLD.';
-    const extensionMicroWarn = strictPolicy ? 2 : 2.3;
+
+    // Extension thresholds: single source of truth. Referenced in the soft-judgment
+    // guidance below so the prose can never drift from the numbers we actually use.
     const extensionMicroAvoid = strictPolicy ? 2.5 : 2.8;
     const extensionMicroNoEntry = strictPolicy ? 3 : 3.3;
-    const extensionPrimaryWarn = strictPolicy ? 2 : 2.3;
     const extensionPrimaryAvoid = strictPolicy ? 2.5 : 2.8;
-
-    const sys = `
-You are an expert swing-trading market structure analyst and trading assistant.
-
-TIMEFRAMES (fixed for this mode)
-- micro: ${microTimeframe} (entry timing / confirmation)
-- primary: ${primaryTimeframe} (setup + execution timeframe)
-- macro: ${macroTimeframe} (regime bias, not a hard filter)
-- context: ${contextTimeframe} (higher-timeframe location + major levels, risk lever)
-
-Primary strategy: ${primaryTimeframe} swing setups executed with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location/levels.
-Holding horizon: typically 1–10 days. Prefer fewer, higher-quality trades; avoid churn.
-
-Decision ladder: Base gates → biases (context/macro/primary) → setup drivers → action.
-Signal strength is driven by aligned_driver_count + regime_alignment + location/level_quality + extension/mean-reversion risk; use a 1–5 scale (1=weak, 3=base, 5=strongest). LOW/MEDIUM/HIGH are acceptable aliases (LOW≈1-2, MEDIUM≈3, HIGH≈4-5).
-Respond in strict JSON ONLY.
-Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary. Keep keys minimal—no extra fields.
-Decision policy mode: ${decisionPolicyLabel}.
-
-GENERAL RULES
-- ${baseGatesRule}
-- ${microEntryRule}
-- **Costs / churn control**: total_cost_bps = ~${total_cost_bps}bps (round-trip fees + slippage). For swing entries, avoid trades where the expected move is not clearly larger than costs; default filter: if edge is unclear or setup quality is MED/LOW → HOLD.
-- **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
-  - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
-- **Macro/context usage**:
-  - macro_bias (${macroTimeframe}) is a bias, not a hard filter. Trades with macro_bias are preferred.
-  - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
-- ${trendGuardHeading}
-  - ${trendGuardShortRule}
-    - Exception: only allow a short if primary_breakdown_confirmed=true AND ${microTimeframe} confirms with lower-high + breakdown/retest (micro_bias=DOWN with clear bearish structure).
-  - ${trendGuardLongRule}
-    - Exception: only allow a long if primary_breakout_confirmed=true AND ${microTimeframe} confirms with higher-low + breakout/retest (micro_bias=UP with clear bullish structure).
-- **Support/Resistance & location**: swing-pivot derived per timeframe; distances in ATR of that timeframe.
-  - Avoid opening new positions directly into strong opposite levels (e.g., long into nearby resistance, short into nearby support) unless breakout/breakdown is confirmed and strength is HIGH.
-  - If both nearest support and resistance are close / at_level, treat as range/chop: avoid fresh entries unless signal_strength is HIGH with clean level logic.
-- **Range handling (${primaryTimeframe})**:
-  - ${rangeHandlingRule}
-  - When range and breakout state conflicts with location (e.g., approaching resistance but structure_break_state_${primaryKey}=above with breakout_retest_ok_${primaryKey}=true and dir=up), treat it as a breakout+retest and prefer LONG setups; do not short into that conflict.
-- **Position truthfulness**: NEVER describe a position as winning if unrealized_pnl_pct < 0 or if price_vs_breakeven_pct is on the losing side for that direction.
-- ${antiFlipRule}
-- **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (approaching major opposite level with gains, regime weakening, structure damage without full reversal). Avoid trims <20%; omit when not needed.
-
-BIAS DEFINITIONS (swing-oriented)
-- primary_bias (${primaryTimeframe}): trend/structure bias from EMA alignment/slope, RSI, HH/HL vs LH/LL, and ${primaryTimeframe} range state.
-- micro_bias (${microTimeframe}): timing bias from ${microTimeframe} structure (break/retest, pullback continuation, reversal failure), momentum, and reaction at levels.
-- macro_bias (${macroTimeframe}): regime trend up/down; if both false → NEUTRAL.
-- context_bias (${contextTimeframe}): higher-timeframe regime/trend + location; modulates risk/selectivity.
-
-MICRO BIAS NORMALIZATION (${microTimeframe})
-- Compute micro_bias with strict precedence:
-  1) Structure first: breakout_retest_dir_${microKey} → structure_break_state_${microKey} → bos_dir_${microKey} → structure_${microKey}_state
-  2) Momentum fallback: EMA slope + RSI + price vs EMA20 on ${microTimeframe}
-  3) Else NEUTRAL
-- If structure and momentum disagree, structure wins.
-
-SETUP DRIVERS (what “aligned_driver_count” should represent)
-Count drivers that materially support a directional swing trade:
-- Structure: HH/HL or LH/LL alignment on ${primaryTimeframe}, with ${microTimeframe} confirmation (break + hold / retest).
-- Level logic: entry near meaningful ${primaryTimeframe} support/resistance, or post-breakout retest; clean invalidation.
-- Regime alignment: ${macroTimeframe} + ${contextTimeframe} supportive (or a high-quality counter-regime mean-reversion at extreme location).
-- Momentum quality: RSI/slope confirmation on ${primaryTimeframe}; ${microTimeframe} impulse/continuation vs fading.
-- Volatility/ATR sanity: not entering after exhausted expansion unless continuation setup is exceptionally clean.
-
-ACTIONS LOGIC
-- **No position open**:
-  - With base gates true + HIGH + aligned_driver_count ≥ 4 → BUY/SELL in the direction of the primary_bias, unless ${microTimeframe} invalidates.
-  - MEDIUM requires aligned_driver_count ≥ 4 AND acceptable location (not into strong opposite level, not overly extended).
-  - Counter-macro trades are allowed but selective:
-    - Require HIGH, aligned_driver_count ≥ 5, clear ${primaryTimeframe} structure reversal, and non-extended entry (|dist_from_ema20_${microTimeframe}_in_atr| ≤ 1.8 and |dist_from_ema20_${primaryTimeframe}_in_atr| ≤ 2.0).
-  - Avoid new shorts when dist_to_support_in_atr_${contextTimeframe} < 0.6 unless breakdown_confirmed=true; mirror for longs vs resistance/breakout.
-  - HOLD on LOW signals, unclear structure, mixed regime/location, or extreme extension without clean continuation logic.
-- **Position open**:
-  - Strong opposite + HIGH → CLOSE or REVERSE (use reversal rules).
-  - Trim 30–70% when: gains into major opposite level, structure weakens, regime alignment deteriorates, or volatility expansion looks exhausted.
-  - Prefer HOLD if macro/context support the position and no strong opposite structure signal; prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and no HIGH opposite signal.
-
-REVERSAL DISCIPLINE (swing)
-- REVERSE = close entire current position (exit_size_pct=100) then open opposite side. No partial reversals.
-- REVERSE only if reverse_confidence="high", aligned_driver_count ≥ 5, and signal_strength = HIGH, plus clear ${primaryTimeframe} structure flip (break + acceptance) confirmed by ${microTimeframe}.
-- ${reversalLossRule}
-
-EXTENSION / OVERBOUGHT-OVERSOLD (swing)
-- Use extension as risk control, not as a standalone signal.
-- Overbought/oversold is NOT a counter-trend trigger by itself. Treat RSI extremes + extension as "permission" only when structure shows damage/flip (e.g., ${microTimeframe} fails to make HH/LL and breaks key support/resistance, followed by ${primaryTimeframe} rolling over).
-- On ${microTimeframe}: |dist_from_ema20_${microTimeframe}_in_atr| in [${extensionMicroWarn},${extensionMicroAvoid}) → require cleaner level/invalidation; ≥ ${extensionMicroAvoid} → avoid fresh entries; > ${extensionMicroNoEntry} → strongly prefer no new entries.
-- On ${primaryTimeframe}: |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ ${extensionPrimaryWarn} → be selective and tighten profit-taking; ≥ ${extensionPrimaryAvoid} avoid fresh entries unless this is a post-breakout retest with HIGH strength.
-`.trim();
 
     const modeLabel = dryRun ? 'simulation' : 'live';
     const baseSymbol = symbol.replace(/USDT$/i, '');
+    const assetClass = String(category || '').toLowerCase() || 'unknown';
+
+    // signal_strength is OWNED BY CODE (computeSignalStrength). We compute it once here
+    // and hand it to the model as a given input — the model must NOT recompute it, and
+    // postprocessDecision gates on this same value.
+    const signalStrength = computeSignalStrength({
+        micro_bias_calc: microBiasLabel,
+        primary_bias: primaryBias,
+        macro_bias: macroBias,
+        context_bias: contextBias,
+        primary_trend_up: primaryTrendUp,
+        primary_trend_down: primaryTrendDown,
+        primary_breakdown_confirmed: primaryBreakdownConfirmed,
+        primary_breakout_confirmed: primaryBreakoutConfirmed,
+        micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
+        aligned_driver_count: alignedDriverCount,
+        regime_alignment: regimeAlignment,
+        location_confluence_score: locationConfluenceScore,
+        micro_extension_atr: momentumSignals.microExtensionInAtr ?? null,
+        primary_extension_atr: distance_from_ema20_primary_atr,
+        breakout_retest_ok_primary: breakoutRetestOk4h,
+        breakout_retest_dir_primary: breakoutRetestDir4h ?? null,
+    });
+
+    const srLevel = (lvl: any) =>
+        lvl
+            ? {
+                  price: lvl.price,
+                  dist_atr: lvl.dist_in_atr,
+                  strength: lvl.level_strength,
+                  type: lvl.level_type,
+                  state: lvl.level_state,
+              }
+            : null;
+
+    // ---- Single structured payload: one encoding (JSON), no duplicated keys ----
+    // STATE = derived signals (what to reason over). MARKET = raw inputs (price/tape/news).
+    const state = {
+        signal_strength: signalStrength, // code-owned; given, not for you to recompute
+        favored_side: favoredSide,
+        biases: {
+            micro: microBiasLabel,
+            micro_source: microBiasSource,
+            primary: primaryBias,
+            macro: macroBias,
+            context: contextBias,
+        },
+        trend: {
+            primary_up: primaryTrendUp,
+            primary_down: primaryTrendDown,
+            primary_breakout_confirmed: primaryBreakoutConfirmed,
+            primary_breakdown_confirmed: primaryBreakdownConfirmed,
+            macro_up: momentumSignals.macroTrendUp,
+            macro_down: momentumSignals.macroTrendDown,
+        },
+        structure: {
+            micro: {
+                state: microStructureState,
+                break_state: microStructureBreakState,
+                bos: microBos,
+                bos_dir: microBosDir,
+                choch: microChoch,
+                breakout_retest_ok: microBreakoutRetestOk,
+                breakout_retest_dir: microBreakoutRetestDir,
+            },
+            primary: {
+                state: structure4hState,
+                break_state: structureBreakState4h,
+                bos: bos4h,
+                bos_dir: bosDir4h,
+                choch: choch4h,
+                breakout_retest_ok: breakoutRetestOk4h,
+                breakout_retest_dir: breakoutRetestDir4h,
+            },
+        },
+        momentum: {
+            rsi: {
+                micro: clampNumber(rsi_micro, 1),
+                primary: clampNumber(rsi_primary, 1),
+                macro: clampNumber(rsi_macro, 1),
+            },
+            slope_micro_pct_per_bar: clampNumber(slope21_micro, 4),
+            slope_primary_pct_per_bar: clampNumber(slope21_primary, 4),
+            long: momentumSignals.longMomentum,
+            short: momentumSignals.shortMomentum,
+            micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
+        },
+        extension_atr: {
+            micro: clampNumber(distance_from_ema_atr, 2),
+            primary: clampNumber(distance_from_ema20_primary_atr, 2),
+        },
+        volatility: {
+            atr_pct: { primary: clampNumber(atr_pct_primary, 3), macro: clampNumber(atr_pct_macro, 3) },
+            atr_pctile: { primary: clampNumber(atrPctile4h, 0), macro: clampNumber(atrPctile1d, 0) },
+            rvol: { primary: clampNumber(rvol4h, 2), macro: clampNumber(rvol1d, 2) },
+            value_state_macro: valueState1d,
+        },
+        drivers: {
+            aligned_count: alignedDriverCount,
+            long: longAlignedDriverCount,
+            short: shortAlignedDriverCount,
+            regime_alignment: clampNumber(regimeAlignment, 2),
+            medium_action_ready: mediumActionReady,
+        },
+        location: {
+            into_context_support: intoContextSupport,
+            into_context_resistance: intoContextResistance,
+            context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
+            context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
+            context_breakout_confirmed: htfBreakoutConfirmed,
+            context_breakdown_confirmed: htfBreakdownConfirmed,
+            near_primary_support: nearPrimarySupport,
+            near_primary_resistance: nearPrimaryResistance,
+            confluence_score: clampNumber(locationConfluenceScore, 3),
+            chop_risk: chopRisk,
+        },
+        levels: {
+            primary: { support: srLevel(primarySR?.support), resistance: srLevel(primarySR?.resistance) },
+            context: { support: srLevel(contextSR?.support), resistance: srLevel(contextSR?.resistance) },
+        },
+        gates: {
+            spread_ok: gates.spread_ok,
+            liquidity_ok: gates.liquidity_ok,
+            atr_ok: gates.atr_ok,
+            slippage_ok: gates.slippage_ok,
+        },
+        costs: {
+            round_trip_fee_bps: taker_round_trip_bps,
+            slippage_bps,
+            total_cost_bps,
+            recent_realized_pnl_pct: clampNumber(realizedRoiPct ?? null, 2),
+        },
+        position: position_context
+            ? { open: true, ...position_context }
+            : { open: false, status: position_status },
+        closing_guardrails: position_context ? closingGuidance : null,
+    };
+
+    const market: Record<string, any> = {
+        price: {
+            last: Number.isFinite(price) ? price : null,
+            change_24h_pct: Number.isFinite(change) ? change : null,
+        },
+        recent_candles: priceTrendPoints,
+        liquidity: {
+            spread_bps: clampNumber(spreadBpsCanonical, 4),
+            best_bid: Number.isFinite(bestBidRaw) ? bestBidRaw : null,
+            best_ask: Number.isFinite(bestAskRaw) ? bestAskRaw : null,
+            bid_walls: analytics.topWalls?.bid ?? [],
+            ask_walls: analytics.topWalls?.ask ?? [],
+        },
+        volume_profile: (analytics.volume_profile || [])
+            .slice(0, 10)
+            .map((v: any) => ({ price: clampNumber(v.price, 2), volume: v.volume })),
+        news: { sentiment: normalizedNewsSentiment, headlines: normalizedHeadlines },
+        recent_actions: recentActionsExists
+            ? recentActions
+                  .slice(-1 * actionsToShow)
+                  .map((a) => ({ action: a.action, ts: new Date(a.timestamp).toISOString() }))
+            : [],
+    };
+    if (forex_event_context && typeof forex_event_context === 'object') {
+        market.forex_events = forex_event_context;
+    }
+    if (forex_session_context && typeof forex_session_context === 'object') {
+        market.forex_session = forex_session_context;
+    }
+
+    // Each note describes ONLY the context this category actually receives (see
+    // /api/analyze: forex_session is built for forex/commodity/index; forex_events for
+    // forex only; crypto gets neither). Keep prose aligned with the data or it misleads.
+    const assetNote =
+        assetClass === 'crypto'
+            ? 'Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. Funding/borrow is not modeled here; judge on structure, regime and location.'
+            : assetClass === 'forex'
+              ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
+              : assetClass === 'commodity'
+                ? 'Asset class: commodity (e.g. metals). Sensitive to USD, real yields and risk-on/off flows; strongly session-driven (London/NY). market.forex_events carries the relevant macro calendar (USD for metals — CPI/NFP/FOMC). Use market.forex_session levels + events as location and risk context, not standalone triggers; avoid initiating new risk into an imminent high-impact event.'
+                : assetClass === 'index'
+                  ? "Asset class: index. Session-driven and gap-prone around the cash open/close. market.forex_events carries the index's home-economy macro calendar. Use market.forex_session levels + events as location and risk context, not standalone triggers; avoid initiating new risk into an imminent high-impact event."
+                  : `Asset class: ${assetClass}. No session or event context is provided; judge on structure, regime, location and cost.`;
+
+    const trendGuardException = strictPolicy
+        ? 'no exceptions'
+        : 'unless signal_strength=HIGH and the matching primary breakout/breakdown is confirmed';
+    const microEntryException = strictPolicy
+        ? 'unless signal_strength=HIGH with a confirmed primary breakout/retest'
+        : 'unless signal_strength=HIGH with a confirmed primary breakout/retest, or (balanced policy) strength≥MEDIUM with drivers.aligned_count≥4';
+    const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
+    const antiFlipStrength = strictPolicy ? 'HIGH' : 'at least MEDIUM';
+
+    const sys = `
+You are an expert swing-trading market-structure analyst. Decide one action and size it.
+
+${assetNote}
+
+TIMEFRAMES (fixed)
+- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever).
+Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
+
+INPUTS
+- You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
+- micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
+
+DECISION OWNERSHIP
+- state.signal_strength (LOW/MEDIUM/HIGH) is computed by the system and is GROUND TRUTH. Do NOT recompute, rescale, or argue with it. Use it to set selectivity and leverage.
+- The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:
+  1. Allowed actions: flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE only.
+  2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
+  3. Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).
+  4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless strength is ${antiFlipStrength}.
+  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.
+
+YOUR JOB (soft judgment — where your reasoning actually matters)
+- Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
+- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (location.near_primary_support/resistance, or context distance < 0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries unless strength=HIGH with clean level logic.
+- Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
+- Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
+- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip with state.closing_guardrails.reverse_confidence=high.
+- Leverage 1–5 by conviction AND risk: cut to 1–2 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.
+- Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
+
+OUTPUT
+- Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys.
+- Decision policy mode: ${decisionPolicyLabel}.
+`.trim();
+
     const user = `
-You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. I will call you roughly once per ${microTimeframe}.
-Decision policy: ${decisionPolicyLabel}.
+You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}, asset_class=${assetClass}).
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. Called ~once per ${microTimeframe}. Decision policy: ${decisionPolicyLabel}.
+S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 
-RISK/COSTS:
-- ${risk_policy}
-${realizedRoiLine ? `${realizedRoiLine}\n` : ''}
-- S/R method: swing-pivot levels per timeframe (~150 bars), distances expressed in that timeframe's ATR, level_state ∈ {at_level, approaching, rejected, broken, retesting}.
+STATE (derived signals — single source of truth):
+${JSON.stringify(state)}
 
-BASE GATES (tradeability):
-- ${base_gating_flags}
-
-REGIME / BIASES:
-- ${regime_flags}  // macro (${macroTimeframe}) regime flags
-- Context bias (${contextTimeframe}): ${contextBias}
-
-KEY METRICS:
-- ${key_metrics}
-
-DATA INPUTS (swing-relevant windows):
-- Current price and % change (now): ${market_data}
-- Volume / activity (lookback window = ${TRADE_WINDOW_MINUTES}m): ${vol_profile_str}
-- Price action (recent bars for structure context): ${priceTrendSeries}
-- Liquidity/spread snapshot (cost sanity check): ${liquidity_data}
-${newsSentimentBlock}${newsHeadlinesBlock}${forexEventContextBlock}${forexSessionContextBlock}${recentActionsBlock}- Current position: ${position_status}
-${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
-- Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
-- Macro (${macroTimeframe}, last 60 candles): ${indicators.macro}
-${contextIndicatorsBlock}${contextDepthBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
-- HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
-
-- Swing state (compact):
-${JSON.stringify({
-    macro_trend_up: momentumSignals.macroTrendUp,
-    macro_trend_down: momentumSignals.macroTrendDown,
-    primary_bias: primaryBias,
-    context_bias: contextBias,
-    micro_bias: microBiasLabel,
-    micro_bias_calc: microBiasLabel,
-    micro_bias_source: microBiasSource,
-    micro_structure_state: microStructureState,
-    micro_structure_break_state: microStructureBreakState,
-    primary_trend_up: primaryTrendUp,
-    primary_trend_down: primaryTrendDown,
-    primary_breakdown_confirmed: primaryBreakdownConfirmed,
-    primary_breakout_confirmed: primaryBreakoutConfirmed,
-    into_context_support: intoContextSupport,
-    into_context_resistance: intoContextResistance,
-    context_breakdown_confirmed: htfBreakdownConfirmed,
-    context_breakout_confirmed: htfBreakoutConfirmed,
-    location_confluence_score: clampNumber(locationConfluenceScore, 3),
-    micro_extension_atr: momentumSignals.microExtensionInAtr, // interpret as ${microTimeframe}
-    primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3), // interpret as ${primaryTimeframe}
-})}
-
-- Signal strength drivers: ${JSON.stringify(signalDrivers)}
-- Closing guardrails: ${JSON.stringify(closingGuidance)}
+MARKET (raw inputs):
+${JSON.stringify(market)}
 
 TASKS:
-1) Output exactly one action: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
-   - If no position: BUY/SELL/HOLD.
-   - If in position: HOLD/CLOSE/REVERSE only.
-2) Pick leverage (1–5) for BUY/SELL/REVERSE; use null for HOLD/CLOSE.
-3) Summarize in ≤3 lines.
+1) Output exactly one allowed action (see DECISION OWNERSHIP): flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE.
+2) leverage 1–5 for BUY/SELL/REVERSE, else null.
+3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
+4) summary ≤3 lines; reason = brief rationale.
 
-JSON OUTPUT (strict):
+Respond with strict JSON only:
 {"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
 `;
 
@@ -1082,12 +967,41 @@ export function postprocessDecision(params: {
 // OpenAI API Call
 // ------------------------------
 
-export async function callAI(system: string, user: string) {
+// Strict Structured-Outputs schema for the swing decision. Mirrors the JSON the prompt
+// asks for; strict mode requires every property in `required` and additionalProperties:false.
+// Nullable fields use a type union (e.g. ['integer','null']).
+export const SWING_DECISION_SCHEMA = {
+    name: 'swing_decision',
+    schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action', 'summary', 'reason', 'exit_size_pct', 'leverage'],
+        properties: {
+            action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
+            summary: { type: 'string' },
+            reason: { type: 'string' },
+            exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
+            leverage: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+        },
+    },
+} as const;
+
+export async function callAI(
+    system: string,
+    user: string,
+    schema?: { name: string; schema: Record<string, unknown> },
+) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
 
     const base = AI_BASE_URL;
     const model = AI_MODEL;
+
+    // Structured Outputs (json_schema, strict) guarantees the response shape at the API
+    // layer when a caller supplies a schema; otherwise fall back to free-form JSON mode.
+    const response_format = schema
+        ? { type: 'json_schema', json_schema: { name: schema.name, schema: schema.schema, strict: true } }
+        : { type: 'json_object' };
 
     const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
@@ -1101,8 +1015,10 @@ export async function callAI(system: string, user: string) {
                 { role: 'system', content: system },
                 { role: 'user', content: user },
             ],
-            temperature: 0.2,
-            response_format: { type: 'json_object' },
+            // gpt-5.x reasoning models only accept the default temperature (1); determinism
+            // comes from reasoning_effort + the post-processing gates, not a low temperature.
+            reasoning_effort: 'medium',
+            response_format,
         }),
     });
 
