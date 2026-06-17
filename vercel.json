@@ -12,28 +12,8 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
+      "path": "/api/swing/analyze?symbol=USDJPY&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
       "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/scalp/composer/cron/execute?dryRun=false",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/scalp/composer/cron/reconcile",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/scalp/composer/cron/load-candles?batchSize=20&maxAttempts=10",
-      "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/scalp/composer/cron/promote",
-      "schedule": "*/15 * * * *"
     }
   ]
 }
