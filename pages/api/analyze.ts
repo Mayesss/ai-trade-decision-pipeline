@@ -24,6 +24,7 @@ import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type A
 import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
+import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
 import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
 import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
@@ -210,6 +211,54 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform,
             instrumentId,
         });
+        const persistPreAiSkip = async (params: {
+            stage: string;
+            decision: Record<string, any>;
+            execResult: Record<string, any>;
+            gates?: Record<string, any>;
+            metrics?: Record<string, any>;
+            usedTape?: boolean;
+            snapshot?: Record<string, any>;
+        }) => {
+            const reason = typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage;
+            await appendDecisionHistory({
+                timestamp: Date.now(),
+                symbol,
+                category: category ?? undefined,
+                platform,
+                instrumentId,
+                newsSource,
+                timeFrame,
+                dryRun,
+                prompt: null,
+                aiDecision: {
+                    ...params.decision,
+                    decision_source: 'pre_ai_skip',
+                    promptSkipped: true,
+                    skipStage: params.stage,
+                } as any,
+                execResult: params.execResult,
+                snapshot: {
+                    category: category ?? undefined,
+                    platform,
+                    newsSource,
+                    instrumentId,
+                    promptSkipped: true,
+                    skipStage: params.stage,
+                    skipReason: reason,
+                    usedTape: Boolean(params.usedTape),
+                    gates: params.gates,
+                    metrics: params.metrics,
+                    ...(params.snapshot ?? {}),
+                },
+                biasTimeframes: {
+                    context: contextTimeFrame,
+                    macro: macroTimeFrame,
+                    primary: timeFrame,
+                    micro: microTimeFrame,
+                },
+            });
+        };
         const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && isAutomationCronRequest(req);
         if (isSwingCronAnalyzeRequest) {
             const swingCronControl = await loadSwingCronControlState();
@@ -221,6 +270,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     updatedBy: swingCronControl.updatedBy,
                     reason: swingCronControl.reason,
                 });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'swing_cron_hard_deactivated',
+                    reason: 'swing_cron_hard_deactivated',
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'swing_cron_hard_deactivated' };
+                await persistPreAiSkip({
+                    stage: 'swing_cron_hard_deactivated',
+                    decision,
+                    execResult: execRes,
+                    snapshot: {
+                        cronControl: {
+                            hardDeactivated: true,
+                            updatedAtMs: swingCronControl.updatedAtMs,
+                            updatedBy: swingCronControl.updatedBy,
+                            reason: swingCronControl.reason,
+                        },
+                    },
+                });
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -230,14 +300,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     timeFrame,
                     dryRun,
                     decisionPolicy,
-                    decision: {
-                        action: 'HOLD',
-                        bias: 'NEUTRAL',
-                        signal_strength: 'LOW',
-                        summary: 'swing_cron_hard_deactivated',
-                        reason: 'swing_cron_hard_deactivated',
-                    },
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'swing_cron_hard_deactivated' },
+                    decision,
+                    execRes,
                     usedTape: false,
                     promptSkipped: true,
                     cronControl: swingCronControl,
@@ -268,6 +332,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 enforcePrimaryCloseGate,
                 timeFrame,
             });
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: 'LOW',
+                summary: 'not_primary_close',
+                reason: 'flat_skip_until_primary_close',
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' };
+            await persistPreAiSkip({
+                stage: 'primary_close_gate_blocked',
+                decision,
+                execResult: execRes,
+                snapshot: {
+                    primaryCloseTime,
+                    enforcePrimaryCloseGate,
+                    positionOpen,
+                },
+            });
             return res.status(200).json({
                 symbol,
                 platform,
@@ -277,14 +359,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 timeFrame,
                 dryRun,
                 decisionPolicy,
-                decision: {
-                    action: 'HOLD',
-                    bias: 'NEUTRAL',
-                    signal_strength: 'LOW',
-                    summary: 'not_primary_close',
-                    reason: 'flat_skip_until_primary_close',
-                },
-                execRes: { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' },
+                decision,
+                execRes,
                 usedTape: false,
                 promptSkipped: true,
                 ...(debugGates
@@ -361,7 +437,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 2) Analytics from light bundle (no tape)
         const analyticsLight = computeAnalytics({ ...bundleLight, trades: [] });
-        const atrFloorScale = platform === 'capital' && category === 'forex' ? 0.8 : 1;
+        const atrFloorScale = 1;
 
         // 3) Gates on light data (orderbook/ATR based)
         const gatesOut = getGates({
@@ -373,10 +449,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionOpen,
             disableSymbolExclusions: platform === 'capital',
             atrFloorScale,
+            marketCategory: category,
         });
 
         // 3b) Short-circuit if no trade allowed and no open position
         if (gatesOut.preDecision && !positionOpen) {
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' };
+            await persistPreAiSkip({
+                stage: 'base_gates_short_circuit',
+                decision: gatesOut.preDecision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+            });
             emitGateDebug('base_gates_short_circuit', {
                 gate: 'BASE_GATES',
                 preDecisionReason: gatesOut.preDecision.reason,
@@ -396,9 +481,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 dryRun,
                 decisionPolicy,
                 decision: gatesOut.preDecision,
-                execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
+                execRes,
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape: false,
+                promptSkipped: true,
                 ...(debugGates
                     ? {
                           gateDebug: {
@@ -454,6 +540,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
 
         if (!positionOpen && calmMarket) {
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: 'LOW',
+                summary: 'calm_market',
+                reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'calm_market' };
+            await persistPreAiSkip({
+                stage: 'calm_market_short_circuit',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: {
+                    price: effectivePrice,
+                    momentumSignals,
+                },
+            });
             emitGateDebug('calm_market_short_circuit', {
                 gate: 'MOMENTUM_FILTER',
                 reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
@@ -471,16 +577,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 timeFrame,
                 dryRun,
                 decisionPolicy,
-                decision: {
-                    action: 'HOLD',
-                    bias: 'NEUTRAL',
-                    signal_strength: 'LOW',
-                    summary: 'calm_market',
-                    reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
-                },
-                execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
+                decision,
+                execRes,
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape,
+                promptSkipped: true,
                 ...(debugGates
                     ? {
                           gateDebug: {
@@ -539,6 +640,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
         const recentHistory = await loadDecisionHistory(symbol, 5, platform);
         const recentActions = recentHistory
+            .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
             .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
             .filter((a) => a.action);
         const forexEventContext =
@@ -548,6 +650,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       instrumentId,
                   })
                 : null;
+        let forexSessionContext = null;
+        if (category === 'forex') {
+            try {
+                const sessionBundle =
+                    String(microTimeFrame) === String(timeFrame)
+                        ? bundle
+                        : await fetchMarketBundle(symbol, microTimeFrame, {
+                              includeTrades: false,
+                              candleLimit: 120,
+                          });
+                forexSessionContext = buildForexSessionLevelsContext({
+                    symbol,
+                    candles: Array.isArray((sessionBundle as any)?.candles) ? (sessionBundle as any).candles : [],
+                    sourceTimeframe: microTimeFrame,
+                });
+            } catch (err) {
+                console.warn(`Could not build forex session levels for ${symbol}:`, err);
+            }
+        }
 
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
@@ -561,6 +682,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsBundle?.sentiment ?? null, // omit from prompt if unavailable
             newsBundle?.headlines ?? [],
             forexEventContext,
+            forexSessionContext,
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
             positionContext,
@@ -598,6 +720,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       positionOpen,
                       disableSymbolExclusions: platform === 'capital',
                       atrFloorScale,
+                      marketCategory: category,
                   })
                 : gatesOut;
 
@@ -628,6 +751,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
                 gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
                 forexEventContext: forexEventContext,
+                forexSessionContext,
                 usedTape,
                 ...(debugGates
                     ? {
@@ -670,6 +794,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsSentiment: newsBundle?.sentiment ?? null,
             newsHeadlines: newsBundle?.headlines ?? [],
             forexEventContext: forexEventContext,
+            forexSessionContext,
             positionContext,
             momentumSignals,
         };
@@ -714,6 +839,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             execRes,
             gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
             forexEventContext: forexEventContext,
+            forexSessionContext,
             usedTape,
             ...(debugGates
                 ? {

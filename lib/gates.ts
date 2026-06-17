@@ -37,6 +37,7 @@ export interface GatesInput {
   medianSpreadBps24h?: number;
   disableSymbolExclusions?: boolean;
   atrFloorScale?: number;
+  marketCategory?: string | null;
 }
 
 /** Output of the adaptive gate computation */
@@ -212,7 +213,32 @@ function tierFor(symbol: string, stats?: { vol24hUSD?: number; medianSpreadBps24
   return 'SMALL';
 }
 
-function tierThresholds(tier: Tier) {
+function normalizeMarketCategory(value: unknown): string | null {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '');
+  return normalized || null;
+}
+
+function tierThresholds(tier: Tier, marketCategory?: string | null) {
+  if (normalizeMarketCategory(marketCategory) === 'forex') {
+    return {
+      spreadBpsMax: 8,
+      depthMinUSD: 50_000,
+      refNotionalUSDT: 15_000,
+      depthPerNotional: 6,
+      minDepthScale: 0.15,
+      maxDepthScale: 1.5,
+      slippageBpsMax: 8,
+
+      // Major FX pairs can produce valid swing setups in quieter regimes than
+      // crypto. This daily-scaled floor is ~0.245%, versus the generic SMALL
+      // floor of ~0.49% before scaling overrides.
+      atrPctRange: [0.0005, 0.018] as [number, number],
+    };
+  }
+
   return {
     spreadBpsMax:
       tier === 'BTC' ? 3 :
@@ -278,7 +304,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
     symbol, last, orderbook, notionalUSDT, atrAbsMacro, macroTimeframeMinutes,
     spreadBpsHistory, top5BidUsdHistory, atrPctHistory, slippageBpsHistory,
-    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions, atrFloorScale,
+    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions, atrFloorScale, marketCategory,
   } = input;
 
   const bids = toPriceSizeArrays(orderbook.bids);
@@ -310,7 +336,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
 
   // Tier & fallbacks
   const tier = tierFor(symbol, { vol24hUSD, medianSpreadBps24h });
-  const t = tierThresholds(tier);
+  const t = tierThresholds(tier, marketCategory);
 
   // Spread gate (slightly relaxed if band widened substantially)
   const spreadCapBase = Math.min(spreadP75 ?? Infinity, t.spreadBpsMax);
@@ -427,6 +453,7 @@ export function getGates(args: {
   histories?: GatesHistories;
   disableSymbolExclusions?: boolean;
   atrFloorScale?: number;
+  marketCategory?: string | null;
 }): {
   allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[];
   gates: {
@@ -447,7 +474,7 @@ export function getGates(args: {
     reason: string;
   };
 } {
-  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions, atrFloorScale } = args;
+  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions, atrFloorScale, marketCategory } = args;
 
   const last = analytics?.last || extractLastPrice(bundle, NaN);
   const atrAbsMacro = parseAtr1hAbs(indicators);
@@ -475,6 +502,7 @@ export function getGates(args: {
     medianSpreadBps24h: histories?.medianSpreadBps24h,
     disableSymbolExclusions: Boolean(disableSymbolExclusions),
     atrFloorScale,
+    marketCategory,
   });
 
   const gates = {

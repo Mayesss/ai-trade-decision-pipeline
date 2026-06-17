@@ -11,6 +11,7 @@ import {
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
+import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import { setEvaluation, getEvaluation } from './utils';
 
 export type PositionContext = {
@@ -196,6 +197,7 @@ export async function buildPrompt(
     news_sentiment: string | null = null,
     news_headlines: string[] = [],
     forex_event_context: ForexEventContextForPrompt | null = null,
+    forex_session_context: ForexSessionLevelsContext | null = null,
     indicators: MultiTFIndicators,
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
@@ -282,6 +284,10 @@ export async function buildPrompt(
     const forexEventContextBlock =
         forex_event_context && typeof forex_event_context === 'object'
             ? `- Forex macro events (advisory only; not hard-gated): ${JSON.stringify(forex_event_context)}\n`
+            : '';
+    const forexSessionContextBlock =
+        forex_session_context && typeof forex_session_context === 'object'
+            ? `- Forex session/liquidity context (advisory swing context, not a standalone entry trigger): ${JSON.stringify(forex_session_context)}\n`
             : '';
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
@@ -844,7 +850,7 @@ DATA INPUTS (swing-relevant windows):
 - Volume / activity (lookback window = ${TRADE_WINDOW_MINUTES}m): ${vol_profile_str}
 - Price action (recent bars for structure context): ${priceTrendSeries}
 - Liquidity/spread snapshot (cost sanity check): ${liquidity_data}
-${newsSentimentBlock}${newsHeadlinesBlock}${forexEventContextBlock}${recentActionsBlock}- Current position: ${position_status}
+${newsSentimentBlock}${newsHeadlinesBlock}${forexEventContextBlock}${forexSessionContextBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
 - Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
 - Macro (${macroTimeframe}, last 60 candles): ${indicators.macro}
@@ -906,6 +912,7 @@ JSON OUTPUT (strict):
         primary_extension_atr: distance_from_ema20_primary_atr,
         breakout_retest_ok_primary: breakoutRetestOk4h,
         breakout_retest_dir_primary: breakoutRetestDir4h ?? null,
+        forex_session_context,
     };
 
     return { system: sys, user, context };
@@ -928,6 +935,7 @@ export type PromptDecisionContext = {
     primary_extension_atr: number | null;
     breakout_retest_ok_primary: boolean;
     breakout_retest_dir_primary: string | null;
+    forex_session_context?: ForexSessionLevelsContext | null;
 };
 
 const toBiasLabel = (value: string): 'UP' | 'DOWN' | 'NEUTRAL' => {

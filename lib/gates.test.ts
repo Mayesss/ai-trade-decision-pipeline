@@ -50,3 +50,32 @@ test('computeAdaptiveGates supports atrFloorScale to avoid over-strict ATR floor
     assert.equal(relaxed.gates.atr_ok, true);
     assert.ok(relaxed.metrics.atrPctFloor < strict.metrics.atrPctFloor);
 });
+
+test('computeAdaptiveGates uses explicit forex ATR thresholds', () => {
+    const baseInput = {
+        symbol: 'USDJPY',
+        last: 160.3,
+        orderbook: {
+            bids: [[160.29, 5_000_000]] as [number, number][],
+            asks: [[160.33, 5_000_000]] as [number, number][],
+        },
+        notionalUSDT: 100,
+        atrAbsMacro: 0.48,
+        macroTimeframeMinutes: 1440,
+        regime: 'up' as const,
+        positionOpen: false,
+        disableSymbolExclusions: true,
+    };
+
+    const generic = computeAdaptiveGates(baseInput);
+    const forex = computeAdaptiveGates({
+        ...baseInput,
+        marketCategory: 'forex',
+    });
+
+    assert.equal(generic.gates.atr_ok, false);
+    assert.equal(forex.gates.atr_ok, true);
+    assert.equal(forex.gates.spread_ok, true);
+    assert.equal(forex.gates.slippage_ok, true);
+    assert.ok(forex.metrics.atrPctFloor < generic.metrics.atrPctFloor);
+});
