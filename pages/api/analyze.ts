@@ -340,16 +340,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 reason: 'flat_skip_until_primary_close',
             };
             const execRes = { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' };
-            await persistPreAiSkip({
-                stage: 'primary_close_gate_blocked',
-                decision,
-                execResult: execRes,
-                snapshot: {
-                    primaryCloseTime,
-                    enforcePrimaryCloseGate,
-                    positionOpen,
-                },
-            });
             return res.status(200).json({
                 symbol,
                 platform,
