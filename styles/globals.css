@@ -178,3 +178,129 @@
 .theme-dark .scalp-grid-muted-dark .ag-paging-panel {
   border-color: rgb(63 63 70 / 0.75);
 }
+
+/* ============================================================
+   Terminal reskin — minimal monochrome on black.
+   Structural rules apply globally; the chromatic remaps are
+   scoped to .theme-dark. Only emerald (green) and rose (red)
+   survive as chromatic accents, carrying P&L / long-short
+   meaning; every other accent is flattened to grey.
+   ============================================================ */
+
+/* Monospace everywhere (form controls inherit via Tailwind preflight) */
+:root {
+  color-scheme: dark;
+  --default-font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+  --default-mono-font-family: var(--default-font-family);
+}
+html,
+body {
+  font-family: var(--default-font-family);
+}
+
+/* Sharp corners, no shadows — terminal panels are framed, not floated */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Flatten gradients and glass blur to solid surfaces */
+[class*="bg-gradient-"] {
+  background-image: none !important;
+}
+[class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* --- Desaturate accents to grey (dark theme only) --- */
+
+/* Accent text -> light grey */
+.theme-dark .text-sky-100,
+.theme-dark .text-sky-200,
+.theme-dark .text-sky-300,
+.theme-dark .text-sky-600,
+.theme-dark .text-sky-700,
+.theme-dark .text-sky-800,
+.theme-dark .text-amber-100,
+.theme-dark .text-amber-200,
+.theme-dark .text-amber-300,
+.theme-dark .text-amber-400,
+.theme-dark .text-amber-700,
+.theme-dark .text-amber-800,
+.theme-dark .text-indigo-700,
+.theme-dark .text-teal-700,
+.theme-dark .text-purple-700,
+.theme-dark .text-orange-400,
+.theme-dark .text-orange-700,
+.theme-dark .text-lime-400,
+.theme-dark .text-lime-700,
+.theme-dark .text-fuchsia-700,
+.theme-dark .text-cyan-700,
+.theme-dark .text-blue-700 {
+  color: rgb(212 212 216 / 1); /* zinc-300 */
+}
+
+/* Soft accent panels -> dark grey */
+.theme-dark .bg-sky-50,
+.theme-dark .bg-sky-100,
+.theme-dark .bg-amber-50,
+.theme-dark .bg-amber-100,
+.theme-dark .bg-indigo-100,
+.theme-dark .bg-teal-100,
+.theme-dark .bg-purple-100,
+.theme-dark .bg-orange-100,
+.theme-dark .bg-lime-100,
+.theme-dark .bg-fuchsia-100,
+.theme-dark .bg-cyan-100,
+.theme-dark .bg-blue-100 {
+  background-color: rgb(39 39 42 / 1); /* zinc-800 */
+}
+
+/* Solid accent fills (buttons, status dots) -> mid grey */
+.theme-dark .bg-sky-400,
+.theme-dark .bg-sky-500,
+.theme-dark .bg-sky-600,
+.theme-dark .bg-amber-400,
+.theme-dark .bg-amber-500 {
+  background-color: rgb(82 82 91 / 1); /* zinc-600 */
+}
+
+/* Translucent accent fills -> translucent grey */
+.theme-dark .bg-sky-500\/20,
+.theme-dark .bg-sky-500\/12,
+.theme-dark .bg-amber-500\/10,
+.theme-dark .bg-amber-500\/12,
+.theme-dark .bg-amber-400\/20,
+.theme-dark .bg-amber-400\/15,
+.theme-dark .bg-amber-400\/80 {
+  background-color: rgb(63 63 70 / 0.4); /* zinc-700/40 */
+}
+
+/* Accent borders -> grey */
+.theme-dark .border-sky-200,
+.theme-dark .border-sky-300,
+.theme-dark .border-sky-400\/70,
+.theme-dark .border-sky-400\/60,
+.theme-dark .border-sky-500\/60,
+.theme-dark .border-sky-500\/35,
+.theme-dark .border-amber-100,
+.theme-dark .border-amber-200,
+.theme-dark .border-amber-300,
+.theme-dark .border-amber-300\/60,
+.theme-dark .border-amber-300\/50,
+.theme-dark .border-amber-400\/40,
+.theme-dark .border-amber-500\/35 {
+  border-color: rgb(63 63 70 / 1); /* zinc-700 */
+}
+
+/* Accent icon fills -> grey */
+.theme-dark .fill-amber-400,
+.theme-dark .fill-orange-400,
+.theme-dark .fill-lime-400 {
+  fill: rgb(161 161 170 / 1); /* zinc-400 */
+}

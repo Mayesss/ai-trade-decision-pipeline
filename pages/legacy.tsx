@@ -2504,8 +2504,6 @@ export default function Home() {
   const [tabData, setTabData] = useState<Record<string, EvaluationEntry>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showAspects, setShowAspects] = useState(false);
-  const [showRawEvaluation, setShowRawEvaluation] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<
     Record<string, EvaluateJobRecord>
@@ -2580,8 +2578,8 @@ export default function Home() {
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
   const [themePreference, setThemePreference] =
-    useState<ThemePreference>("system");
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("light");
+    useState<ThemePreference>("dark");
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
   const scalpSummaryFetchedAtMsRef = useRef<number>(0);
   const scalpSummaryErrorCountRef = useRef<number>(0);
@@ -3692,8 +3690,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setShowAspects(false);
-    setShowRawEvaluation(false);
     setShowPrompt(false);
   }, [active, symbols]);
 
@@ -6882,89 +6878,202 @@ export default function Home() {
           </div>
         )}
         <div className="w-full">
-          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                Performance
-              </p>
-              <h1 className="text-3xl font-semibold leading-tight text-slate-900">
-                AI Trade Dashboard
-              </h1>
-              <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
-                <button
-                  type="button"
-                  onClick={() => handleStrategyModeChange("swing")}
-                  className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                    strategyMode === "swing"
-                      ? "bg-sky-600 text-white shadow-sm"
-                      : "text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
-                  }`}
-                >
-                  Swing
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleStrategyModeChange("scalp")}
-                  className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                    strategyMode === "scalp"
-                      ? "bg-sky-600 text-white shadow-sm"
-                      : "text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
-                  }`}
-                >
-                  Scalp
-                </button>
-              </div>
-              {strategyMode === "swing" && activeSymbol && currentEvalJob ? (
-                <p className="mt-1 text-xs text-slate-500">
-                  Eval job for {activeSymbol}:{" "}
-                  <span className="font-semibold text-slate-700">
-                    {currentEvalJob.status}
-                  </span>
-                  {currentEvalJob.error ? ` (${currentEvalJob.error})` : ""}
-                </p>
-              ) : null}
-              {strategyMode === "swing" && activeSymbol ? (
-                <p className="mt-1 text-xs text-slate-500">
-                  Live price:{" "}
-                  <span
-                    className={
-                      livePriceConnected
-                        ? "font-semibold text-emerald-700"
-                        : "font-semibold text-slate-600"
-                    }
-                  >
-                    {livePriceConnected ? "connected" : "connecting"}
-                  </span>
-                  {typeof livePriceNow === "number"
-                    ? ` · ${livePriceNow.toFixed(2)}`
-                    : ""}
-                </p>
-              ) : null}
-              {strategyMode === "swing" ? (
-                <p className="mt-1 text-xs text-slate-500">
-                  Swing cron:{" "}
-                  <span
-                    className={
-                      !swingCronControlLoaded
-                        ? "font-semibold text-slate-600"
-                        : swingCronHardDeactivated
-                          ? "font-semibold text-rose-700"
-                          : "font-semibold text-emerald-700"
-                    }
-                  >
-                    {!swingCronControlLoaded
-                      ? "loading"
-                      : swingCronHardDeactivated
-                        ? "hard-deactivated"
-                        : "active"}
-                  </span>
-                  {swingCronReason ? ` · ${swingCronReason}` : ""}
-                </p>
-              ) : null}
-              {loading ? (
-                <p className="mt-1 text-xs text-slate-500">{loadingLabel}</p>
-              ) : null}
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <h1 className="text-base font-semibold leading-none text-slate-900">
+                    AI Trade
+                  </h1>
+                  <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handleStrategyModeChange("swing")}
+                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                        strategyMode === "swing"
+                          ? "bg-sky-600 text-white"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Swing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStrategyModeChange("scalp")}
+                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                        strategyMode === "scalp"
+                          ? "bg-sky-600 text-white"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Scalp
+                    </button>
+                  </div>
+                  {strategyMode === "swing" && activeSymbol ? (
+                    <span
+                      className="inline-flex items-center gap-1 text-[11px] text-slate-500"
+                      title={livePriceConnected ? "live price connected" : "connecting"}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${livePriceConnected ? "bg-emerald-500" : "bg-slate-400"}`}
+                      />
+                      {typeof livePriceNow === "number"
+                        ? livePriceNow.toFixed(2)
+                        : "—"}
+                    </span>
+                  ) : null}
+                  {strategyMode === "swing" ? (
+                    <span
+                      className="inline-flex items-center gap-1 text-[11px] text-slate-500"
+                      title={swingCronReason || "swing cron"}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          !swingCronControlLoaded
+                            ? "bg-slate-400"
+                            : swingCronHardDeactivated
+                              ? "bg-rose-500"
+                              : "bg-emerald-500"
+                        }`}
+                      />
+                      cron
+                    </span>
+                  ) : null}
+                  {strategyMode === "swing" && currentEvalJob ? (
+                    <span className="text-[11px] text-slate-500">
+                      eval:{" "}
+                      <span className="font-semibold text-slate-700">
+                        {currentEvalJob.status}
+                      </span>
+                    </span>
+                  ) : null}
+                  {loading ? (
+                    <span className="text-[11px] text-slate-500">
+                      {loadingLabel}
+                    </span>
+                  ) : null}
+                </div>
+                {strategyMode === "swing" && current ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] tabular-nums">
+                    <span className="flex items-baseline gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                        {dashboardRange}
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          typeof effectivePnl7dWithOpen === "number"
+                            ? effectivePnl7dWithOpen >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        {typeof effectivePnl7dWithOpen === "number"
+                          ? `${effectivePnl7dWithOpen.toFixed(2)}%`
+                          : typeof current.pnl7d === "number"
+                            ? `${current.pnl7d.toFixed(2)}%`
+                            : "—"}
+                      </span>
+                      {typeof current.pnl7dNet === "number" ? (
+                        <span className="text-[11px] text-slate-500">
+                          {current.pnl7dNet >= 0 ? "+" : ""}
+                          {formatUsd(current.pnl7dNet)}
+                        </span>
+                      ) : null}
+                      {current.pnl7dTrades ? (
+                        <span className="text-[11px] text-slate-400">
+                          ·{current.pnl7dTrades}t
+                        </span>
+                      ) : null}
+                    </span>
+                    {Array.isArray(current.pnlSpark) &&
+                    current.pnlSpark.length > 1 ? (
+                      <span className="inline-flex h-4 items-end gap-px">
+                        {current.pnlSpark.map((v, i) => {
+                          const arr = current.pnlSpark as number[];
+                          const max = Math.max(
+                            ...arr.map((n) => Math.abs(n)),
+                            1e-9,
+                          );
+                          const h = Math.max(
+                            2,
+                            Math.round((Math.abs(v) / max) * 14),
+                          );
+                          return (
+                            <span
+                              key={i}
+                              className={`w-0.5 ${v >= 0 ? "bg-emerald-500" : "bg-rose-500"}`}
+                              style={{ height: `${h}px` }}
+                            />
+                          );
+                        })}
+                      </span>
+                    ) : null}
+                    <span className="text-slate-300">·</span>
+                    <span className="flex items-baseline gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                        last
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          typeof current.lastPositionPnl === "number"
+                            ? current.lastPositionPnl >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        {typeof current.lastPositionPnl === "number"
+                          ? `${current.lastPositionPnl.toFixed(2)}%`
+                          : "—"}
+                      </span>
+                      {current.lastPositionDirection ? (
+                        <span
+                          className={`text-[10px] ${current.lastPositionDirection === "long" ? "text-emerald-600" : "text-rose-600"}`}
+                        >
+                          {current.lastPositionDirection === "long" ? "L" : "S"}
+                          {typeof current.lastPositionLeverage === "number"
+                            ? `${current.lastPositionLeverage.toFixed(0)}x`
+                            : ""}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="text-slate-300">·</span>
+                    <span className="flex items-baseline gap-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                        open
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          typeof effectiveOpenPnl === "number"
+                            ? effectiveOpenPnl >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        {typeof effectiveOpenPnl === "number"
+                          ? `${effectiveOpenPnl.toFixed(2)}%`
+                          : "—"}
+                      </span>
+                      {current.openDirection ? (
+                        <span
+                          className={`text-[10px] ${current.openDirection === "long" ? "text-emerald-600" : "text-rose-600"}`}
+                        >
+                          {current.openDirection === "long" ? "L" : "S"}
+                          {typeof current.openLeverage === "number"
+                            ? `${current.openLeverage.toFixed(0)}x`
+                            : ""}
+                        </span>
+                      ) : null}
+                      {openPnlIsLive ? (
+                        <span className="text-[9px] font-semibold uppercase text-emerald-600">
+                          live
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
               {strategyMode === "swing" ? (
@@ -7975,191 +8084,6 @@ export default function Home() {
               </div>
             ) : current ? (
               <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
-                <div className="space-y-4 lg:col-span-2">
-                  <div className="relative rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
-                    <div className="absolute right-4 top-4">
-                      <img
-                        src={activePlatformLogo}
-                        alt={`${activePlatform} platform`}
-                        className="h-5 w-auto opacity-80"
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500">
-                          {dashboardRange} PnL
-                        </div>
-                        <div className="mt-3 text-3xl font-semibold text-slate-900">
-                          <span
-                            className={
-                              typeof effectivePnl7dWithOpen === "number"
-                                ? effectivePnl7dWithOpen >= 0
-                                  ? "text-emerald-600"
-                                  : "text-rose-600"
-                                : "text-slate-500"
-                            }
-                          >
-                            {typeof effectivePnl7dWithOpen === "number"
-                              ? `${effectivePnl7dWithOpen.toFixed(2)}%`
-                              : typeof current.pnl7d === "number"
-                                ? `${current.pnl7d.toFixed(2)}%`
-                                : "—"}
-                            {typeof current.pnl7dNet === "number" ? (
-                              <span className="ml-1 align-middle text-sm font-medium text-slate-500">
-                                ({current.pnl7dNet >= 0 ? "+" : ""}
-                                {formatUsd(current.pnl7dNet)})
-                              </span>
-                            ) : null}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-500">
-                          from {current.pnl7dTrades ?? 0}{" "}
-                          {current.pnl7dTrades === 1 ? "trade" : "trades"} in
-                          last {dashboardRangeText}
-                          {typeof effectiveOpenPnl === "number"
-                            ? " + open position"
-                            : ""}
-                        </p>
-                        <div className="mt-1 text-[11px] text-slate-500">
-                          {typeof current.pnl7dGross === "number" ||
-                          typeof current.pnl7d === "number" ? (
-                            <>
-                              gross vs net:{" "}
-                              <span className="font-semibold text-slate-700">
-                                {typeof current.pnl7dGross === "number"
-                                  ? current.pnl7dGross.toFixed(2)
-                                  : "—"}
-                                %
-                              </span>{" "}
-                              /{" "}
-                              <span className="font-semibold text-slate-700">
-                                {typeof current.pnl7d === "number"
-                                  ? current.pnl7d.toFixed(2)
-                                  : "—"}
-                                %
-                              </span>
-                            </>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500">
-                          Last PNL
-                        </div>
-                        <div className="mt-3 text-3xl font-semibold text-slate-900">
-                          <span
-                            className={
-                              typeof current.lastPositionPnl === "number"
-                                ? current.lastPositionPnl >= 0
-                                  ? "text-emerald-600"
-                                  : "text-rose-600"
-                                : "text-slate-500"
-                            }
-                          >
-                            {typeof current.lastPositionPnl === "number"
-                              ? `${current.lastPositionPnl.toFixed(2)}%`
-                              : "—"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {typeof current.lastPositionPnl === "number" ? (
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="flex items-center gap-1">
-                                direction –
-                                {current.lastPositionDirection ? (
-                                  <span
-                                    className={`${
-                                      current.lastPositionDirection === "long"
-                                        ? "text-emerald-600"
-                                        : "text-rose-600"
-                                    }`}
-                                  >
-                                    {current.lastPositionDirection}
-                                  </span>
-                                ) : null}
-                              </span>
-                              {typeof current.lastPositionLeverage ===
-                              "number" ? (
-                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                                  {current.lastPositionLeverage.toFixed(0)}x
-                                </span>
-                              ) : null}
-                            </span>
-                          ) : (
-                            "no recent positions"
-                          )}
-                        </p>
-                        {typeof current.winRate === "number" ||
-                        typeof current.avgWinPct === "number" ||
-                        typeof current.avgLossPct === "number" ? (
-                          <div className="mt-2 text-[11px] text-slate-500">
-                            {typeof current.winRate === "number"
-                              ? `Win rate: ${current.winRate.toFixed(0)}%`
-                              : ""}
-                            {typeof current.avgWinPct === "number"
-                              ? ` · Avg win: ${current.avgWinPct.toFixed(2)}%`
-                              : ""}
-                            {typeof current.avgLossPct === "number"
-                              ? ` · Avg loss: ${current.avgLossPct.toFixed(2)}%`
-                              : ""}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500">
-                          Open PNL
-                        </div>
-                        <div className="mt-3 text-3xl font-semibold text-slate-900">
-                          <span
-                            className={
-                              typeof effectiveOpenPnl === "number"
-                                ? effectiveOpenPnl >= 0
-                                  ? "text-emerald-600"
-                                  : "text-rose-600"
-                                : "text-slate-500"
-                            }
-                          >
-                            {typeof effectiveOpenPnl === "number"
-                              ? `${effectiveOpenPnl.toFixed(2)}%`
-                              : "—"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {typeof effectiveOpenPnl === "number" ? (
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="flex items-center gap-1">
-                                direction –
-                                {current.openDirection ? (
-                                  <span
-                                    className={
-                                      current.openDirection === "long"
-                                        ? "text-emerald-600"
-                                        : "text-rose-600"
-                                    }
-                                  >
-                                    {current.openDirection}
-                                  </span>
-                                ) : null}
-                              </span>
-                              {typeof current.openLeverage === "number" ? (
-                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                                  {current.openLeverage.toFixed(0)}x
-                                </span>
-                              ) : null}
-                              {openPnlIsLive ? (
-                                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                                  live
-                                </span>
-                              ) : null}
-                            </span>
-                          ) : (
-                            "no open position"
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
 
                 {showChartPanel ? (
                   <ChartPanel
@@ -8283,230 +8207,6 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                      <span>Latest Evaluation</span>
-                      {current.evaluationTs ? (
-                        <span className="lowercase text-slate-400">
-                          {formatDecisionTime(current.evaluationTs)}
-                        </span>
-                      ) : null}
-                    </div>
-                    {current?.evaluation?.confidence && (
-                      <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                        Confidence: {current.evaluation.confidence}
-                      </div>
-                    )}
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
-                    <span>
-                      Rating:{" "}
-                      <span className="text-sky-600">
-                        {current?.evaluation?.overall_rating ?? "—"}
-                      </span>
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1">
-                      {Array.from({ length: 10 }).map((_, idx) => {
-                        const ratingVal = Number(
-                          current?.evaluation?.overall_rating ?? 0,
-                        );
-                        const filled = ratingVal >= idx + 1;
-                        const colorClass =
-                          ratingVal >= 9
-                            ? "text-emerald-500 fill-emerald-500"
-                            : ratingVal >= 8
-                              ? "text-emerald-400 fill-emerald-400"
-                              : ratingVal >= 6
-                                ? "text-lime-400 fill-lime-400"
-                                : ratingVal >= 5
-                                  ? "text-amber-400 fill-amber-400"
-                                  : ratingVal >= 3
-                                    ? "text-orange-400 fill-orange-400"
-                                    : "text-rose-500 fill-rose-500";
-                        return (
-                          <Star
-                            key={idx}
-                            className={`h-4 w-4 ${filled ? colorClass : "stroke-slate-300 text-slate-300"}`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <p className="mt-3 text-sm text-slate-700">
-                    {current?.evaluation?.overview || "No overview provided."}
-                  </p>
-                  {((current?.evaluation?.aspects ?? null) || hasDetails) && (
-                    <div className="mt-4 space-y-4">
-                      {current?.evaluation?.aspects && (
-                        <>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() => setShowAspects((prev) => !prev)}
-                              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                            >
-                              {showAspects
-                                ? "Hide aspect ratings"
-                                : "Show aspect ratings"}
-                            </button>
-                            <button
-                              onClick={() =>
-                                setShowRawEvaluation((prev) => !prev)
-                              }
-                              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                            >
-                              {showRawEvaluation
-                                ? "Hide raw JSON"
-                                : "Show raw JSON"}
-                            </button>
-                          </div>
-                          {showRawEvaluation && (
-                            <pre className="overflow-auto rounded-xl border border-slate-800 bg-slate-900/95 p-3 font-mono text-[11px] leading-snug text-slate-100">
-                              {JSON.stringify(current.evaluation, null, 2)}
-                            </pre>
-                          )}
-                          {showAspects && (
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                              {Object.entries(current.evaluation.aspects).map(
-                                ([key, val]) => (
-                                  <div
-                                    key={key}
-                                    className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center gap-2">
-                                        {(() => {
-                                          const meta = aspectMeta[key] || {
-                                            Icon: Circle,
-                                            color: "text-slate-600",
-                                            bg: "bg-slate-100",
-                                          };
-                                          const Icon = meta.Icon;
-                                          return (
-                                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                                              <Icon className="h-4 w-4" />
-                                            </span>
-                                          );
-                                        })()}
-                                        <div className="text-sm font-semibold text-slate-900">
-                                          {formatLabel(key)}
-                                        </div>
-                                      </div>
-                                      <div className="text-lg font-semibold text-sky-700">
-                                        {val?.rating ?? "—"}
-                                      </div>
-                                    </div>
-                                    <p className="mt-2 text-xs text-slate-600">
-                                      {val?.comment || "No comment"}
-                                    </p>
-                                    {(val?.checks?.length ||
-                                      val?.improvements?.length ||
-                                      val?.findings?.length) && (
-                                      <div className="mt-3 space-y-2">
-                                        {val?.checks?.length ? (
-                                          <div>
-                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                              Checks
-                                            </div>
-                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
-                                              {val.checks.map((item, idx) => (
-                                                <li key={idx}>{item}</li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        ) : null}
-                                        {val?.improvements?.length ? (
-                                          <div>
-                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                              Improvements
-                                            </div>
-                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
-                                              {val.improvements.map(
-                                                (item, idx) => (
-                                                  <li key={idx}>{item}</li>
-                                                ),
-                                              )}
-                                            </ul>
-                                          </div>
-                                        ) : null}
-                                        {val?.findings?.length ? (
-                                          <div>
-                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                              Findings
-                                            </div>
-                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-rose-800">
-                                              {val.findings.map((item, idx) => (
-                                                <li key={idx}>{item}</li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    )}
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          )}
-                        </>
-                      )}
-
-                      {((current?.evaluation?.aspects && showAspects) ||
-                        !current?.evaluation?.aspects) &&
-                        hasDetails && (
-                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="text-xs uppercase tracking-wide text-slate-500">
-                              Details
-                            </div>
-                            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                              {current.evaluation.what_went_well?.length ? (
-                                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                                  <div className="text-sm font-semibold text-emerald-800">
-                                    What went well
-                                  </div>
-                                  <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                    {current.evaluation.what_went_well.map(
-                                      (item, idx) => (
-                                        <li key={idx}>{item}</li>
-                                      ),
-                                    )}
-                                  </ul>
-                                </div>
-                              ) : null}
-                              {current.evaluation.issues?.length ? (
-                                <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
-                                  <div className="text-sm font-semibold text-rose-800">
-                                    Issues
-                                  </div>
-                                  <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                    {current.evaluation.issues.map(
-                                      (item, idx) => (
-                                        <li key={idx}>{item}</li>
-                                      ),
-                                    )}
-                                  </ul>
-                                </div>
-                              ) : null}
-                              {current.evaluation.improvements?.length ? (
-                                <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                                  <div className="text-sm font-semibold text-amber-800">
-                                    Improvements
-                                  </div>
-                                  <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                    {current.evaluation.improvements.map(
-                                      (item, idx) => (
-                                        <li key={idx}>{item}</li>
-                                      ),
-                                    )}
-                                  </ul>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        )}
-                    </div>
-                  )}
-                </div>
               </div>
             ) : (
               renderDashboardSkeleton()
