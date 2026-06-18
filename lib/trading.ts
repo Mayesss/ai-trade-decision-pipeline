@@ -107,7 +107,8 @@ type PlaceOrderBody = {
     clientOid: string;
     force: string;
     holdSide?: 'long' | 'short';
-    reduceOnly?: boolean;
+    // Bitget mix v2 expects the string 'YES'/'NO' here, not a boolean.
+    reduceOnly?: 'YES' | 'NO';
 };
 
 async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
@@ -224,7 +225,8 @@ export async function executeDecision(
                             size: closeSize.toString(),
                             clientOid: `${clientOid}-close`,
                             force: 'gtc',
-                            reduceOnly: true,
+                            // Bitget expects the string 'YES'/'NO', not a boolean.
+                            reduceOnly: 'YES',
                         };
                         const closeRes = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, closeBody);
 
@@ -321,45 +323,84 @@ export async function executeDecision(
             return { placed: false, orderId: null, clientOid, closed: false, note: 'no open position' };
         }
 
-        // Allow partial close (reduce-only) when requested and we know the position size
+        // Partial close (reduce-only) when requested. A partial close must NEVER
+        // escalate to a full close — that would defeat "trim X% and let the rest
+        // run". On any failure we surface it and leave the position intact rather
+        // than flash-closing everything.
         if (partialClosePct !== null && partialClosePct < 100) {
+            const posSize = Number(pos.total ?? pos.available);
+            if (!(Number.isFinite(posSize) && posSize > 0 && pos.holdSide)) {
+                return {
+                    placed: false,
+                    orderId: null,
+                    clientOid,
+                    closed: false,
+                    note: 'partial_close_unknown_position_size',
+                };
+            }
+            const targetSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
+            if (!(targetSize > 0 && targetSize < posSize)) {
+                return {
+                    placed: false,
+                    orderId: null,
+                    clientOid,
+                    closed: false,
+                    note: 'partial_close_size_out_of_range',
+                    partialClosePct,
+                    targetSize,
+                    posSize,
+                };
+            }
+            const partialIsHedge = pos.posMode === 'hedge_mode';
+            const body: any = {
+                symbol,
+                productType,
+                marginCoin: pos.marginCoin ?? 'USDT',
+                marginMode: 'isolated',
+                orderType: 'market',
+                size: targetSize.toString(),
+                clientOid,
+                force: 'gtc',
+            };
+            if (partialIsHedge) {
+                // Hedge mode reduces via tradeSide=close (no reduceOnly flag).
+                body.side = pos.holdSide === 'long' ? 'buy' : 'sell';
+                body.tradeSide = 'close';
+                body.holdSide = pos.holdSide;
+            } else {
+                // One-way mode: opposite side + reduceOnly. Bitget expects the
+                // string 'YES'/'NO' here, NOT a boolean (a boolean is rejected
+                // with error 40017 REDUCEONLY).
+                body.side = pos.holdSide === 'long' ? 'sell' : 'buy';
+                body.reduceOnly = 'YES';
+            }
             try {
-                const posSize = Number(pos.total ?? pos.available);
-                if (Number.isFinite(posSize) && posSize > 0 && pos.holdSide) {
-                    const targetSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
-                    if (targetSize > 0 && targetSize < posSize) {
-                        const side = pos.holdSide === 'long' ? 'sell' : 'buy';
-                        const body: any = {
-                            symbol,
-                            productType,
-                            marginCoin: pos.marginCoin ?? 'USDT',
-                            marginMode: 'isolated',
-                            side,
-                            orderType: 'market',
-                            size: targetSize.toString(),
-                            clientOid,
-                            force: 'gtc',
-                            reduceOnly: true,
-                        };
-                        if (pos.posMode === 'hedge_mode') {
-                            body.holdSide = pos.holdSide;
-                        }
-                        const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
-                        return {
-                            placed: true,
-                            orderId: res?.orderId || res?.order_id || null,
-                            clientOid,
-                            closed: true,
-                            partial: true,
-                            partialClosePct,
-                            size: targetSize,
-                            raw: res,
-                        };
-                    }
-                }
+                const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+                return {
+                    placed: true,
+                    orderId: res?.orderId || res?.order_id || null,
+                    clientOid,
+                    closed: true,
+                    partial: true,
+                    partialClosePct,
+                    size: targetSize,
+                    raw: res,
+                };
             } catch (err) {
-                // fall through to full flash close if reduce-only order fails
-                console.warn('Partial close failed, falling back to full flash close:', err);
+                // Leave the position intact: the request was to keep the
+                // remainder open, so a failed trim must not become a full close.
+                console.warn('Partial close order failed (position left intact):', err);
+                return {
+                    placed: false,
+                    orderId: null,
+                    clientOid,
+                    closed: false,
+                    partial: true,
+                    partialClosePct,
+                    size: targetSize,
+                    note: 'partial_close_failed',
+                    error: err instanceof Error ? err.message : String(err),
+                };
             }
         }
 

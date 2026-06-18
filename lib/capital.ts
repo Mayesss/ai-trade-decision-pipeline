@@ -3423,6 +3423,13 @@ async function closeCapitalPosition(
       ? Number(fullSize) * (partialClosePct / 100)
       : fullSize;
 
+  // NOTE: Capital.com's documented REST API only supports a FULL close via
+  // `DELETE /api/v1/positions/{dealId}` (no body, all-or-nothing). There is no
+  // documented size-based partial close. The sized `DELETE /api/v1/positions`
+  // call below is undocumented and only used as a best-effort fallback if the
+  // primary close fails — it has NOT been verified against the live API. A real
+  // partial close on Capital.com likely needs an opposing POST order instead.
+  // TODO: verify partial-close behaviour against the live Capital.com API.
   try {
     const payload = await capitalFetch(
       "DELETE",
