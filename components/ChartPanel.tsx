@@ -43,7 +43,7 @@ type CachedChartEntry = {
   fetchedAt: number;
 };
 
-export type ChartRangeKey = '7D' | '30D' | '6M';
+export type ChartRangeKey = '1D' | '7D' | '30D' | '6M';
 
 type ChartPanelProps = {
   symbol: string | null;
@@ -61,8 +61,9 @@ type ChartPanelProps = {
 const BERLIN_TZ = 'Europe/Berlin';
 const CHART_CACHE_TTL_MS = 60_000;
 const CHART_FETCH_DEFER_MS = 120;
-const CHART_RANGE_ORDER: ChartRangeKey[] = ['7D', '30D', '6M'];
+const CHART_RANGE_ORDER: ChartRangeKey[] = ['1D', '7D', '30D', '6M'];
 const CHART_RANGE_PRESETS: Record<ChartRangeKey, { timeframe: string; limit: number }> = {
+  '1D': { timeframe: '15m', limit: 96 },
   '7D': { timeframe: '1H', limit: 168 },
   '30D': { timeframe: '4H', limit: 180 },
   '6M': { timeframe: '1D', limit: 183 },
@@ -132,6 +133,13 @@ const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
       timeZone: BERLIN_TZ,
       day: '2-digit',
       month: '2-digit',
+    }).format(date);
+  }
+  if (rangeKey === '1D') {
+    return new Intl.DateTimeFormat('de-DE', {
+      timeZone: BERLIN_TZ,
+      hour: '2-digit',
+      minute: '2-digit',
     }).format(date);
   }
   return new Intl.DateTimeFormat('de-DE', {

@@ -34,6 +34,7 @@ import {
   Star,
   ArrowUpRight,
   ArrowDownRight,
+  AlertTriangle,
   Copy,
   CheckCircle2,
   type LucideIcon,
@@ -696,7 +697,7 @@ type EvaluateJobRecord = {
   error?: string;
 };
 
-type DashboardRangeKey = "7D" | "30D" | "6M";
+type DashboardRangeKey = "1D" | "7D" | "30D" | "6M";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type StrategyMode = "swing" | "scalp";
@@ -2505,6 +2506,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [cronConfirmOpen, setCronConfirmOpen] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<
     Record<string, EvaluateJobRecord>
   >({});
@@ -2691,6 +2693,15 @@ export default function Home() {
     return () => {
       mobileMedia.removeListener(onViewportChange);
     };
+  }, []);
+
+  // On phones, default the chart to the 1D range (desktop keeps 7D). Runs once
+  // on mount so it never overrides a range the user picks afterward.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.matchMedia("(max-width: 640px)").matches) {
+      setDashboardRange("1D");
+    }
   }, []);
 
   const resolveSystemTheme = (): ResolvedTheme => {
@@ -6810,31 +6821,6 @@ export default function Home() {
             : "theme-light bg-slate-50 text-slate-900"
         }`}
       >
-        <button
-          type="button"
-          onClick={handleThemeToggle}
-          className={`fixed right-4 top-4 z-[60] inline-flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition focus:outline-none focus-visible:ring-2 ${
-            resolvedTheme === "dark"
-              ? "border-zinc-700 bg-zinc-900 text-zinc-100 hover:border-zinc-500 hover:bg-zinc-800 hover:text-zinc-50 focus-visible:ring-zinc-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
-              : "border-slate-300 bg-white text-slate-700 hover:border-slate-500 hover:bg-slate-50 hover:text-slate-900 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50"
-          }`}
-          aria-label={
-            resolvedTheme === "dark"
-              ? "Switch to light mode"
-              : "Switch to dark mode"
-          }
-          title={
-            resolvedTheme === "dark"
-              ? "Switch to light mode"
-              : "Switch to dark mode"
-          }
-        >
-          {resolvedTheme === "dark" ? (
-            <Sun className="h-4 w-4" />
-          ) : (
-            <Moon className="h-4 w-4" />
-          )}
-        </button>
         {adminReady && !adminGranted && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl pointer-events-auto">
@@ -6882,63 +6868,6 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                  <h1 className="text-base font-semibold leading-none text-slate-900">
-                    AI Trade
-                  </h1>
-                  <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => handleStrategyModeChange("swing")}
-                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
-                        strategyMode === "swing"
-                          ? "bg-sky-600 text-white"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Swing
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleStrategyModeChange("scalp")}
-                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
-                        strategyMode === "scalp"
-                          ? "bg-sky-600 text-white"
-                          : "text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      Scalp
-                    </button>
-                  </div>
-                  {strategyMode === "swing" && activeSymbol ? (
-                    <span
-                      className="inline-flex items-center gap-1 text-[11px] text-slate-500"
-                      title={livePriceConnected ? "live price connected" : "connecting"}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${livePriceConnected ? "bg-emerald-500" : "bg-slate-400"}`}
-                      />
-                      {typeof livePriceNow === "number"
-                        ? livePriceNow.toFixed(2)
-                        : "—"}
-                    </span>
-                  ) : null}
-                  {strategyMode === "swing" ? (
-                    <span
-                      className="inline-flex items-center gap-1 text-[11px] text-slate-500"
-                      title={swingCronReason || "swing cron"}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          !swingCronControlLoaded
-                            ? "bg-slate-400"
-                            : swingCronHardDeactivated
-                              ? "bg-rose-500"
-                              : "bg-emerald-500"
-                        }`}
-                      />
-                      cron
-                    </span>
-                  ) : null}
                   {strategyMode === "swing" && currentEvalJob ? (
                     <span className="text-[11px] text-slate-500">
                       eval:{" "}
@@ -6952,10 +6881,53 @@ export default function Home() {
                       {loadingLabel}
                     </span>
                   ) : null}
+                  {strategyMode === "swing" && !error && symbols.length ? (
+                    <div className="ml-1 flex items-center gap-1">
+                      {symbols.map((sym, i) => {
+                        const isActive = i === active;
+                        const tab = tabData[sym];
+                        const pnl7dValue =
+                          typeof tab?.pnl7dWithOpen === "number"
+                            ? tab.pnl7dWithOpen
+                            : typeof tab?.pnl7d === "number"
+                              ? tab.pnl7d
+                              : null;
+                        const toneClass =
+                          typeof pnl7dValue === "number"
+                            ? pnl7dValue < 0
+                              ? "bg-rose-500"
+                              : "bg-emerald-500"
+                            : "bg-slate-400";
+                        return (
+                          <button
+                            key={sym}
+                            onClick={() => setActive(i)}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${
+                              isActive
+                                ? "border-slate-400 bg-slate-100 text-slate-900"
+                                : "border-slate-200 text-slate-500 hover:text-slate-800"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${toneClass}`}
+                            />
+                            {sym}
+                          </button>
+                        );
+                      })}
+                      {isInitialLoading &&
+                        Array.from({ length: 3 }).map((_, idx) => (
+                          <span
+                            key={`tab-skeleton-${idx}`}
+                            className="h-5 w-16 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                          />
+                        ))}
+                    </div>
+                  ) : null}
                 </div>
                 {strategyMode === "swing" && current ? (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] tabular-nums">
-                    <span className="flex items-baseline gap-1">
+                  <div className="mt-1.5 flex flex-nowrap items-center gap-x-2 overflow-x-auto text-[12px] tabular-nums sm:gap-x-3 sm:text-[13px]">
+                    <span className="flex shrink-0 items-baseline gap-1">
                       <span className="text-[10px] uppercase tracking-wide text-slate-500">
                         {dashboardRange}
                       </span>
@@ -6975,20 +6947,20 @@ export default function Home() {
                             : "—"}
                       </span>
                       {typeof current.pnl7dNet === "number" ? (
-                        <span className="text-[11px] text-slate-500">
+                        <span className="hidden text-[11px] text-slate-500 sm:inline">
                           {current.pnl7dNet >= 0 ? "+" : ""}
                           {formatUsd(current.pnl7dNet)}
                         </span>
                       ) : null}
                       {current.pnl7dTrades ? (
-                        <span className="text-[11px] text-slate-400">
+                        <span className="hidden text-[11px] text-slate-400 sm:inline">
                           ·{current.pnl7dTrades}t
                         </span>
                       ) : null}
                     </span>
                     {Array.isArray(current.pnlSpark) &&
                     current.pnlSpark.length > 1 ? (
-                      <span className="inline-flex h-4 items-end gap-px">
+                      <span className="hidden h-4 items-end gap-px sm:inline-flex">
                         {current.pnlSpark.map((v, i) => {
                           const arr = current.pnlSpark as number[];
                           const max = Math.max(
@@ -7009,8 +6981,8 @@ export default function Home() {
                         })}
                       </span>
                     ) : null}
-                    <span className="text-slate-300">·</span>
-                    <span className="flex items-baseline gap-1">
+                    <span className="shrink-0 text-slate-300">·</span>
+                    <span className="flex shrink-0 items-baseline gap-1">
                       <span className="text-[10px] uppercase tracking-wide text-slate-500">
                         last
                       </span>
@@ -7038,8 +7010,8 @@ export default function Home() {
                         </span>
                       ) : null}
                     </span>
-                    <span className="text-slate-300">·</span>
-                    <span className="flex items-baseline gap-1">
+                    <span className="shrink-0 text-slate-300">·</span>
+                    <span className="flex shrink-0 items-baseline gap-1">
                       <span className="text-[10px] uppercase tracking-wide text-slate-500">
                         open
                       </span>
@@ -7075,71 +7047,121 @@ export default function Home() {
                   </div>
                 ) : null}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col items-end gap-2">
               {strategyMode === "swing" ? (
-                <button
-                  onClick={() =>
-                    activeSymbol ? triggerEvaluation(activeSymbol) : undefined
-                  }
-                  disabled={
-                    !adminGranted ||
-                    !activeSymbol ||
-                    !!evaluateSubmittingSymbol ||
-                    evaluateRunning
-                  }
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {evaluateSubmittingSymbol
-                    ? "Queueing…"
-                    : evaluateRunning
-                      ? "Evaluating…"
-                      : "Run Evaluation"}
-                </button>
-              ) : null}
-              {strategyMode === "swing" ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void setSwingCronHardDeactivate(!swingCronHardDeactivated);
-                  }}
-                  disabled={
-                    !adminGranted ||
-                    swingCronControlUpdating ||
-                    !swingCronControlLoaded
-                  }
-                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                    swingCronHardDeactivated
-                      ? "border-rose-300 bg-rose-50 text-rose-700 hover:border-rose-400 hover:bg-rose-100"
-                      : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-100"
-                  }`}
-                  title={
-                    swingCronHardDeactivated
-                      ? "Re-enable swing cron analyze execution"
-                      : "Hard-deactivate swing cron analyze execution"
-                  }
-                >
-                  {swingCronControlUpdating
-                    ? "Updating…"
-                    : !swingCronControlLoaded
-                      ? "Swing Cron: ..."
-                      : swingCronHardDeactivated
-                        ? "Swing Cron: OFF"
-                        : "Swing Cron: ON"}
-                </button>
-              ) : null}
-                <button
-                  onClick={() => {
-                    if (strategyMode === "scalp") {
-                      loadScalpDashboard();
-                      return;
+                <div className="relative flex items-center gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {swingCronControlUpdating
+                      ? "…"
+                      : !swingCronControlLoaded
+                        ? "cron"
+                        : swingCronHardDeactivated
+                          ? "cron off"
+                          : "cron on"}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!swingCronHardDeactivated}
+                    onClick={() => setCronConfirmOpen((v) => !v)}
+                    disabled={
+                      !adminGranted ||
+                      swingCronControlUpdating ||
+                      !swingCronControlLoaded
                     }
-                    loadDashboard();
-                  }}
-                  disabled={!adminGranted}
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Refresh
-                </button>
+                    title={
+                      !swingCronControlLoaded
+                        ? "loading"
+                        : swingCronHardDeactivated
+                          ? "swing cron OFF — click to re-enable"
+                          : "swing cron ON — click to disable"
+                    }
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      swingCronControlUpdating || !swingCronControlLoaded
+                        ? "border-slate-300 bg-slate-200"
+                        : swingCronHardDeactivated
+                          ? "border-rose-400 bg-rose-500/80"
+                          : "border-emerald-400 bg-emerald-500/80"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                        swingCronHardDeactivated
+                          ? "translate-x-0.5"
+                          : "translate-x-4"
+                      }`}
+                    />
+                  </button>
+                  {cronConfirmOpen ? (
+                    <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-amber-300 bg-white p-3 text-left shadow-lg">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                        <div className="text-xs text-slate-700">
+                          {swingCronHardDeactivated
+                            ? "Re-enable the swing cron? It resumes analyzing and executing swing trades automatically."
+                            : "Disable the swing cron? This hard-deactivates automated swing analysis and execution."}
+                        </div>
+                      </div>
+                      <div className="mt-3 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCronConfirmOpen(false)}
+                          className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void setSwingCronHardDeactivate(
+                              !swingCronHardDeactivated,
+                            );
+                            setCronConfirmOpen(false);
+                          }}
+                          className={`rounded-full px-3 py-1 text-xs font-semibold text-white transition ${
+                            swingCronHardDeactivated
+                              ? "bg-emerald-600 hover:bg-emerald-700"
+                              : "bg-rose-600 hover:bg-rose-700"
+                          }`}
+                        >
+                          {swingCronHardDeactivated ? "Enable" : "Disable"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {resolvedTheme === "dark" ? "dark" : "light"}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={resolvedTheme === "dark"}
+                    onClick={handleThemeToggle}
+                    title={
+                      resolvedTheme === "dark"
+                        ? "Switch to light mode"
+                        : "Switch to dark mode"
+                    }
+                    className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-slate-400 bg-slate-200 transition"
+                  >
+                    <span
+                      className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white transition-transform ${
+                        resolvedTheme === "dark"
+                          ? "translate-x-4"
+                          : "translate-x-0.5"
+                      }`}
+                    >
+                      {resolvedTheme === "dark" ? (
+                        <Moon className="h-2.5 w-2.5 text-slate-700" />
+                      ) : (
+                        <Sun className="h-2.5 w-2.5 text-slate-700" />
+                      )}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -7147,53 +7169,6 @@ export default function Home() {
           {error && (
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
               Could not load dashboard data: {error}
-            </div>
-          )}
-
-          {strategyMode === "swing" && !error && (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {symbols.map((sym, i) => {
-                const isActive = i === active;
-                const tab = tabData[sym];
-                const pnl7dValue =
-                  typeof tab?.pnl7dWithOpen === "number"
-                    ? tab.pnl7dWithOpen
-                    : typeof tab?.pnl7d === "number"
-                      ? tab.pnl7d
-                      : null;
-                const pnlTone =
-                  typeof pnl7dValue === "number"
-                    ? pnl7dValue < 0
-                      ? "negative"
-                      : "positive"
-                    : "neutral";
-                return (
-                  <button
-                    key={sym}
-                    onClick={() => setActive(i)}
-                    className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                      pnlTone === "positive"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:text-emerald-800"
-                        : pnlTone === "negative"
-                          ? "border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:text-rose-800"
-                          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800"
-                    } ${
-                      isActive
-                        ? "shadow-md ring-2 ring-slate-400/70 outline outline-2 outline-offset-2 outline-slate-200/80"
-                        : ""
-                    }`}
-                  >
-                    {sym}
-                  </button>
-                );
-              })}
-              {isInitialLoading &&
-                Array.from({ length: 4 }).map((_, idx) => (
-                  <span
-                    key={`tab-skeleton-${idx}`}
-                    className="h-9 w-24 animate-pulse rounded-full border border-slate-200 bg-slate-100"
-                  />
-                ))}
             </div>
           )}
 
