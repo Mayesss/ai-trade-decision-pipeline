@@ -203,7 +203,6 @@ export default function ChartPanel(props: ChartPanelProps) {
   } = props;
 
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
-  const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartAttempted, setChartAttempted] = useState(false);
@@ -219,7 +218,6 @@ export default function ChartPanel(props: ChartPanelProps) {
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
   const chartSeriesRef = useRef<any>(null);
-  const chartMarkersRef = useRef<any>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
@@ -235,7 +233,6 @@ export default function ChartPanel(props: ChartPanelProps) {
   const applyPayload = (payload: ChartApiResponse) => {
     const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
     setChartData(mapped.filter((c) => Number.isFinite(c.time) && Number.isFinite(c.value)));
-    setChartMarkers(Array.isArray(payload.markers) ? payload.markers : []);
     setPositionOverlays(Array.isArray(payload.positions) ? payload.positions : []);
   };
 
@@ -245,7 +242,6 @@ export default function ChartPanel(props: ChartPanelProps) {
       setChartLoading(false);
       setChartAttempted(false);
       setChartData([]);
-      setChartMarkers([]);
       setPositionOverlays([]);
       setRenderedOverlays([]);
       setHoveredOverlay(null);
@@ -269,7 +265,6 @@ export default function ChartPanel(props: ChartPanelProps) {
       setChartLoading(!hasFresh);
     } else {
       setChartData([]);
-      setChartMarkers([]);
       setPositionOverlays([]);
       setChartLoading(true);
       setChartAttempted(false);
@@ -311,7 +306,6 @@ export default function ChartPanel(props: ChartPanelProps) {
         if (cancelled || err?.name === 'AbortError') return;
         if (!cached) {
           setChartData([]);
-          setChartMarkers([]);
           setPositionOverlays([]);
         }
       } finally {
@@ -493,7 +487,6 @@ export default function ChartPanel(props: ChartPanelProps) {
         chartInstanceRef.current = null;
       }
       chartSeriesRef.current = null;
-      chartMarkersRef.current = null;
     };
   }, [
     symbol,
