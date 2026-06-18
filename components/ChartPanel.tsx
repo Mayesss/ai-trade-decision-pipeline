@@ -219,6 +219,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
   const chartSeriesRef = useRef<any>(null);
+  const chartMarkersRef = useRef<any>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
@@ -229,6 +230,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const chartLineColor = isDark ? '#38bdf8' : '#0ea5e9';
   const chartAreaTopColor = isDark ? 'rgba(56,189,248,0.26)' : 'rgba(14,165,233,0.3)';
   const chartAreaBottomColor = isDark ? 'rgba(14,165,233,0.08)' : 'rgba(14,165,233,0.05)';
+  const hasChartData = chartData.length > 0;
 
   const applyPayload = (payload: ChartApiResponse) => {
     const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
@@ -392,7 +394,7 @@ export default function ChartPanel(props: ChartPanelProps) {
 
   useEffect(() => {
     const container = chartContainerRef.current;
-    if (!container || !chartData.length) return;
+    if (!container || !hasChartData) return;
     let chart: any;
     let disposed = false;
 
@@ -469,9 +471,6 @@ export default function ChartPanel(props: ChartPanelProps) {
 
       chartSeriesRef.current = series;
       series.setData(chartData);
-      if (Array.isArray(chartMarkers) && chartMarkers.length && typeof series.setMarkers === 'function') {
-        series.setMarkers(chartMarkers);
-      }
       chart.timeScale().fitContent();
       setChartInitToken((t) => t + 1);
     })();
@@ -494,12 +493,13 @@ export default function ChartPanel(props: ChartPanelProps) {
         chartInstanceRef.current = null;
       }
       chartSeriesRef.current = null;
+      chartMarkersRef.current = null;
     };
   }, [
     symbol,
     timeframe,
     rangeKey,
-    chartData.length,
+    hasChartData,
     isFullscreen,
     chartAreaBottomColor,
     chartAreaTopColor,
@@ -512,10 +512,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     const series = chartSeriesRef.current;
     if (!series || !chartData.length) return;
     series.setData(chartData);
-    if (Array.isArray(chartMarkers) && typeof series.setMarkers === 'function') {
-      series.setMarkers(chartMarkers);
-    }
-  }, [chartData, chartMarkers]);
+  }, [chartData]);
 
   useEffect(() => {
     const recalcOverlays = () => {
@@ -607,7 +604,6 @@ export default function ChartPanel(props: ChartPanelProps) {
 
   if (!adminGranted || !symbol) return null;
 
-  const hasChartData = chartData.length > 0;
   const showSkeleton = (chartLoading && !hasChartData) || !chartAttempted;
   const showEmpty = !chartLoading && chartAttempted && !hasChartData;
 
@@ -752,23 +748,31 @@ export default function ChartPanel(props: ChartPanelProps) {
                         style={{ right: 0, backgroundColor: 'rgba(161,161,170,0.8)' }}
                       />
                     )}
-                    <div className="pointer-events-none absolute right-1 top-1 rounded-full bg-white/90 p-2 shadow-sm">
+                    <div className="pointer-events-none absolute right-1 top-1 flex items-center gap-1 bg-white/90 px-1.5 py-0.5 shadow-sm">
                       {pos.side === 'long' ? (
                         <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
                       ) : pos.side === 'short' ? (
                         <ArrowDownRight className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
                       ) : null}
+                      {leverageLabel ? (
+                        <span className="text-[10px] font-semibold text-slate-700">
+                          {leverageLabel}
+                        </span>
+                      ) : null}
+                      {pnlLabel ? (
+                        <span
+                          className={`text-[10px] font-semibold ${
+                            profitable === null
+                              ? 'text-slate-700'
+                              : profitable
+                              ? 'text-emerald-700'
+                              : 'text-rose-700'
+                          }`}
+                        >
+                          {pnlLabel}
+                        </span>
+                      ) : null}
                     </div>
-                    {pnlLabel && (
-                      <div className="pointer-events-none absolute right-1 top-10 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
-                        {pnlLabel}
-                      </div>
-                    )}
-                    {leverageLabel ? (
-                      <div className="pointer-events-none absolute right-9 top-3.5 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
-                        {leverageLabel}
-                      </div>
-                    ) : null}
                   </div>
                 );
               })}

@@ -146,7 +146,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const history = await loadDecisionHistory(symbol, historyLimit, platform);
     const markers =
       history
-        ?.filter((h) => h.timestamp && Number(h.timestamp) >= windowStartMs && Number(h.timestamp) <= nowMs)
+        ?.filter((h) => {
+          if (!h.timestamp) return false;
+          const ts = Number(h.timestamp);
+          if (!(ts >= windowStartMs && ts <= nowMs)) return false;
+          // Only entry/exit decisions get a chart arrow. HOLD (and anything
+          // else) would just clutter the price line with repeated markers.
+          const a = (h.aiDecision?.action || '').toUpperCase();
+          return a === 'BUY' || a === 'SELL' || a === 'CLOSE';
+        })
         .map((h) => {
           const rawTsSec = Math.floor(Number(h.timestamp) / 1000);
           const action = (h.aiDecision?.action || '').toUpperCase() || 'DECISION';
@@ -171,7 +179,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             position: isBuy ? 'belowBar' : 'aboveBar',
             color: isBuy ? '#16a34a' : isSell ? '#dc2626' : '#334155',
             shape: isClose ? 'arrowDown' : isBuy ? 'arrowUp' : 'arrowDown',
-            text: action,
+            text: '',
             price: markerPrice,
           };
         })
