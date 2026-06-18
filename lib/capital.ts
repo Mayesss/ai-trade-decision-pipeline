@@ -2149,6 +2149,33 @@ export async function fetchCapitalMarketBundle(
   };
 }
 
+// Lightweight real-time check of whether a Capital.com market is currently
+// tradeable, used to skip work (AI calls, order placement) when the venue is
+// closed. Capital reports `marketStatus` on the market snapshot; only
+// "TRADEABLE" permits market orders (CLOSED / EDITS_ONLY / ON_AUCTION /
+// SUSPENDED / OFFLINE do not). Fails OPEN: if the status can't be determined
+// (null status or a lookup error) we report tradeable so we never silently
+// halt trading on a transient failure.
+export async function fetchCapitalMarketTradeability(symbol: string): Promise<{
+  tradeable: boolean;
+  status: string | null;
+  epic: string | null;
+}> {
+  try {
+    const resolved = await resolveCapitalEpicRuntime(symbol);
+    const details = await loadMarketDetails(resolved.epic);
+    const status = details.marketStatus;
+    const tradeable = status === null || status === "TRADEABLE";
+    return { tradeable, status, epic: resolved.epic };
+  } catch (err) {
+    console.warn(
+      `[capital] market tradeability check failed for ${symbol}:`,
+      err,
+    );
+    return { tradeable: true, status: null, epic: null };
+  }
+}
+
 async function loadMarketOverview(
   epic: string,
 ): Promise<CapitalMarketSearchRow | null> {

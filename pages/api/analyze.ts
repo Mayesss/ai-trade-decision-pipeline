@@ -15,6 +15,7 @@ import {
     calculateCapitalMultiTFIndicators,
     executeCapitalDecision,
     fetchCapitalMarketBundle,
+    fetchCapitalMarketTradeability,
     fetchCapitalPositionInfo,
     fetchCapitalRealizedRoi,
     resolveCapitalEpic,
@@ -320,6 +321,56 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                                   updatedAtMs: swingCronControl.updatedAtMs,
                                   updatedBy: swingCronControl.updatedBy,
                                   reason: swingCronControl.reason,
+                              },
+                          }
+                        : {}),
+                });
+            }
+        }
+
+        // Skip the (expensive) AI call entirely when the Capital.com market is
+        // closed — orders can't execute anyway. Bitget crypto trades 24/7 so
+        // this gate only applies to the Capital platform.
+        if (platform === 'capital') {
+            const tradeability = await fetchCapitalMarketTradeability(symbol);
+            if (!tradeability.tradeable) {
+                emitGateDebug('capital_market_closed', {
+                    gate: 'CAPITAL_MARKET_CLOSED',
+                    marketStatus: tradeability.status,
+                });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'capital_market_closed',
+                    reason: `capital_market_closed:${tradeability.status ?? 'unknown'}`,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'capital_market_closed' };
+                await persistPreAiSkip({
+                    stage: 'capital_market_closed',
+                    decision,
+                    execResult: execRes,
+                    snapshot: { marketStatus: tradeability.status },
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    usedTape: false,
+                    promptSkipped: true,
+                    marketStatus: tradeability.status,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'CAPITAL_MARKET_CLOSED',
+                                  marketStatus: tradeability.status,
                               },
                           }
                         : {}),
