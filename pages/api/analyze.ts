@@ -822,10 +822,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // Catastrophe stop: a deliberately WIDE ATR-based protective stop placed
+        // at entry so the position is bounded during the ~1h gap between AI
+        // evaluations. It is a circuit breaker, not a tactical exit — the AI
+        // remains the primary exit manager each hour, so it must be wide enough
+        // not to get wicked out of trades the AI would otherwise manage.
+        const CATASTROPHE_STOP_ATR_MULT = 3;
+        let stopLossPrice: number | null = null;
+        if (decision.action === 'BUY' || decision.action === 'SELL') {
+            const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+            const anchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
+            if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
+                const dist = CATASTROPHE_STOP_ATR_MULT * primaryAtr;
+                const raw = decision.action === 'BUY' ? anchor - dist : anchor + dist;
+                stopLossPrice = raw > 0 ? raw : null;
+            }
+        }
+
         const execRes =
             platform === 'capital'
-                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun)
-                : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun);
+                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun, stopLossPrice)
+                : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun, stopLossPrice);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
         const spreadBpsSnapshot = safeNum(gatesForExec.metrics?.spreadBpsNow, safeNum(analytics.spreadBps, 0));

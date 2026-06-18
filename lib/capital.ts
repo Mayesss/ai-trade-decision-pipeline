@@ -3563,6 +3563,7 @@ export async function executeCapitalDecision(
   sideSizeUSDT: number,
   decision: TradeDecision,
   dryRun = true,
+  stopLossPrice: number | null = null,
 ) {
   const clientOid = `cap-${crypto.randomUUID()}`;
   const leverage = deriveLeverage(decision);
@@ -3574,12 +3575,20 @@ export async function executeCapitalDecision(
   if (decision.action === "BUY" || decision.action === "SELL") {
     if (dryRun) return { placed: false, orderId: null, clientOid, leverage };
     const direction = decision.action === "BUY" ? "BUY" : "SELL";
+    // Protective (catastrophe) stop attached at entry, sized/sided by the
+    // caller. openCapitalPosition validates and adjusts it to Capital's
+    // min/max stop-distance constraints.
+    const stopLevel =
+      Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0
+        ? Number(stopLossPrice)
+        : null;
     const opened = await openCapitalPosition({
       symbol,
       direction,
       sideSizeUSDT,
       leverage,
       clientOid,
+      stopLevel,
     });
     if (!opened.accepted) {
       return {

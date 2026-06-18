@@ -109,6 +109,9 @@ type PlaceOrderBody = {
     holdSide?: 'long' | 'short';
     // Bitget mix v2 expects the string 'YES'/'NO' here, not a boolean.
     reduceOnly?: 'YES' | 'NO';
+    // Preset stop-loss trigger price (string) attached at entry. When hit,
+    // Bitget closes the position at market. Optional.
+    presetStopLossPrice?: string;
 };
 
 async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
@@ -151,6 +154,7 @@ export async function executeDecision(
     decision: TradeDecision,
     productType: ProductType,
     dryRun = true,
+    stopLossPrice: number | null = null,
 ) {
     const clientOid = `cfw-${crypto.randomUUID()}`;
     const partialClosePct =
@@ -181,6 +185,15 @@ export async function executeDecision(
         // In hedge mode Bitget expects holdSide to distinguish open vs reduce
         if (decision.action === 'BUY') body['holdSide'] = 'long';
         if (decision.action === 'SELL') body['holdSide'] = 'short';
+        // Attach a protective (catastrophe) stop at entry so the position is
+        // bounded during the gap between AI evaluations. The stop is sized and
+        // placed on the correct side of entry by the caller; here we just
+        // quantize it to the symbol's price precision.
+        if (Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0) {
+            const meta = await fetchSymbolMeta(symbol, productType);
+            const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
+            body['presetStopLossPrice'] = Number(stopLossPrice).toFixed(Math.max(0, pricePlace));
+        }
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return {
             placed: true,
