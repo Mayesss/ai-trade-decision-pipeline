@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { sql, join } from '../lib/scalp/pg/sql';
 
 import { scalpPrisma } from '../lib/scalp/pg/client';
 
@@ -46,14 +46,14 @@ async function loadSummary(symbols: string[]): Promise<Array<{ symbol: string; t
             weekRows: number | bigint;
             candles: number | bigint;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             symbol,
             timeframe,
             COUNT(*)::bigint AS "weekRows",
             COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS candles
         FROM scalp_candle_history_weeks
-        WHERE symbol IN (${Prisma.join(symbols)})
+        WHERE symbol IN (${join(symbols)})
         GROUP BY symbol, timeframe
         ORDER BY symbol ASC, timeframe ASC;
     `);
@@ -74,9 +74,9 @@ async function main(): Promise<void> {
     const db = scalpPrisma();
     const before = await loadSummary(opts.symbols);
     const deleted = await db.$executeRaw(
-        Prisma.sql`
+        sql`
             DELETE FROM scalp_candle_history_weeks
-            WHERE symbol IN (${Prisma.join(opts.symbols)});
+            WHERE symbol IN (${join(opts.symbols)});
         `,
     );
     const after = await loadSummary(opts.symbols);

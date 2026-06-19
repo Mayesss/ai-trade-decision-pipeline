@@ -1,6 +1,7 @@
 import { PositionContext, MomentumSignals } from './ai';
 import { TradeDecision } from './trading';
 import type { CapturedLeverage } from './analytics';
+import { upsertSwingDecision } from './swing/pg';
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
@@ -161,6 +162,15 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
         await kvZRemRangeByScore(HISTORY_INDEX_KEY, 0, cutoff);
     } catch (err) {
         console.error('Failed to append decision history:', err);
+    }
+
+    // Durable dual-write to Postgres (source of truth beyond the KV TTL). Kept
+    // separate so a PG outage never breaks the KV path, and a no-op when PG is
+    // unconfigured.
+    try {
+        await upsertSwingDecision(entry);
+    } catch (err) {
+        console.error('Failed to persist decision to Postgres:', err);
     }
 }
 

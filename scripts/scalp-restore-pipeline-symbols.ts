@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { sql, join } from '../lib/scalp/pg/sql';
 import { scalpPrisma } from '../lib/scalp/pg/client';
 
 function normalizeSymbol(value: string): string {
@@ -32,7 +32,7 @@ async function snapshot(symbols: string[]) {
       discoverError: string | null;
       loadError: string | null;
       prepareError: string | null;
-    }>>(Prisma.sql`
+    }>>(sql`
       SELECT
         symbol,
         active,
@@ -45,7 +45,7 @@ async function snapshot(symbols: string[]) {
         load_error AS "loadError",
         prepare_error AS "prepareError"
       FROM scalp_pipeline_symbols
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
       ORDER BY symbol ASC;
     `),
     db.$queryRaw<Array<{
@@ -56,7 +56,7 @@ async function snapshot(symbols: string[]) {
       workerDirty: boolean;
       promotionDirty: boolean;
       c: bigint | number;
-    }>>(Prisma.sql`
+    }>>(sql`
       SELECT
         symbol,
         in_universe AS "inUniverse",
@@ -66,7 +66,7 @@ async function snapshot(symbols: string[]) {
         promotion_dirty AS "promotionDirty",
         COUNT(*)::bigint AS c
       FROM scalp_deployments
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
       GROUP BY symbol, in_universe, enabled, retired_at, worker_dirty, promotion_dirty
       ORDER BY symbol ASC, in_universe DESC, enabled DESC;
     `),
@@ -95,7 +95,7 @@ async function main() {
   const db = scalpPrisma();
 
   for (const symbol of symbols) {
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       INSERT INTO scalp_pipeline_symbols(
         symbol,
         active,
@@ -177,7 +177,7 @@ async function main() {
   }
 
   const deploymentsUpdated = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       UPDATE scalp_deployments
       SET
         in_universe = TRUE,
@@ -185,7 +185,7 @@ async function main() {
         worker_dirty = TRUE,
         updated_by = 'script:restore-pipeline-symbols',
         updated_at = NOW()
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
 

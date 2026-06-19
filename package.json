@@ -4,7 +4,6 @@
   "type": "module",
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
-    "@prisma/client": "^6.16.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.2",
@@ -25,9 +24,6 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "db:pg:generate": "node scripts/with-db-env.mjs prisma generate",
-    "db:pg:validate": "node scripts/with-db-env.mjs prisma validate",
-    "db:pg:migrate:deploy": "node scripts/with-db-env.mjs prisma migrate deploy",
     "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-pg-healthcheck.ts",
     "test:ts": "node --import tsx --test",
     "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
@@ -41,7 +37,6 @@
   "devDependencies": {
     "@types/pg": "^8.20.0",
     "baseline-browser-mapping": "^2.9.19",
-    "prisma": "^6.16.0",
     "tsx": "^4.21.0"
   },
   "overrides": {

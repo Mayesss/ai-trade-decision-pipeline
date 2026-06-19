@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { sql, join, empty } from '../lib/scalp/pg/sql';
 
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import {
@@ -75,12 +75,12 @@ async function loadMissingCoverageRows(params: {
   const db = scalpPrisma();
   const symbolFilter =
     params.symbols.length > 0
-      ? Prisma.sql`AND s.symbol IN (${Prisma.join(params.symbols)})`
-      : Prisma.empty;
+      ? sql`AND s.symbol IN (${join(params.symbols)})`
+      : empty;
 
-  return db.$queryRaw<Array<MissingCoverageRow>>(Prisma.sql`
+  return db.$queryRaw<Array<MissingCoverageRow>>(sql`
     WITH required AS (
-      SELECT UNNEST(ARRAY[${Prisma.join(params.requiredStrategyIds)}]::text[]) AS strategy_id
+      SELECT UNNEST(ARRAY[${join(params.requiredStrategyIds)}]::text[]) AS strategy_id
     )
     SELECT
       s.symbol,
@@ -137,14 +137,14 @@ async function applyBackfill(params: {
   if (!params.symbols.length) return 0;
   const db = scalpPrisma();
   return Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       UPDATE scalp_discovered_symbols s
       SET
         prepare_status = 'pending',
         prepare_next_run_at = NOW(),
         prepare_error = NULL,
         updated_at = NOW()
-      WHERE s.symbol IN (${Prisma.join(params.symbols)})
+      WHERE s.symbol IN (${join(params.symbols)})
         AND s.prepare_status NOT IN ('pending', 'running', 'retry_wait');
     `),
   );

@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { sql, join, raw } from '../lib/scalp/pg/sql';
 
 import { isScalpPgConfigured, scalpPrisma } from "../lib/scalp/pg/client";
 
@@ -66,7 +66,7 @@ async function tableExists(tableName: string): Promise<boolean> {
   }
   const db = scalpPrisma();
   try {
-    const rows = await db.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ exists: boolean }>>(sql`
       SELECT to_regclass(${`public.${normalized}`}) IS NOT NULL AS "exists";
     `);
     const exists = Boolean(rows[0]?.exists);
@@ -103,7 +103,7 @@ async function countQueryIfTableExists(
 async function loadCapitalDeploymentRows() {
   if (!(await tableExists("scalp_deployments"))) return [];
   const db = scalpPrisma();
-  return db.$queryRaw<Array<{ deploymentId: string; symbol: string }>>(Prisma.sql`
+  return db.$queryRaw<Array<{ deploymentId: string; symbol: string }>>(sql`
     SELECT deployment_id AS "deploymentId", symbol
     FROM scalp_deployments
     WHERE deployment_id LIKE 'capital:%'
@@ -118,14 +118,14 @@ async function loadSymbolsBySource(source: "capital" | "bitget") {
   const hasCandles = await tableExists("scalp_candle_history_weeks");
   const [metaRows, candleRows] = await Promise.all([
     hasMeta
-      ? db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+      ? db.$queryRaw<Array<{ symbol: string }>>(sql`
           SELECT symbol
           FROM scalp_symbol_market_metadata
           WHERE source = ${source};
         `)
       : Promise.resolve([]),
     hasCandles
-      ? db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+      ? db.$queryRaw<Array<{ symbol: string }>>(sql`
           SELECT DISTINCT symbol
           FROM scalp_candle_history_weeks
           WHERE source = ${source};
@@ -141,7 +141,7 @@ async function loadSymbolsBySource(source: "capital" | "bitget") {
 async function loadBitgetDeploymentSymbols() {
   if (!(await tableExists("scalp_deployments"))) return [];
   const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
     SELECT DISTINCT symbol
     FROM scalp_deployments
     WHERE deployment_id LIKE 'bitget:%';
@@ -157,10 +157,10 @@ async function countByDeploymentIds(
   if (!deploymentIds.length) return 0;
   if (!(await tableExists(tableName))) return 0;
   const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(sql`
     SELECT COUNT(*)::bigint AS count
-    FROM ${Prisma.raw(tableName)}
-    WHERE ${Prisma.raw(columnName)} IN (${Prisma.join(deploymentIds)});
+    FROM ${raw(tableName)}
+    WHERE ${raw(columnName)} IN (${join(deploymentIds)});
   `);
   return Number(rows[0]?.count || 0);
 }
@@ -172,10 +172,10 @@ async function countBySymbols(
   if (!symbols.length) return 0;
   if (!(await tableExists(tableName))) return 0;
   const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(sql`
     SELECT COUNT(*)::bigint AS count
-    FROM ${Prisma.raw(tableName)}
-    WHERE symbol IN (${Prisma.join(symbols)});
+    FROM ${raw(tableName)}
+    WHERE symbol IN (${join(symbols)});
   `);
   return Number(rows[0]?.count || 0);
 }
@@ -235,21 +235,21 @@ async function collectCounts(params: {
     countBySymbols("scalp_pipeline_symbols", params.capitalOnlySymbols),
     countBySymbols("scalp_symbol_cooldowns", params.capitalOnlySymbols),
     countQueryIfTableExists("scalp_symbol_market_metadata", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_symbol_market_metadata
         WHERE source = 'capital';
       `),
     ),
     countQueryIfTableExists("scalp_candle_history_weeks", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_candle_history_weeks
         WHERE source = 'capital';
       `),
     ),
     countQueryIfTableExists("scalp_jobs", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_jobs
         WHERE dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital'
@@ -260,28 +260,28 @@ async function collectCounts(params: {
       `),
     ),
     countQueryIfTableExists("scalp_pipeline_job_runs", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_pipeline_job_runs
         WHERE details_json::text ILIKE '%capital%';
       `),
     ),
     countQueryIfTableExists("scalp_pipeline_jobs", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_pipeline_jobs
         WHERE progress_json::text ILIKE '%capital%';
       `),
     ),
     countQueryIfTableExists("scalp_symbol_universe_snapshots", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_symbol_universe_snapshots
         WHERE payload_json::text ILIKE '%capital%';
       `),
     ),
     countQueryIfTableExists("scalp_journal", () =>
-      db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+      db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_journal
         WHERE payload::text ILIKE '%capital%'
@@ -336,63 +336,63 @@ async function applyPurge(params: {
   await db.$transaction(async (tx) => {
     if (params.capitalDeploymentIds.length) {
       if (has.scalp_trade_ledger) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_trade_ledger
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_journal) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_journal
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_research_tasks) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_research_tasks
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_deployment_weekly_metrics) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_deployment_weekly_metrics
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_sessions) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_sessions
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_execution_runs) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_execution_runs
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
       if (has.scalp_deployments) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_deployments
-          WHERE deployment_id IN (${Prisma.join(params.capitalDeploymentIds)});
+          WHERE deployment_id IN (${join(params.capitalDeploymentIds)});
         `);
       }
     }
 
     if (has.scalp_symbol_market_metadata) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_symbol_market_metadata
         WHERE source = 'capital';
       `);
     }
     if (has.scalp_candle_history_weeks) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_candle_history_weeks
         WHERE source = 'capital';
       `);
     }
     if (has.scalp_jobs) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_jobs
         WHERE dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital'
            OR dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital:%'
@@ -402,13 +402,13 @@ async function applyPurge(params: {
       `);
     }
     if (has.scalp_pipeline_job_runs) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_pipeline_job_runs
         WHERE details_json::text ILIKE '%capital%';
       `);
     }
     if (has.scalp_pipeline_jobs) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         UPDATE scalp_pipeline_jobs
         SET
           progress_json = NULL,
@@ -418,13 +418,13 @@ async function applyPurge(params: {
       `);
     }
     if (has.scalp_symbol_universe_snapshots) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_symbol_universe_snapshots
         WHERE payload_json::text ILIKE '%capital%';
       `);
     }
     if (has.scalp_journal) {
-      await tx.$executeRaw(Prisma.sql`
+      await tx.$executeRaw(sql`
         DELETE FROM scalp_journal
         WHERE payload::text ILIKE '%capital%'
            OR reason_codes::text ILIKE '%capital%';
@@ -433,15 +433,15 @@ async function applyPurge(params: {
 
     if (params.capitalOnlySymbols.length) {
       if (has.scalp_pipeline_symbols) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_pipeline_symbols
-          WHERE symbol IN (${Prisma.join(params.capitalOnlySymbols)});
+          WHERE symbol IN (${join(params.capitalOnlySymbols)});
         `);
       }
       if (has.scalp_symbol_cooldowns) {
-        await tx.$executeRaw(Prisma.sql`
+        await tx.$executeRaw(sql`
           DELETE FROM scalp_symbol_cooldowns
-          WHERE symbol IN (${Prisma.join(params.capitalOnlySymbols)});
+          WHERE symbol IN (${join(params.capitalOnlySymbols)});
         `);
       }
     }

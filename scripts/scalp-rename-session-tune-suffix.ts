@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { sql, join, raw } from '../lib/scalp/pg/sql';
 
 import {
     buildScalpDeploymentId,
@@ -94,7 +94,7 @@ function quoteIdent(name: string): string {
 
 async function loadLegacySessionDeploymentRows(): Promise<DeploymentRow[]> {
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<DeploymentRow>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<DeploymentRow>>(sql`
         SELECT
             deployment_id AS "deploymentId",
             symbol,
@@ -146,7 +146,7 @@ function buildMappings(rows: DeploymentRow[]): RenameMapping[] {
 
 async function loadScalpTableSummaries(): Promise<TableSummary[]> {
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<TableColumnRow>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<TableColumnRow>>(sql`
         SELECT
             table_name AS "tableName",
             column_name AS "columnName"
@@ -189,19 +189,19 @@ async function loadTableImpacts(
         let tuneIdRows = 0;
 
         if (table.hasDeploymentId && oldDeploymentIds.length > 0) {
-            const [row] = await db.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+            const [row] = await db.$queryRaw<Array<{ count: bigint }>>(sql`
                 SELECT COUNT(*)::bigint AS count
-                FROM ${Prisma.raw(tableIdent)}
-                WHERE deployment_id IN (${Prisma.join(oldDeploymentIds)});
+                FROM ${raw(tableIdent)}
+                WHERE deployment_id IN (${join(oldDeploymentIds)});
             `);
             deploymentIdRows = Number(row?.count || 0);
         }
 
         if (table.hasTuneId && oldTuneIds.length > 0) {
-            const [row] = await db.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+            const [row] = await db.$queryRaw<Array<{ count: bigint }>>(sql`
                 SELECT COUNT(*)::bigint AS count
-                FROM ${Prisma.raw(tableIdent)}
-                WHERE tune_id IN (${Prisma.join(oldTuneIds)});
+                FROM ${raw(tableIdent)}
+                WHERE tune_id IN (${join(oldTuneIds)});
             `);
             tuneIdRows = Number(row?.count || 0);
         }
@@ -229,10 +229,10 @@ async function loadConflicts(mappings: RenameMapping[]): Promise<{
 
     const deploymentIdConflicts: string[] = [];
     if (newDeploymentIds.length > 0) {
-        const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(Prisma.sql`
+        const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
             SELECT deployment_id AS "deploymentId"
             FROM scalp_deployments
-            WHERE deployment_id IN (${Prisma.join(newDeploymentIds)});
+            WHERE deployment_id IN (${join(newDeploymentIds)});
         `);
         for (const row of rows) {
             const id = String(row.deploymentId || '').trim();
@@ -248,16 +248,16 @@ async function loadConflicts(mappings: RenameMapping[]): Promise<{
         deploymentId: string;
     }> = [];
     if (newTriplets.length > 0) {
-        const whereRows = Prisma.join(
+        const whereRows = join(
             newTriplets.map(
                 ([symbol, strategyId, tuneId]) =>
-                    Prisma.sql`(symbol = ${symbol} AND strategy_id = ${strategyId} AND tune_id = ${tuneId})`,
+                    sql`(symbol = ${symbol} AND strategy_id = ${strategyId} AND tune_id = ${tuneId})`,
             ),
             ' OR ',
         );
         const rows = await db.$queryRaw<
             Array<{ symbol: string; strategyId: string; tuneId: string; deploymentId: string }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 symbol,
                 strategy_id AS "strategyId",
@@ -301,23 +301,23 @@ async function applyRename(
         `);
 
         await tx.$executeRaw(
-            Prisma.sql`
-                INSERT INTO ${Prisma.raw(MAP_TEMP_TABLE)}(
+            sql`
+                INSERT INTO ${raw(MAP_TEMP_TABLE)}(
                     old_deployment_id,
                     new_deployment_id,
                     old_tune_id,
                     new_tune_id
                 )
-                VALUES ${Prisma.join(
+                VALUES ${join(
                     mappings.map(
                         (row) =>
-                            Prisma.sql`(${row.oldDeploymentId}, ${row.newDeploymentId}, ${row.oldTuneId}, ${row.newTuneId})`,
+                            sql`(${row.oldDeploymentId}, ${row.newDeploymentId}, ${row.oldTuneId}, ${row.newTuneId})`,
                     ),
                 )};
             `,
         );
 
-        const [insertRow] = await tx.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        const [insertRow] = await tx.$queryRaw<Array<{ count: bigint }>>(sql`
             WITH inserted AS (
                 INSERT INTO scalp_deployments(
                     deployment_id,
@@ -355,7 +355,7 @@ async function applyRename(
                     d.created_at,
                     NOW()
                 FROM scalp_deployments d
-                JOIN ${Prisma.raw(MAP_TEMP_TABLE)} m
+                JOIN ${raw(MAP_TEMP_TABLE)} m
                   ON m.old_deployment_id = d.deployment_id
                 RETURNING 1
             )
@@ -405,10 +405,10 @@ async function applyRename(
             }
         }
 
-        const [deleteRow] = await tx.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        const [deleteRow] = await tx.$queryRaw<Array<{ count: bigint }>>(sql`
             WITH deleted AS (
                 DELETE FROM scalp_deployments d
-                USING ${Prisma.raw(MAP_TEMP_TABLE)} m
+                USING ${raw(MAP_TEMP_TABLE)} m
                 WHERE d.deployment_id = m.old_deployment_id
                 RETURNING 1
             )

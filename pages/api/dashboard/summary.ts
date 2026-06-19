@@ -7,6 +7,8 @@ import {
 } from '../../../lib/analytics';
 import { fetchCapitalPositionInfo, fetchCapitalRealizedRoi } from '../../../lib/capital';
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
+import { syncSwingClosedPositions } from '../../../lib/swing/sync';
+import { kvGetJson, kvSetJson } from '../../../lib/kv';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
@@ -45,6 +47,21 @@ const SUMMARY_RANGE_LOOKBACK_HOURS: Record<SummaryRangeKey, number> = {
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_LAST_POSITION_LEVERAGE_OVERRIDE = 3;
 
+// Read-through KV cache. The summary is expensive to build (per-symbol Bitget /
+// Capital calls + decision history) and the dashboard polls it, so we collapse
+// bursts into one compute per freshness window. Open PnL is the most live field;
+// the default 30s window keeps it near-live while killing repeat egress/compute.
+// Bypass with ?fresh=1. Stored TTL == freshness window, so a present blob is
+// fresh by definition.
+const SUMMARY_CACHE_KEY_PREFIX = 'swing:dashboard:summary:v1';
+const SUMMARY_CACHE_TTL_SECONDS = (() => {
+  const n = Number(process.env.SWING_DASHBOARD_SUMMARY_TTL_SECONDS);
+  return Number.isFinite(n) && n >= 0 ? n : 30;
+})();
+
+type SummaryPayload = { symbols: string[]; data: SummaryEntry[]; range: SummaryRangeKey };
+type CachedSummary = { payload: SummaryPayload; generatedAtMs: number };
+
 const scalePct = (value: number | null | undefined, factor: number): number | null | undefined => {
   if (typeof value !== 'number') return value;
   return value * factor;
@@ -68,6 +85,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
   const range = resolveSummaryRange(rangeParam);
   const lookbackHours = SUMMARY_RANGE_LOOKBACK_HOURS[range];
+
+  const freshParam = Array.isArray(req.query.fresh) ? req.query.fresh[0] : req.query.fresh;
+  const bypassCache = freshParam === '1' || freshParam === 'true';
+  const cacheKey = `${SUMMARY_CACHE_KEY_PREFIX}:${range}`;
+
+  if (!bypassCache && SUMMARY_CACHE_TTL_SECONDS > 0) {
+    try {
+      const cached = await kvGetJson<CachedSummary>(cacheKey);
+      if (cached?.payload) {
+        return res.status(200).json({ ...cached.payload, cached: true, generatedAtMs: cached.generatedAtMs });
+      }
+    } catch (err) {
+      console.warn('summary cache read failed; computing fresh:', err);
+    }
+  }
 
   const configs = getCronSymbolConfigs();
   const symbols = configs.map((item) => item.symbol);
@@ -153,6 +185,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (platform !== 'capital') {
           try {
             const recentWindows = await fetchRecentPositionWindows(symbol, lookbackHours, capturedLevs);
+            // write-through: mirror closed positions to Postgres with captured leverage
+            await syncSwingClosedPositions(platform, recentWindows, capturedLevs);
             const lastWindows = recentWindows.slice(-14);
             const spark = lastWindows
               .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
@@ -285,5 +319,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }),
   );
 
-  return res.status(200).json({ symbols, data, range });
+  const payload: SummaryPayload = { symbols, data, range };
+  const generatedAtMs = Date.now();
+
+  // write-through: materialize the blob so subsequent polls within the window
+  // are served from KV instead of recomputing. Best-effort — never fail the
+  // response on a cache write.
+  if (SUMMARY_CACHE_TTL_SECONDS > 0) {
+    try {
+      await kvSetJson<CachedSummary>(cacheKey, { payload, generatedAtMs }, SUMMARY_CACHE_TTL_SECONDS);
+    } catch (err) {
+      console.warn('summary cache write failed:', err);
+    }
+  }
+
+  return res.status(200).json({ ...payload, cached: false, generatedAtMs });
 }

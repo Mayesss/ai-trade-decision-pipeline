@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { sql } from '../lib/scalp/pg/sql';
 
 import { isScalpPgConfigured, scalpPrisma } from '../lib/scalp/pg/client';
 
@@ -47,7 +47,7 @@ async function loadSourceCounts(): Promise<SourceCounts> {
         completedWithResultAndDeployment: bigint;
         completedWithResultMissingDeployment: bigint;
         uniqueDeploymentWeeks: bigint;
-    }>>(Prisma.sql`
+    }>>(sql`
         WITH eligible AS (
             SELECT
                 t.deployment_id,
@@ -103,7 +103,7 @@ async function loadSourceCounts(): Promise<SourceCounts> {
 
 async function tableExists(tableName: string): Promise<boolean> {
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ exists: boolean }>>(sql`
         SELECT to_regclass(${`public.${tableName}`}) IS NOT NULL AS exists;
     `);
     return Boolean(rows[0]?.exists);
@@ -112,7 +112,7 @@ async function tableExists(tableName: string): Promise<boolean> {
 async function ensureWeeklyMetricsTable(): Promise<void> {
     const db = scalpPrisma();
 
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         CREATE TABLE IF NOT EXISTS scalp_deployment_weekly_metrics (
             id bigserial PRIMARY KEY,
             deployment_id text NOT NULL REFERENCES scalp_deployments(deployment_id) ON DELETE CASCADE,
@@ -148,21 +148,21 @@ async function ensureWeeklyMetricsTable(): Promise<void> {
         );
     `);
 
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_claim_idx
             ON scalp_deployment_weekly_metrics(status, next_run_at, week_start);
     `);
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_session_claim_idx
             ON scalp_deployment_weekly_metrics(entry_session_profile, status, next_run_at, week_start);
     `);
 
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_deployment_week_idx
             ON scalp_deployment_weekly_metrics(deployment_id, week_start DESC);
     `);
 
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_symbol_strategy_week_idx
             ON scalp_deployment_weekly_metrics(symbol, strategy_id, tune_id, week_start DESC);
     `);
@@ -172,7 +172,7 @@ async function previewBackfill(): Promise<BackfillResult> {
     const db = scalpPrisma();
     const hasWeeklyMetrics = await tableExists('scalp_deployment_weekly_metrics');
 
-    const [sourceRows] = await db.$queryRaw<Array<{ candidateRows: bigint }>>(Prisma.sql`
+    const [sourceRows] = await db.$queryRaw<Array<{ candidateRows: bigint }>>(sql`
         WITH src_base AS (
             SELECT
                 t.deployment_id,
@@ -219,7 +219,7 @@ async function previewBackfill(): Promise<BackfillResult> {
         candidateRows: bigint;
         wouldInsert: bigint;
         wouldUpdate: bigint;
-    }>>(Prisma.sql`
+    }>>(sql`
         WITH src_base AS (
             SELECT
                 t.deployment_id,
@@ -263,7 +263,7 @@ async function runBackfill(): Promise<BackfillResult> {
         affectedRows: bigint;
         insertedRows: bigint;
         updatedRows: bigint;
-    }>>(Prisma.sql`
+    }>>(sql`
         WITH src_base AS (
             SELECT
                 t.deployment_id,
@@ -494,7 +494,7 @@ async function runBackfill(): Promise<BackfillResult> {
 
 async function countWeeklyMetricsRows(): Promise<number> {
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ count: bigint }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployment_weekly_metrics;
     `);

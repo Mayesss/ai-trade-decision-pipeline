@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { sql, join } from '../lib/scalp/pg/sql';
 
 import { bitgetFetch, resolveProductType } from '../lib/bitget';
 import { scalpPrisma } from '../lib/scalp/pg/client';
@@ -286,7 +286,7 @@ async function loadCryptoWeekSymbols(timeframe: string): Promise<CryptoWeekSymbo
             assetCategory: string | null;
             instrumentType: string | null;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             w.symbol,
             COUNT(*)::bigint AS "weekRows",
@@ -347,7 +347,7 @@ async function replaceWeeklyCandles(params: {
     const weekly = toWeeklyBuckets(params.candles);
     for (const bucket of weekly) {
         await db.$executeRaw(
-            Prisma.sql`
+            sql`
                 INSERT INTO scalp_candle_history_weeks(
                     symbol,
                     timeframe,
@@ -451,10 +451,10 @@ async function main(): Promise<void> {
 
     if (symbolsToDelete.length) {
         await db.$executeRaw(
-            Prisma.sql`
+            sql`
                 DELETE FROM scalp_candle_history_weeks
                 WHERE timeframe = ${opts.timeframe}
-                  AND symbol IN (${Prisma.join(symbolsToDelete)});
+                  AND symbol IN (${join(symbolsToDelete)});
             `,
         );
     }
@@ -504,7 +504,7 @@ async function main(): Promise<void> {
             candles: number | bigint;
             sourcePreview: string[] | null;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             symbol,
             COUNT(*)::bigint AS "weekRows",
@@ -512,7 +512,7 @@ async function main(): Promise<void> {
             ARRAY_REMOVE(ARRAY_AGG(DISTINCT NULLIF(TRIM(COALESCE(source, '')), '')), NULL) AS "sourcePreview"
         FROM scalp_candle_history_weeks
         WHERE timeframe = ${opts.timeframe}
-          AND symbol IN (${Prisma.join(targets.map((row) => row.targetSymbol))})
+          AND symbol IN (${join(targets.map((row) => row.targetSymbol))})
         GROUP BY symbol
         ORDER BY symbol ASC;
     `);

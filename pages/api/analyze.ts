@@ -42,6 +42,7 @@ import { executeDecision, getTargetLeverage, getTradeProductType } from '../../l
 import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
+import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import {
     CONTEXT_TIMEFRAME,
     DEFAULT_NOTIONAL_USDT,
@@ -380,6 +381,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
+        // Bounded account-leverage history: one snapshot per analyze tick (~hourly
+        // per symbol). Best-effort; never blocks the trading path on failure.
+        await recordSwingAccountSnapshot({
+            platform,
+            symbol,
+            capturedAtMs: Date.now(),
+            positionInfo: positionInfo as any,
+        });
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
         const primaryCloseGateBlocked = !positionOpen && !primaryCloseTime;
         if (primaryCloseGateBlocked && enforcePrimaryCloseGate) {
