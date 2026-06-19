@@ -6,7 +6,7 @@ import {
   fetchRecentPositionWindows,
 } from '../../../lib/analytics';
 import { fetchCapitalPositionInfo, fetchCapitalRealizedRoi } from '../../../lib/capital';
-import { loadDecisionHistory } from '../../../lib/history';
+import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
@@ -138,15 +138,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             nowMs,
           });
         }
-        const leverageFromHistory = history
-          .map((h) => {
-            const lev =
-              Number((h.execResult as any)?.leverage) ||
-              Number((h.aiDecision as any)?.leverage) ||
-              Number((h.execResult as any)?.targetLeverage);
-            return Number.isFinite(lev) && lev > 0 ? lev : null;
-          })
-          .find((v) => v !== null);
+        const capturedLevs = extractCapturedLeverages(history);
+        const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
 
         const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
         const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
@@ -159,7 +152,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (platform !== 'capital') {
           try {
-            const recentWindows = await fetchRecentPositionWindows(symbol, lookbackHours);
+            const recentWindows = await fetchRecentPositionWindows(symbol, lookbackHours, capturedLevs);
             const lastWindows = recentWindows.slice(-14);
             const spark = lastWindows
               .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))

@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
-import { loadDecisionHistory, listHistorySymbols } from '../../lib/history';
+import { loadDecisionHistory, listHistorySymbols, extractCapturedLeverages } from '../../lib/history';
 import {
   fetchPositionInfo as fetchBitgetPositionInfo,
   fetchRealizedRoi as fetchBitgetRealizedRoi,
@@ -164,16 +164,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const history = latest && hasExplicitLatestPlatform
           ? historyAny.filter((entry) => extractPlatformFromHistoryEntry(entry) === platform)
           : historyAny;
-        // Get latest leverage we set/applied from history (execResult or aiDecision hint)
-        const leverageFromHistory = history
-          .map((h) => {
-            const lev =
-              Number((h.execResult as any)?.leverage) ||
-              Number((h.aiDecision as any)?.leverage) ||
-              Number((h.execResult as any)?.targetLeverage);
-            return Number.isFinite(lev) && lev > 0 ? lev : null;
-          })
-          .find((v) => v !== null);
+        // Leverage we set/applied, captured from history (ground truth per position).
+        const capturedLevs = extractCapturedLeverages(history);
+        const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
 
         const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
         const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
@@ -186,7 +179,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (platform !== 'capital') {
           try {
-            const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS);
+            const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS, capturedLevs);
             const lastWindows = recentWindows.slice(-14);
             const spark = lastWindows
               .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))

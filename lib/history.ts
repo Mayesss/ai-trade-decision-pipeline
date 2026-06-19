@@ -1,5 +1,6 @@
 import { PositionContext, MomentumSignals } from './ai';
 import { TradeDecision } from './trading';
+import type { CapturedLeverage } from './analytics';
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
@@ -197,6 +198,26 @@ export async function loadDecisionHistory(symbol?: string, limit = 20, platform?
         }
     }
     return results;
+}
+
+// Extract the leverage we actually set at execution time from decision history,
+// as a timestamped list usable to attribute the right leverage to each position.
+// Prefers execResult.leverage (what was applied), then the targetLeverage we asked
+// for, then the AI's hinted leverage. Used to override Bitget's stale reported
+// leverage on closed positions (see pickCapturedLeverage in lib/analytics.ts).
+export function extractCapturedLeverages(history: DecisionHistoryEntry[] | null | undefined): CapturedLeverage[] {
+    if (!history?.length) return [];
+    const out: CapturedLeverage[] = [];
+    for (const h of history) {
+        const ts = Number(h?.timestamp);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        const lev =
+            Number((h.execResult as any)?.leverage) ||
+            Number((h.execResult as any)?.targetLeverage) ||
+            Number((h.aiDecision as any)?.leverage);
+        if (Number.isFinite(lev) && lev > 0) out.push({ timestamp: ts, leverage: lev });
+    }
+    return out;
 }
 
 export async function clearDecisionHistory() {

@@ -46,6 +46,39 @@ export type PositionWindow = {
     leverage?: number | null;
 };
 
+// Leverage we actually set at execution time, captured from decision history.
+// This is ground truth for what leverage was active on a position — unlike
+// Bitget's reported leverage, which only ever reflects the *current* account
+// setting and is stale for closed/historical positions.
+export type CapturedLeverage = { timestamp: number; leverage: number };
+
+// Pick the captured leverage that was in effect for a position opened at
+// `entryTs`: the most recent capture at or before entry; failing that, the
+// closest capture after entry. Returns null when nothing usable is provided.
+export function pickCapturedLeverage(
+    entryTs: number | null | undefined,
+    captured?: CapturedLeverage[] | null,
+): number | null {
+    if (!captured?.length) return null;
+    if (!Number.isFinite(entryTs as number)) {
+        // No entry time to match against — fall back to the most recent capture.
+        const latest = captured.reduce((a, b) => (b.timestamp > a.timestamp ? b : a));
+        return latest.leverage;
+    }
+    const ts = entryTs as number;
+    let before: CapturedLeverage | null = null;
+    let after: CapturedLeverage | null = null;
+    for (const c of captured) {
+        if (!(Number.isFinite(c.timestamp) && Number.isFinite(c.leverage) && c.leverage > 0)) continue;
+        if (c.timestamp <= ts) {
+            if (!before || c.timestamp > before.timestamp) before = c;
+        } else if (!after || c.timestamp < after.timestamp) {
+            after = c;
+        }
+    }
+    return (before ?? after)?.leverage ?? null;
+}
+
 type OBLevel = { price: number; size: number };
 
 // ------------------------------
@@ -174,7 +207,11 @@ function calculatePnLPercent(data: RawPosition): string {
 // ------------------------------
 // Recent closed positions (FUTURES only)
 // ------------------------------
-export async function fetchRecentPositionWindows(symbol: string, hours = 24): Promise<PositionWindow[]> {
+export async function fetchRecentPositionWindows(
+    symbol: string,
+    hours = 24,
+    capturedLeverages?: CapturedLeverage[] | null,
+): Promise<PositionWindow[]> {
     try {
         const productType = resolveProductType();
         const now = Date.now();
@@ -218,17 +255,20 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                     it.margin ?? it.marginAmount ?? it.marginValue ?? it.fixedMargin ?? it.cMargin,
                     NaN,
                 );
+                // Leverage authority for a CLOSED position, most to least trustworthy:
+                //   1. captured-at-execution leverage (what we actually set when opening)
+                //   2. derived notional/margin (computed from the position's own historical
+                //      notional + locked margin — both are real historical values)
+                //   3. Bitget's reported leverage field (only ever the *current* account
+                //      setting, so stale for past positions — last resort)
+                const capturedLev = pickCapturedLeverage(entryTimestamp, capturedLeverages);
+                const derivedLev =
+                    Number.isFinite(notional) && notional! > 0 && Number.isFinite(marginVal) && marginVal > 0
+                        ? notional! / marginVal
+                        : null;
                 const levRaw = Number(it.leverage ?? it.marginLeverage ?? it.lever);
-                let leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
-                if (
-                    (leverage === null || leverage === 0) &&
-                    Number.isFinite(notional) &&
-                    notional! > 0 &&
-                    Number.isFinite(marginVal) &&
-                    marginVal > 0
-                ) {
-                    leverage = notional! / marginVal;
-                }
+                const reportedLev = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
+                const leverage = capturedLev ?? derivedLev ?? reportedLev;
                 const marginBasisRaw =
                     Number.isFinite(marginVal) && marginVal > 0
                         ? marginVal

@@ -5,7 +5,7 @@ import {
   fetchRecentPositionWindows,
 } from '../../lib/analytics';
 import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/capital';
-import { loadDecisionHistory } from '../../lib/history';
+import { loadDecisionHistory, extractCapturedLeverages } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 
@@ -188,16 +188,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         )
         .sort((a, b) => a.time - b.time) || [];
 
-    const leverageFromHistory =
-      history
-        ?.map((h) => {
-          const lev =
-            Number((h.execResult as any)?.leverage) ||
-            Number((h.aiDecision as any)?.leverage) ||
-            Number((h.execResult as any)?.targetLeverage);
-          return Number.isFinite(lev) && lev > 0 ? lev : null;
-        })
-        .find((v) => v !== null) ?? null;
+    const capturedLevs = extractCapturedLeverages(history);
+    const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
 
     const findNearestDecision = (tsMs?: number | null) => {
       if (!tsMs || !history?.length) return null;
@@ -222,7 +214,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let positions: any[] = [];
     try {
-      const closed = platform === 'capital' ? [] : await fetchRecentPositionWindows(symbol, historyHours);
+      const closed = platform === 'capital' ? [] : await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
       const closedNormalized =
         platform === 'bitget' && symbol === BTC_SYMBOL
           ? closed.map((position) => {
