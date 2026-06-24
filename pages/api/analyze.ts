@@ -14,6 +14,7 @@ import { fetchNewsWithHeadlines } from '../../lib/news';
 import {
     calculateCapitalMultiTFIndicators,
     executeCapitalDecision,
+    getCapitalCategoryLeverage,
     fetchCapitalMarketBundle,
     fetchCapitalMarketTradeability,
     fetchCapitalPositionInfo,
@@ -34,6 +35,7 @@ import {
     postprocessDecision,
     resolveDecisionPolicy,
     SWING_DECISION_SCHEMA,
+    SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
 import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
@@ -496,13 +498,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const analyticsLight = computeAnalytics({ ...bundleLight, trades: [] });
         const atrFloorScale = 1;
 
+        // Capital applies a fixed per-asset-class leverage, so the swing position
+        // opens at notional = sideSizeUSDT * that leverage — gates must vet the
+        // leveraged size. (Bitget leverages by the model's chosen value, which is
+        // only known after the AI call, so its base gate stays at sideSizeUSDT and
+        // is re-checked post-decision below.)
+        const capitalLeverage = platform === 'capital' ? getCapitalCategoryLeverage(symbol) : null;
+        const baseNotionalUSDT = sideSizeUSDT * (capitalLeverage ?? 1);
+
         // 3) Gates on light data (orderbook/ATR based)
         const gatesOut = getGates({
             symbol,
             bundle: bundleLight,
             analytics: analyticsLight,
             indicators,
-            notionalUSDT: sideSizeUSDT,
+            notionalUSDT: baseNotionalUSDT,
             positionOpen,
             disableSymbolExclusions: platform === 'capital',
             atrFloorScale,
@@ -756,10 +766,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             Number(gatesOut.metrics?.spreadBpsNow),
             decisionPolicy,
             category,
+            platform,
         );
 
-        // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
-        const decisionRaw = await callAI(system, user, SWING_DECISION_SCHEMA);
+        // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
+        // Capital decides leverage by asset class, so it uses the leverage-free schema.
+        const decisionRaw = await callAI(
+            system,
+            user,
+            platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
+        );
         const decision = postprocessDecision({
             decision: decisionRaw,
             context,
@@ -771,10 +787,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
-        const execLeverage = getTargetLeverage(decision);
+        const execLeverage = capitalLeverage ?? getTargetLeverage(decision);
         const execNotionalUSDT = sideSizeUSDT * (execLeverage ?? 1);
         const gatesForExec =
-            execNotionalUSDT !== sideSizeUSDT
+            execNotionalUSDT !== baseNotionalUSDT
                 ? getGates({
                       symbol,
                       bundle,
@@ -850,7 +866,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const execRes =
             platform === 'capital'
-                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun, stopLossPrice)
+                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun, stopLossPrice, true)
                 : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun, stopLossPrice);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);

@@ -208,6 +208,7 @@ export async function buildPrompt(
     spreadBpsOverride?: number,
     decisionPolicy?: DecisionPolicy,
     category?: string | null,
+    platform?: string | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -533,6 +534,20 @@ export async function buildPrompt(
     const modeLabel = dryRun ? 'simulation' : 'live';
     const baseSymbol = symbol.replace(/USDT$/i, '');
     const assetClass = String(category || '').toLowerCase() || 'unknown';
+    // On Capital, leverage is fixed by the broker per asset class — the model does
+    // not pick it. Only crypto (Bitget) takes a model-chosen 1–5 leverage.
+    const isCapital = String(platform || '').toLowerCase() === 'capital';
+    const leverageOwnershipNote = isCapital
+        ? 'Use it to set selectivity.'
+        : 'Use it to set selectivity and leverage.';
+    const leverageGuidance = isCapital
+        ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
+        : `Leverage 1–5 by conviction AND risk: cut to 1–2 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
+    const leverageTask = isCapital
+        ? 'do NOT output a leverage field — leverage is broker-defined per asset class on this venue.'
+        : 'leverage 1–5 for BUY/SELL/REVERSE, else null.';
+    // Capital: omit the leverage key entirely (no comma). Bitget: include it.
+    const leverageJsonField = isCapital ? '' : ',"leverage":null|1|2|3|4|5';
 
     // signal_strength is OWNED BY CODE (computeSignalStrength). We compute it once here
     // and hand it to the model as a given input — the model must NOT recompute it, and
@@ -737,7 +752,7 @@ INPUTS
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 
 DECISION OWNERSHIP
-- state.signal_strength (LOW/MEDIUM/HIGH) is computed by the system and is GROUND TRUTH. Do NOT recompute, rescale, or argue with it. Use it to set selectivity and leverage.
+- state.signal_strength (LOW/MEDIUM/HIGH) is computed by the system and is GROUND TRUTH. Do NOT recompute, rescale, or argue with it. ${leverageOwnershipNote}
 - The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:
   1. Allowed actions: flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE only.
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
@@ -751,7 +766,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip with state.closing_guardrails.reverse_confidence=high.
-- Leverage 1–5 by conviction AND risk: cut to 1–2 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.
+- ${leverageGuidance}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
 OUTPUT
@@ -772,12 +787,12 @@ ${JSON.stringify(market)}
 
 TASKS:
 1) Output exactly one allowed action (see DECISION OWNERSHIP): flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE.
-2) leverage 1–5 for BUY/SELL/REVERSE, else null.
+2) ${leverageTask}
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
 4) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100${leverageJsonField}}
 `;
 
     const context = {
@@ -982,6 +997,24 @@ export const SWING_DECISION_SCHEMA = {
             reason: { type: 'string' },
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
             leverage: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+        },
+    },
+} as const;
+
+// Capital decides leverage by asset class, so the model is not asked for it and
+// the schema omits the field entirely (strict structured-output requires the
+// schema to match the prompt's JSON exactly — no leverage key at all).
+export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
+    name: 'swing_decision',
+    schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action', 'summary', 'reason', 'exit_size_pct'],
+        properties: {
+            action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
+            summary: { type: 'string' },
+            reason: { type: 'string' },
+            exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
         },
     },
 } as const;

@@ -226,6 +226,22 @@ const CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
   crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
   other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
 };
+
+// Predefined per-asset-class leverage Capital applies to a symbol. Capital does
+// not take a model-chosen leverage on the swing path — each asset class trades at
+// a fixed broker leverage — so callers (sizing + entry gates) resolve it from the
+// symbol here. Symbol-inferred (no instrumentType) to match the swing pipeline's
+// symbol-based category resolution; openCapitalPosition refines via instrumentType
+// for the actual margin cap.
+export function getCapitalCategoryLeverage(symbol: string): number {
+  const category = scalpAssetCategoryFromInstrumentType(
+    normalizeTicker(symbol),
+    null,
+  );
+  return (
+    CAPITAL_LEVERAGE_BY_CATEGORY[category] ?? CAPITAL_LEVERAGE_BY_CATEGORY.other
+  );
+}
 const CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS = Math.max(
   5_000,
   Math.floor(Number(process.env.CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS) || 60_000),
@@ -791,6 +807,7 @@ function deriveLeverage(decision: TradeDecision): number | null {
   }
   return null;
 }
+
 
 function normalizeClosePct(pct: unknown) {
   const n = Number(pct);
@@ -3065,6 +3082,10 @@ async function openCapitalPosition(params: {
   stopLevel?: number | null;
   profitLevel?: number | null;
   forceOpen?: boolean;
+  // Swing path: treat sideSizeUSDT as margin and open a position leveraged by the
+  // asset class (notional = sideSizeUSDT * category leverage). Off (default) keeps
+  // the scalp contract where sideSizeUSDT IS the target notional.
+  notionalLeverageByCategory?: boolean;
 }) {
   const {
     symbol,
@@ -3077,6 +3098,7 @@ async function openCapitalPosition(params: {
     stopLevel = null,
     profitLevel = null,
     forceOpen = true,
+    notionalLeverageByCategory = false,
   } = params;
   const resolved = await resolveCapitalEpicRuntime(symbol);
   const details = await loadMarketDetails(resolved.epic);
@@ -3109,12 +3131,20 @@ async function openCapitalPosition(params: {
   const accountLeverageCap =
     CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
     CAPITAL_LEVERAGE_BY_CATEGORY.other;
-  const effectiveLeverageForMarginCap = SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE
+  // notionalLeverageByCategory (swing): notional = margin * category leverage.
+  // Otherwise (scalp): sideSizeUSDT is the notional directly — account-leverage
+  // mode just sets the margin ceiling, the legacy `leverage` only applies when
+  // account-leverage mode is off.
+  const notionalLeverage = notionalLeverageByCategory
     ? accountLeverageCap
-    : leverage ?? 1;
-  const requestedNotional =
-    sideSizeUSDT *
-    (SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE ? 1 : leverage ?? 1);
+    : SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE
+      ? 1
+      : leverage ?? 1;
+  const effectiveLeverageForMarginCap =
+    SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE || notionalLeverageByCategory
+      ? accountLeverageCap
+      : leverage ?? 1;
+  const requestedNotional = sideSizeUSDT * notionalLeverage;
   const forexConversion =
     assetCategory === "forex"
       ? await resolveCapitalForexBaseUnitUsdLive({
@@ -3192,7 +3222,14 @@ async function openCapitalPosition(params: {
   if (profitLevelNumber !== null) {
     body.profitLevel = profitLevelNumber;
   }
-  if (leverage && !SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE) body.leverage = leverage;
+  if (!SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE) {
+    // When not relying on the account's per-instrument leverage, send an explicit
+    // leverage: the category leverage on the swing path, else the legacy value.
+    const explicitLeverage = notionalLeverageByCategory
+      ? accountLeverageCap
+      : leverage;
+    if (explicitLeverage) body.leverage = explicitLeverage;
+  }
 
   const submittedAtMs = Date.now();
   let payload: any = null;
@@ -3564,9 +3601,18 @@ export async function executeCapitalDecision(
   decision: TradeDecision,
   dryRun = true,
   stopLossPrice: number | null = null,
+  // Swing path: sideSizeUSDT is margin and the position opens leveraged by the
+  // asset class (notional = margin * category leverage), and decision.leverage is
+  // ignored. Off (default) preserves the legacy contract for other callers (e.g.
+  // the forex engine, which sizes notional and leverage itself).
+  notionalLeverageByCategory = false,
 ) {
   const clientOid = `cap-${crypto.randomUUID()}`;
-  const leverage = deriveLeverage(decision);
+  // On the swing path leverage is broker-defined per asset class, not chosen by
+  // the model; elsewhere fall back to the decision's own leverage.
+  const leverage = notionalLeverageByCategory
+    ? getCapitalCategoryLeverage(symbol)
+    : deriveLeverage(decision);
   const partialClosePct =
     normalizeClosePct((decision as any)?.exit_size_pct) ??
     normalizeClosePct((decision as any)?.close_size_pct) ??
@@ -3589,6 +3635,7 @@ export async function executeCapitalDecision(
       leverage,
       clientOid,
       stopLevel,
+      notionalLeverageByCategory,
     });
     if (!opened.accepted) {
       return {
@@ -3679,6 +3726,7 @@ export async function executeCapitalDecision(
       sideSizeUSDT,
       leverage,
       clientOid,
+      notionalLeverageByCategory,
     });
     if (!opened.accepted) {
       return {
