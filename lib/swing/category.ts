@@ -2,7 +2,7 @@ import forexUniverse from '../../data/forexUniverse.json';
 import type { AnalysisPlatform } from '../platform';
 
 const MAJOR_FX_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD']);
-const INDEX_HINTS = ['US500', 'SPX', 'NAS100', 'US100', 'DJ30', 'GER40', 'UK100', 'JP225', 'FR40', 'EU50', 'HK50'];
+const INDEX_HINTS = ['US500', 'SPX', 'NAS100', 'US100', 'DJ30', 'GER40', 'UK100', 'JP225', 'FR40', 'EU50', 'HK50', 'TLT'];
 const COMMODITY_HINTS = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'NGAS', 'NATGAS', 'NATURALGAS', 'OIL', 'COPPER'];
 const EQUITY_HINTS = ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'QQQ', 'SPY'];
 

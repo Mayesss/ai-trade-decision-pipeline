@@ -79,6 +79,7 @@ type EvaluationEntry = {
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
+  lastAiCallTs?: number | null;
   lastDecisionTs?: number | null;
   lastDecision?: {
     action?: string;
@@ -126,6 +127,7 @@ type DashboardSummaryRow = {
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
+  lastAiCallTs?: number | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -846,6 +848,9 @@ const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = "strategy_mode";
 const SCALP_ENTRY_SESSION_STORAGE_KEY = "scalp_entry_session_filter_v2";
+// Per-symbol "last acknowledged AI-call timestamp" — drives the unread badge on
+// symbol tabs. Purely client-side (no backend), so it's free.
+const SWING_SEEN_AI_CALL_STORAGE_KEY = "swing_seen_ai_call_v1";
 const SCALP_ENTRY_SESSION_FILTER_OPTIONS: Array<{
   id: ScalpEntrySessionFilterUi;
   label: string;
@@ -2503,6 +2508,10 @@ export default function Home() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [active, setActive] = useState(0);
   const [tabData, setTabData] = useState<Record<string, EvaluationEntry>>({});
+  // Per-symbol acknowledged AI-call timestamp (unread-badge state). A symbol shows
+  // an unread dot when its lastAiCallTs exceeds the acknowledged value; clicking the
+  // tab (or first sighting) acknowledges it. localStorage-backed, no backend.
+  const [seenAiCalls, setSeenAiCalls] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
@@ -2837,6 +2846,31 @@ export default function Home() {
           evaluation: nextEvaluation,
         },
       };
+    });
+  };
+
+  const persistSeenAiCalls = (next: Record<string, number>) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        SWING_SEEN_AI_CALL_STORAGE_KEY,
+        JSON.stringify(next),
+      );
+    } catch {
+      /* ignore quota/serialization errors */
+    }
+  };
+
+  // Acknowledge a symbol's latest AI call (clears its unread badge). Called on tab
+  // click and on first sighting (baseline), so only genuinely-new calls badge.
+  const markSymbolRead = (symbol: string) => {
+    const ts = tabData[symbol]?.lastAiCallTs;
+    if (typeof ts !== "number") return;
+    setSeenAiCalls((prev) => {
+      if (prev[symbol] === ts) return prev;
+      const next = { ...prev, [symbol]: ts };
+      persistSeenAiCalls(next);
+      return next;
     });
   };
 
@@ -3572,6 +3606,40 @@ export default function Home() {
       }
     })();
   }, []);
+
+  // Load acknowledged AI-call timestamps once on mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(SWING_SEEN_AI_CALL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") setSeenAiCalls(parsed);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Baseline first-sighting: a symbol we have no acknowledged ts for is marked as
+  // seen at its current lastAiCallTs, so pre-existing calls don't badge — only AI
+  // calls that arrive AFTER you've seen the dashboard do.
+  useEffect(() => {
+    setSeenAiCalls((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const sym of symbols) {
+        const ts = tabData[sym]?.lastAiCallTs;
+        if (typeof ts === "number" && !(sym in next)) {
+          next[sym] = ts;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      persistSeenAiCalls(next);
+      return next;
+    });
+  }, [tabData, symbols]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6882,7 +6950,7 @@ export default function Home() {
                     </span>
                   ) : null}
                   {strategyMode === "swing" && !error && symbols.length ? (
-                    <div className="ml-1 flex items-center gap-1">
+                    <div className="ml-1 flex flex-wrap items-center gap-1">
                       {symbols.map((sym, i) => {
                         const isActive = i === active;
                         const tab = tabData[sym];
@@ -6898,11 +6966,24 @@ export default function Home() {
                               ? "bg-rose-500"
                               : "bg-emerald-500"
                             : "bg-slate-400";
+                        const isRed =
+                          typeof pnl7dValue === "number" && pnl7dValue < 0;
+                        const seenTs = seenAiCalls[sym];
+                        // Unread when a real AI call arrived after the one we last
+                        // acknowledged, and the symbol isn't in the red.
+                        const hasUnread =
+                          typeof tab?.lastAiCallTs === "number" &&
+                          typeof seenTs === "number" &&
+                          tab.lastAiCallTs > seenTs &&
+                          !isRed;
                         return (
                           <button
                             key={sym}
-                            onClick={() => setActive(i)}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${
+                            onClick={() => {
+                              setActive(i);
+                              markSymbolRead(sym);
+                            }}
+                            className={`relative inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${
                               isActive
                                 ? "border-slate-400 bg-slate-100 text-slate-900"
                                 : "border-slate-200 text-slate-500 hover:text-slate-800"
@@ -6912,6 +6993,12 @@ export default function Home() {
                               className={`h-1.5 w-1.5 rounded-full ${toneClass}`}
                             />
                             {sym}
+                            {hasUnread ? (
+                              <span
+                                className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-sky-500 ring-2 ring-white"
+                                aria-label="new AI call"
+                              />
+                            ) : null}
                           </button>
                         );
                       })}

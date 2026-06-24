@@ -451,6 +451,7 @@ const COMMODITY_USD_HINTS = [
 ];
 const INDEX_CURRENCY_HINTS: Array<[string, string]> = [
   ['US500', 'USD'], ['US100', 'USD'], ['NAS100', 'USD'], ['SPX', 'USD'], ['US30', 'USD'], ['DJ30', 'USD'], ['US2000', 'USD'], ['RUSSELL', 'USD'],
+  ['TLT', 'USD'], // US Treasury ETF — rates driven by the USD macro calendar (FOMC/CPI/NFP)
   ['GER40', 'EUR'], ['GER30', 'EUR'], ['DAX', 'EUR'], ['FR40', 'EUR'], ['CAC', 'EUR'], ['EU50', 'EUR'], ['STOXX', 'EUR'], ['ESP35', 'EUR'], ['IT40', 'EUR'],
   ['UK100', 'GBP'], ['FTSE', 'GBP'],
   ['JP225', 'JPY'], ['NIKKEI', 'JPY'],
