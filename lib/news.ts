@@ -4,12 +4,12 @@ import { COINDESK_API_BASE, COINDESK_NEWS_LIST_PATH, MARKETAUX_API_BASE } from '
 import type { AnalysisPlatform, NewsSource } from './platform';
 
 // ------------------------------
-// KV cache (1h TTL)
+// KV cache (6h TTL)
 // ------------------------------
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
-const NEWS_CACHE_TTL_SECONDS = 60 * 60; // 1 hour
+const NEWS_CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours — swing holds 1–10 days; hourly news freshness is overkill and would blow news-API quotas at hourly cadence
 
 function ensureKvConfig() {
     return upstash_payasyougo_KV_REST_API_URL && upstash_payasyougo_KV_REST_API_TOKEN;

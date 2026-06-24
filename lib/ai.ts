@@ -188,14 +188,17 @@ export async function getLastEvaluation(symbol: string) {
 // Prompt Builder (with guardrails, regime, momentum & extension gates)
 // ------------------------------
 
-export async function buildPrompt(
+// Derivation half of the old buildPrompt: computes signal_strength + the decision
+// context (cheap), and returns an `assemble(news)` closure that builds the actual
+// STATE/MARKET prompt strings (the expensive JSON.stringify + template work).
+// Callers can read signal_strength and gate BEFORE assembling — so flat sub-MEDIUM
+// ticks never pay for prompt assembly or the news fetch. News is not needed here.
+export function computeSwingState(
     symbol: string,
     timeframe: string,
     bundle: any,
     analytics: any,
     position_status: string = 'none',
-    news_sentiment: string | null = null,
-    news_headlines: string[] = [],
     forex_event_context: ForexEventContextForPrompt | null = null,
     forex_session_context: ForexSessionLevelsContext | null = null,
     indicators: MultiTFIndicators,
@@ -263,10 +266,6 @@ export async function buildPrompt(
             };
         })
         .filter((p: any) => p !== null);
-
-    const normalizedNewsSentiment =
-        typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
-    const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
     const actionsToShow = recentActionsExists ? Math.min(recentActions.length, 5) : 5;
@@ -571,6 +570,15 @@ export async function buildPrompt(
         breakout_retest_dir_primary: breakoutRetestDir4h ?? null,
     });
 
+    // Assembly half: builds the STATE/MARKET JSON + system/user strings. This is the
+    // expensive part (two JSON.stringify + a large template), so it's deferred behind
+    // this closure and only run once we know the AI will be called. Captures the
+    // derivation scope above, so no state needs threading through. News enters here.
+    const assemble = (news_sentiment: string | null = null, news_headlines: string[] = []) => {
+    const normalizedNewsSentiment =
+        typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
+    const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
+
     const srLevel = (lvl: any) =>
         lvl
             ? {
@@ -795,6 +803,9 @@ Respond with strict JSON only:
 {"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100${leverageJsonField}}
 `;
 
+        return { system: sys, user };
+    };
+
     const context = {
         // Exposed so the caller can gate the AI call on the code-owned conviction
         // before spending it (flat + sub-MEDIUM → no AI call). Same value the
@@ -819,7 +830,56 @@ Respond with strict JSON only:
         forex_session_context,
     };
 
-    return { system: sys, user, context };
+    return { signalStrength, context, assemble };
+}
+
+// Backward-compatible wrapper: original buildPrompt behavior (derive + assemble in
+// one call). The hourly swing path uses computeSwingState directly so it can gate on
+// signal_strength before assembling/fetching news.
+export async function buildPrompt(
+    symbol: string,
+    timeframe: string,
+    bundle: any,
+    analytics: any,
+    position_status: string = 'none',
+    news_sentiment: string | null = null,
+    news_headlines: string[] = [],
+    forex_event_context: ForexEventContextForPrompt | null = null,
+    forex_session_context: ForexSessionLevelsContext | null = null,
+    indicators: MultiTFIndicators,
+    gates: any,
+    position_context: PositionContext | null = null,
+    momentumSignalsOverride?: MomentumSignals,
+    recentActions: { action: string; timestamp: number }[] = [],
+    realizedRoiPct?: number | null,
+    dryRun?: boolean,
+    spreadBpsOverride?: number,
+    decisionPolicy?: DecisionPolicy,
+    category?: string | null,
+    platform?: string | null,
+) {
+    const { context, assemble } = computeSwingState(
+        symbol,
+        timeframe,
+        bundle,
+        analytics,
+        position_status,
+        forex_event_context,
+        forex_session_context,
+        indicators,
+        gates,
+        position_context,
+        momentumSignalsOverride,
+        recentActions,
+        realizedRoiPct,
+        dryRun,
+        spreadBpsOverride,
+        decisionPolicy,
+        category,
+        platform,
+    );
+    const { system, user } = assemble(news_sentiment, news_headlines);
+    return { system, user, context };
 }
 
 export type PromptDecisionContext = {

@@ -10,7 +10,7 @@ import {
     fetchRealizedRoi as fetchBitgetRealizedRoi,
 } from '../../lib/analytics';
 import { calculateMultiTFIndicators as calculateBitgetMultiTFIndicators } from '../../lib/indicators';
-import { fetchNewsWithHeadlines } from '../../lib/news';
+import { fetchNewsWithHeadlines, type Sentiment } from '../../lib/news';
 import {
     calculateCapitalMultiTFIndicators,
     executeCapitalDecision,
@@ -29,7 +29,7 @@ import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
 import {
-    buildPrompt,
+    computeSwingState,
     callAI,
     computeMomentumSignals,
     postprocessDecision,
@@ -453,8 +453,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 1) Product & parallel baseline fetches (fast)
         const productType = platform === 'bitget' ? getTradeProductType() : null;
 
-        const [newsBundle, bundleLight, indicators] = await Promise.all([
-            fetchNewsWithHeadlines(symbol, { platform, source: newsSource }),
+        // News is the AI's ONLY consumer — defer fetching it until we know the AI
+        // will actually be called (past the signal-strength gate), so flat sub-MEDIUM
+        // ticks don't hit the news API. Assigned just before callAI below.
+        let newsBundle: { sentiment: Sentiment | null; headlines: string[] } | null = null;
+        const [bundleLight, indicators] = await Promise.all([
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
             calculateMultiTFIndicators(symbol, {
@@ -750,14 +753,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
-        const { system, user, context } = await buildPrompt(
+        // Derive signal_strength + context WITHOUT assembling the prompt or fetching
+        // news — both are deferred until we know the AI will be called (past the gate),
+        // so flat sub-MEDIUM ticks skip the expensive assembly entirely.
+        const swingState = computeSwingState(
             symbol, // e.g. "BTCUSDT"
             timeFrame, // e.g. "45m"
             bundle, // from fetchMarketBundle(...)
             analytics, // from computeAnalytics(bundle)
-            positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
-            newsBundle?.sentiment ?? null, // omit from prompt if unavailable
-            newsBundle?.headlines ?? [],
+            positionForPrompt, // "none" | JSON string like 'open long @ ...'
             forexEventContext,
             forexSessionContext,
             indicators, // from calculateMultiTFIndicators(symbol)
@@ -772,6 +776,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             category,
             platform,
         );
+        const { context } = swingState;
 
         // 6b) Signal-strength gate. When flat, only spend the AI call if the
         // code-owned signal_strength is at least the configured rank. LOW setups
@@ -824,6 +829,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 promptSkipped: true,
             });
         }
+
+        // Past the gate → the AI will be called, and news is its only consumer. Fetch
+        // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
+        newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource });
+        const { system, user } = swingState.assemble(newsBundle?.sentiment ?? null, newsBundle?.headlines ?? []);
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
         // Capital decides leverage by asset class, so it uses the leverage-free schema.
