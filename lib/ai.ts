@@ -796,6 +796,10 @@ Respond with strict JSON only:
 `;
 
     const context = {
+        // Exposed so the caller can gate the AI call on the code-owned conviction
+        // before spending it (flat + sub-MEDIUM → no AI call). Same value the
+        // model receives and postprocessDecision gates on.
+        signal_strength: signalStrength,
         micro_bias_calc: microBiasLabel,
         primary_bias: primaryBias,
         macro_bias: macroBias,
@@ -819,6 +823,9 @@ Respond with strict JSON only:
 }
 
 export type PromptDecisionContext = {
+    // Populated on the context returned by buildPrompt; absent on the input passed
+    // to computeSignalStrength (which produces it).
+    signal_strength?: 'LOW' | 'MEDIUM' | 'HIGH';
     micro_bias_calc: string;
     primary_bias: string;
     macro_bias: string;

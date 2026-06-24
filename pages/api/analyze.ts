@@ -51,6 +51,7 @@ import {
     MACRO_TIMEFRAME,
     MICRO_TIMEFRAME,
     PRIMARY_TIMEFRAME,
+    SWING_FLAT_MIN_SIGNAL_STRENGTH,
 } from '../../lib/constants';
 
 // ------------------------------------------------------------------
@@ -189,7 +190,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
         const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
-        const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, true);
+        // Default OFF: flat ticks now evaluate hourly and are cost-gated by the
+        // signal-strength check (below), not by 4H candle close. A caller can still
+        // opt back into the old 4H-close cadence by passing enforcePrimaryCloseGate=true.
+        const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, false);
         const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const emitGateDebug = (stage: string, payload: Record<string, unknown>) => {
@@ -768,6 +772,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             category,
             platform,
         );
+
+        // 6b) Signal-strength gate. When flat, only spend the AI call if the
+        // code-owned signal_strength is at least the configured rank. LOW setups
+        // can't open a quality position anyway, so we skip the (expensive) call and
+        // HOLD. Entries are still evaluated every tick (data is collected hourly);
+        // the AI just isn't paid for until a setup is actionable. In-position ticks
+        // always proceed — exits/trims can be needed at any strength.
+        const STRENGTH_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2 } as const;
+        const flatSignalStrength = (String(context.signal_strength || 'LOW').toUpperCase() as
+            | 'LOW'
+            | 'MEDIUM'
+            | 'HIGH');
+        if (!positionOpen && STRENGTH_RANK[flatSignalStrength] < STRENGTH_RANK[SWING_FLAT_MIN_SIGNAL_STRENGTH]) {
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: flatSignalStrength,
+                summary: 'below_min_signal_strength',
+                reason: `flat_skip_signal_strength_${flatSignalStrength}_below_${SWING_FLAT_MIN_SIGNAL_STRENGTH}`,
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'below_min_signal_strength' };
+            await persistPreAiSkip({
+                stage: 'signal_strength_gate',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: { price: effectivePrice, signalStrength: flatSignalStrength, momentumSignals },
+            });
+            emitGateDebug('signal_strength_gate', {
+                gate: 'MIN_SIGNAL_STRENGTH',
+                signalStrength: flatSignalStrength,
+                threshold: SWING_FLAT_MIN_SIGNAL_STRENGTH,
+                positionOpen,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes,
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                usedTape,
+                promptSkipped: true,
+            });
+        }
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
         // Capital decides leverage by asset class, so it uses the leverage-free schema.
