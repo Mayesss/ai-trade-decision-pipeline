@@ -834,6 +834,60 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // 6c) Micro-entry gate. When flat with micro_entry_ok=false, postprocessDecision
+        // coerces any BUY/SELL to HOLD unless the entry exception is met. If that
+        // exception provably can't hold for this setup, the AI call could only ever
+        // return HOLD — so skip it (a wasted call + news fetch). This mirrors the
+        // exception in postprocessDecision exactly; in-position ticks are unaffected.
+        const microEntryExceptionPossible =
+            (flatSignalStrength === 'HIGH' && context.breakout_retest_ok_primary) ||
+            (decisionPolicy !== 'strict' &&
+                flatSignalStrength !== 'LOW' &&
+                (context.breakout_retest_ok_primary || context.aligned_driver_count >= 4));
+        if (!positionOpen && !context.micro_entry_ok && !microEntryExceptionPossible) {
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: flatSignalStrength,
+                summary: 'micro_entry_blocked',
+                reason: `flat_skip_micro_entry_ok_false_${flatSignalStrength}_${decisionPolicy}`,
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'micro_entry_blocked' };
+            await persistPreAiSkip({
+                stage: 'micro_entry_gate',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: { price: effectivePrice, signalStrength: flatSignalStrength, momentumSignals },
+            });
+            emitGateDebug('micro_entry_gate', {
+                gate: 'MICRO_ENTRY_OK',
+                signalStrength: flatSignalStrength,
+                microEntryOk: context.micro_entry_ok,
+                breakoutRetestOkPrimary: context.breakout_retest_ok_primary,
+                alignedDriverCount: context.aligned_driver_count,
+                decisionPolicy,
+                positionOpen,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes,
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                usedTape,
+                promptSkipped: true,
+            });
+        }
+
         // Past the gate → the AI will be called, and news is its only consumer. Fetch
         // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
         newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource });
