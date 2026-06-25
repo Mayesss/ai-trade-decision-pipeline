@@ -10,6 +10,9 @@ import type { AnalysisPlatform, NewsSource } from './platform';
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 const NEWS_CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours — swing holds 1–10 days; hourly news freshness is overkill and would blow news-API quotas at hourly cadence
+const MARKETAUX_COMMODITY_SEARCH_LOOKBACK_DAYS = 7;
+
+type NewsFetchOptions = { source?: NewsSource; platform?: AnalysisPlatform; category?: string | null };
 
 function ensureKvConfig() {
     return upstash_payasyougo_KV_REST_API_URL && upstash_payasyougo_KV_REST_API_TOKEN;
@@ -34,8 +37,9 @@ async function kvSetEx(key: string, ttlSeconds: number, value: string) {
     });
 }
 
-function newsCacheKey(base: string, source: NewsSource) {
-    return `news:${source}:${base.toUpperCase()}`;
+function newsCacheKey(base: string, source: NewsSource, variant?: string | null) {
+    const suffix = variant ? `:${variant}` : '';
+    return `news:${source}:${base.toUpperCase()}${suffix}`;
 }
 
 function resolveSource(source?: NewsSource, platform?: AnalysisPlatform): NewsSource {
@@ -102,10 +106,49 @@ const MARKETAUX_SYMBOL_ALIASES: Record<string, string> = {
     COFFEEARABICA: 'KC',
 };
 
+const MARKETAUX_COMMODITY_SEARCH_TERMS: Record<string, string> = {
+    GOLD: 'gold',
+    XAU: 'gold',
+    SILVER: 'silver',
+    XAG: 'silver',
+    OIL: 'crude oil',
+    OIL_CRUDE: 'crude oil',
+    USOIL: 'crude oil',
+    WTI: 'wti crude oil',
+    BRENT: 'brent crude oil',
+    NATURALGAS: 'natural gas',
+    NATGAS: 'natural gas',
+    NGAS: 'natural gas',
+    COPPER: 'copper',
+    PLATINUM: 'platinum',
+    PALLADIUM: 'palladium',
+};
+
 function resolveMarketauxQuerySymbols(base: string): string {
     const normalized = base.toUpperCase();
     const alias = MARKETAUX_SYMBOL_ALIASES[normalized];
     return alias && alias !== normalized ? `${alias},${normalized}` : normalized;
+}
+
+function normalizeMarketauxSearchTerm(base: string): string {
+    return String(base || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ');
+}
+
+export function resolveMarketauxCommoditySearchTerm(base: string): string {
+    const normalized = String(base || '').trim().toUpperCase();
+    return MARKETAUX_COMMODITY_SEARCH_TERMS[normalized] || normalizeMarketauxSearchTerm(normalized);
+}
+
+function isCommodityCategory(category?: string | null): boolean {
+    return String(category || '').trim().toLowerCase() === 'commodity';
+}
+
+function daysAgoDate(days: number): string {
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 /** Extracts the base asset ticker (e.g., BTC from BTCUSDT or ETH-PERP). */
@@ -213,10 +256,17 @@ async function fetchCoinDeskNews(base: string): Promise<{ sentiment: Sentiment |
     return { sentiment, headlines };
 }
 
-async function fetchMarketauxNews(base: string): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
-    const querySymbols = resolveMarketauxQuerySymbols(base);
+async function fetchMarketauxNews(base: string, opts?: { category?: string | null }): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
+    const commoditySearch = isCommodityCategory(opts?.category);
     const payload = await marketauxFetch('/news/all', {
-        symbols: querySymbols,
+        ...(commoditySearch
+            ? {
+                  search: resolveMarketauxCommoditySearchTerm(base),
+                  published_after: daysAgoDate(MARKETAUX_COMMODITY_SEARCH_LOOKBACK_DAYS),
+              }
+            : {
+                  symbols: resolveMarketauxQuerySymbols(base),
+              }),
         language: 'en',
         limit: 25,
         filter_entities: 'true',
@@ -247,7 +297,7 @@ async function fetchMarketauxNews(base: string): Promise<{ sentiment: Sentiment 
 
 export async function fetchNewsSentiment(
     symbolOrBase: string,
-    opts?: { source?: NewsSource; platform?: AnalysisPlatform },
+    opts?: NewsFetchOptions,
 ): Promise<Sentiment | null> {
     const { sentiment } = await fetchNewsWithHeadlines(symbolOrBase, opts);
     return sentiment;
@@ -255,11 +305,12 @@ export async function fetchNewsSentiment(
 
 export async function fetchNewsWithHeadlines(
     symbolOrBase: string,
-    opts?: { source?: NewsSource; platform?: AnalysisPlatform },
+    opts?: NewsFetchOptions,
 ): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
     const base = baseFromSymbol(symbolOrBase);
     const source = resolveSource(opts?.source, opts?.platform);
-    const cacheKey = newsCacheKey(base, source);
+    const cacheVariant = source === 'marketaux' && isCommodityCategory(opts?.category) ? 'commodity_search' : null;
+    const cacheKey = newsCacheKey(base, source, cacheVariant);
 
     try {
         const cached = await kvGet(cacheKey);
@@ -279,7 +330,7 @@ export async function fetchNewsWithHeadlines(
 
     try {
         const result =
-            source === 'marketaux' ? await fetchMarketauxNews(base) : await fetchCoinDeskNews(base);
+            source === 'marketaux' ? await fetchMarketauxNews(base, { category: opts?.category }) : await fetchCoinDeskNews(base);
         try {
             await kvSetEx(
                 cacheKey,

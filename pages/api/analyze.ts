@@ -890,7 +890,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // Past the gate → the AI will be called, and news is its only consumer. Fetch
         // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
-        newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource });
+        newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category });
         const { system, user } = swingState.assemble(newsBundle?.sentiment ?? null, newsBundle?.headlines ?? []);
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
