@@ -33,9 +33,10 @@ type SummaryEntry = {
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
-  // Timestamp (ms) of the most recent REAL AI call (excludes calm-market /
-  // signal-strength pre-AI skips). Drives the dashboard "unread" badge.
-  lastAiCallTs?: number | null;
+  // Whether the most recent decision was a real AI call (not a calm-market /
+  // signal-strength pre-AI skip). Crons run hourly, so this == "the AI decided
+  // this symbol in the last hour". Drives the symbol-tab status dot.
+  lastWasAiCall?: boolean;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -134,20 +135,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let avgLossPct: number | null | undefined = null;
       let lastNewsSource: string | null | undefined = config.newsSource;
       let forexEventContext: any | null = null;
-      let lastAiCallTs: number | null = null;
+      let lastWasAiCall = false;
 
       try {
         const history = await loadDecisionHistory(symbol, 120, platform);
         const latest = history[0];
-        // Most recent REAL AI call (history is newest-first). Excludes pre-AI skips
-        // (calm-market / below-min-signal-strength) so the badge only fires on an
-        // actual evaluation.
-        const lastAiCall = history.find(
-          (h) =>
-            (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
-            !(h.aiDecision as any)?.promptSkipped,
-        );
-        lastAiCallTs = lastAiCall ? lastAiCall.timestamp : null;
+        // Was the most recent decision (history is newest-first) a real AI call,
+        // or a calm-market / below-min-signal-strength pre-AI skip?
+        lastWasAiCall = latest
+          ? (latest.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
+            !(latest.aiDecision as any)?.promptSkipped
+          : false;
         if (latest) {
           category =
             typeof latest.category === 'string'
@@ -325,7 +323,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastPositionPnl,
         lastPositionDirection,
         lastPositionLeverage,
-        lastAiCallTs,
+        lastWasAiCall,
         winRate,
         avgWinPct,
         avgLossPct,
