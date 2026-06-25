@@ -4,6 +4,14 @@
 // captured at execution time (ground truth) over anything the broker reports.
 import { pickCapturedLeverage, type CapturedLeverage, type PositionWindow } from '../analytics';
 import { isSwingPgConfigured, upsertSwingPosition, insertSwingAccountSnapshot } from './pg';
+import { kvGetJson, kvSetJson } from '../kv';
+
+// Per-symbol high-water-mark of the latest closed-position exit timestamp we've
+// already mirrored to Postgres. Closed positions are immutable, so re-upserting
+// the full lookback on every dashboard recompute just burns Neon transfer — we
+// only write windows that closed AFTER this mark.
+const syncedExitHwmKey = (platform: string, symbol: string) =>
+  `swing:synced_exit_hwm:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
 
 function finiteNum(value: unknown): number | null {
     const n = Number(value);
@@ -47,21 +55,52 @@ export async function syncSwingClosedPositions(
     capturedLeverages?: CapturedLeverage[] | null,
 ): Promise<void> {
     if (!isSwingPgConfigured() || !windows?.length) return;
+
+    // Group by symbol so we can throttle each against its own high-water-mark.
+    // (Callers pass one symbol's windows today, but stay correct if that changes.)
+    const bySymbol = new Map<string, PositionWindow[]>();
     for (const w of windows) {
-        // only persist actually-closed positions here (stable id + final pnl)
-        if (!w.exitTimestamp) continue;
-        const captured = pickCapturedLeverage(w.entryTimestamp, capturedLeverages);
-        const entryLeverage = captured ?? (typeof w.leverage === 'number' ? w.leverage : null);
-        const leverageSource = captured != null ? 'captured' : entryLeverage != null ? 'derived' : null;
+        if (!w.exitTimestamp || !w.symbol) continue; // only stable, closed positions
+        const arr = bySymbol.get(w.symbol) ?? [];
+        arr.push(w);
+        bySymbol.set(w.symbol, arr);
+    }
+
+    for (const [symbol, symbolWindows] of bySymbol) {
+        const hwmKey = syncedExitHwmKey(platform, symbol);
+        let hwm = 0;
         try {
-            await upsertSwingPosition(platform, {
-                ...w,
-                status: 'closed',
-                entryLeverage,
-                leverageSource,
-            });
-        } catch (err) {
-            console.error(`Failed to persist swing position ${w.id}:`, err);
+            hwm = (await kvGetJson<number>(hwmKey)) ?? 0;
+        } catch {
+            /* treat as not-yet-synced */
+        }
+
+        let maxExit = hwm;
+        for (const w of symbolWindows) {
+            const exitTs = Number(w.exitTimestamp);
+            if (!(exitTs > hwm)) continue; // already mirrored — skip the redundant write
+            const captured = pickCapturedLeverage(w.entryTimestamp, capturedLeverages);
+            const entryLeverage = captured ?? (typeof w.leverage === 'number' ? w.leverage : null);
+            const leverageSource = captured != null ? 'captured' : entryLeverage != null ? 'derived' : null;
+            try {
+                await upsertSwingPosition(platform, {
+                    ...w,
+                    status: 'closed',
+                    entryLeverage,
+                    leverageSource,
+                });
+                if (exitTs > maxExit) maxExit = exitTs;
+            } catch (err) {
+                console.error(`Failed to persist swing position ${w.id}:`, err);
+            }
+        }
+
+        if (maxExit > hwm) {
+            try {
+                await kvSetJson(hwmKey, maxExit);
+            } catch {
+                // HWM is best-effort: if it fails we just re-sync next time (no data loss)
+            }
         }
     }
 }

@@ -45,6 +45,7 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
+import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import {
     CONTEXT_TIMEFRAME,
     DEFAULT_NOTIONAL_USDT,
@@ -273,6 +274,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     micro: microTimeFrame,
                 },
             });
+            // A new decision was recorded → bust the dashboard summary cache so the
+            // next load reflects it. Best-effort; never blocks the trading path.
+            await invalidateSwingSummaryCache();
         };
         const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && isAutomationCronRequest(req);
         if (isSwingCronAnalyzeRequest) {
@@ -982,6 +986,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 micro: microTimeFrame,
             },
         });
+        // New decision recorded → bust the dashboard summary cache so the next load
+        // reflects it. Best-effort; never blocks the trading path.
+        await invalidateSwingSummaryCache();
         emitGateDebug('decision_recorded', {
             action: decision.action,
             usedTape,

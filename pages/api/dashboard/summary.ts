@@ -13,6 +13,7 @@ import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
 import { buildForexEventContext, ensureForexEventsState } from '../../../lib/swing/forexEvents';
+import { swingSummaryCacheKey } from '../../../lib/swing/summaryCache';
 
 type SummaryEntry = {
   symbol: string;
@@ -52,15 +53,15 @@ const BTC_SYMBOL = 'BTCUSDT';
 const BTC_LAST_POSITION_LEVERAGE_OVERRIDE = 3;
 
 // Read-through KV cache. The summary is expensive to build (per-symbol Bitget /
-// Capital calls + decision history) and the dashboard polls it, so we collapse
-// bursts into one compute per freshness window. Open PnL is the most live field;
-// the default 30s window keeps it near-live while killing repeat egress/compute.
-// Bypass with ?fresh=1. Stored TTL == freshness window, so a present blob is
-// fresh by definition.
-const SUMMARY_CACHE_KEY_PREFIX = 'swing:dashboard:summary:v1';
+// Capital calls + decision history), and swing data only changes at the hourly
+// cron tick — so we cache it for a long window and let the analyze cron bust it
+// (invalidateSwingSummaryCache) whenever a new decision is recorded. Result: fresh
+// right after each tick, served from KV in between. The active symbol stays live
+// via the separate /live-price endpoint, so a long TTL here costs no live-ness.
+// Bypass with ?fresh=1.
 const SUMMARY_CACHE_TTL_SECONDS = (() => {
   const n = Number(process.env.SWING_DASHBOARD_SUMMARY_TTL_SECONDS);
-  return Number.isFinite(n) && n >= 0 ? n : 30;
+  return Number.isFinite(n) && n >= 0 ? n : 3600;
 })();
 
 type SummaryPayload = { symbols: string[]; data: SummaryEntry[]; range: SummaryRangeKey };
@@ -92,7 +93,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const freshParam = Array.isArray(req.query.fresh) ? req.query.fresh[0] : req.query.fresh;
   const bypassCache = freshParam === '1' || freshParam === 'true';
-  const cacheKey = `${SUMMARY_CACHE_KEY_PREFIX}:${range}`;
+  const cacheKey = swingSummaryCacheKey(range);
 
   if (!bypassCache && SUMMARY_CACHE_TTL_SECONDS > 0) {
     try {

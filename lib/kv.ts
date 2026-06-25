@@ -130,6 +130,10 @@ async function kvSet(key: string, value: string) {
     return kvCommand('SET', key, value);
 }
 
+export async function kvDel(key: string) {
+    return kvCommand('DEL', key);
+}
+
 async function kvSetEx(key: string, ttlSeconds: number, value: string) {
     return kvCommand('SETEX', key, ttlSeconds, value);
 }
