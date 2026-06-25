@@ -10,7 +10,7 @@ import type { AnalysisPlatform, NewsSource } from './platform';
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 const NEWS_CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours — swing holds 1–10 days; hourly news freshness is overkill and would blow news-API quotas at hourly cadence
-const MARKETAUX_COMMODITY_SEARCH_LOOKBACK_DAYS = 7;
+const MARKETAUX_SEARCH_LOOKBACK_DAYS = 7;
 
 type NewsFetchOptions = { source?: NewsSource; platform?: AnalysisPlatform; category?: string | null };
 
@@ -124,6 +124,20 @@ const MARKETAUX_COMMODITY_SEARCH_TERMS: Record<string, string> = {
     PALLADIUM: 'palladium',
 };
 
+const MARKETAUX_INDEX_SEARCH_TERMS: Record<string, string> = {
+    US100: 'Nasdaq 100',
+    NAS100: 'Nasdaq 100',
+    US500: 'S&P 500',
+    SPX: 'S&P 500',
+    DJ30: 'Dow Jones Industrial Average',
+    HK50: 'Hang Seng Index',
+    GER40: 'DAX 40',
+    UK100: 'FTSE 100',
+    JP225: 'Nikkei 225',
+    FR40: 'CAC 40',
+    EU50: 'Euro Stoxx 50',
+};
+
 function resolveMarketauxQuerySymbols(base: string): string {
     const normalized = base.toUpperCase();
     const alias = MARKETAUX_SYMBOL_ALIASES[normalized];
@@ -143,8 +157,23 @@ export function resolveMarketauxCommoditySearchTerm(base: string): string {
     return MARKETAUX_COMMODITY_SEARCH_TERMS[normalized] || normalizeMarketauxSearchTerm(normalized);
 }
 
+export function resolveMarketauxIndexSearchTerm(base: string): string | null {
+    const normalized = String(base || '').trim().toUpperCase();
+    return MARKETAUX_INDEX_SEARCH_TERMS[normalized] || null;
+}
+
 function isCommodityCategory(category?: string | null): boolean {
     return String(category || '').trim().toLowerCase() === 'commodity';
+}
+
+function isIndexCategory(category?: string | null): boolean {
+    return String(category || '').trim().toLowerCase() === 'index';
+}
+
+function resolveMarketauxSearchTerm(base: string, category?: string | null): string | null {
+    if (isCommodityCategory(category)) return resolveMarketauxCommoditySearchTerm(base);
+    if (isIndexCategory(category)) return resolveMarketauxIndexSearchTerm(base);
+    return null;
 }
 
 function daysAgoDate(days: number): string {
@@ -257,12 +286,12 @@ async function fetchCoinDeskNews(base: string): Promise<{ sentiment: Sentiment |
 }
 
 async function fetchMarketauxNews(base: string, opts?: { category?: string | null }): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
-    const commoditySearch = isCommodityCategory(opts?.category);
+    const searchTerm = resolveMarketauxSearchTerm(base, opts?.category);
     const payload = await marketauxFetch('/news/all', {
-        ...(commoditySearch
+        ...(searchTerm
             ? {
-                  search: resolveMarketauxCommoditySearchTerm(base),
-                  published_after: daysAgoDate(MARKETAUX_COMMODITY_SEARCH_LOOKBACK_DAYS),
+                  search: searchTerm,
+                  published_after: daysAgoDate(MARKETAUX_SEARCH_LOOKBACK_DAYS),
               }
             : {
                   symbols: resolveMarketauxQuerySymbols(base),
@@ -309,7 +338,7 @@ export async function fetchNewsWithHeadlines(
 ): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
     const base = baseFromSymbol(symbolOrBase);
     const source = resolveSource(opts?.source, opts?.platform);
-    const cacheVariant = source === 'marketaux' && isCommodityCategory(opts?.category) ? 'commodity_search' : null;
+    const cacheVariant = source === 'marketaux' && resolveMarketauxSearchTerm(base, opts?.category) ? 'search' : null;
     const cacheKey = newsCacheKey(base, source, cacheVariant);
 
     try {
