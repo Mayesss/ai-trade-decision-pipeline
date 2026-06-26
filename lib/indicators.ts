@@ -484,6 +484,100 @@ export function slopePct(series: number[], lookback: number): number {
 // Multi-Timeframe Indicators (FUTURES only)
 // ------------------------------
 
+// Default summary for an empty/too-short timeframe (mirrors the prior Capital
+// formatSummary fallback so behaviour is unchanged on missing data).
+const EMPTY_TF_SUMMARY =
+    'VWAP=0.00, RSI=50.0, trend=down, ATR=0.00, EMA9=0.00, EMA21=0.00, EMA20=0.00, EMA50=0.00, SMA200=0.00, slopeEMA21_10=0.000%/bar';
+
+// Compute the full per-timeframe indicator summary + metrics + S/R for a candle
+// array. Shared by both the Bitget and Capital indicator pipelines so they
+// produce identical inputs (structure, valueState, atrPctile, rvol, S/R) — this
+// is the single source of truth for timeframe metrics. Candles are [ts,o,h,l,c,v].
+export function buildTimeframeMetrics(
+    candles: any[],
+    tf: string,
+): { summary: string; atr: number; candleCount: number; sr?: SRLevels; metrics: TimeframeMetrics } {
+    if (!Array.isArray(candles) || candles.length < 2) {
+        return {
+            summary: EMPTY_TF_SUMMARY,
+            atr: 0,
+            candleCount: Array.isArray(candles) ? candles.length : 0,
+            sr: undefined,
+            metrics: {
+                atr: 0,
+                structure: 'range',
+                bos: false,
+                bosDir: null,
+                structureBreakState: 'inside',
+                choch: false,
+                breakoutRetestOk: false,
+                breakoutRetestDir: null,
+            },
+        };
+    }
+    const closes = candles.map((c) => parseFloat(c[4]));
+    const vwap = computeVWAP(candles);
+    const rsi = computeRSI_Wilder(closes, 14);
+
+    const ema9 = computeEMA(closes, 9);
+    const ema21 = computeEMA(closes, 21);
+    const ema20 = computeEMA(closes, 20);
+    const ema50 = computeEMA(closes, 50);
+    const sma200 = computeSMA(closes, 200);
+
+    const e9 = ema9.at(-1)! ?? closes.at(-1)!;
+    const e21 = ema21.at(-1)! ?? closes.at(-1)!;
+    const e20 = ema20.at(-1)! ?? closes.at(-1)!;
+    const e50 = ema50.at(-1)! ?? closes.at(-1)!;
+    const s200 = sma200.at(-1)! ?? closes.at(-1)!;
+
+    const trend = e20 > e50 ? 'up' : 'down';
+
+    const atr = computeATR(candles, 14);
+    const atrSeries = computeAtrSeries(candles, 14);
+    const atrPctile = percentileRank(atrSeries, atr);
+    const rvol = computeRvol(candles, 20);
+    const structureMetrics = computeStructureMetrics(candles);
+    const valueArea = computeValueArea(candles, 24, 0.7);
+    const lastClose = Number(candles.at(-1)?.[4]);
+    const valueState: ValueState | undefined =
+        valueArea && Number.isFinite(lastClose)
+            ? lastClose > valueArea.vah
+                ? 'above_vah'
+                : lastClose < valueArea.val
+                ? 'below_val'
+                : 'inside_value'
+            : undefined;
+
+    const momSlope = slopePct(ema21, 10); // % per bar
+
+    return {
+        summary: `VWAP=${vwap.toFixed(2)}, RSI=${rsi.toFixed(1)}, trend=${trend}, ATR=${atr.toFixed(
+            2,
+        )}, EMA9=${e9.toFixed(2)}, EMA21=${e21.toFixed(2)}, EMA20=${e20.toFixed(2)}, EMA50=${e50.toFixed(
+            2,
+        )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
+        atr,
+        candleCount: candles.length,
+        sr: computeSRLevels(candles, atr, tf),
+        metrics: {
+            atr,
+            atrPctile,
+            rvol,
+            structure: structureMetrics.structure,
+            bos: structureMetrics.bos,
+            bosDir: structureMetrics.bosDir,
+            structureBreakState: structureMetrics.structureBreakState,
+            choch: structureMetrics.choch,
+            breakoutRetestOk: structureMetrics.breakoutRetestOk,
+            breakoutRetestDir: structureMetrics.breakoutRetestDir,
+            valueState,
+            vah: valueArea?.vah,
+            val: valueArea?.val,
+        },
+    };
+}
+
 export async function calculateMultiTFIndicators(
     symbol: string,
     opts: IndicatorTimeframeOptions = {},
@@ -523,70 +617,7 @@ export async function calculateMultiTFIndicators(
         { summary: string; atr: number; candleCount: number; sr?: SRLevels; metrics?: TimeframeMetrics }
     >();
 
-    const build = (candles: any[], tf: string) => {
-        const closes = candles.map((c) => parseFloat(c[4]));
-        const vwap = computeVWAP(candles);
-        const rsi = computeRSI_Wilder(closes, 14);
-
-        const ema9 = computeEMA(closes, 9);
-        const ema21 = computeEMA(closes, 21);
-        const ema20 = computeEMA(closes, 20);
-        const ema50 = computeEMA(closes, 50);
-        const sma200 = computeSMA(closes, 200);
-
-        const e9 = ema9.at(-1)! ?? closes.at(-1)!;
-        const e21 = ema21.at(-1)! ?? closes.at(-1)!;
-        const e20 = ema20.at(-1)! ?? closes.at(-1)!;
-        const e50 = ema50.at(-1)! ?? closes.at(-1)!;
-        const s200 = sma200.at(-1)! ?? closes.at(-1)!;
-
-        const trend = e20 > e50 ? 'up' : 'down';
-
-        const atr = computeATR(candles, 14);
-        const atrSeries = computeAtrSeries(candles, 14);
-        const atrPctile = percentileRank(atrSeries, atr);
-        const rvol = computeRvol(candles, 20);
-        const structureMetrics = computeStructureMetrics(candles);
-        const valueArea = computeValueArea(candles, 24, 0.7);
-        const lastClose = Number(candles.at(-1)?.[4]);
-        const valueState: ValueState | undefined =
-            valueArea && Number.isFinite(lastClose)
-                ? lastClose > valueArea.vah
-                    ? 'above_vah'
-                    : lastClose < valueArea.val
-                    ? 'below_val'
-                    : 'inside_value'
-                : undefined;
-
-        // momentum slope gate (10-bar slope of EMA21)
-        const momSlope = slopePct(ema21, 10); // % per bar
-
-        return {
-            summary: `VWAP=${vwap.toFixed(2)}, RSI=${rsi.toFixed(1)}, trend=${trend}, ATR=${atr.toFixed(
-                2,
-            )}, EMA9=${e9.toFixed(2)}, EMA21=${e21.toFixed(2)}, EMA20=${e20.toFixed(2)}, EMA50=${e50.toFixed(
-                2,
-            )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
-            atr,
-            candleCount: candles.length,
-            sr: computeSRLevels(candles, atr, tf),
-            metrics: {
-                atr,
-                atrPctile,
-                rvol,
-                structure: structureMetrics.structure,
-                bos: structureMetrics.bos,
-                bosDir: structureMetrics.bosDir,
-                structureBreakState: structureMetrics.structureBreakState,
-                choch: structureMetrics.choch,
-                breakoutRetestOk: structureMetrics.breakoutRetestOk,
-                breakoutRetestDir: structureMetrics.breakoutRetestDir,
-                valueState,
-                vah: valueArea?.vah,
-                val: valueArea?.val,
-            },
-        };
-    };
+    const build = buildTimeframeMetrics;
 
     await Promise.all(
         entries.map(async ([tf, promise]) => {

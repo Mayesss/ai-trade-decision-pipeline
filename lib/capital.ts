@@ -5,14 +5,7 @@ import type {
   MultiTFIndicators,
   IndicatorTimeframeOptions,
 } from "./indicators";
-import {
-  computeATR,
-  computeEMA,
-  computeRSI_Wilder,
-  computeSMA,
-  computeVWAP,
-  slopePct,
-} from "./indicators";
+import { buildTimeframeMetrics } from "./indicators";
 import {
   CONTEXT_TIMEFRAME,
   MACRO_TIMEFRAME,
@@ -709,41 +702,6 @@ function parseCapitalCandles(payload: any): any[] {
     .sort((a, b) => Number(a[0]) - Number(b[0]));
 
   return candles;
-}
-
-function formatSummary(candles: any[]): string {
-  if (!Array.isArray(candles) || candles.length < 5) {
-    return "VWAP=0.00, RSI=50.0, trend=down, ATR=0.00, EMA9=0.00, EMA21=0.00, EMA20=0.00, EMA50=0.00, SMA200=0.00, slopeEMA21_10=0.000%/bar";
-  }
-  const closes = candles
-    .map((c) => Number(c?.[4]))
-    .filter((v) => Number.isFinite(v));
-  if (closes.length < 5) {
-    return "VWAP=0.00, RSI=50.0, trend=down, ATR=0.00, EMA9=0.00, EMA21=0.00, EMA20=0.00, EMA50=0.00, SMA200=0.00, slopeEMA21_10=0.000%/bar";
-  }
-
-  const vwap = computeVWAP(candles);
-  const rsi = computeRSI_Wilder(closes, 14);
-  const ema9 = computeEMA(closes, 9);
-  const ema21 = computeEMA(closes, 21);
-  const ema20 = computeEMA(closes, 20);
-  const ema50 = computeEMA(closes, 50);
-  const sma200 = computeSMA(closes, 200);
-  const atr = computeATR(candles, 14);
-
-  const e9 = ema9.at(-1) ?? closes.at(-1) ?? 0;
-  const e21 = ema21.at(-1) ?? closes.at(-1) ?? 0;
-  const e20 = ema20.at(-1) ?? closes.at(-1) ?? 0;
-  const e50 = ema50.at(-1) ?? closes.at(-1) ?? 0;
-  const s200 = sma200.at(-1) ?? closes.at(-1) ?? 0;
-  const trend = e20 >= e50 ? "up" : "down";
-  const momSlope = slopePct(ema21, 10);
-
-  return `VWAP=${vwap.toFixed(2)}, RSI=${rsi.toFixed(1)}, trend=${trend}, ATR=${atr.toFixed(2)}, EMA9=${e9.toFixed(
-    2,
-  )}, EMA21=${e21.toFixed(2)}, EMA20=${e20.toFixed(2)}, EMA50=${e50.toFixed(2)}, SMA200=${s200.toFixed(
-    2,
-  )}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`;
 }
 
 function buildSyntheticOrderbook(last: number) {
@@ -2978,44 +2936,6 @@ export async function fetchCapitalRealizedRoi(_symbol: string, _hours = 24) {
   };
 }
 
-function buildSimpleMetrics(candles: any[]) {
-  const closes = candles
-    .map((c) => Number(c?.[4]))
-    .filter((v) => Number.isFinite(v));
-  const atr = computeATR(candles, 14);
-  const last = closes.at(-1);
-  const prev = closes.at(-2);
-  const prev2 = closes.at(-3);
-  let structure: "bull" | "bear" | "range" = "range";
-  if (
-    Number.isFinite(last as number) &&
-    Number.isFinite(prev as number) &&
-    Number.isFinite(prev2 as number) &&
-    (last as number) > (prev as number) &&
-    (prev as number) > (prev2 as number)
-  ) {
-    structure = "bull";
-  } else if (
-    Number.isFinite(last as number) &&
-    Number.isFinite(prev as number) &&
-    Number.isFinite(prev2 as number) &&
-    (last as number) < (prev as number) &&
-    (prev as number) < (prev2 as number)
-  ) {
-    structure = "bear";
-  }
-  return {
-    atr,
-    structure,
-    bos: false,
-    bosDir: null as "up" | "down" | null,
-    structureBreakState: "inside" as "above" | "below" | "inside",
-    choch: false,
-    breakoutRetestOk: false,
-    breakoutRetestDir: null as "up" | "down" | null,
-  };
-}
-
 export async function calculateCapitalMultiTFIndicators(
   symbol: string,
   opts: IndicatorTimeframeOptions = {},
@@ -3040,19 +2960,28 @@ export async function calculateCapitalMultiTFIndicators(
   const primaryCandles = byTf.get(primaryTF) ?? [];
   const contextCandles = byTf.get(contextTF) ?? [];
 
+  // Full indicator parity with Bitget: the shared builder computes structure,
+  // valueState, atrPctile, rvol, real bos/breakout-retest and S/R levels on the
+  // same candle arrays. Previously this used a stub (buildSimpleMetrics + sr:{}),
+  // which left Capital assets without valueState/S-R and stuck at LOW strength.
+  const microBuilt = buildTimeframeMetrics(microCandles, microTF);
+  const macroBuilt = buildTimeframeMetrics(macroCandles, macroTF);
+  const primaryBuilt = buildTimeframeMetrics(primaryCandles, primaryTF);
+  const contextBuilt = buildTimeframeMetrics(contextCandles, contextTF);
+
   const out: MultiTFIndicators = {
-    micro: formatSummary(microCandles),
-    macro: formatSummary(macroCandles),
+    micro: microBuilt.summary,
+    macro: macroBuilt.summary,
     microTimeFrame: microTF,
     macroTimeFrame: macroTF,
     contextTimeFrame: contextTF,
     primary: {
       timeframe: primaryTF,
-      summary: formatSummary(primaryCandles),
+      summary: primaryBuilt.summary,
     },
     context: {
       timeframe: contextTF,
-      summary: formatSummary(contextCandles),
+      summary: contextBuilt.summary,
     },
     candleDepth: {
       [microTF]: microCandles.length,
@@ -3060,12 +2989,17 @@ export async function calculateCapitalMultiTFIndicators(
       [primaryTF]: primaryCandles.length,
       [contextTF]: contextCandles.length,
     },
-    sr: {},
+    sr: {
+      [microTF]: microBuilt.sr,
+      [macroTF]: macroBuilt.sr,
+      [primaryTF]: primaryBuilt.sr,
+      [contextTF]: contextBuilt.sr,
+    },
     metrics: {
-      [microTF]: buildSimpleMetrics(microCandles),
-      [macroTF]: buildSimpleMetrics(macroCandles),
-      [primaryTF]: buildSimpleMetrics(primaryCandles),
-      [contextTF]: buildSimpleMetrics(contextCandles),
+      [microTF]: microBuilt.metrics,
+      [macroTF]: macroBuilt.metrics,
+      [primaryTF]: primaryBuilt.metrics,
+      [contextTF]: contextBuilt.metrics,
     },
   };
   return out;
