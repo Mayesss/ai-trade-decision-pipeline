@@ -421,9 +421,6 @@ export function computeSwingState(
     const clampNumber = (value: number | null | undefined, digits = 3) =>
         Number.isFinite(value as number) ? Number((value as number).toFixed(digits)) : null;
     const trendBias = gates.regime_trend_up ? 1 : gates.regime_trend_down ? -1 : 0;
-    const oversoldMicro = typeof rsi_micro === 'number' && rsi_micro <= 35;
-    const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro >= 65;
-    const reversalOpportunity = oversoldMicro ? 'oversold' : overboughtMicro ? 'overbought' : null;
 
     const supportProximity = typeof htfSupportDist === 'number' ? Math.max(0, 1 - Math.min(htfSupportDist, 2) / 2) : 0;
     const resistanceProximity =
@@ -471,18 +468,6 @@ export function computeSwingState(
     const longAlignedDriverCount = countTrue(longDrivers);
     const shortAlignedDriverCount = countTrue(shortDrivers);
     const alignedDriverCount = Math.max(longAlignedDriverCount, shortAlignedDriverCount);
-    const favoredSide =
-        longAlignedDriverCount > shortAlignedDriverCount
-            ? 'long'
-            : shortAlignedDriverCount > longAlignedDriverCount
-              ? 'short'
-              : 'neutral';
-
-    const macroPenalty =
-        (momentumSignals.macroTrendDown && favoredSide === 'long') ||
-        (momentumSignals.macroTrendUp && favoredSide === 'short');
-    const mediumActionReady =
-        alignedDriverCount >= 4 && (momentumSignals.longMomentum || momentumSignals.shortMomentum) && !macroPenalty;
 
     const positionSide = position_context?.side;
     const priceVsBreakevenPctRaw =
@@ -497,20 +482,12 @@ export function computeSwingState(
         positionSide === 'long' ? gates.regime_trend_up : positionSide === 'short' ? gates.regime_trend_down : null;
     const macroOpposesPosition =
         positionSide === 'long' ? gates.regime_trend_down : positionSide === 'short' ? gates.regime_trend_up : null;
-    const closingAlert = Boolean(macroOpposesPosition && (priceVsBreakevenPct ?? 0) < -0.15);
-
-    const reverseConfidence =
-        alignedDriverCount >= 5 && macroOpposesPosition ? 'high' : alignedDriverCount >= 4 ? 'medium' : 'low';
-
     const closingGuidance = {
         macro_bias: trendBias,
         price_vs_breakeven_pct: priceVsBreakevenPct,
         hold_minutes: clampNumber(position_context?.hold_minutes ?? null, 1),
         macro_supports_position: macroSupportsPosition,
         macro_opposes_position: macroOpposesPosition,
-        closing_alert: closingAlert,
-        reversal_opportunity: reversalOpportunity,
-        reverse_confidence: reverseConfidence,
     };
     // Costs (educate the model)
     const taker_fee_rate_side = Number.isFinite(position_context?.taker_fee_rate as number)
@@ -536,9 +513,6 @@ export function computeSwingState(
     // On Capital, leverage is fixed by the broker per asset class — the model does
     // not pick it. Only crypto (Bitget) takes a model-chosen 1–5 leverage.
     const isCapital = String(platform || '').toLowerCase() === 'capital';
-    const leverageOwnershipNote = isCapital
-        ? 'Use it to set selectivity.'
-        : 'Use it to set selectivity and leverage.';
     const leverageGuidance = isCapital
         ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
         : `Leverage 1–5 by conviction AND risk: cut to 1–2 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
@@ -548,9 +522,9 @@ export function computeSwingState(
     // Capital: omit the leverage key entirely (no comma). Bitget: include it.
     const leverageJsonField = isCapital ? '' : ',"leverage":null|1|2|3|4|5';
 
-    // signal_strength is OWNED BY CODE (computeSignalStrength). We compute it once here
-    // and hand it to the model as a given input — the model must NOT recompute it, and
-    // postprocessDecision gates on this same value.
+    // signal_strength is OWNED BY CODE (computeSignalStrength). It is NOT shown to the
+    // model (we don't want it anchoring the model's analysis) — it drives only the
+    // pre-prompt budget gate and postprocessDecision's exception thresholds.
     const signalStrength = computeSignalStrength({
         micro_bias_calc: microBiasLabel,
         primary_bias: primaryBias,
@@ -593,8 +567,6 @@ export function computeSwingState(
     // ---- Single structured payload: one encoding (JSON), no duplicated keys ----
     // STATE = derived signals (what to reason over). MARKET = raw inputs (price/tape/news).
     const state = {
-        signal_strength: signalStrength, // code-owned; given, not for you to recompute
-        favored_side: favoredSide,
         biases: {
             micro: microBiasLabel,
             micro_source: microBiasSource,
@@ -638,8 +610,6 @@ export function computeSwingState(
             },
             slope_micro_pct_per_bar: clampNumber(slope21_micro, 4),
             slope_primary_pct_per_bar: clampNumber(slope21_primary, 4),
-            long: momentumSignals.longMomentum,
-            short: momentumSignals.shortMomentum,
             micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
         },
         extension_atr: {
@@ -652,23 +622,11 @@ export function computeSwingState(
             rvol: { primary: clampNumber(rvol4h, 2), macro: clampNumber(rvol1d, 2) },
             value_state_macro: valueState1d,
         },
-        drivers: {
-            aligned_count: alignedDriverCount,
-            long: longAlignedDriverCount,
-            short: shortAlignedDriverCount,
-            regime_alignment: clampNumber(regimeAlignment, 2),
-            medium_action_ready: mediumActionReady,
-        },
         location: {
-            into_context_support: intoContextSupport,
-            into_context_resistance: intoContextResistance,
             context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
             context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
             context_breakout_confirmed: htfBreakoutConfirmed,
             context_breakdown_confirmed: htfBreakdownConfirmed,
-            near_primary_support: nearPrimarySupport,
-            near_primary_resistance: nearPrimaryResistance,
-            confluence_score: clampNumber(locationConfluenceScore, 3),
             chop_risk: chopRisk,
         },
         levels: {
@@ -739,12 +697,12 @@ export function computeSwingState(
 
     const trendGuardException = strictPolicy
         ? 'no exceptions'
-        : 'unless signal_strength=HIGH and the matching primary breakout/breakdown is confirmed';
+        : 'rare exception: a confirmed primary breakout/breakdown in the new direction';
     const microEntryException = strictPolicy
-        ? 'unless signal_strength=HIGH with a confirmed primary breakout/retest'
-        : 'unless signal_strength=HIGH with a confirmed primary breakout/retest, or (balanced policy) strength≥MEDIUM with drivers.aligned_count≥4';
+        ? 'unless a confirmed primary breakout-retest'
+        : 'unless a confirmed primary breakout-retest, or strong multi-factor structure+location alignment';
     const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
-    const antiFlipStrength = strictPolicy ? 'HIGH' : 'at least MEDIUM';
+    const antiFlipStrength = strictPolicy ? 'strong conviction' : 'at least moderate conviction';
 
     const sys = `
 You are an expert swing-trading market-structure analyst. Decide one action and size it.
@@ -760,20 +718,20 @@ INPUTS
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 
 DECISION OWNERSHIP
-- state.signal_strength (LOW/MEDIUM/HIGH) is computed by the system and is GROUND TRUTH. Do NOT recompute, rescale, or argue with it. ${leverageOwnershipNote}
+- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Size leverage to that conviction.'}
 - The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:
   1. Allowed actions: flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE only.
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
   3. Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).
-  4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless strength is ${antiFlipStrength}.
+  4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.
   5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
-- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (location.near_primary_support/resistance, or context distance < 0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries unless strength=HIGH with clean level logic.
+- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
-- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip with state.closing_guardrails.reverse_confidence=high.
+- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.
 - ${leverageGuidance}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -807,9 +765,9 @@ Respond with strict JSON only:
     };
 
     const context = {
-        // Exposed so the caller can gate the AI call on the code-owned conviction
-        // before spending it (flat + sub-MEDIUM → no AI call). Same value the
-        // model receives and postprocessDecision gates on.
+        // Code-owned conviction. NOT shown to the model (kept out of the prompt so it
+        // doesn't anchor the model's analysis) — used only to gate the AI call before
+        // spending it (flat + sub-MEDIUM → no call) and by postprocessDecision.
         signal_strength: signalStrength,
         micro_bias_calc: microBiasLabel,
         primary_bias: primaryBias,

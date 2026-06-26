@@ -754,6 +754,56 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // 6a) Event-proximity gate (HARD risk rule). When flat and inside a
+        // high/medium-impact event blackout window (pre/post-event minutes +
+        // blocked impacts are env-configured in lib/swing/forexEvents), block NEW
+        // entries — opening a fresh position into CPI/NFP/FOMC is exactly the risk
+        // this prevents, and we don't leave it to model discretion. Exits are
+        // unaffected: in-position ticks fall through and the AI still runs. Skipping
+        // here also avoids the prompt assembly, news fetch and AI call.
+        if (!positionOpen && forexEventContext?.status === 'active') {
+            const reasonCodes = Array.isArray(forexEventContext.reasonCodes) ? forexEventContext.reasonCodes : [];
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                summary: 'event_blackout',
+                reason: `flat_skip_event_blackout_${reasonCodes.join('|') || 'active'}`,
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'event_blackout' };
+            await persistPreAiSkip({
+                stage: 'event_blackout_gate',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: { price: effectivePrice, forexEventContext, momentumSignals },
+            });
+            emitGateDebug('event_blackout_gate', {
+                gate: 'FOREX_EVENT_BLACKOUT',
+                status: forexEventContext.status,
+                reasonCodes,
+                activeEvents: forexEventContext.activeEvents,
+                positionOpen,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes,
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                forexEventContext,
+                usedTape,
+                promptSkipped: true,
+            });
+        }
+
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
@@ -782,7 +832,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
         const { context } = swingState;
 
-        // 6b) Signal-strength gate. When flat, only spend the AI call if the
+        // 6b) Signal-strength gate (pure cost control — signal_strength is code-only,
+        // not shown to the model). When flat, only spend the AI call if the
         // code-owned signal_strength is at least the configured rank. LOW setups
         // can't open a quality position anyway, so we skip the (expensive) call and
         // HOLD. Entries are still evaluated every tick (data is collected hourly);
