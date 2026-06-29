@@ -448,19 +448,25 @@ export function computeSwingState(
     const valueOkLong = valueState1d === 'n/a' ? false : valueState1d !== 'below_val';
     const valueOkShort = valueState1d === 'n/a' ? false : valueState1d !== 'above_vah';
 
+    // Directional drivers (macro, context) require ACTUAL alignment with the side,
+    // not mere non-opposition. The old `!== opposite` form was near-tautological for
+    // the favored side (a NEUTRAL bias counted for both sides), inflating
+    // aligned_driver_count so MEDIUM became the floor. `=== direction` makes the
+    // count reflect genuine multi-timeframe confluence. The at-level exception
+    // (intoContextSupport/Resistance) on the context driver is retained.
     const longDrivers = [
         structure4hState === 'bull' || (bos4h && bosDir4h === 'up'),
         (breakoutRetestOk4h && breakoutRetestDir4h === 'up') || nearPrimarySupport,
-        macroBias !== 'DOWN',
-        contextBias !== 'DOWN' || intoContextSupport,
+        macroBias === 'UP',
+        contextBias === 'UP' || intoContextSupport,
         valueOkLong,
     ];
 
     const shortDrivers = [
         structure4hState === 'bear' || (bos4h && bosDir4h === 'down'),
         (breakoutRetestOk4h && breakoutRetestDir4h === 'down') || nearPrimaryResistance,
-        macroBias !== 'UP',
-        contextBias !== 'UP' || intoContextResistance,
+        macroBias === 'DOWN',
+        contextBias === 'DOWN' || intoContextResistance,
         valueOkShort,
     ];
 
