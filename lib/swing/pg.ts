@@ -357,6 +357,54 @@ export async function upsertSwingPosition(
     `);
 }
 
+export async function loadClosedSwingPositions(opts: {
+    platform?: string | null;
+    symbol?: string | null;
+    fromMs: number;
+    toMs?: number;
+    limit?: number;
+}): Promise<PositionWindow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const symbol = opts.symbol ? String(opts.symbol).toUpperCase() : null;
+    const fromMs = finite(opts.fromMs) ?? 0;
+    const toMs = finite(opts.toMs) ?? Date.now();
+    const limit = Math.max(1, Math.min(5000, Math.floor(Number(opts.limit) || 1000)));
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT
+            position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price,
+            pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage
+        FROM swing.positions
+        WHERE status = 'closed'
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND (${symbol}::text IS NULL OR symbol = ${symbol})
+          AND (
+            (exit_ts_ms IS NOT NULL AND exit_ts_ms >= ${fromMs} AND exit_ts_ms <= ${toMs})
+            OR (exit_ts_ms IS NULL AND entry_ts_ms IS NOT NULL AND entry_ts_ms >= ${fromMs} AND entry_ts_ms <= ${toMs})
+          )
+        ORDER BY COALESCE(exit_ts_ms, entry_ts_ms, 0) ASC
+        LIMIT ${limit};
+    `);
+
+    return (rows || []).map((row) => ({
+        id: String(row.position_key),
+        symbol: String(row.symbol || symbol || ''),
+        side: row.side === 'long' || row.side === 'short' ? row.side : null,
+        entryTimestamp: finite(row.entry_ts_ms),
+        exitTimestamp: finite(row.exit_ts_ms),
+        entryPrice: finite(row.entry_price),
+        exitPrice: finite(row.exit_price),
+        pnlNet: finite(row.pnl_net),
+        pnlGross: finite(row.pnl_gross),
+        pnlPct: finite(row.pnl_pct),
+        pnlGrossPct: finite(row.pnl_gross_pct),
+        notional: finite(row.notional),
+        leverage: finite(row.entry_leverage),
+    }));
+}
+
 // --------------------------------------------------------------------------
 // Account snapshots (append-only)
 // --------------------------------------------------------------------------

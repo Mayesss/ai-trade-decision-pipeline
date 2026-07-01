@@ -8,6 +8,7 @@ import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/ca
 import { loadDecisionHistory, extractCapturedLeverages } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
+import { loadClosedSwingPositions } from '../../lib/swing/pg';
 
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_CHART_LEVERAGE_OVERRIDE = 3;
@@ -190,6 +191,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const capturedLevs = extractCapturedLeverages(history);
     const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
+    const finiteNumber = (value: unknown): number | null => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+    const positiveNumber = (value: unknown): number | null => {
+      const n = finiteNumber(value);
+      return n !== null && n > 0 ? n : null;
+    };
 
     const findNearestDecision = (tsMs?: number | null) => {
       if (!tsMs || !history?.length) return null;
@@ -214,7 +223,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let positions: any[] = [];
     try {
-      const closed = platform === 'capital' ? [] : await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
+      const closed =
+        platform === 'capital'
+          ? await loadClosedSwingPositions({
+              platform,
+              symbol,
+              fromMs: windowStartMs,
+              toMs: nowMs,
+              limit: 1000,
+            })
+          : await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
       const closedNormalized =
         platform === 'bitget' && symbol === BTC_SYMBOL
           ? closed.map((position) => {
@@ -260,19 +278,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const combined = [...closedNormalized];
       if (openOverlay) combined.push(openOverlay);
 
-      positions = combined.map((p) => ({
-        id: p.id,
-        status: p.exitTimestamp ? 'closed' : 'open',
-        side: p.side ?? null,
-        entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
-        exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
-        pnlPct: Number.isFinite(p.pnlPct) ? p.pnlPct : null,
-        entryPrice: p.entryPrice ?? null,
-        exitPrice: p.exitPrice ?? null,
-        leverage: p.leverage ?? null,
-        entryDecision: findNearestDecision(p.entryTimestamp),
-        exitDecision: findNearestDecision(p.exitTimestamp),
-      }));
+      positions = combined.map((p) => {
+        const pnlPct = finiteNumber(p.pnlPct);
+        const pnlNet = finiteNumber(p.pnlNet);
+        const capitalPctLooksPlaceholder =
+          platform === 'capital' &&
+          pnlPct !== null &&
+          Math.abs(pnlPct) < 0.005 &&
+          pnlNet !== null &&
+          Math.abs(pnlNet) > 0.005;
+        return {
+          id: p.id,
+          status: p.exitTimestamp ? 'closed' : 'open',
+          side: p.side ?? null,
+          entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
+          exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
+          pnlPct: capitalPctLooksPlaceholder ? null : pnlPct,
+          pnlNet,
+          entryPrice: positiveNumber(p.entryPrice),
+          exitPrice: positiveNumber(p.exitPrice),
+          leverage: positiveNumber(p.leverage),
+          entryDecision: findNearestDecision(p.entryTimestamp),
+          exitDecision: findNearestDecision(p.exitTimestamp),
+        };
+      });
     } catch (err) {
       console.warn(`Failed to build position overlays for ${symbol}:`, err);
       positions = [];

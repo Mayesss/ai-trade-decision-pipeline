@@ -51,6 +51,7 @@ export type PositionWindow = {
 // Bitget's reported leverage, which only ever reflects the *current* account
 // setting and is stale for closed/historical positions.
 export type CapturedLeverage = { timestamp: number; leverage: number };
+const BITGET_POSITION_HISTORY_MAX_INTERVAL_MS = 89 * 24 * 60 * 60 * 1000;
 
 // Pick the captured leverage that was in effect for a position opened at
 // `entryTs`: the most recent capture at or before entry; failing that, the
@@ -100,6 +101,50 @@ function ensureAscendingCandles(cs: any[]) {
 export function roundToDecimals(value: number, decimals: number): number {
     const factor = Math.pow(10, decimals);
     return Math.floor(value * factor) / factor;
+}
+
+function extractPositionHistoryItems(res: any): any[] {
+    return Array.isArray(res?.list)
+        ? res.list
+        : Array.isArray(res?.data?.list)
+        ? res.data.list
+        : Array.isArray(res)
+        ? res
+        : Array.isArray(res?.data)
+        ? res.data
+        : Array.isArray(res?.items)
+        ? res.items
+        : [];
+}
+
+async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number, endTime: number): Promise<any[]> {
+    const productType = resolveProductType();
+    const requestedStart = Math.max(0, Math.floor(startTime));
+    const end = Math.max(requestedStart, Math.floor(endTime));
+    // Bitget rejects position-history windows that reach too far into the past,
+    // even when each request interval is below the documented max. The dashboard
+    // complements this live window with the local swing.positions mirror.
+    const liveStartFloor = Math.max(0, end - BITGET_POSITION_HISTORY_MAX_INTERVAL_MS + 1);
+    const start = Math.max(liveStartFloor, requestedStart);
+    const items: any[] = [];
+
+    for (
+        let chunkStart = start;
+        chunkStart <= end;
+        chunkStart = Math.min(end + 1, chunkStart + BITGET_POSITION_HISTORY_MAX_INTERVAL_MS)
+    ) {
+        const chunkEnd = Math.min(end, chunkStart + BITGET_POSITION_HISTORY_MAX_INTERVAL_MS - 1);
+        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
+            productType,
+            symbol,
+            startTime: chunkStart,
+            endTime: chunkEnd,
+        });
+        items.push(...extractPositionHistoryItems(res));
+        if (chunkEnd >= end) break;
+    }
+
+    return items;
 }
 
 // ------------------------------
@@ -213,27 +258,9 @@ export async function fetchRecentPositionWindows(
     capturedLeverages?: CapturedLeverage[] | null,
 ): Promise<PositionWindow[]> {
     try {
-        const productType = resolveProductType();
         const now = Date.now();
         const startTime = now - hours * 60 * 60 * 1000;
-        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
-            productType,
-            symbol,
-            startTime,
-            endTime: now,
-        });
-
-        const items: any[] = Array.isArray(res?.list)
-            ? res.list
-            : Array.isArray(res?.data?.list)
-            ? res.data.list
-            : Array.isArray(res)
-            ? res
-            : Array.isArray(res?.data)
-            ? res.data
-            : Array.isArray(res?.items)
-            ? res.items
-            : [];
+        const items = await fetchBitgetPositionHistoryItems(symbol, startTime, now);
 
         const windows: PositionWindow[] = items
             .map((it: any, idx: number): PositionWindow => {
@@ -341,26 +368,9 @@ export async function fetchRealizedRoi(
     lastSide: 'long' | 'short' | null;
 }> {
     try {
-        const productType = resolveProductType();
         const now = Date.now();
         const startTime = now - hours * 60 * 60 * 1000;
-        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
-            productType,
-            symbol,
-            startTime,
-            endTime: now,
-        });
-        const items: any[] = Array.isArray(res?.list)
-            ? res.list
-            : Array.isArray(res?.data?.list)
-            ? res.data.list
-            : Array.isArray(res)
-            ? res
-            : Array.isArray(res?.data)
-            ? res.data
-            : Array.isArray(res?.items)
-            ? res.items
-            : [];
+        const items = await fetchBitgetPositionHistoryItems(symbol, startTime, now);
         let total = 0;
         let count = 0;
         let sumPct = 0;

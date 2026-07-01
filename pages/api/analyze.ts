@@ -8,6 +8,7 @@ import {
     computeAnalytics,
     fetchPositionInfo as fetchBitgetPositionInfo,
     fetchRealizedRoi as fetchBitgetRealizedRoi,
+    type PositionInfo,
 } from '../../lib/analytics';
 import { calculateMultiTFIndicators as calculateBitgetMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines, type Sentiment } from '../../lib/news';
@@ -45,6 +46,7 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
+import { upsertSwingPosition } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import {
     CONTEXT_TIMEFRAME,
@@ -67,6 +69,55 @@ function parsePnlPct(p: string | undefined): number {
 function safeNum(x: any, def = 0): number {
     const n = Number(x);
     return Number.isFinite(n) ? n : def;
+}
+
+async function persistCapitalClosedPositionSnapshot(params: {
+    symbol: string;
+    positionInfo: PositionInfo;
+    execRes: any;
+    exitPrice: number | null;
+    closedAtMs: number;
+}) {
+    if (params.positionInfo.status !== 'open') return;
+    if (!params.execRes?.placed) return;
+    if (!(params.execRes?.closed === true || params.execRes?.reversed === true)) return;
+
+    const entryPrice = Number(params.positionInfo.entryPrice);
+    const exitPrice = Number(params.exitPrice);
+    const pnlPct = parsePnlPct(params.positionInfo.currentPnl);
+    const entryTimestamp = Number(params.positionInfo.entryTimestamp);
+    const positionKey = [
+        'capital',
+        params.symbol.toUpperCase(),
+        Number.isFinite(entryTimestamp) && entryTimestamp > 0 ? Math.floor(entryTimestamp) : 'nots',
+        Math.floor(params.closedAtMs),
+        String(params.execRes.orderId || params.execRes.clientOid || 'close'),
+    ].join(':');
+
+    try {
+        await upsertSwingPosition('capital', {
+            id: positionKey,
+            symbol: params.symbol.toUpperCase(),
+            side: params.positionInfo.holdSide ?? null,
+            status: 'closed',
+            entryTimestamp: Number.isFinite(entryTimestamp) && entryTimestamp > 0 ? entryTimestamp : null,
+            exitTimestamp: params.closedAtMs,
+            entryPrice: Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : null,
+            exitPrice: Number.isFinite(exitPrice) && exitPrice > 0 ? exitPrice : null,
+            pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+            pnlGrossPct: Number.isFinite(pnlPct) ? pnlPct : null,
+            pnlNet: null,
+            pnlGross: null,
+            leverage:
+                Number.isFinite(params.positionInfo.leverage as number) && (params.positionInfo.leverage as number) > 0
+                    ? (params.positionInfo.leverage as number)
+                    : null,
+            notional: null,
+            leverageSource: 'captured',
+        });
+    } catch (err) {
+        console.warn(`Could not persist Capital closed position for ${params.symbol}:`, err);
+    }
 }
 
 function timeframeToMinutes(tf: string): number {
@@ -1043,6 +1094,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform === 'capital'
                 ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun, stopLossPrice, true)
                 : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun, stopLossPrice);
+        const executedAtMs = Date.now();
+        if (platform === 'capital' && !dryRun) {
+            await persistCapitalClosedPositionSnapshot({
+                symbol,
+                positionInfo,
+                execRes,
+                exitPrice: Number.isFinite(lastPrice) ? lastPrice : Number.isFinite(effectivePrice) ? effectivePrice : null,
+                closedAtMs: executedAtMs,
+            });
+        }
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
         const spreadBpsSnapshot = safeNum(gatesForExec.metrics?.spreadBpsNow, safeNum(analytics.spreadBps, 0));
@@ -1072,7 +1133,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         };
 
         await appendDecisionHistory({
-            timestamp: Date.now(),
+            timestamp: executedAtMs,
             symbol,
             category: category ?? undefined,
             platform,

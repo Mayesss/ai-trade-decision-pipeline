@@ -15,6 +15,7 @@ type PositionOverlay = {
   entryTime: number | null;
   exitTime?: number | null;
   pnlPct?: number | null;
+  pnlNet?: number | null;
   leverage?: number | null;
   entryPrice?: number | null;
   exitPrice?: number | null;
@@ -176,6 +177,18 @@ const formatOverlayTime = (tsSeconds?: number | null) => {
   if (!tsSeconds) return '—';
   const d = new Date(tsSeconds * 1000);
   return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: BERLIN_TZ });
+};
+
+const formatOverlayPnl = (pos: PositionOverlay) => {
+  if (typeof pos.pnlPct === 'number') return `${pos.pnlPct.toFixed(1)}%`;
+  if (typeof pos.pnlNet === 'number') return `${pos.pnlNet >= 0 ? '+' : ''}${pos.pnlNet.toFixed(2)}`;
+  return null;
+};
+
+const getOverlayPnlValue = (pos: PositionOverlay) => {
+  if (typeof pos.pnlPct === 'number') return pos.pnlPct;
+  if (typeof pos.pnlNet === 'number') return pos.pnlNet;
+  return null;
 };
 
 const formatOverlayDecisionTs = (tsMs?: number | null) => {
@@ -696,8 +709,9 @@ export default function ChartPanel(props: ChartPanelProps) {
                 </div>
               ) : null}
               {renderedOverlays.map((pos) => {
-                const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
-                const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
+                const pnlValue = getOverlayPnlValue(pos);
+                const profitable = typeof pnlValue === 'number' ? pnlValue >= 0 : null;
+                const pnlLabel = formatOverlayPnl(pos);
                 const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
                 const fill =
                   profitable === null
@@ -785,14 +799,14 @@ export default function ChartPanel(props: ChartPanelProps) {
                     </span>
                     <span
                       className={
-                        typeof hoveredOverlay.pnlPct === 'number'
-                          ? hoveredOverlay.pnlPct >= 0
+                        getOverlayPnlValue(hoveredOverlay) !== null
+                          ? (getOverlayPnlValue(hoveredOverlay) as number) >= 0
                             ? 'font-semibold text-emerald-600'
                             : 'font-semibold text-rose-600'
                           : 'text-slate-500'
                       }
                     >
-                      {typeof hoveredOverlay.pnlPct === 'number' ? `${hoveredOverlay.pnlPct.toFixed(2)}%` : '—'}
+                      {formatOverlayPnl(hoveredOverlay) || '—'}
                     </span>
                   </div>
                   <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">

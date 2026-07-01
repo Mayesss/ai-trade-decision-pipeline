@@ -121,6 +121,18 @@ export type CapitalDealActivityRow = {
   raw: Record<string, unknown>;
 };
 
+export type CapitalTradeTransactionRow = {
+  dateUtcMs: number | null;
+  instrumentName: string | null;
+  transactionType: string | null;
+  note: string | null;
+  reference: string | null;
+  pnlNet: number | null;
+  currency: string | null;
+  status: string | null;
+  raw: Record<string, unknown>;
+};
+
 export type CapitalPositionOwnershipMatch =
   | "dealId"
   | "dealReference"
@@ -653,6 +665,24 @@ function normalizeCapitalActivityRow(row: any): CapitalDealActivityRow {
   };
 }
 
+function normalizeCapitalTradeTransactionRow(row: any): CapitalTradeTransactionRow {
+  const pnlNet = safeNumber(
+    row?.size ?? row?.amount ?? row?.profitAndLoss ?? row?.profit ?? row?.pnl,
+    NaN,
+  );
+  return {
+    dateUtcMs: toIsoTimestampMs(row?.dateUTC ?? row?.dateUtc ?? row?.date),
+    instrumentName: normalizeCapitalText(row?.instrumentName ?? row?.instrument ?? row?.epic),
+    transactionType: normalizeCapitalText(row?.transactionType ?? row?.type),
+    note: normalizeCapitalText(row?.note),
+    reference: String(row?.reference ?? row?.dealId ?? row?.dealReference ?? "").trim() || null,
+    pnlNet: Number.isFinite(pnlNet) ? pnlNet : null,
+    currency: normalizeCapitalText(row?.currency),
+    status: normalizeCapitalText(row?.status),
+    raw: row && typeof row === "object" && !Array.isArray(row) ? row : {},
+  };
+}
+
 export async function fetchCapitalDealActivityHistory(params: {
   dealId?: string | null;
   fromTsMs?: number;
@@ -677,6 +707,38 @@ export async function fetchCapitalDealActivityHistory(params: {
   return extractRows<any>(payload, ["activities", "activity", "data"]).map(
     normalizeCapitalActivityRow,
   );
+}
+
+export async function fetchCapitalTradeTransactions(params: {
+  fromTsMs?: number;
+  toTsMs?: number;
+}): Promise<CapitalTradeTransactionRow[]> {
+  const now = Date.now();
+  const toTsMs = Number.isFinite(Number(params.toTsMs))
+    ? Math.floor(Number(params.toTsMs))
+    : now;
+  const fromTsMs = Number.isFinite(Number(params.fromTsMs))
+    ? Math.floor(Number(params.fromTsMs))
+    : toTsMs - 24 * 60 * 60 * 1000;
+  const maxChunkMs = 31 * 24 * 60 * 60 * 1000;
+  const rows: CapitalTradeTransactionRow[] = [];
+
+  for (let start = fromTsMs; start <= toTsMs; start = Math.min(toTsMs + 1, start + maxChunkMs)) {
+    const end = Math.min(toTsMs, start + maxChunkMs - 1);
+    const payload = await capitalFetch("GET", "/api/v1/history/transactions", {
+      from: formatCapitalHistoryDateUtc(start),
+      to: formatCapitalHistoryDateUtc(end),
+      type: "TRADE",
+    });
+    rows.push(
+      ...extractRows<any>(payload, ["transactions", "transaction", "data"]).map(
+        normalizeCapitalTradeTransactionRow,
+      ),
+    );
+    if (end >= toTsMs) break;
+  }
+
+  return rows.sort((a, b) => Number(a.dateUtcMs ?? 0) - Number(b.dateUtcMs ?? 0));
 }
 
 function parseCapitalCandles(payload: any): any[] {

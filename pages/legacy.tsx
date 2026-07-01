@@ -2516,6 +2516,8 @@ export default function Home() {
     string | null
   >(null);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("7D");
+  const [swingSummaryRange, setSwingSummaryRange] =
+    useState<DashboardRangeKey | null>(null);
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("swing");
   const [scalpSession, setScalpSession] =
     useState<ScalpEntrySessionFilterUi>("all");
@@ -2540,6 +2542,7 @@ export default function Home() {
   const scalpCandidateTotalsRequestIdRef = useRef(0);
   const scalpCandidatesStateFilterRef = useRef<ScalpCandidateGridStateUi>("evaluated");
   const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
+  const swingDashboardRequestIdRef = useRef(0);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
   >(null);
@@ -2917,6 +2920,10 @@ export default function Home() {
   };
 
   const loadDashboard = async () => {
+    const requestId = swingDashboardRequestIdRef.current + 1;
+    swingDashboardRequestIdRef.current = requestId;
+    const requestedRange = dashboardRange;
+    setSwingSummaryRange((prev) => (prev === requestedRange ? prev : null));
     setLoading(true);
     try {
       let summaryError: string | null = null;
@@ -2970,7 +2977,7 @@ export default function Home() {
       });
 
       try {
-        const summaryParams = new URLSearchParams({ range: dashboardRange });
+        const summaryParams = new URLSearchParams({ range: requestedRange });
         const summaryRes = await fetch(
           `/api/swing/dashboard/summary?${summaryParams.toString()}`,
           {
@@ -2988,9 +2995,11 @@ export default function Home() {
           throw new Error(`Failed to load summary (${summaryRes.status})`);
         }
         const summaryJson: DashboardSummaryResponse = await summaryRes.json();
+        if (requestId !== swingDashboardRequestIdRef.current) return;
         const summaryRows = Array.isArray(summaryJson.data)
           ? summaryJson.data
           : [];
+        const resolvedSummaryRange = summaryJson.range || requestedRange;
         setTabData((prev) => {
           const next = { ...prev };
           for (const row of summaryRows) {
@@ -3006,7 +3015,11 @@ export default function Home() {
           }
           return next;
         });
+        setSwingSummaryRange(resolvedSummaryRange);
       } catch (summaryErr: any) {
+        if (requestId === swingDashboardRequestIdRef.current) {
+          setSwingSummaryRange(null);
+        }
         summaryError =
           summaryErr?.message || "Failed to load dashboard summary";
       }
@@ -3776,6 +3789,7 @@ export default function Home() {
     activePlatform === "capital" ? "/capital.svg" : "/bitget.svg";
   const dashboardRangeText =
     dashboardRange === "6M" ? "6m" : dashboardRange.toLowerCase();
+  const swingSummaryMatchesRange = swingSummaryRange === dashboardRange;
   const liveOpenPnl =
     current &&
     typeof livePriceNow === "number" &&
@@ -3797,18 +3811,35 @@ export default function Home() {
       : current && typeof current.openPnl === "number"
         ? current.openPnl
         : null;
-  const effectivePnl7dWithOpen =
+  const effectiveRangePnlWithOpen =
+    swingSummaryMatchesRange &&
     current &&
     typeof current.pnl7d === "number" &&
     typeof effectiveOpenPnl === "number"
       ? current.pnl7d + effectiveOpenPnl
-      : current && typeof current.pnl7d === "number"
+      : swingSummaryMatchesRange && current && typeof current.pnl7d === "number"
         ? current.pnl7d
-        : typeof effectiveOpenPnl === "number"
+        : swingSummaryMatchesRange && typeof effectiveOpenPnl === "number"
           ? effectiveOpenPnl
-          : current && typeof current.pnl7dWithOpen === "number"
+          : swingSummaryMatchesRange &&
+              current &&
+              typeof current.pnl7dWithOpen === "number"
             ? current.pnl7dWithOpen
             : null;
+  const effectiveRangeCashPnl =
+    swingSummaryMatchesRange && current && typeof current.pnl7dNet === "number"
+      ? current.pnl7dNet
+      : null;
+  const rangePnlToneValue =
+    typeof effectiveRangePnlWithOpen === "number"
+      ? effectiveRangePnlWithOpen
+      : effectiveRangeCashPnl;
+  const rangePnlLabel =
+    typeof effectiveRangePnlWithOpen === "number"
+      ? `${effectiveRangePnlWithOpen.toFixed(2)}%`
+      : typeof effectiveRangeCashPnl === "number"
+        ? formatUsd(effectiveRangeCashPnl)
+        : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
@@ -6889,11 +6920,16 @@ export default function Home() {
                         const isActive = i === active;
                         const tab = tabData[sym];
                         const pnl7dValue =
+                          swingSummaryMatchesRange &&
                           typeof tab?.pnl7dWithOpen === "number"
                             ? tab.pnl7dWithOpen
-                            : typeof tab?.pnl7d === "number"
+                            : swingSummaryMatchesRange &&
+                                typeof tab?.pnl7d === "number"
                               ? tab.pnl7d
-                              : null;
+                              : swingSummaryMatchesRange &&
+                                  typeof tab?.pnl7dNet === "number"
+                                ? tab.pnl7dNet
+                                : null;
                         const toneClass =
                           typeof pnl7dValue === "number"
                             ? pnl7dValue < 0
@@ -6941,32 +6977,31 @@ export default function Home() {
                       </span>
                       <span
                         className={`font-semibold ${
-                          typeof effectivePnl7dWithOpen === "number"
-                            ? effectivePnl7dWithOpen >= 0
+                          typeof rangePnlToneValue === "number"
+                            ? rangePnlToneValue >= 0
                               ? "text-emerald-600"
                               : "text-rose-600"
                             : "text-slate-500"
                         }`}
                       >
-                        {typeof effectivePnl7dWithOpen === "number"
-                          ? `${effectivePnl7dWithOpen.toFixed(2)}%`
-                          : typeof current.pnl7d === "number"
-                            ? `${current.pnl7d.toFixed(2)}%`
-                            : "—"}
+                        {rangePnlLabel || "—"}
                       </span>
-                      {typeof current.pnl7dNet === "number" ? (
+                      {swingSummaryMatchesRange &&
+                      typeof current.pnl7dNet === "number" &&
+                      typeof effectiveRangePnlWithOpen === "number" ? (
                         <span className="hidden text-[11px] text-slate-500 sm:inline">
                           {current.pnl7dNet >= 0 ? "+" : ""}
                           {formatUsd(current.pnl7dNet)}
                         </span>
                       ) : null}
-                      {current.pnl7dTrades ? (
+                      {swingSummaryMatchesRange && current.pnl7dTrades ? (
                         <span className="hidden text-[11px] text-slate-400 sm:inline">
                           ·{current.pnl7dTrades}t
                         </span>
                       ) : null}
                     </span>
-                    {Array.isArray(current.pnlSpark) &&
+                    {swingSummaryMatchesRange &&
+                    Array.isArray(current.pnlSpark) &&
                     current.pnlSpark.length > 1 ? (
                       <span className="hidden h-4 items-end gap-px sm:inline-flex">
                         {current.pnlSpark.map((v, i) => {
