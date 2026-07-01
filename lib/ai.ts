@@ -188,11 +188,79 @@ export async function getLastEvaluation(symbol: string) {
 // Prompt Builder (with guardrails, regime, momentum & extension gates)
 // ------------------------------
 
+// ------------------------------
+// Actionability gate (pre-AI, flat entries)
+// ------------------------------
+// Derived empirically from the decision history, NOT hand-tuned: across 543 flat
+// AI calls the model opened only 3.3% of the time, and those opens were almost
+// entirely (a) a confirmed primary structure break, or (b) a bounce off a level
+// with room to run and micro structure turning that way. It HOLDs when sandwiched
+// between nearby support AND resistance with no break (62% of holds, 0% of opens).
+// This gate fires only when a trade is plausible → backtest: 100% recall on opens,
+// ~76% fewer AI calls than the old signal_strength≥MEDIUM gate. Thresholds are the
+// ATR proximity ("at a level") and room-to-run distance; both env-tunable.
+const ACTIONABILITY_NEAR_ATR = (() => {
+    const n = Number(process.env.SWING_ACTIONABILITY_NEAR_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 0.6;
+})();
+const ACTIONABILITY_ROOM_ATR = (() => {
+    const n = Number(process.env.SWING_ACTIONABILITY_ROOM_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 1.5;
+})();
+
+export type ActionabilityInputs = {
+    microEntryOk: boolean;
+    primaryBreakoutConfirmed: boolean;
+    primaryBreakdownConfirmed: boolean;
+    primaryBreakoutRetestOk: boolean;
+    primaryBos: boolean;
+    primaryBreakState?: string | null; // 'above' | 'below' | 'inside'
+    primarySupportDistAtr?: number | null;
+    primaryResistanceDistAtr?: number | null;
+    microBreakoutRetestOk: boolean;
+    microBreakoutRetestDir?: string | null;
+    microBos: boolean;
+    microBosDir?: string | null;
+    microBreakState?: string | null;
+};
+
+export function evaluateActionability(x: ActionabilityInputs): { actionable: boolean; reason: string } {
+    // Entry timing is a hard prerequisite (all opens had it).
+    if (!x.microEntryOk) return { actionable: false, reason: 'micro_entry_ok_false' };
+    // (a) confirmed primary structure — the universal opener (17/18 opens, all asset classes).
+    const confirmed =
+        x.primaryBreakoutConfirmed ||
+        x.primaryBreakdownConfirmed ||
+        x.primaryBreakoutRetestOk ||
+        x.primaryBos ||
+        (!!x.primaryBreakState && x.primaryBreakState !== 'inside');
+    if (confirmed) return { actionable: true, reason: 'confirmed_primary_structure' };
+    // (b) tight bounce — at one level, opposite level far (room to run), micro turning that way.
+    const sup = Number.isFinite(x.primarySupportDistAtr as number) ? (x.primarySupportDistAtr as number) : null;
+    const res = Number.isFinite(x.primaryResistanceDistAtr as number) ? (x.primaryResistanceDistAtr as number) : null;
+    const microUp =
+        (x.microBreakoutRetestOk && x.microBreakoutRetestDir === 'up') ||
+        (x.microBos && x.microBosDir === 'up') ||
+        x.microBreakState === 'above';
+    const microDown =
+        (x.microBreakoutRetestOk && x.microBreakoutRetestDir === 'down') ||
+        (x.microBos && x.microBosDir === 'down') ||
+        x.microBreakState === 'below';
+    const longBounce =
+        sup != null && res != null && sup <= ACTIONABILITY_NEAR_ATR && res >= ACTIONABILITY_ROOM_ATR && microUp;
+    const shortBounce =
+        sup != null && res != null && res <= ACTIONABILITY_NEAR_ATR && sup >= ACTIONABILITY_ROOM_ATR && microDown;
+    if (longBounce) return { actionable: true, reason: 'bounce_long' };
+    if (shortBounce) return { actionable: true, reason: 'bounce_short' };
+    // sandwiched / no break → the AI HOLDs these; skip the call.
+    return { actionable: false, reason: 'boxed_or_unconfirmed' };
+}
+
 // Derivation half of the old buildPrompt: computes signal_strength + the decision
 // context (cheap), and returns an `assemble(news)` closure that builds the actual
 // STATE/MARKET prompt strings (the expensive JSON.stringify + template work).
-// Callers can read signal_strength and gate BEFORE assembling — so flat sub-MEDIUM
-// ticks never pay for prompt assembly or the news fetch. News is not needed here.
+// Callers can read the actionability gate BEFORE assembling — so non-actionable
+// flat ticks never pay for prompt assembly or the news fetch. News is not needed here.
 export function computeSwingState(
     symbol: string,
     timeframe: string,
@@ -794,7 +862,23 @@ Respond with strict JSON only:
         forex_session_context,
     };
 
-    return { signalStrength, context, assemble };
+    const actionability = evaluateActionability({
+        microEntryOk: Boolean(momentumSignals.info?.microEntryOk),
+        primaryBreakoutConfirmed,
+        primaryBreakdownConfirmed,
+        primaryBreakoutRetestOk: breakoutRetestOk4h,
+        primaryBos: bos4h,
+        primaryBreakState: structureBreakState4h,
+        primarySupportDistAtr: primarySR?.support?.dist_in_atr ?? null,
+        primaryResistanceDistAtr: primarySR?.resistance?.dist_in_atr ?? null,
+        microBreakoutRetestOk,
+        microBreakoutRetestDir,
+        microBos,
+        microBosDir,
+        microBreakState: microStructureBreakState,
+    });
+
+    return { signalStrength, context, assemble, actionability };
 }
 
 // Backward-compatible wrapper: original buildPrompt behavior (derive + assemble in
