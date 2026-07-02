@@ -191,6 +191,21 @@ const getOverlayPnlValue = (pos: PositionOverlay) => {
   return null;
 };
 
+const actionPillToneClass = (action?: string | null, pnlValue?: number | null) => {
+  const normalized = String(action || '').trim().toUpperCase();
+  if (normalized === 'BUY') return 'border-emerald-200 bg-emerald-100 text-emerald-800';
+  if (normalized === 'SELL') return 'border-rose-200 bg-rose-100 text-rose-800';
+  if (normalized === 'CLOSE') {
+    if (typeof pnlValue === 'number') {
+      return pnlValue >= 0
+        ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+        : 'border-rose-200 bg-rose-100 text-rose-800';
+    }
+    return 'neutral-highlight';
+  }
+  return 'neutral-highlight';
+};
+
 const formatOverlayDecisionTs = (tsMs?: number | null) => {
   if (!tsMs) return '—';
   const d = new Date(tsMs);
@@ -238,9 +253,9 @@ export default function ChartPanel(props: ChartPanelProps) {
   const resolvedLimit = Math.max(32, rangePreset.limit);
   const chartTextColor = isDark ? '#d4d4d8' : '#0f172a';
   const chartGridColor = isDark ? '#3f3f46' : '#e2e8f0';
-  const chartLineColor = isDark ? '#38bdf8' : '#0ea5e9';
-  const chartAreaTopColor = isDark ? 'rgba(56,189,248,0.26)' : 'rgba(14,165,233,0.3)';
-  const chartAreaBottomColor = isDark ? 'rgba(14,165,233,0.08)' : 'rgba(14,165,233,0.05)';
+  const chartLineColor = isDark ? '#d4d4d8' : '#475569';
+  const chartAreaTopColor = isDark ? 'rgba(212,212,216,0.3)' : 'rgba(71,85,105,0.3)';
+  const chartAreaBottomColor = isDark ? 'rgba(161,161,170,0.09)' : 'rgba(71,85,105,0.07)';
   const hasChartData = chartData.length > 0;
 
   const applyPayload = (payload: ChartApiResponse) => {
@@ -461,17 +476,19 @@ export default function ChartPanel(props: ChartPanelProps) {
               lineColor: chartLineColor,
               topColor: chartAreaTopColor,
               bottomColor: chartAreaBottomColor,
+              lineWidth: 1,
             })
           : typeof chart.addSeries === 'function' && AreaSeriesCtor
           ? chart.addSeries(AreaSeriesCtor, {
               lineColor: chartLineColor,
               topColor: chartAreaTopColor,
               bottomColor: chartAreaBottomColor,
+              lineWidth: 1,
             })
           : typeof chart.addLineSeries === 'function'
-          ? chart.addLineSeries({ color: chartLineColor, lineWidth: 2 })
+          ? chart.addLineSeries({ color: chartLineColor, lineWidth: 1 })
           : typeof chart.addSeries === 'function' && LineSeriesCtor
-          ? chart.addSeries(LineSeriesCtor, { color: chartLineColor, lineWidth: 2 })
+          ? chart.addSeries(LineSeriesCtor, { color: chartLineColor, lineWidth: 1 })
           : null;
 
       if (!series) return;
@@ -633,7 +650,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                 onClick={() => onRangeChange(key)}
                 className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
                   active
-                    ? 'bg-sky-600 text-white shadow-sm'
+                    ? 'neutral-highlight shadow-sm'
                     : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
                 }`}
                 aria-pressed={active}
@@ -745,13 +762,13 @@ export default function ChartPanel(props: ChartPanelProps) {
                     }}
                   >
                     {pos.showEntryWall && (
-                      <div className="absolute top-0 bottom-0 w-[2px]" style={{ left: 0, backgroundColor: stroke }} />
+                      <div className="absolute top-0 bottom-0 w-px" style={{ left: 0, backgroundColor: stroke }} />
                     )}
                     {pos.status === 'closed' ? (
-                      <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: stroke }} />
+                      <div className="absolute top-0 bottom-0 w-px" style={{ right: 0, backgroundColor: stroke }} />
                     ) : (
                       <div
-                        className="absolute top-0 bottom-0 w-[2px]"
+                        className="absolute top-0 bottom-0 w-px"
                         style={{ right: 0, backgroundColor: 'rgba(161,161,170,0.8)' }}
                       />
                     )}
@@ -831,7 +848,11 @@ export default function ChartPanel(props: ChartPanelProps) {
                         Entry AI decision
                       </div>
                       <div className="text-[11px] text-slate-800">
-                        <span className="font-semibold text-sky-700">
+                        <span
+                          className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${actionPillToneClass(
+                            hoveredOverlay.entryDecision.action,
+                          )}`}
+                        >
                           {hoveredOverlay.entryDecision.action || 'Decision'}
                         </span>
                         {hoveredOverlay.entryDecision.summary ? ` · ${hoveredOverlay.entryDecision.summary}` : ''}
@@ -848,7 +869,12 @@ export default function ChartPanel(props: ChartPanelProps) {
                         Exit AI decision
                       </div>
                       <div className="text-[11px] text-slate-800">
-                        <span className="font-semibold text-sky-700">
+                        <span
+                          className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${actionPillToneClass(
+                            hoveredOverlay.exitDecision.action,
+                            getOverlayPnlValue(hoveredOverlay),
+                          )}`}
+                        >
                           {hoveredOverlay.exitDecision.action || 'Decision'}
                         </span>
                         {hoveredOverlay.exitDecision.summary ? ` · ${hoveredOverlay.exitDecision.summary}` : ''}

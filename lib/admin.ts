@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/swing/analyze",
+  "/api/dashboard/summary-warm",
   "/api/scalp/composer/cron/discover",
   "/api/scalp/composer/cron/load-candles",
   "/api/scalp/composer/cron/evaluate",

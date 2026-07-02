@@ -726,6 +726,21 @@ const formatUsd = (value: number) => {
 const formatSignedR = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
 
+const actionPillToneClass = (action?: string | null, pnlValue?: number | null) => {
+  const normalized = String(action || '').trim().toUpperCase();
+  if (normalized === "BUY") return "border-emerald-200 bg-emerald-100 text-emerald-800";
+  if (normalized === "SELL") return "border-rose-200 bg-rose-100 text-rose-800";
+  if (normalized === "CLOSE") {
+    if (typeof pnlValue === "number") {
+      return pnlValue >= 0
+        ? "border-emerald-200 bg-emerald-100 text-emerald-800"
+        : "border-rose-200 bg-rose-100 text-rose-800";
+    }
+    return "neutral-highlight";
+  }
+  return "neutral-highlight";
+};
+
 const BERLIN_TZ = "Europe/Berlin";
 const SCALP_MIN_REFRESH_GAP_MS = 25_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
@@ -3833,13 +3848,13 @@ export default function Home() {
   const rangePnlToneValue =
     typeof effectiveRangePnlWithOpen === "number"
       ? effectiveRangePnlWithOpen
-      : effectiveRangeCashPnl;
+      : typeof effectiveRangeCashPnl === "number"
+        ? effectiveRangeCashPnl
+        : null;
   const rangePnlLabel =
     typeof effectiveRangePnlWithOpen === "number"
       ? `${effectiveRangePnlWithOpen.toFixed(2)}%`
-      : typeof effectiveRangeCashPnl === "number"
-        ? formatUsd(effectiveRangeCashPnl)
-        : null;
+      : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
@@ -6930,13 +6945,19 @@ export default function Home() {
                                   typeof tab?.pnl7dNet === "number"
                                 ? tab.pnl7dNet
                                 : null;
-                        const toneClass =
+                        const boxToneClass =
                           typeof pnl7dValue === "number"
-                            ? pnl7dValue < 0
-                              ? "bg-rose-500"
-                              : "bg-emerald-500"
-                            : "bg-slate-400";
-                        // Show the status dot only when the symbol's most recent
+                            ? pnl7dValue > 0
+                              ? isActive
+                                ? "border-emerald-500 bg-emerald-100 text-emerald-800"
+                                : "border-emerald-200 bg-emerald-50 text-emerald-800 hover:border-emerald-300 hover:bg-emerald-100"
+                              : isActive
+                                ? "border-rose-500 bg-rose-100 text-rose-800"
+                                : "border-rose-200 bg-rose-50 text-rose-800 hover:border-rose-300 hover:bg-rose-100"
+                            : isActive
+                              ? "border-slate-400 bg-slate-100 text-slate-900"
+                              : "border-slate-200 text-slate-500 hover:text-slate-800";
+                        // Show the status square only when the symbol's most recent
                         // decision was a real AI call (not a skip). Crons are
                         // hourly, so this means "the AI decided this in the last hour".
                         const aiDecisionRecent = tab?.lastWasAiCall === true;
@@ -6944,16 +6965,10 @@ export default function Home() {
                           <button
                             key={sym}
                             onClick={() => setActive(i)}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${
-                              isActive
-                                ? "border-slate-400 bg-slate-100 text-slate-900"
-                                : "border-slate-200 text-slate-500 hover:text-slate-800"
-                            }`}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${boxToneClass}`}
                           >
                             {aiDecisionRecent ? (
-                              <span
-                                className={`h-1.5 w-1.5 rounded-full ${toneClass}`}
-                              />
+                              <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />
                             ) : null}
                             {sym}
                           </button>
@@ -6987,8 +7002,7 @@ export default function Home() {
                         {rangePnlLabel || "—"}
                       </span>
                       {swingSummaryMatchesRange &&
-                      typeof current.pnl7dNet === "number" &&
-                      typeof effectiveRangePnlWithOpen === "number" ? (
+                      typeof current.pnl7dNet === "number" ? (
                         <span className="hidden text-[11px] text-slate-500 sm:inline">
                           {current.pnl7dNet >= 0 ? "+" : ""}
                           {formatUsd(current.pnl7dNet)}
@@ -7003,21 +7017,32 @@ export default function Home() {
                     {swingSummaryMatchesRange &&
                     Array.isArray(current.pnlSpark) &&
                     current.pnlSpark.length > 1 ? (
-                      <span className="hidden h-4 items-end gap-px sm:inline-flex">
+                      <span className="hidden h-5 items-end gap-[2px] rounded-sm px-0.5 sm:inline-flex">
                         {current.pnlSpark.map((v, i) => {
                           const arr = current.pnlSpark as number[];
                           const max = Math.max(
                             ...arr.map((n) => Math.abs(n)),
                             1e-9,
                           );
+                          const isLatest = i === arr.length - 1;
                           const h = Math.max(
-                            2,
-                            Math.round((Math.abs(v) / max) * 14),
+                            3,
+                            Math.round((Math.abs(v) / max) * 18),
                           );
                           return (
                             <span
                               key={i}
-                              className={`w-0.5 ${v >= 0 ? "bg-emerald-500" : "bg-rose-500"}`}
+                              className={`rounded-full shadow-[0_0_0_1px_rgba(15,23,42,0.04)] ${
+                                isLatest ? "w-[4px]" : "w-[3px]"
+                              } ${
+                                v >= 0
+                                  ? isLatest
+                                    ? "bg-emerald-500"
+                                    : "bg-emerald-500/80"
+                                  : isLatest
+                                    ? "bg-rose-500"
+                                    : "bg-rose-500/80"
+                              }`}
                               style={{ height: `${h}px` }}
                             />
                           );
@@ -7124,7 +7149,7 @@ export default function Home() {
                         ? "border-slate-300 bg-slate-200"
                         : swingCronHardDeactivated
                           ? "border-rose-400 bg-rose-500/80"
-                          : "border-emerald-400 bg-emerald-500/80"
+                          : "neutral-highlight"
                     }`}
                   >
                     <span
@@ -8140,10 +8165,13 @@ export default function Home() {
                     </div>
                     <div className="mt-3 text-sm text-slate-800">
                       Action:{" "}
-                      <span className="font-semibold text-sky-700">
-                        {(
-                          (current.lastDecision as any)?.action || ""
-                        ).toString() || "—"}
+                      <span
+                        className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${actionPillToneClass(
+                          (current.lastDecision as any)?.action,
+                          current.lastPositionPnl,
+                        )}`}
+                      >
+                        {((current.lastDecision as any)?.action || "").toString() || "—"}
                       </span>
                       {(current.lastDecision as any)?.summary
                         ? ` · ${(current.lastDecision as any).summary}`

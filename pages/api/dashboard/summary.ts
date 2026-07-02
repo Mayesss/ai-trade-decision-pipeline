@@ -136,6 +136,30 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function positiveNumber(value: unknown): number | null {
+  const n = finiteNumber(value);
+  return n !== null && n > 0 ? n : null;
+}
+
+function derivePnlPctFromNetNotional(window: PositionWindow): number | null {
+  const pnlNet = finiteNumber(window.pnlNet);
+  const notional = positiveNumber(window.notional);
+  if (pnlNet === null || notional === null) return null;
+  return (pnlNet / notional) * 100;
+}
+
+function withCapitalNotionalPct(window: PositionWindow): PositionWindow {
+  const derivedPct = derivePnlPctFromNetNotional(window);
+  if (derivedPct === null) return window;
+  const existingPct = finiteNumber(window.pnlPct);
+  const existingGrossPct = finiteNumber(window.pnlGrossPct);
+  return {
+    ...window,
+    pnlPct: existingPct !== null && Math.abs(existingPct) >= 0.005 ? existingPct : derivedPct,
+    pnlGrossPct: existingGrossPct !== null && Math.abs(existingGrossPct) >= 0.005 ? existingGrossPct : derivedPct,
+  };
+}
+
 function normalizeCapitalSymbolKey(value: unknown): string {
   return String(value || '')
     .trim()
@@ -195,12 +219,21 @@ function enrichCapitalWindowFromHistory(window: PositionWindow, history: any[]):
     finiteNumber(entry?.snapshot?.price) ??
     window.entryPrice ??
     null;
+  const notional =
+    positiveNumber(window.notional) ??
+    positiveNumber(entry?.execResult?.notionalUsd) ??
+    positiveNumber(entry?.execResult?.notionalUSDT) ??
+    positiveNumber(entry?.execResult?.orderNotionalUsd) ??
+    positiveNumber(entry?.snapshot?.gates?.notionalUSDT) ??
+    positiveNumber(entry?.snapshot?.gates?.notionalUsd) ??
+    null;
   return {
     ...window,
     entryTimestamp: Number(entry.timestamp),
     entryPrice,
     side: window.side ?? (action === 'BUY' ? 'long' : action === 'SELL' ? 'short' : null),
     leverage: window.leverage ?? finiteNumber(entry?.execResult?.leverage) ?? finiteNumber(entry?.aiDecision?.leverage),
+    notional,
   };
 }
 
@@ -345,31 +378,10 @@ function resolveSummaryRange(raw: unknown): SummaryRangeKey {
   return '7D';
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
-  }
-  if (!requireAdminAccess(req, res)) return;
-
-  const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
-  const range = resolveSummaryRange(rangeParam);
+// Compute the summary for a range and write it to KV. Shared by the HTTP handler
+// (on cache miss) and the warm cron, so the two paths can never drift.
+export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise<CachedSummary> {
   const lookbackHours = SUMMARY_RANGE_LOOKBACK_HOURS[range];
-
-  const freshParam = Array.isArray(req.query.fresh) ? req.query.fresh[0] : req.query.fresh;
-  const bypassCache = freshParam === '1' || freshParam === 'true';
-  const cacheKey = swingSummaryCacheKey(range);
-
-  if (!bypassCache && SUMMARY_CACHE_TTL_SECONDS > 0) {
-    try {
-      const cached = await kvGetJson<CachedSummary>(cacheKey);
-      if (cached?.payload) {
-        return res.status(200).json({ ...cached.payload, cached: true, generatedAtMs: cached.generatedAtMs });
-      }
-    } catch (err) {
-      console.warn('summary cache read failed; computing fresh:', err);
-    }
-  }
-
   const configs = getCronSymbolConfigs();
   const symbols = configs.map((item) => item.symbol);
   const nowMs = Date.now();
@@ -507,7 +519,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const recentWindows = mergeCapitalPositionWindows([
               ...mergePositionWindows(persistedWindows, historyWindows),
               ...transactionWindows,
-            ]);
+            ]).map(withCapitalNotionalPct);
             if (recentWindows.length) {
               const summary = applyClosedWindowSummary({
                 windows: recentWindows,
@@ -661,15 +673,62 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const generatedAtMs = Date.now();
 
   // write-through: materialize the blob so subsequent polls within the window
-  // are served from KV instead of recomputing. Best-effort — never fail the
-  // response on a cache write.
+  // are served from KV instead of recomputing. Best-effort — never fail on a
+  // cache write.
   if (SUMMARY_CACHE_TTL_SECONDS > 0) {
     try {
-      await kvSetJson<CachedSummary>(cacheKey, { payload, generatedAtMs }, SUMMARY_CACHE_TTL_SECONDS);
+      await kvSetJson<CachedSummary>(swingSummaryCacheKey(range), { payload, generatedAtMs }, SUMMARY_CACHE_TTL_SECONDS);
     } catch (err) {
       console.warn('summary cache write failed:', err);
     }
   }
 
+  return { payload, generatedAtMs };
+}
+
+const ALL_SUMMARY_RANGES: SummaryRangeKey[] = ['1D', '7D', '30D', '6M'];
+
+// Rebuild every range blob and write them to KV. Ranges run concurrently so the
+// warm cron's wall-clock ≈ a single fan-out (matching what the analyze crons
+// already tolerate). Best-effort per range — a failure just falls back to an
+// on-demand rebuild on the next dashboard load.
+export async function warmAllSwingSummaries(): Promise<Array<{ range: SummaryRangeKey; ok: boolean; symbols: number }>> {
+  return Promise.all(
+    ALL_SUMMARY_RANGES.map(async (range) => {
+      try {
+        const { payload } = await buildAndCacheSwingSummary(range);
+        return { range, ok: true, symbols: payload.data.length };
+      } catch (err) {
+        console.warn(`warm summary failed for ${range}:`, err);
+        return { range, ok: false, symbols: 0 };
+      }
+    }),
+  );
+}
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
+  }
+  if (!requireAdminAccess(req, res)) return;
+
+  const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
+  const range = resolveSummaryRange(rangeParam);
+
+  const freshParam = Array.isArray(req.query.fresh) ? req.query.fresh[0] : req.query.fresh;
+  const bypassCache = freshParam === '1' || freshParam === 'true';
+
+  if (!bypassCache && SUMMARY_CACHE_TTL_SECONDS > 0) {
+    try {
+      const cached = await kvGetJson<CachedSummary>(swingSummaryCacheKey(range));
+      if (cached?.payload) {
+        return res.status(200).json({ ...cached.payload, cached: true, generatedAtMs: cached.generatedAtMs });
+      }
+    } catch (err) {
+      console.warn('summary cache read failed; computing fresh:', err);
+    }
+  }
+
+  const { payload, generatedAtMs } = await buildAndCacheSwingSummary(range);
   return res.status(200).json({ ...payload, cached: false, generatedAtMs });
 }

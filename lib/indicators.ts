@@ -19,6 +19,11 @@ export interface MultiTFIndicators {
     candleDepth?: Record<string, number | undefined>;
     sr?: Record<string, SRLevels | undefined>;
     metrics?: Record<string, TimeframeMetrics | undefined>;
+    // Raw broker candle rows (`[tsMs, open, high, low, close, ...]`) keyed by
+    // timeframe, exposed so callers (e.g. the analyze chart-cache warm step) can
+    // reuse candles already fetched for indicators instead of re-fetching. Optional
+    // — nothing in the decision path reads it.
+    rawCandles?: Record<string, any[]>;
 }
 
 export interface IndicatorTimeframeOptions {
@@ -618,10 +623,12 @@ export async function calculateMultiTFIndicators(
     >();
 
     const build = buildTimeframeMetrics;
+    const rawByTf = new Map<string, any[]>();
 
     await Promise.all(
         entries.map(async ([tf, promise]) => {
             const candles = await promise;
+            rawByTf.set(tf, candles);
             summaries.set(tf, build(candles, tf));
         }),
     );
@@ -641,6 +648,13 @@ export async function calculateMultiTFIndicators(
     out.candleDepth![macroTF] = summaries.get(macroTF)?.candleCount;
     out.candleDepth![contextTF] = summaries.get(contextTF)?.candleCount;
     out.candleDepth![primaryTF] = summaries.get(primaryTF)?.candleCount;
+
+    out.rawCandles = {
+        [microTF]: rawByTf.get(microTF) ?? [],
+        [macroTF]: rawByTf.get(macroTF) ?? [],
+        [contextTF]: rawByTf.get(contextTF) ?? [],
+        [primaryTF]: rawByTf.get(primaryTF) ?? [],
+    };
 
     out.sr![microTF] = summaries.get(microTF)?.sr;
     out.sr![macroTF] = summaries.get(macroTF)?.sr;

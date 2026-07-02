@@ -132,8 +132,10 @@ const MARKETAUX_INDEX_SEARCH_TERMS: Record<string, string> = {
     DJ30: 'Dow Jones Industrial Average',
     HK50: 'Hang Seng Index',
     GER40: 'DAX 40',
+    DE40: 'DAX 40',
     UK100: 'FTSE 100',
     JP225: 'Nikkei 225',
+    J225: 'Nikkei 225',
     FR40: 'CAC 40',
     EU50: 'Euro Stoxx 50',
 };

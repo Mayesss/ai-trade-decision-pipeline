@@ -3063,8 +3063,115 @@ export async function calculateCapitalMultiTFIndicators(
       [primaryTF]: primaryBuilt.metrics,
       [contextTF]: contextBuilt.metrics,
     },
+    rawCandles: {
+      [microTF]: microCandles,
+      [macroTF]: macroCandles,
+      [primaryTF]: primaryCandles,
+      [contextTF]: contextCandles,
+    },
   };
   return out;
+}
+
+export type CapitalMinSizeAffordability = {
+  affordable: boolean;
+  availableMarginUsd: number | null;
+  requiredMarginUsd: number | null;
+  minNotionalUsd: number | null;
+  minDealSize: number | null;
+  referencePrice: number | null;
+  leverage: number;
+};
+
+// Can the account cover the SMALLEST tradeable position for this symbol right now?
+// Mirrors the sizing pre-check in resolveCapitalScalpOrderSizing (maxNotional =
+// availableMargin * leverage vs minNotional = minDealSize * unitPrice) so a
+// pre-AI skip matches exactly what execution would reject on. Fails OPEN: any
+// missing input (unknown margin, price, min size) returns affordable=true so we
+// never block trading on a data hiccup — the real sizing gate still runs at exec.
+export async function evaluateCapitalMinSizeAffordability(
+  symbol: string,
+): Promise<CapitalMinSizeAffordability> {
+  const resolved = await resolveCapitalEpicRuntime(symbol);
+  const details = await loadMarketDetails(resolved.epic);
+  const priceCandidate =
+    Number.isFinite(details.bid as number) &&
+    Number.isFinite(details.offer as number)
+      ? ((details.bid as number) + (details.offer as number)) / 2
+      : Number.isFinite(details.bid as number)
+        ? (details.bid as number)
+        : Number.isFinite(details.offer as number)
+          ? (details.offer as number)
+          : NaN;
+  const referencePrice = Number.isFinite(priceCandidate) && priceCandidate > 0
+    ? priceCandidate
+    : null;
+  const assetCategory = scalpAssetCategoryFromInstrumentType(
+    normalizeTicker(symbol),
+    details.instrumentType,
+  );
+  const leverage =
+    CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
+    CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  const availableMarginUsd = await fetchCapitalAccountAvailableMarginUsd().catch(
+    () => null,
+  );
+
+  // Fail open on any missing input — let the real exec-time sizing gate decide.
+  if (
+    referencePrice === null ||
+    availableMarginUsd === null ||
+    !(Number.isFinite(details.minDealSize as number) && Number(details.minDealSize) > 0)
+  ) {
+    return {
+      affordable: true,
+      availableMarginUsd,
+      requiredMarginUsd: null,
+      minNotionalUsd: null,
+      minDealSize: details.minDealSize ?? null,
+      referencePrice,
+      leverage,
+    };
+  }
+
+  const forexConversion =
+    assetCategory === "forex"
+      ? await resolveCapitalForexBaseUnitUsdLive({
+          symbol,
+          pairPrice: referencePrice,
+        }).catch(() => ({ baseUnitUsd: null, reasonCodes: [] as string[] }))
+      : { baseUnitUsd: null, reasonCodes: [] as string[] };
+
+  // Probe the shared sizing logic with a requested notional large enough that the
+  // only thing that can reject is the min-size-vs-margin ceiling (line-1060 path).
+  const sizing = resolveCapitalScalpOrderSizing({
+    symbol,
+    assetCategory,
+    requestedNotionalUsd: Number.MAX_SAFE_INTEGER,
+    referencePrice,
+    minDealSize: details.minDealSize,
+    sizeDecimals: details.sizeDecimals,
+    availableMarginUsd,
+    leverageCap: leverage,
+    forexBaseUnitUsd: forexConversion.baseUnitUsd,
+  });
+
+  const minNotionalUsd = sizing.minNotionalUsd ?? null;
+  const requiredMarginUsd =
+    minNotionalUsd !== null && leverage > 0 ? minNotionalUsd / leverage : null;
+  // Only the margin ceiling counts as "unaffordable"; a null baseUnit / bad
+  // sizing input is a data problem, not an empty account — fail open there too.
+  const affordable = sizing.rejectReason !== "INSUFFICIENT_AVAILABLE_MARGIN";
+
+  return {
+    affordable,
+    availableMarginUsd,
+    requiredMarginUsd,
+    minNotionalUsd,
+    minDealSize: details.minDealSize,
+    referencePrice,
+    leverage,
+  };
 }
 
 async function openCapitalPosition(params: {

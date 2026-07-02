@@ -33,9 +33,11 @@ const INDEX_TOKENS = [
   "NAS100",
   "US30",
   "GER40",
+  "DE40",
   "UK100",
   "FRA40",
   "JPN225",
+  "J225",
   "QQQ",
 ];
 const METAL_SYMBOLS = new Set([

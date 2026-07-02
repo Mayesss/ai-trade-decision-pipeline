@@ -9,16 +9,15 @@ import { loadDecisionHistory, extractCapturedLeverages } from '../../lib/history
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
+import {
+  readChartCandlesCache,
+  writeChartCandlesCache,
+  normalizeChartCandles,
+  type ChartCandle,
+} from '../../lib/swing/chartCache';
 
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_CHART_LEVERAGE_OVERRIDE = 3;
-type ChartCandle = {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-};
 
 function isBitgetUnknownSymbolError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');
@@ -101,36 +100,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    const fetchBundleByPlatform = async (targetPlatform: AnalysisPlatform) => {
-      const fetchMarketBundle = targetPlatform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
-      return fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
-    };
-    let bundle: any;
-    try {
-      bundle = await fetchBundleByPlatform(platform);
-    } catch (err) {
-      if (!explicitPlatform && platform === 'bitget' && isBitgetUnknownSymbolError(err)) {
-        platform = 'capital';
+    const nowMsForCandles = Date.now();
+
+    // Boundary-bucketed candle cache: served for the rest of the current bar,
+    // warmed hourly by the analyze cron and written-through on a live miss here.
+    // Markers/positions below are always computed live.
+    let candles: ChartCandle[] = [];
+    const cachedCandles = await readChartCandlesCache({ symbol, platform, timeframe, nowMs: nowMsForCandles });
+    if (cachedCandles && cachedCandles.length >= boundedLimit) {
+      candles = cachedCandles.slice(-boundedLimit);
+    }
+
+    if (!candles.length) {
+      const fetchBundleByPlatform = async (targetPlatform: AnalysisPlatform) => {
+        const fetchMarketBundle = targetPlatform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
+        return fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
+      };
+      let bundle: any;
+      try {
         bundle = await fetchBundleByPlatform(platform);
-      } else {
-        throw err;
+      } catch (err) {
+        if (!explicitPlatform && platform === 'bitget' && isBitgetUnknownSymbolError(err)) {
+          platform = 'capital';
+          bundle = await fetchBundleByPlatform(platform);
+        } else {
+          throw err;
+        }
       }
+
+      const normalized = normalizeChartCandles(bundle.candles);
+      candles = normalized.slice(-boundedLimit);
+      // write-through so the next load in this bucket skips the broker fetch (uses
+      // the corrected platform if the bitget→capital fallback flipped it above)
+      void writeChartCandlesCache({ symbol, platform, timeframe, nowMs: nowMsForCandles, candles: normalized });
     }
 
     const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
-
-    const candles: ChartCandle[] = Array.isArray(bundle.candles)
-      ? bundle.candles
-          .slice(-boundedLimit)
-          .map((c: any) => ({
-            time: Math.floor(Number(c?.[0]) / 1000),
-            open: Number(c?.[1]),
-            high: Number(c?.[2]),
-            low: Number(c?.[3]),
-            close: Number(c?.[4]),
-          }))
-          .sort((a: ChartCandle, b: ChartCandle) => a.time - b.time)
-      : [];
 
     const candleMap = new Map<number, { close: number; open: number; high: number; low: number }>();
     for (const c of candles) {

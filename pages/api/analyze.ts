@@ -14,6 +14,7 @@ import { calculateMultiTFIndicators as calculateBitgetMultiTFIndicators } from '
 import { fetchNewsWithHeadlines, type Sentiment } from '../../lib/news';
 import {
     calculateCapitalMultiTFIndicators,
+    evaluateCapitalMinSizeAffordability,
     executeCapitalDecision,
     getCapitalCategoryLeverage,
     fetchCapitalMarketBundle,
@@ -48,6 +49,7 @@ import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { upsertSwingPosition } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
+import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
 import {
     CONTEXT_TIMEFRAME,
     DEFAULT_NOTIONAL_USDT,
@@ -502,6 +504,73 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 enforcePrimaryCloseGate,
                 timeFrame,
             });
+        }
+
+        // Margin-aware pre-skip (Capital, flat only): if the account can't cover the
+        // smallest tradeable size for this symbol, opening is impossible — skip before
+        // spending the AI call and record it as an intentional skip rather than letting
+        // it surface later as an INSUFFICIENT_AVAILABLE_MARGIN exec rejection. Open
+        // positions are exempt: HOLD/CLOSE still need to run to manage them. Fails open.
+        if (platform === 'capital' && !positionOpen) {
+            const afford = await evaluateCapitalMinSizeAffordability(symbol).catch(() => null);
+            if (afford && afford.affordable === false) {
+                const need =
+                    typeof afford.requiredMarginUsd === 'number' ? Math.ceil(afford.requiredMarginUsd) : null;
+                const have =
+                    typeof afford.availableMarginUsd === 'number' ? Math.floor(afford.availableMarginUsd) : null;
+                const reason =
+                    need !== null && have !== null
+                        ? `insufficient_margin_min_size:need≈${need} have≈${have}`
+                        : 'insufficient_margin_min_size';
+                emitGateDebug('insufficient_margin', {
+                    gate: 'INSUFFICIENT_MARGIN',
+                    availableMarginUsd: afford.availableMarginUsd,
+                    requiredMarginUsd: afford.requiredMarginUsd,
+                    minNotionalUsd: afford.minNotionalUsd,
+                    minDealSize: afford.minDealSize,
+                    leverage: afford.leverage,
+                });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'insufficient_margin',
+                    reason,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'insufficient_margin' };
+                await persistPreAiSkip({
+                    stage: 'insufficient_margin',
+                    decision,
+                    execResult: execRes,
+                    snapshot: { margin: afford },
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    usedTape: false,
+                    promptSkipped: true,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'INSUFFICIENT_MARGIN',
+                                  reason,
+                                  availableMarginUsd: afford.availableMarginUsd,
+                                  requiredMarginUsd: afford.requiredMarginUsd,
+                                  minNotionalUsd: afford.minNotionalUsd,
+                                  leverage: afford.leverage,
+                              },
+                          }
+                        : {}),
+                });
+            }
         }
 
         // 1) Product & parallel baseline fetches (fast)
@@ -1096,6 +1165,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // New decision recorded → bust the dashboard summary cache so the next load
         // reflects it. Best-effort; never blocks the trading path.
         await invalidateSwingSummaryCache();
+        // Warm the chart candle cache from candles already fetched for indicators
+        // (1H/4H/1D reused for free) plus one extra 15m fetch, so dashboard chart
+        // loads hit KV instead of the broker. Best-effort; never blocks trading.
+        try {
+            await warmChartCandlesFromAnalyze({
+                symbol,
+                platform,
+                nowMs: Date.now(),
+                rawCandlesByTf: indicators.rawCandles,
+                fetch15m: async () => {
+                    const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
+                    return (b as any)?.candles ?? [];
+                },
+            });
+        } catch (err) {
+            console.warn(`chart cache warm failed for ${symbol}:`, err);
+        }
         emitGateDebug('decision_recorded', {
             action: decision.action,
             usedTape,

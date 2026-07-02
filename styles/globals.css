@@ -323,3 +323,27 @@ body {
 .theme-dark .fill-lime-400 {
   fill: rgb(161 161 170 / 1); /* zinc-400 */
 }
+
+.neutral-highlight {
+  border-color: rgb(51 65 85 / 1);
+  background-color: rgb(51 65 85 / 1);
+  color: rgb(255 255 255 / 1);
+}
+
+.theme-dark .neutral-highlight {
+  border-color: rgb(255 255 255 / 0.95);
+  background-color: rgb(255 255 255 / 1);
+  color: rgb(24 24 27 / 1);
+}
+
+.ai-call-indicator {
+  display: inline-block;
+  border: 1px solid rgb(15 23 42 / 0.24);
+  background-color: rgb(51 65 85 / 1);
+}
+
+.theme-dark .ai-call-indicator {
+  border-color: rgb(255 255 255 / 0.95);
+  background-color: rgb(255 255 255 / 1);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.28);
+}
