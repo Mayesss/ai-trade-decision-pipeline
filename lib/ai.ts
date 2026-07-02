@@ -207,13 +207,22 @@ const ACTIONABILITY_ROOM_ATR = (() => {
     const n = Number(process.env.SWING_ACTIONABILITY_ROOM_ATR);
     return Number.isFinite(n) && n > 0 ? n : 1.5;
 })();
+// A confirmed setup pressing within this ATR distance of a near, unbroken MAJOR
+// (context) opposing level is rejected (the AI HOLDs those). 0.3 = 0 opens lost
+// in backtest; 0.5 saves more holds but costs ~1 marginal open/week.
+const ACTIONABILITY_WALL_ATR = (() => {
+    const n = Number(process.env.SWING_ACTIONABILITY_WALL_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 0.3;
+})();
 
 export type ActionabilityInputs = {
     microEntryOk: boolean;
     primaryBreakoutConfirmed: boolean;
     primaryBreakdownConfirmed: boolean;
     primaryBreakoutRetestOk: boolean;
+    primaryBreakoutRetestDir?: string | null;
     primaryBos: boolean;
+    primaryBosDir?: string | null;
     primaryBreakState?: string | null; // 'above' | 'below' | 'inside'
     primarySupportDistAtr?: number | null;
     primaryResistanceDistAtr?: number | null;
@@ -222,6 +231,12 @@ export type ActionabilityInputs = {
     microBos: boolean;
     microBosDir?: string | null;
     microBreakState?: string | null;
+    // major (context/weekly) opposing wall — used to reject confirmed setups that
+    // press straight into a near, unbroken higher-timeframe level.
+    contextSupportDistAtr?: number | null;
+    contextSupportState?: string | null;
+    contextResistanceDistAtr?: number | null;
+    contextResistanceState?: string | null;
 };
 
 export function evaluateActionability(x: ActionabilityInputs): { actionable: boolean; reason: string } {
@@ -234,7 +249,33 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
         x.primaryBreakoutRetestOk ||
         x.primaryBos ||
         (!!x.primaryBreakState && x.primaryBreakState !== 'inside');
-    if (confirmed) return { actionable: true, reason: 'confirmed_primary_structure' };
+    if (confirmed) {
+        // ...but skip if the confirmed direction presses straight into a NEAR, UNBROKEN
+        // MAJOR (context/weekly) opposing wall — the AI reliably HOLDs "confirmed
+        // breakdown but sitting on major weekly support" (and the bullish mirror).
+        // Validated: at 0.3 ATR this drops 104 such HOLD-calls with 0 opens lost.
+        // Scoped to CONTEXT levels (opens push through primary levels) and to unbroken
+        // walls (a broken/retesting level is no longer in the way).
+        const confDown =
+            x.primaryBreakdownConfirmed ||
+            (x.primaryBreakoutRetestOk && x.primaryBreakoutRetestDir === 'down') ||
+            (x.primaryBos && x.primaryBosDir === 'down') ||
+            x.primaryBreakState === 'below';
+        const confUp =
+            x.primaryBreakoutConfirmed ||
+            (x.primaryBreakoutRetestOk && x.primaryBreakoutRetestDir === 'up') ||
+            (x.primaryBos && x.primaryBosDir === 'up') ||
+            x.primaryBreakState === 'above';
+        const dir = confDown && !confUp ? 'down' : confUp && !confDown ? 'up' : null;
+        const blocking = (s?: string | null) => !!s && s !== 'broken' && s !== 'retesting';
+        const csd = Number.isFinite(x.contextSupportDistAtr as number) ? (x.contextSupportDistAtr as number) : null;
+        const crd = Number.isFinite(x.contextResistanceDistAtr as number) ? (x.contextResistanceDistAtr as number) : null;
+        const intoWall =
+            (dir === 'down' && csd != null && csd <= ACTIONABILITY_WALL_ATR && blocking(x.contextSupportState)) ||
+            (dir === 'up' && crd != null && crd <= ACTIONABILITY_WALL_ATR && blocking(x.contextResistanceState));
+        if (intoWall) return { actionable: false, reason: 'into_context_wall' };
+        return { actionable: true, reason: 'confirmed_primary_structure' };
+    }
     // (b) tight bounce — at one level, opposite level far (room to run), micro turning that way.
     const sup = Number.isFinite(x.primarySupportDistAtr as number) ? (x.primarySupportDistAtr as number) : null;
     const res = Number.isFinite(x.primaryResistanceDistAtr as number) ? (x.primaryResistanceDistAtr as number) : null;
@@ -867,7 +908,9 @@ Respond with strict JSON only:
         primaryBreakoutConfirmed,
         primaryBreakdownConfirmed,
         primaryBreakoutRetestOk: breakoutRetestOk4h,
+        primaryBreakoutRetestDir: breakoutRetestDir4h,
         primaryBos: bos4h,
+        primaryBosDir: bosDir4h,
         primaryBreakState: structureBreakState4h,
         primarySupportDistAtr: primarySR?.support?.dist_in_atr ?? null,
         primaryResistanceDistAtr: primarySR?.resistance?.dist_in_atr ?? null,
@@ -876,6 +919,10 @@ Respond with strict JSON only:
         microBos,
         microBosDir,
         microBreakState: microStructureBreakState,
+        contextSupportDistAtr: contextSR?.support?.dist_in_atr ?? null,
+        contextSupportState: contextSR?.support?.level_state ?? null,
+        contextResistanceDistAtr: contextSR?.resistance?.dist_in_atr ?? null,
+        contextResistanceState: contextSR?.resistance?.level_state ?? null,
     });
 
     return { signalStrength, context, assemble, actionability };

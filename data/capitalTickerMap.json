@@ -17,6 +17,8 @@
   "US100": "US100",
   "NAS100": "US100",
   "USTECH100": "US100",
+  "DE40": "DE40",
+  "J225": "J225",
   "OIL_CRUDE": "OIL_CRUDE",
   "WTI": "OIL_CRUDE",
   "USOIL": "OIL_CRUDE",
