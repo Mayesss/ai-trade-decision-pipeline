@@ -21,6 +21,7 @@ import {
   type ScalpOpeningHoursSchedule,
   type ScalpSymbolMarketMetadata,
 } from "./scalp/symbolMarketMetadata";
+import { isPreciousMetalFamilySymbol } from "./scalp/symbolInfo";
 import type { ScalpAssetCategory } from "./scalp/symbolInfo";
 import type { TradeDecision } from "./trading";
 
@@ -87,6 +88,14 @@ type MarketDetails = {
   decimalPlacesFactor: number | null;
   scalingFactor: number | null;
   openingHours: ScalpOpeningHoursSchedule | null;
+  // Capital's own margin requirement for the instrument (marginFactor +
+  // marginFactorUnit from /markets/{epic}). brokerLeverage is the derived max
+  // leverage (100/marginFactor for PERCENTAGE, 1/marginFactor otherwise) — the
+  // real ceiling Capital's risk engine enforces, used for sizing so orders fit
+  // instead of being rejected with RISK_CHECK. Null when the API omits it.
+  marginFactor: number | null;
+  marginFactorUnit: string | null;
+  brokerLeverage: number | null;
 };
 
 type ResolveEpicResult = {
@@ -226,11 +235,44 @@ function toPositiveNumberWithFallback(value: unknown, fallback: number): number 
 const CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
   forex: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_FOREX, 30),
   index: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_INDEX, 20),
-  commodity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY, 20),
+  // Energy/base commodities (copper, oil, gas) margin at ~10% on Capital, i.e.
+  // ~10x — NOT the 20x metals get. We size at this conservative floor so orders
+  // fit Capital's real margin instead of being rejected with RISK_CHECK; if the
+  // real ceiling is higher we simply open a smaller position. Metals are split
+  // out below via SCALP_CAPITAL_LEVERAGE_METAL.
+  commodity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY, 10),
   equity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_EQUITY, 5),
   crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
   other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
 };
+// Precious metals (gold/silver/platinum/palladium) margin at ~5% (~20x) on
+// Capital — higher than energy/base commodities — so they get their own value
+// rather than being downsized to the commodity floor.
+const CAPITAL_LEVERAGE_METAL = toPositiveNumberWithFallback(
+  process.env.SCALP_CAPITAL_LEVERAGE_METAL,
+  20,
+);
+
+// Effective leverage used to size a Capital position: Capital's real
+// margin-derived leverage when the markets API exposes it (brokerLeverage > 1),
+// otherwise a per-asset-class floor — with precious metals split out from
+// energy/base commodities since they margin very differently.
+function resolveCapitalEffectiveLeverage(
+  symbol: string,
+  assetCategory: ScalpAssetCategory,
+  brokerLeverage?: number | null,
+): number {
+  if (typeof brokerLeverage === "number" && brokerLeverage > 1) {
+    return brokerLeverage;
+  }
+  if (assetCategory === "commodity" && isPreciousMetalFamilySymbol(normalizeTicker(symbol))) {
+    return CAPITAL_LEVERAGE_METAL;
+  }
+  return (
+    CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
+    CAPITAL_LEVERAGE_BY_CATEGORY.other
+  );
+}
 
 // Predefined per-asset-class leverage Capital applies to a symbol. Capital does
 // not take a model-chosen leverage on the swing path — each asset class trades at
@@ -243,9 +285,7 @@ export function getCapitalCategoryLeverage(symbol: string): number {
     normalizeTicker(symbol),
     null,
   );
-  return (
-    CAPITAL_LEVERAGE_BY_CATEGORY[category] ?? CAPITAL_LEVERAGE_BY_CATEGORY.other
-  );
+  return resolveCapitalEffectiveLeverage(symbol, category);
 }
 const CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS = Math.max(
   5_000,
@@ -2293,6 +2333,32 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
   const openingHours = parseCapitalOpeningHours(
     market?.instrument?.openingHours ?? market?.openingHours,
   );
+  const marginFactorRaw = safeNumber(
+    market?.instrument?.marginFactor ??
+      market?.marginFactor ??
+      market?.dealingRules?.marginFactor?.value,
+    NaN,
+  );
+  const marginFactor =
+    Number.isFinite(marginFactorRaw) && marginFactorRaw > 0 ? marginFactorRaw : null;
+  const marginFactorUnit = normalizeCapitalText(
+    market?.instrument?.marginFactorUnit ??
+      market?.marginFactorUnit ??
+      market?.dealingRules?.marginFactor?.unit,
+  );
+  const brokerLeverageRaw =
+    marginFactor !== null
+      ? String(marginFactorUnit || "").toUpperCase() === "PERCENTAGE"
+        ? 100 / marginFactor
+        : 1 / marginFactor
+      : null;
+  // Capital's /markets endpoint returns marginFactor=100% (→ 1x) as a
+  // non-informative default on some accounts — it does NOT reflect the real
+  // leverage the risk engine applies at fill (observed: index positions opened
+  // at ~20x despite a 100% marginFactor). Only trust it when it implies real
+  // leverage (>1x); otherwise leave null so callers fall back to category values.
+  const brokerLeverage =
+    brokerLeverageRaw !== null && brokerLeverageRaw > 1 ? brokerLeverageRaw : null;
   return {
     bid: Number.isFinite(bid) ? bid : null,
     offer: Number.isFinite(offer) ? offer : null,
@@ -2307,6 +2373,9 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
     decimalPlacesFactor,
     scalingFactor,
     openingHours,
+    marginFactor,
+    marginFactorUnit: marginFactorUnit ? marginFactorUnit.toUpperCase() : null,
+    brokerLeverage: brokerLeverage !== null && brokerLeverage > 0 ? brokerLeverage : null,
   };
 }
 
@@ -3081,6 +3150,9 @@ export type CapitalMinSizeAffordability = {
   minDealSize: number | null;
   referencePrice: number | null;
   leverage: number;
+  // Whether `leverage` came from Capital's real marginFactor (true) or fell back
+  // to our category default because the API omitted it (false).
+  brokerLeverageResolved: boolean;
 };
 
 // Can the account cover the SMALLEST tradeable position for this symbol right now?
@@ -3110,9 +3182,15 @@ export async function evaluateCapitalMinSizeAffordability(
     normalizeTicker(symbol),
     details.instrumentType,
   );
-  const leverage =
-    CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
-    CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  // Prefer Capital's real margin-derived leverage; fall back to our per-asset
+  // floor (metals split from energy/base commodities) when the API omits it.
+  const brokerLeverageResolved =
+    typeof details.brokerLeverage === "number" && details.brokerLeverage > 1;
+  const leverage = resolveCapitalEffectiveLeverage(
+    symbol,
+    assetCategory,
+    details.brokerLeverage,
+  );
   const availableMarginUsd = await fetchCapitalAccountAvailableMarginUsd().catch(
     () => null,
   );
@@ -3131,6 +3209,7 @@ export async function evaluateCapitalMinSizeAffordability(
       minDealSize: details.minDealSize ?? null,
       referencePrice,
       leverage,
+      brokerLeverageResolved,
     };
   }
 
@@ -3171,6 +3250,7 @@ export async function evaluateCapitalMinSizeAffordability(
     minDealSize: details.minDealSize,
     referencePrice,
     leverage,
+    brokerLeverageResolved,
   };
 }
 
@@ -3231,9 +3311,15 @@ async function openCapitalPosition(params: {
     normalizeTicker(symbol),
     details.instrumentType,
   );
-  const accountLeverageCap =
-    CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
-    CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  // Prefer Capital's real margin-derived leverage when the markets API exposes
+  // it (>1x); else a per-asset-class floor (metals split from energy/base
+  // commodities). Sizing at this floor keeps the order within Capital's real
+  // margin so it fills instead of being rejected with RISK_CHECK.
+  const accountLeverageCap = resolveCapitalEffectiveLeverage(
+    symbol,
+    assetCategory,
+    details.brokerLeverage,
+  );
   // notionalLeverageByCategory (swing): notional = margin * category leverage.
   // Otherwise (scalp): sideSizeUSDT is the notional directly — account-leverage
   // mode just sets the margin ceiling, the legacy `leverage` only applies when

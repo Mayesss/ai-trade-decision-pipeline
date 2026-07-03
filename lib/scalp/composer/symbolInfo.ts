@@ -31,6 +31,7 @@ const CRYPTO_CODES = new Set([
 const INDEX_TOKENS = [
   "US500",
   "NAS100",
+  "US100",
   "US30",
   "GER40",
   "DE40",
@@ -38,6 +39,7 @@ const INDEX_TOKENS = [
   "FRA40",
   "JPN225",
   "J225",
+  "HK50",
   "QQQ",
 ];
 const METAL_SYMBOLS = new Set([
@@ -52,7 +54,14 @@ const METAL_SYMBOLS = new Set([
   "GOLD",
   "SILVER",
 ]);
-const COMMODITY_SYMBOLS = new Set(["USOIL", "UKOIL", "NGAS"]);
+const COMMODITY_SYMBOLS = new Set([
+  "USOIL",
+  "UKOIL",
+  "NGAS",
+  "COPPER",
+  "OIL_CRUDE",
+  "NATURALGAS",
+]);
 
 function normalizeSymbol(value: unknown): string {
   return String(value || "")
