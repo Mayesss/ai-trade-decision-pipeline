@@ -5,7 +5,7 @@ import {
   fetchRecentPositionWindows,
 } from '../../lib/analytics';
 import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/capital';
-import { loadDecisionHistory, extractCapturedLeverages } from '../../lib/history';
+import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
@@ -15,6 +15,10 @@ import {
   normalizeChartCandles,
   type ChartCandle,
 } from '../../lib/swing/chartCache';
+import {
+  readPositionOverlayCache,
+  writePositionOverlayCache,
+} from '../../lib/swing/positionOverlayCache';
 
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_CHART_LEVERAGE_OVERRIDE = 3;
@@ -149,7 +153,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const windowStartMs = Math.max(0, Math.min(firstCandleMs, nowMs - inferredRangeMs));
     const historyHours = Math.max(24, Math.ceil((nowMs - windowStartMs) / (60 * 60 * 1000)));
     const historyLimit = Math.max(200, Math.min(1_200, historyHours * 8));
-    const history = await loadDecisionHistory(symbol, historyLimit, platform);
+    // Only entry/exit markers (BUY/SELL/CLOSE) are drawn on the chart, so read them
+    // straight from the per-symbol marker index (window-bounded) rather than
+    // scanning the full decision index. KV-only; same data, far fewer round-trips.
+    const history = await loadSymbolMarkerHistory(symbol, platform, {
+      fromMs: windowStartMs,
+      toMs: nowMs,
+      limit: historyLimit,
+    });
     const markers =
       history
         ?.filter((h) => {
@@ -227,6 +238,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     let positions: any[] = [];
+    // Serve the position overlay from a short-lived KV cache when present: it skips
+    // the Neon closed-positions read (lowers Neon transfer) and the live broker
+    // fetch below. Only successful computations are cached, so an error path retries
+    // next load rather than caching an empty overlay.
+    const cachedOverlay = await readPositionOverlayCache({ symbol, platform, timeframe, limit: boundedLimit });
+    if (cachedOverlay) {
+      positions = cachedOverlay as any[];
+    } else {
     try {
       const closed =
         platform === 'capital'
@@ -307,9 +326,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           exitDecision: findNearestDecision(p.exitTimestamp),
         };
       });
+      // Cache only on success so an error path retries rather than caching empty.
+      void writePositionOverlayCache({ symbol, platform, timeframe, limit: boundedLimit, overlay: positions });
     } catch (err) {
       console.warn(`Failed to build position overlays for ${symbol}:`, err);
       positions = [];
+    }
     }
 
     res.status(200).json({ symbol, platform, timeframe, candles, markers, positions });

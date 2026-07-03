@@ -9,6 +9,29 @@ const HISTORY_INDEX_KEY = 'decision:index';
 const HISTORY_KEY_PREFIX = 'decision';
 const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
+// Per-symbol marker index: a small sorted set (score = timestamp, member = the
+// main entry key) holding ONLY entry/exit decisions (BUY/SELL/CLOSE) — the ones
+// that draw a chart arrow. The chart endpoint reads this instead of scanning the
+// global decision index for one symbol (which pulled up to ~1200 entries across
+// dozens of KV round-trips). Stays entirely on KV — no Neon transfer.
+const MARKER_INDEX_PREFIX = 'decision:markers';
+// One-shot flag marking that a symbol's marker index has been backfilled from the
+// legacy global index, so the slow fallback scan runs at most once per symbol.
+const MARKER_SEEDED_PREFIX = 'decision:markers:seeded';
+const MARKER_ACTIONS = new Set(['BUY', 'SELL', 'CLOSE']);
+
+function isMarkerAction(action: unknown): boolean {
+    return MARKER_ACTIONS.has(String(action || '').trim().toUpperCase());
+}
+
+function markerIndexKey(symbol: string, platform?: string): string {
+    return `${MARKER_INDEX_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
+}
+
+function markerSeededKey(symbol: string, platform?: string): string {
+    return `${MARKER_SEEDED_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
+}
+
 function ensureKvConfig() {
     if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
         throw new Error('Missing upstash_payasyougo_KV_REST_API_URL or upstash_payasyougo_KV_REST_API_TOKEN');
@@ -62,6 +85,21 @@ async function kvZRemRangeByScore(key: string, minScore: number, maxScore: numbe
 
 async function kvZRevRange(key: string, start: number, stop: number): Promise<string[]> {
     const res = await kvCommand('ZREVRANGE', key, start, stop);
+    return Array.isArray(res) ? res : [];
+}
+
+// ZREVRANGEBYSCORE key max min [LIMIT 0 count] — members with score in [min,max],
+// highest score first. Used to pull just the entry/exit markers inside a chart
+// window from the per-symbol marker index (below).
+async function kvZRevRangeByScore(
+    key: string,
+    max: number | string,
+    min: number | string,
+    limit?: number,
+): Promise<string[]> {
+    const args: (string | number)[] = [key, max, min];
+    if (typeof limit === 'number' && limit > 0) args.push('LIMIT', 0, limit);
+    const res = await kvCommand('ZREVRANGEBYSCORE', ...args);
     return Array.isArray(res) ? res : [];
 }
 
@@ -160,6 +198,14 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
         // prune index entries older than TTL (by timestamp score)
         const cutoff = Date.now() - HISTORY_TTL_SECONDS * 1000;
         await kvZRemRangeByScore(HISTORY_INDEX_KEY, 0, cutoff);
+
+        // Mirror entry/exit decisions into the per-symbol marker index so the chart
+        // can fetch just this symbol's markers without scanning the global index.
+        if (isMarkerAction(entry.aiDecision?.action)) {
+            const mKey = markerIndexKey(entry.symbol, entry.platform);
+            await kvZAdd(mKey, entry.timestamp, key);
+            await kvZRemRangeByScore(mKey, 0, cutoff);
+        }
     } catch (err) {
         console.error('Failed to append decision history:', err);
     }
@@ -208,6 +254,77 @@ export async function loadDecisionHistory(symbol?: string, limit = 20, platform?
         }
     }
     return results;
+}
+
+// Fetch just the entry/exit marker decisions (BUY/SELL/CLOSE) for one symbol in a
+// time window, straight from the per-symbol marker index — a handful of KV
+// round-trips instead of scanning the whole global index. The chart endpoint uses
+// this for markers + captured-leverage. Entirely KV; never touches Neon.
+//
+// One-time backfill: the marker index only starts filling from decisions written
+// after it shipped, so on the first read for a symbol (no `seeded` flag) we do a
+// single legacy scan, populate the index from it, and set the flag — subsequent
+// reads are all fast. Returns entries newest-first.
+export async function loadSymbolMarkerHistory(
+    symbol: string,
+    platform?: string,
+    opts?: { fromMs?: number; toMs?: number; limit?: number },
+): Promise<DecisionHistoryEntry[]> {
+    ensureKvConfig();
+    const upperSymbol = symbol.toUpperCase();
+    const mKey = markerIndexKey(symbol, platform);
+    const min = Math.max(0, Math.floor(opts?.fromMs ?? 0));
+    const max = typeof opts?.toMs === 'number' ? Math.floor(opts.toMs) : Date.now();
+    const limit = typeof opts?.limit === 'number' && opts.limit > 0 ? opts.limit : 500;
+
+    const readFromIndex = async (): Promise<DecisionHistoryEntry[]> => {
+        const memberKeys = await kvZRevRangeByScore(mKey, max, min, limit);
+        if (!memberKeys.length) return [];
+        const values = await kvMGet(memberKeys);
+        const out: DecisionHistoryEntry[] = [];
+        for (const raw of values) {
+            if (!raw) continue;
+            try {
+                out.push(JSON.parse(raw));
+            } catch (err) {
+                console.warn('Skipping invalid marker entry:', err);
+            }
+        }
+        return out;
+    };
+
+    try {
+        const fromIndex = await readFromIndex();
+        if (fromIndex.length) return fromIndex;
+
+        // Empty index → backfill once (guarded by the seeded flag so a symbol that
+        // genuinely has no markers doesn't re-scan on every load).
+        const seededKey = markerSeededKey(symbol, platform);
+        const seeded = await kvGet(seededKey);
+        if (seeded) return [];
+
+        const legacy = (await loadDecisionHistory(symbol, 1200, platform)).filter((h) =>
+            isMarkerAction(h?.aiDecision?.action),
+        );
+        // Populate the index so future reads are fast.
+        await Promise.all(
+            legacy.map((h) =>
+                kvZAdd(mKey, h.timestamp, keyFor(h.symbol, h.timestamp, h.platform)).catch(() => undefined),
+            ),
+        );
+        await kvSetEx(seededKey, HISTORY_TTL_SECONDS, '1');
+        // Return only the entries inside the requested window, newest-first.
+        return legacy
+            .filter((h) => {
+                const ts = Number(h.timestamp);
+                return Number.isFinite(ts) && ts >= min && ts <= max && h.symbol?.toUpperCase() === upperSymbol;
+            })
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, limit);
+    } catch (err) {
+        console.warn('loadSymbolMarkerHistory failed:', err);
+        return [];
+    }
 }
 
 // Extract the leverage we actually set at execution time from decision history,

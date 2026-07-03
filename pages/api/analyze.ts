@@ -603,6 +603,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // Warm the chart candle cache from candles already fetched for indicators
+        // (1H/4H/1D reused for free) plus one extra 15m fetch, so dashboard chart
+        // loads hit KV instead of the broker. Placed here — right after indicators,
+        // BEFORE the gate short-circuits below — so every tick warms, not just the
+        // ~24% that reach a full AI decision. Best-effort; never blocks trading.
+        try {
+            await warmChartCandlesFromAnalyze({
+                symbol,
+                platform,
+                nowMs: Date.now(),
+                rawCandlesByTf: indicators.rawCandles,
+                fetch15m: async () => {
+                    const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
+                    return (b as any)?.candles ?? [];
+                },
+            });
+        } catch (err) {
+            console.warn(`chart cache warm failed for ${symbol}:`, err);
+        }
+
         const positionForPrompt =
             positionOpen
                 ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}, currentPnl=${positionInfo.currentPnl}`
@@ -1165,23 +1185,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // New decision recorded → bust the dashboard summary cache so the next load
         // reflects it. Best-effort; never blocks the trading path.
         await invalidateSwingSummaryCache();
-        // Warm the chart candle cache from candles already fetched for indicators
-        // (1H/4H/1D reused for free) plus one extra 15m fetch, so dashboard chart
-        // loads hit KV instead of the broker. Best-effort; never blocks trading.
-        try {
-            await warmChartCandlesFromAnalyze({
-                symbol,
-                platform,
-                nowMs: Date.now(),
-                rawCandlesByTf: indicators.rawCandles,
-                fetch15m: async () => {
-                    const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
-                    return (b as any)?.candles ?? [];
-                },
-            });
-        } catch (err) {
-            console.warn(`chart cache warm failed for ${symbol}:`, err);
-        }
         emitGateDebug('decision_recorded', {
             action: decision.action,
             usedTape,
