@@ -135,6 +135,9 @@ export type DecisionSnapshot = {
     newsHeadlines?: string[];
     positionContext?: PositionContext | null;
     momentumSignals?: MomentumSignals;
+    // actionability gate verdict for this tick; on called ticks this records which
+    // branch admitted the call (skips record it via skipReason already)
+    actionability?: { actionable: boolean; reason: string } | null;
     platform?: string;
     newsSource?: string;
     instrumentId?: string;

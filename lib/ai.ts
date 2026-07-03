@@ -215,6 +215,35 @@ const ACTIONABILITY_WALL_ATR = (() => {
     return Number.isFinite(n) && n > 0 ? n : 0.3;
 })();
 
+// ------------------------------
+// Re-entry cooldown (anti-churn, flat entries)
+// ------------------------------
+// After a position closes (AI close, auto-close or broker stop), re-entering the
+// SAME direction on the same symbol is blocked for this many minutes. Motivated by
+// the decision history: same-direction re-opens within hours of a close were fee
+// bleed (e.g. 3 NATURALGAS SELLs and 3 US100 BUYs on single days). One primary bar
+// (4H) by default; 0 disables.
+export const REENTRY_COOLDOWN_MIN = (() => {
+    const n = Number(process.env.SWING_REENTRY_COOLDOWN_MIN);
+    return Number.isFinite(n) && n >= 0 ? n : 240;
+})();
+
+export type LastClosedPosition = {
+    side: 'long' | 'short';
+    exitTsMs: number;
+};
+
+// The cooldown that applies to a flat tick right now, or null when inactive.
+export function resolveReentryCooldown(
+    lastClosed: LastClosedPosition | null | undefined,
+    nowMs = Date.now(),
+): { blockedSide: 'long' | 'short'; minutesLeft: number } | null {
+    if (!lastClosed || REENTRY_COOLDOWN_MIN <= 0) return null;
+    const elapsedMin = (nowMs - lastClosed.exitTsMs) / 60_000;
+    if (!(elapsedMin >= 0) || elapsedMin >= REENTRY_COOLDOWN_MIN) return null;
+    return { blockedSide: lastClosed.side, minutesLeft: Math.ceil(REENTRY_COOLDOWN_MIN - elapsedMin) };
+}
+
 export type ActionabilityInputs = {
     microEntryOk: boolean;
     primaryBreakoutConfirmed: boolean;
@@ -321,6 +350,7 @@ export function computeSwingState(
     decisionPolicy?: DecisionPolicy,
     category?: string | null,
     platform?: string | null,
+    lastClosedPosition?: LastClosedPosition | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -616,6 +646,12 @@ export function computeSwingState(
     const strictPolicy = resolvedDecisionPolicy === 'strict';
     const decisionPolicyLabel = strictPolicy ? 'strict_guardrails' : 'balanced_guardrails';
 
+    // Anti-churn: active only when flat (in-position ticks don't re-enter).
+    const cooldownNow = position_context ? null : resolveReentryCooldown(lastClosedPosition);
+    const reentryCooldown = cooldownNow
+        ? { blocked_side: cooldownNow.blockedSide, minutes_left: cooldownNow.minutesLeft }
+        : null;
+
     // Extension thresholds: single source of truth. Referenced in the soft-judgment
     // guidance below so the prose can never drift from the numbers we actually use.
     const extensionMicroAvoid = strictPolicy ? 2.5 : 2.8;
@@ -762,7 +798,7 @@ export function computeSwingState(
         },
         position: position_context
             ? { open: true, ...position_context }
-            : { open: false, status: position_status },
+            : { open: false, status: position_status, reentry_cooldown: reentryCooldown },
         closing_guardrails: position_context ? closingGuidance : null,
     };
 
@@ -839,11 +875,12 @@ DECISION OWNERSHIP
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
   3. Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).
   4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.
-  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.
+  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.${REENTRY_COOLDOWN_MIN > 0 ? `\n  6. Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).` : ''}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
+- Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.
@@ -1042,8 +1079,10 @@ export function postprocessDecision(params: {
     recentActions: { action: string; timestamp: number }[];
     positionContext: PositionContext | null;
     policy?: DecisionPolicy;
+    lastClosedPosition?: LastClosedPosition | null;
 }) {
-    const { decision, context, gates, positionOpen, recentActions, positionContext, policy } = params;
+    const { decision, context, gates, positionOpen, recentActions, positionContext, policy, lastClosedPosition } =
+        params;
     const resolvedDecisionPolicy = resolveDecisionPolicy(policy);
     const strictPolicy = resolvedDecisionPolicy === 'strict';
     const signalStrength = computeSignalStrength(context);
@@ -1085,6 +1124,13 @@ export function postprocessDecision(params: {
                 signalStrength !== 'LOW' &&
                 (context.breakout_retest_ok_primary || context.aligned_driver_count >= 4));
         if (!allowException) action = 'HOLD';
+    }
+
+    // Re-entry cooldown: when flat, block re-opening the direction that just closed.
+    // Opposite-direction entries stay allowed (a reversal thesis is a new trade).
+    if (!positionOpen && (action === 'BUY' || action === 'SELL')) {
+        const cooldown = resolveReentryCooldown(lastClosedPosition);
+        if (cooldown && desiredSide === cooldown.blockedSide) action = 'HOLD';
     }
 
     if (action === 'CLOSE' || action === 'REVERSE') {

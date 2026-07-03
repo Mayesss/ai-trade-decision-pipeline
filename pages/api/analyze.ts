@@ -36,10 +36,11 @@ import {
     computeMomentumSignals,
     postprocessDecision,
     resolveDecisionPolicy,
+    REENTRY_COOLDOWN_MIN,
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
-import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
+import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
@@ -47,9 +48,10 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
-import { upsertSwingPosition } from '../../lib/swing/pg';
+import { loadClosedSwingPositions, upsertSwingPosition } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
+import { warmPositionOverlayCacheFromAnalyze } from '../../lib/swing/positionOverlayCache';
 import {
     CONTEXT_TIMEFRAME,
     DEFAULT_NOTIONAL_USDT,
@@ -603,22 +605,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // Warm the chart candle cache from candles already fetched for indicators
-        // (1H/4H/1D reused for free) plus one extra 15m fetch, so dashboard chart
-        // loads hit KV instead of the broker. Placed here — right after indicators,
-        // BEFORE the gate short-circuits below — so every tick warms, not just the
-        // ~24% that reach a full AI decision. Best-effort; never blocks trading.
+        // Warm the dashboard chart caches before any decision gates can return:
+        // candles reuse indicator data (plus one 15m fetch), and overlays use the
+        // persisted closed-position mirror plus the open position already fetched
+        // above. Best-effort; never blocks trading.
         try {
-            await warmChartCandlesFromAnalyze({
-                symbol,
-                platform,
-                nowMs: Date.now(),
-                rawCandlesByTf: indicators.rawCandles,
-                fetch15m: async () => {
-                    const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
-                    return (b as any)?.candles ?? [];
-                },
-            });
+            const nowMs = Date.now();
+            await Promise.all([
+                warmChartCandlesFromAnalyze({
+                    symbol,
+                    platform,
+                    nowMs,
+                    rawCandlesByTf: indicators.rawCandles,
+                    fetch15m: async () => {
+                        const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
+                        return (b as any)?.candles ?? [];
+                    },
+                }),
+                warmPositionOverlayCacheFromAnalyze({
+                    symbol,
+                    platform,
+                    nowMs,
+                    openPositionInfo: positionInfo,
+                }),
+            ]);
         } catch (err) {
             console.warn(`chart cache warm failed for ${symbol}:`, err);
         }
@@ -855,6 +865,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxProfitPct: positionExtrema.maxProfitPct,
             enteredAt: pstate.enteredAt,
         });
+        // Re-entry cooldown input: most recent close on this symbol (AI close,
+        // auto-close or broker stop — swing.positions records them all). Only needed
+        // when flat; enforcement happens in postprocessDecision, the prompt just
+        // states the constraint. Fails open on read errors.
+        let lastClosedPosition: LastClosedPosition | null = null;
+        if (!positionOpen && REENTRY_COOLDOWN_MIN > 0) {
+            try {
+                const recentClosed = await loadClosedSwingPositions({
+                    platform,
+                    symbol,
+                    fromMs: Date.now() - REENTRY_COOLDOWN_MIN * 60_000,
+                    limit: 10,
+                });
+                const last = recentClosed.at(-1);
+                if (last?.side && Number.isFinite(last.exitTimestamp as number)) {
+                    lastClosedPosition = { side: last.side, exitTsMs: Number(last.exitTimestamp) };
+                }
+            } catch (err) {
+                console.warn(`Could not load recent closed positions for ${symbol}:`, err);
+            }
+        }
+
         const recentHistory = await loadDecisionHistory(symbol, 5, platform);
         const recentActions = recentHistory
             .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
@@ -968,6 +1000,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             decisionPolicy,
             category,
             platform,
+            lastClosedPosition,
         );
         const { context, actionability } = swingState;
 
@@ -1040,6 +1073,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             recentActions,
             positionContext,
             policy: decisionPolicy,
+            lastClosedPosition,
         });
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
@@ -1160,6 +1194,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             forexSessionContext,
             positionContext,
             momentumSignals,
+            // Which actionability branch admitted this call (confirmed_primary_structure /
+            // bounce_long / bounce_short when flat). Skips already record theirs; persisting
+            // it here makes per-branch outcome tracking a SQL query instead of a
+            // reverse-engineering job over prompt STATE.
+            actionability,
         };
 
         await appendDecisionHistory({
@@ -1185,6 +1224,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // New decision recorded → bust the dashboard summary cache so the next load
         // reflects it. Best-effort; never blocks the trading path.
         await invalidateSwingSummaryCache();
+        try {
+            const overlayPositionInfo =
+                !dryRun && execRes?.placed ? await fetchPositionInfo(symbol).catch(() => positionInfo) : positionInfo;
+            await warmPositionOverlayCacheFromAnalyze({
+                symbol,
+                platform,
+                nowMs: Date.now(),
+                openPositionInfo: overlayPositionInfo,
+            });
+        } catch (err) {
+            console.warn(`chart overlay post-decision warm failed for ${symbol}:`, err);
+        }
         emitGateDebug('decision_recorded', {
             action: decision.action,
             usedTape,

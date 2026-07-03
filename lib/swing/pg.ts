@@ -27,6 +27,11 @@ function finitePos(value: unknown): number | null {
 }
 
 function finite(value: unknown): number | null {
+    // Number(null) === 0, so a bare Number() coercion fabricates zeros out of
+    // explicit nulls (e.g. Capital transaction imports pass entryTimestamp: null,
+    // which then persisted as entry_ts_ms = 0 and — being non-null — clobbered
+    // enriched values through the upsert's COALESCE on every re-sync).
+    if (value == null) return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
 }
