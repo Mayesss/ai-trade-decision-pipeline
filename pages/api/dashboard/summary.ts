@@ -141,22 +141,34 @@ function positiveNumber(value: unknown): number | null {
   return n !== null && n > 0 ? n : null;
 }
 
-function derivePnlPctFromNetNotional(window: PositionWindow): number | null {
+function derivePnlPctFromNetExposure(window: PositionWindow): number | null {
   const pnlNet = finiteNumber(window.pnlNet);
   const notional = positiveNumber(window.notional);
   if (pnlNet === null || notional === null) return null;
-  return (pnlNet / notional) * 100;
+  const leverage = positiveNumber(window.leverage);
+  const basis = leverage !== null ? notional / leverage : notional;
+  return basis > 0 ? (pnlNet / basis) * 100 : null;
 }
 
-function withCapitalNotionalPct(window: PositionWindow): PositionWindow {
-  const derivedPct = derivePnlPctFromNetNotional(window);
+function withDerivedPnlPct(window: PositionWindow): PositionWindow {
+  const derivedPct = derivePnlPctFromNetExposure(window);
   if (derivedPct === null) return window;
   const existingPct = finiteNumber(window.pnlPct);
   const existingGrossPct = finiteNumber(window.pnlGrossPct);
+  const existingPctLooksPlaceholder =
+    existingPct !== null &&
+    Math.abs(existingPct) < 0.005 &&
+    finiteNumber(window.pnlNet) !== null &&
+    Math.abs(finiteNumber(window.pnlNet) as number) > 0.005;
+  const existingGrossPctLooksPlaceholder =
+    existingGrossPct !== null &&
+    Math.abs(existingGrossPct) < 0.005 &&
+    finiteNumber(window.pnlGross ?? window.pnlNet) !== null &&
+    Math.abs(finiteNumber(window.pnlGross ?? window.pnlNet) as number) > 0.005;
   return {
     ...window,
-    pnlPct: existingPct !== null && Math.abs(existingPct) >= 0.005 ? existingPct : derivedPct,
-    pnlGrossPct: existingGrossPct !== null && Math.abs(existingGrossPct) >= 0.005 ? existingGrossPct : derivedPct,
+    pnlPct: existingPct !== null && !existingPctLooksPlaceholder ? existingPct : derivedPct,
+    pnlGrossPct: existingGrossPct !== null && !existingGrossPctLooksPlaceholder ? existingGrossPct : derivedPct,
   };
 }
 
@@ -328,7 +340,7 @@ function applyClosedWindowSummary(params: {
   fallbackNetUsd?: number | null;
   fallbackTradeCount?: number | null;
 }) {
-  const recentWindows = params.windows;
+  const recentWindows = params.windows.map(withDerivedPnlPct);
   const lastWindows = recentWindows.slice(-14);
   const spark = lastWindows
     .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
@@ -519,7 +531,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
             const recentWindows = mergeCapitalPositionWindows([
               ...mergePositionWindows(persistedWindows, historyWindows),
               ...transactionWindows,
-            ]).map(withCapitalNotionalPct);
+            ]).map(withDerivedPnlPct);
             if (recentWindows.length) {
               const summary = applyClosedWindowSummary({
                 windows: recentWindows,

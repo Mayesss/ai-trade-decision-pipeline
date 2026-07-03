@@ -3857,6 +3857,93 @@ export default function Home() {
       : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
   const showChartPanel = Boolean(adminGranted && activeSymbol);
+  const handleChartOpenPositionChange = (
+    symbol: string | null,
+    position: {
+      pnlPct: number | null;
+      side: "long" | "short" | null;
+      leverage: number | null;
+      entryPrice: number | null;
+    } | null,
+  ) => {
+    if (!symbol) return;
+    const key = symbol.toUpperCase();
+    setTabData((prev) => {
+      const existing = prev[key];
+      if (!existing) return prev;
+      const nextOpenPnl = position?.pnlPct ?? null;
+      const nextOpenDirection = position?.side ?? null;
+      const nextOpenLeverage = position?.leverage ?? null;
+      const nextOpenEntryPrice = position?.entryPrice ?? null;
+      if (
+        existing.openPnl === nextOpenPnl &&
+        existing.openDirection === nextOpenDirection &&
+        existing.openLeverage === nextOpenLeverage &&
+        existing.openEntryPrice === nextOpenEntryPrice
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [key]: {
+          ...existing,
+          openPnl: nextOpenPnl,
+          openDirection: nextOpenDirection,
+          openLeverage: nextOpenLeverage,
+          openEntryPrice: nextOpenEntryPrice,
+        },
+      };
+    });
+  };
+  const handleChartPositionSummaryChange = (
+    symbol: string | null,
+    summary: {
+      closedPnlPct: number | null;
+      closedPnlNet: number | null;
+      closedCount: number;
+      lastPnlPct: number | null;
+      lastSide: "long" | "short" | null;
+      lastLeverage: number | null;
+      openPnlPct: number | null;
+      openSide: "long" | "short" | null;
+      openLeverage: number | null;
+      openEntryPrice: number | null;
+    },
+  ) => {
+    if (!symbol || !swingSummaryMatchesRange) return;
+    const key = symbol.toUpperCase();
+    setTabData((prev) => {
+      const existing = prev[key];
+      if (!existing) return prev;
+      const openPnl = summary.openPnlPct;
+      const closedPnl = summary.closedPnlPct;
+      const pnlWithOpen =
+        typeof closedPnl === "number" && typeof openPnl === "number"
+          ? closedPnl + openPnl
+          : typeof closedPnl === "number"
+            ? closedPnl
+            : typeof openPnl === "number"
+              ? openPnl
+              : null;
+      return {
+        ...prev,
+        [key]: {
+          ...existing,
+          pnl7d: closedPnl,
+          pnl7dWithOpen: pnlWithOpen,
+          pnl7dNet: summary.closedPnlNet ?? existing.pnl7dNet ?? null,
+          pnl7dTrades: summary.closedCount,
+          lastPositionPnl: summary.lastPnlPct,
+          lastPositionDirection: summary.lastSide,
+          lastPositionLeverage: summary.lastLeverage,
+          openPnl,
+          openDirection: summary.openSide,
+          openLeverage: summary.openLeverage,
+          openEntryPrice: summary.openEntryPrice,
+        },
+      };
+    });
+  };
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
   const evaluateRunning = Boolean(
     activeSymbol &&
@@ -8141,6 +8228,12 @@ export default function Home() {
                     livePrice={livePriceNow}
                     liveTimestamp={livePriceTs}
                     liveConnected={livePriceConnected}
+                    onOpenPositionChange={(position) =>
+                      handleChartOpenPositionChange(activeSymbol, position)
+                    }
+                    onPositionSummaryChange={(summary) =>
+                      handleChartPositionSummaryChange(activeSymbol, summary)
+                    }
                   />
                 ) : null}
 

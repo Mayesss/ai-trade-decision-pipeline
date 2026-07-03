@@ -57,6 +57,24 @@ type ChartPanelProps = {
   livePrice?: number | null;
   liveTimestamp?: number | null;
   liveConnected?: boolean;
+  onOpenPositionChange?: (position: {
+    pnlPct: number | null;
+    side: 'long' | 'short' | null;
+    leverage: number | null;
+    entryPrice: number | null;
+  } | null) => void;
+  onPositionSummaryChange?: (summary: {
+    closedPnlPct: number | null;
+    closedPnlNet: number | null;
+    closedCount: number;
+    lastPnlPct: number | null;
+    lastSide: 'long' | 'short' | null;
+    lastLeverage: number | null;
+    openPnlPct: number | null;
+    openSide: 'long' | 'short' | null;
+    openLeverage: number | null;
+    openEntryPrice: number | null;
+  }) => void;
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
@@ -228,6 +246,8 @@ export default function ChartPanel(props: ChartPanelProps) {
     livePrice = null,
     liveTimestamp = null,
     liveConnected = false,
+    onOpenPositionChange,
+    onPositionSummaryChange,
   } = props;
 
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
@@ -261,7 +281,42 @@ export default function ChartPanel(props: ChartPanelProps) {
   const applyPayload = (payload: ChartApiResponse) => {
     const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
     setChartData(mapped.filter((c) => Number.isFinite(c.time) && Number.isFinite(c.value)));
-    setPositionOverlays(Array.isArray(payload.positions) ? payload.positions : []);
+    const nextPositions = Array.isArray(payload.positions) ? payload.positions : [];
+    setPositionOverlays(nextPositions);
+    const openPosition = nextPositions.find((pos) => pos?.status === 'open') ?? null;
+    const closedPositions = nextPositions.filter((pos) => pos?.status === 'closed');
+    const closedPcts = closedPositions
+      .map((pos) => (typeof pos.pnlPct === 'number' ? pos.pnlPct : null))
+      .filter((value): value is number => typeof value === 'number');
+    const closedNet = closedPositions
+      .map((pos) => (typeof pos.pnlNet === 'number' ? pos.pnlNet : null))
+      .filter((value): value is number => typeof value === 'number');
+    const lastClosed = closedPositions
+      .slice()
+      .sort((a, b) => Number(a.exitTime ?? a.entryTime ?? 0) - Number(b.exitTime ?? b.entryTime ?? 0))
+      .at(-1);
+    onOpenPositionChange?.(
+      openPosition
+        ? {
+            pnlPct: typeof openPosition.pnlPct === 'number' ? openPosition.pnlPct : null,
+            side: openPosition.side === 'long' || openPosition.side === 'short' ? openPosition.side : null,
+            leverage: typeof openPosition.leverage === 'number' ? openPosition.leverage : null,
+            entryPrice: typeof openPosition.entryPrice === 'number' ? openPosition.entryPrice : null,
+          }
+        : null,
+    );
+    onPositionSummaryChange?.({
+      closedPnlPct: closedPcts.length ? closedPcts.reduce((sum, value) => sum + value, 0) : null,
+      closedPnlNet: closedNet.length ? closedNet.reduce((sum, value) => sum + value, 0) : null,
+      closedCount: closedPositions.length,
+      lastPnlPct: typeof lastClosed?.pnlPct === 'number' ? lastClosed.pnlPct : null,
+      lastSide: lastClosed?.side === 'long' || lastClosed?.side === 'short' ? lastClosed.side : null,
+      lastLeverage: typeof lastClosed?.leverage === 'number' ? lastClosed.leverage : null,
+      openPnlPct: typeof openPosition?.pnlPct === 'number' ? openPosition.pnlPct : null,
+      openSide: openPosition?.side === 'long' || openPosition?.side === 'short' ? openPosition.side : null,
+      openLeverage: typeof openPosition?.leverage === 'number' ? openPosition.leverage : null,
+      openEntryPrice: typeof openPosition?.entryPrice === 'number' ? openPosition.entryPrice : null,
+    });
   };
 
   useEffect(() => {

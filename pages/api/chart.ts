@@ -9,6 +9,7 @@ import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages 
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
+import { syncSwingClosedPositions } from '../../lib/swing/sync';
 import {
   readChartCandlesCache,
   writeChartCandlesCache,
@@ -49,6 +50,7 @@ function timeframeToSeconds(tf: string): number {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const requestStartedAt = Date.now();
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
   }
@@ -105,14 +107,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const nowMsForCandles = Date.now();
+    let candleCacheStatus: 'hit' | 'miss' | 'short' = 'miss';
+    let overlayCacheStatus: 'hit' | 'miss' = 'miss';
+    let closedPositionSource: 'cache' | 'persisted' | 'broker' | 'none' = 'none';
+    let candleLoadMs = 0;
+    let markerLoadMs = 0;
+    let overlayLoadMs = 0;
 
     // Boundary-bucketed candle cache: served for the rest of the current bar,
     // warmed hourly by the analyze cron and written-through on a live miss here.
     // Markers/positions below are always computed live.
     let candles: ChartCandle[] = [];
+    const candleLoadStartedAt = Date.now();
     const cachedCandles = await readChartCandlesCache({ symbol, platform, timeframe, nowMs: nowMsForCandles });
     if (cachedCandles && cachedCandles.length >= boundedLimit) {
+      candleCacheStatus = 'hit';
       candles = cachedCandles.slice(-boundedLimit);
+    } else if (cachedCandles) {
+      candleCacheStatus = 'short';
     }
 
     if (!candles.length) {
@@ -138,6 +150,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // the corrected platform if the bitget→capital fallback flipped it above)
       void writeChartCandlesCache({ symbol, platform, timeframe, nowMs: nowMsForCandles, candles: normalized });
     }
+    candleLoadMs = Date.now() - candleLoadStartedAt;
 
     const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
 
@@ -156,6 +169,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Only entry/exit markers (BUY/SELL/CLOSE) are drawn on the chart, so read them
     // straight from the per-symbol marker index (window-bounded) rather than
     // scanning the full decision index. KV-only; same data, far fewer round-trips.
+    const markerLoadStartedAt = Date.now();
     const history = await loadSymbolMarkerHistory(symbol, platform, {
       fromMs: windowStartMs,
       toMs: nowMs,
@@ -204,6 +218,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           (m) => candleTimes.length === 0 || (m.time >= candleTimes[0] && m.time <= candleTimes[candleTimes.length - 1])
         )
         .sort((a, b) => a.time - b.time) || [];
+    markerLoadMs = Date.now() - markerLoadStartedAt;
 
     const capturedLevs = extractCapturedLeverages(history);
     const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
@@ -238,102 +253,123 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     let positions: any[] = [];
+    const overlayLoadStartedAt = Date.now();
     // Serve the position overlay from a short-lived KV cache when present: it skips
     // the Neon closed-positions read (lowers Neon transfer) and the live broker
     // fetch below. Only successful computations are cached, so an error path retries
     // next load rather than caching an empty overlay.
     const cachedOverlay = await readPositionOverlayCache({ symbol, platform, timeframe, limit: boundedLimit });
     if (cachedOverlay) {
+      overlayCacheStatus = 'hit';
+      closedPositionSource = 'cache';
       positions = cachedOverlay as any[];
     } else {
-    try {
-      const closed =
-        platform === 'capital'
-          ? await loadClosedSwingPositions({
-              platform,
-              symbol,
-              fromMs: windowStartMs,
-              toMs: nowMs,
-              limit: 1000,
-            })
-          : await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
-      const closedNormalized =
-        platform === 'bitget' && symbol === BTC_SYMBOL
-          ? closed.map((position) => {
-              const rawLev = Number(position.leverage);
-              const fallbackLev = Number(leverageFromHistory);
-              const detectedLeverage =
-                Number.isFinite(rawLev) && rawLev > 0
-                  ? rawLev
-                  : Number.isFinite(fallbackLev) && fallbackLev > 0
-                  ? fallbackLev
-                  : 1;
-              const scale = BTC_CHART_LEVERAGE_OVERRIDE / detectedLeverage;
-              const rawPnlPct = Number(position.pnlPct);
-              return {
-                ...position,
-                pnlPct: Number.isFinite(rawPnlPct) ? rawPnlPct * scale : position.pnlPct,
-                leverage: BTC_CHART_LEVERAGE_OVERRIDE,
-              };
-            })
-          : closed;
-      let openOverlay: any = null;
       try {
-        const open = await fetchPositionInfo(symbol);
-        if (open.status === 'open') {
-          const pnl = typeof open.currentPnl === 'string' ? open.currentPnl.replace('%', '') : open.currentPnl;
-          const pnlVal = Number(pnl);
-          openOverlay = {
-            id: `${platform}:${symbol}-open-position`,
+        const loadPersistedClosed = () =>
+          loadClosedSwingPositions({
+            platform,
             symbol,
-            side: open.holdSide ?? null,
-            entryTimestamp: open.entryTimestamp ?? null,
-            exitTimestamp: null,
-            pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
-            entryPrice: Number(open.entryPrice) || null,
-            exitPrice: null,
-            leverage: Number.isFinite(open.leverage as number) ? (open.leverage as number) : leverageFromHistory,
-          };
+            fromMs: windowStartMs,
+            toMs: nowMs,
+            limit: 1000,
+          });
+        let closed = await loadPersistedClosed();
+        if (closed.length) {
+          closedPositionSource = 'persisted';
         }
+        if (!closed.length && platform === 'bitget') {
+          closed = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
+          closedPositionSource = closed.length ? 'broker' : 'none';
+          // Keep the mirror warm for the next chart load. Best-effort; never blocks
+          // chart rendering beyond the fallback broker read we already had to do.
+          await syncSwingClosedPositions(platform, closed, capturedLevs);
+        }
+        const closedNormalized =
+          platform === 'bitget' && symbol === BTC_SYMBOL
+            ? closed.map((position) => {
+                const rawLev = Number(position.leverage);
+                const fallbackLev = Number(leverageFromHistory);
+                const detectedLeverage =
+                  Number.isFinite(rawLev) && rawLev > 0
+                    ? rawLev
+                    : Number.isFinite(fallbackLev) && fallbackLev > 0
+                    ? fallbackLev
+                    : 1;
+                const scale = BTC_CHART_LEVERAGE_OVERRIDE / detectedLeverage;
+                const rawPnlPct = Number(position.pnlPct);
+                return {
+                  ...position,
+                  pnlPct: Number.isFinite(rawPnlPct) ? rawPnlPct * scale : position.pnlPct,
+                  leverage: BTC_CHART_LEVERAGE_OVERRIDE,
+                };
+              })
+            : closed;
+        let openOverlay: any = null;
+        try {
+          const open = await fetchPositionInfo(symbol);
+          if (open.status === 'open') {
+            const pnl = typeof open.currentPnl === 'string' ? open.currentPnl.replace('%', '') : open.currentPnl;
+            const pnlVal = Number(pnl);
+            openOverlay = {
+              id: `${platform}:${symbol}-open-position`,
+              symbol,
+              side: open.holdSide ?? null,
+              entryTimestamp: open.entryTimestamp ?? null,
+              exitTimestamp: null,
+              pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
+              entryPrice: Number(open.entryPrice) || null,
+              exitPrice: null,
+              leverage: Number.isFinite(open.leverage as number) ? (open.leverage as number) : leverageFromHistory,
+            };
+          }
+        } catch (err) {
+          console.warn(`Could not fetch open position for ${symbol}:`, err);
+        }
+
+        const combined = [...closedNormalized];
+        if (openOverlay) combined.push(openOverlay);
+
+        positions = combined.map((p) => {
+          const pnlPct = finiteNumber(p.pnlPct);
+          const pnlNet = finiteNumber(p.pnlNet);
+          const capitalPctLooksPlaceholder =
+            platform === 'capital' &&
+            pnlPct !== null &&
+            Math.abs(pnlPct) < 0.005 &&
+            pnlNet !== null &&
+            Math.abs(pnlNet) > 0.005;
+          return {
+            id: p.id,
+            status: p.exitTimestamp ? 'closed' : 'open',
+            side: p.side ?? null,
+            entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
+            exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
+            pnlPct: capitalPctLooksPlaceholder ? null : pnlPct,
+            pnlNet,
+            entryPrice: positiveNumber(p.entryPrice),
+            exitPrice: positiveNumber(p.exitPrice),
+            leverage: positiveNumber(p.leverage),
+            entryDecision: findNearestDecision(p.entryTimestamp),
+            exitDecision: findNearestDecision(p.exitTimestamp),
+          };
+        });
+        // Cache only on success so an error path retries rather than caching empty.
+        void writePositionOverlayCache({ symbol, platform, timeframe, limit: boundedLimit, overlay: positions });
       } catch (err) {
-        console.warn(`Could not fetch open position for ${symbol}:`, err);
+        console.warn(`Failed to build position overlays for ${symbol}:`, err);
+        positions = [];
       }
-
-      const combined = [...closedNormalized];
-      if (openOverlay) combined.push(openOverlay);
-
-      positions = combined.map((p) => {
-        const pnlPct = finiteNumber(p.pnlPct);
-        const pnlNet = finiteNumber(p.pnlNet);
-        const capitalPctLooksPlaceholder =
-          platform === 'capital' &&
-          pnlPct !== null &&
-          Math.abs(pnlPct) < 0.005 &&
-          pnlNet !== null &&
-          Math.abs(pnlNet) > 0.005;
-        return {
-          id: p.id,
-          status: p.exitTimestamp ? 'closed' : 'open',
-          side: p.side ?? null,
-          entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
-          exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
-          pnlPct: capitalPctLooksPlaceholder ? null : pnlPct,
-          pnlNet,
-          entryPrice: positiveNumber(p.entryPrice),
-          exitPrice: positiveNumber(p.exitPrice),
-          leverage: positiveNumber(p.leverage),
-          entryDecision: findNearestDecision(p.entryTimestamp),
-          exitDecision: findNearestDecision(p.exitTimestamp),
-        };
-      });
-      // Cache only on success so an error path retries rather than caching empty.
-      void writePositionOverlayCache({ symbol, platform, timeframe, limit: boundedLimit, overlay: positions });
-    } catch (err) {
-      console.warn(`Failed to build position overlays for ${symbol}:`, err);
-      positions = [];
     }
-    }
+    overlayLoadMs = Date.now() - overlayLoadStartedAt;
 
+    res.setHeader(
+      'x-swing-chart-cache',
+      `candles=${candleCacheStatus}; overlay=${overlayCacheStatus}; closedPositions=${closedPositionSource}`,
+    );
+    res.setHeader(
+      'x-swing-chart-timing-ms',
+      `candles=${candleLoadMs}; markers=${markerLoadMs}; overlay=${overlayLoadMs}; total=${Date.now() - requestStartedAt}`,
+    );
     res.status(200).json({ symbol, platform, timeframe, candles, markers, positions });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
