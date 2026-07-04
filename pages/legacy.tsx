@@ -3859,6 +3859,122 @@ export default function Home() {
       : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
   const showChartPanel = Boolean(adminGranted && activeSymbol);
+  // Compact PnL stats (range / open) that ride alongside the chart's range
+  // switches. Rendered inside ChartPanel so it no longer costs its own header
+  // line; on mobile it takes the "1H bars · window" slot. Each block only
+  // renders when it actually has data — no "—" placeholders.
+  const rangeStatHasData = Boolean(rangePnlLabel);
+  const openStatHasData = Boolean(
+    current &&
+      (current.openDirection || typeof effectiveOpenPnl === "number"),
+  );
+  const swingChartStats =
+    strategyMode === "swing" &&
+    current &&
+    (rangeStatHasData || openStatHasData) ? (
+      <div className="flex flex-nowrap items-center gap-x-2 overflow-x-auto text-[12px] tabular-nums sm:gap-x-3 sm:text-[13px]">
+        {rangeStatHasData ? (
+          <span className="flex shrink-0 items-baseline gap-1">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">
+              {dashboardRange}
+            </span>
+            <span
+              className={`font-semibold ${
+                typeof rangePnlToneValue === "number"
+                  ? rangePnlToneValue >= 0
+                    ? "text-emerald-600"
+                    : "text-rose-600"
+                  : "text-slate-500"
+              }`}
+            >
+              {rangePnlLabel}
+            </span>
+            {swingSummaryMatchesRange &&
+            typeof current.pnl7dNet === "number" ? (
+              <span className="hidden text-[11px] text-slate-500 sm:inline">
+                {current.pnl7dNet >= 0 ? "+" : ""}
+                {formatUsd(current.pnl7dNet)}
+              </span>
+            ) : null}
+            {swingSummaryMatchesRange && current.pnl7dTrades ? (
+              <span className="hidden text-[11px] text-slate-400 sm:inline">
+                ·{current.pnl7dTrades}t
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+        {rangeStatHasData &&
+        swingSummaryMatchesRange &&
+        Array.isArray(current.pnlSpark) &&
+        current.pnlSpark.length > 1 ? (
+          <span className="hidden h-4 items-end gap-[2px] rounded bg-slate-100 px-1 py-[3px] sm:inline-flex">
+            {current.pnlSpark.map((v, i) => {
+              const arr = current.pnlSpark as number[];
+              const max = Math.max(...arr.map((n) => Math.abs(n)), 1e-9);
+              const isLatest = i === arr.length - 1;
+              const h = Math.max(2, Math.round((Math.abs(v) / max) * 10));
+              return (
+                <span
+                  key={i}
+                  className={`rounded-full shadow-[0_0_0_1px_rgba(15,23,42,0.04)] ${
+                    isLatest ? "w-[4px]" : "w-[3px]"
+                  } ${
+                    v >= 0
+                      ? isLatest
+                        ? "bg-emerald-500"
+                        : "bg-emerald-500/80"
+                      : isLatest
+                        ? "bg-rose-500"
+                        : "bg-rose-500/80"
+                  }`}
+                  style={{ height: `${h}px` }}
+                />
+              );
+            })}
+          </span>
+        ) : null}
+        {openStatHasData ? (
+          <>
+            {rangeStatHasData ? (
+              <span className="shrink-0 text-slate-300">·</span>
+            ) : null}
+            <span className="flex shrink-0 items-baseline gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                open
+              </span>
+              <span
+                className={`font-semibold ${
+                  typeof effectiveOpenPnl === "number"
+                    ? effectiveOpenPnl >= 0
+                      ? "text-emerald-600"
+                      : "text-rose-600"
+                    : "text-slate-500"
+                }`}
+              >
+                {typeof effectiveOpenPnl === "number"
+                  ? `${effectiveOpenPnl.toFixed(2)}%`
+                  : "—"}
+              </span>
+              {current.openDirection ? (
+                <span
+                  className={`text-[10px] ${current.openDirection === "long" ? "text-emerald-600" : "text-rose-600"}`}
+                >
+                  {current.openDirection === "long" ? "L" : "S"}
+                  {typeof current.openLeverage === "number"
+                    ? `${current.openLeverage.toFixed(0)}x`
+                    : ""}
+                </span>
+              ) : null}
+              {openPnlIsLive ? (
+                <span className="text-[9px] font-semibold uppercase text-emerald-600">
+                  live
+                </span>
+              ) : null}
+            </span>
+          </>
+        ) : null}
+      </div>
+    ) : null;
   const handleChartOpenPositionChange = (
     symbol: string | null,
     position: {
@@ -7071,7 +7187,7 @@ export default function Home() {
                             title={marketClosed ? `${sym} — market closed` : undefined}
                             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${
                               marketClosed
-                                ? ` grayscale line-through decoration-1 ${isActive ? "opacity-70" : "opacity-40"}`
+                                ? ` grayscale ${isActive ? "opacity-70" : "opacity-40"}`
                                 : ""
                             }`}
                           >
@@ -7092,138 +7208,8 @@ export default function Home() {
                     </div>
                   ) : null}
                 </div>
-                {strategyMode === "swing" && current ? (
-                  <div className="mt-1.5 flex flex-nowrap items-center gap-x-2 overflow-x-auto text-[12px] tabular-nums sm:gap-x-3 sm:text-[13px]">
-                    <span className="flex shrink-0 items-baseline gap-1">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                        {dashboardRange}
-                      </span>
-                      <span
-                        className={`font-semibold ${
-                          typeof rangePnlToneValue === "number"
-                            ? rangePnlToneValue >= 0
-                              ? "text-emerald-600"
-                              : "text-rose-600"
-                            : "text-slate-500"
-                        }`}
-                      >
-                        {rangePnlLabel || "—"}
-                      </span>
-                      {swingSummaryMatchesRange &&
-                      typeof current.pnl7dNet === "number" ? (
-                        <span className="hidden text-[11px] text-slate-500 sm:inline">
-                          {current.pnl7dNet >= 0 ? "+" : ""}
-                          {formatUsd(current.pnl7dNet)}
-                        </span>
-                      ) : null}
-                      {swingSummaryMatchesRange && current.pnl7dTrades ? (
-                        <span className="hidden text-[11px] text-slate-400 sm:inline">
-                          ·{current.pnl7dTrades}t
-                        </span>
-                      ) : null}
-                    </span>
-                    {swingSummaryMatchesRange &&
-                    Array.isArray(current.pnlSpark) &&
-                    current.pnlSpark.length > 1 ? (
-                      <span className="hidden h-5 items-end gap-[2px] rounded-sm px-0.5 sm:inline-flex">
-                        {current.pnlSpark.map((v, i) => {
-                          const arr = current.pnlSpark as number[];
-                          const max = Math.max(
-                            ...arr.map((n) => Math.abs(n)),
-                            1e-9,
-                          );
-                          const isLatest = i === arr.length - 1;
-                          const h = Math.max(
-                            3,
-                            Math.round((Math.abs(v) / max) * 18),
-                          );
-                          return (
-                            <span
-                              key={i}
-                              className={`rounded-full shadow-[0_0_0_1px_rgba(15,23,42,0.04)] ${
-                                isLatest ? "w-[4px]" : "w-[3px]"
-                              } ${
-                                v >= 0
-                                  ? isLatest
-                                    ? "bg-emerald-500"
-                                    : "bg-emerald-500/80"
-                                  : isLatest
-                                    ? "bg-rose-500"
-                                    : "bg-rose-500/80"
-                              }`}
-                              style={{ height: `${h}px` }}
-                            />
-                          );
-                        })}
-                      </span>
-                    ) : null}
-                    <span className="shrink-0 text-slate-300">·</span>
-                    <span className="flex shrink-0 items-baseline gap-1">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                        last
-                      </span>
-                      <span
-                        className={`font-semibold ${
-                          typeof current.lastPositionPnl === "number"
-                            ? current.lastPositionPnl >= 0
-                              ? "text-emerald-600"
-                              : "text-rose-600"
-                            : "text-slate-500"
-                        }`}
-                      >
-                        {typeof current.lastPositionPnl === "number"
-                          ? `${current.lastPositionPnl.toFixed(2)}%`
-                          : "—"}
-                      </span>
-                      {current.lastPositionDirection ? (
-                        <span
-                          className={`text-[10px] ${current.lastPositionDirection === "long" ? "text-emerald-600" : "text-rose-600"}`}
-                        >
-                          {current.lastPositionDirection === "long" ? "L" : "S"}
-                          {typeof current.lastPositionLeverage === "number"
-                            ? `${current.lastPositionLeverage.toFixed(0)}x`
-                            : ""}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="shrink-0 text-slate-300">·</span>
-                    <span className="flex shrink-0 items-baseline gap-1">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                        open
-                      </span>
-                      <span
-                        className={`font-semibold ${
-                          typeof effectiveOpenPnl === "number"
-                            ? effectiveOpenPnl >= 0
-                              ? "text-emerald-600"
-                              : "text-rose-600"
-                            : "text-slate-500"
-                        }`}
-                      >
-                        {typeof effectiveOpenPnl === "number"
-                          ? `${effectiveOpenPnl.toFixed(2)}%`
-                          : "—"}
-                      </span>
-                      {current.openDirection ? (
-                        <span
-                          className={`text-[10px] ${current.openDirection === "long" ? "text-emerald-600" : "text-rose-600"}`}
-                        >
-                          {current.openDirection === "long" ? "L" : "S"}
-                          {typeof current.openLeverage === "number"
-                            ? `${current.openLeverage.toFixed(0)}x`
-                            : ""}
-                        </span>
-                      ) : null}
-                      {openPnlIsLive ? (
-                        <span className="text-[9px] font-semibold uppercase text-emerald-600">
-                          live
-                        </span>
-                      ) : null}
-                    </span>
-                  </div>
-                ) : null}
               </div>
-              <div className="flex flex-col items-end gap-2">
+              <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:gap-3">
               {strategyMode === "swing" ? (
                 <div className="relative flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -8246,6 +8232,7 @@ export default function Home() {
                     isDark={resolvedTheme === "dark"}
                     rangeKey={dashboardRange}
                     onRangeChange={setDashboardRange}
+                    statsSlot={swingChartStats}
                     livePrice={livePriceNow}
                     liveTimestamp={livePriceTs}
                     liveConnected={livePriceConnected}
@@ -8299,7 +8286,7 @@ export default function Home() {
                         {(current.lastDecision as any).reason}
                       </p>
                     ) : null}
-                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
                       {biasOrder.map(({ key, label }) => {
                         const raw = (current.lastDecision as any)?.[key];
                         const val =
@@ -8321,16 +8308,18 @@ export default function Home() {
                         return (
                           <div
                             key={key}
-                            className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                            className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
                           >
-                            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            <span className="whitespace-nowrap text-[8px] font-semibold uppercase leading-tight tracking-tight text-slate-500 sm:text-[10px] sm:tracking-wide">
                               {displayLabel}
                             </span>
                             <span
-                              className={`flex items-center gap-1 text-sm font-semibold ${meta.color}`}
+                              className={`flex items-center gap-0.5 text-xs font-semibold sm:gap-1 sm:text-sm ${meta.color}`}
                             >
-                              <Icon className="h-4 w-4" />
-                              {val || "—"}
+                              <Icon className="h-3 w-3 sm:h-4 sm:w-4" />
+                              <span className="hidden sm:inline">
+                                {val || "—"}
+                              </span>
                             </span>
                           </div>
                         );

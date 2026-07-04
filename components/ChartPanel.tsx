@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowDownRight, ArrowUpRight } from 'lucide-react';
 
 type DecisionBrief = {
   timestamp?: number | null;
@@ -23,15 +22,6 @@ type PositionOverlay = {
   exitDecision?: DecisionBrief | null;
 };
 
-type RenderedOverlay = PositionOverlay & {
-  left: number;
-  width: number;
-  startX: number;
-  endX: number;
-  clampedEntry: number;
-  clampedExit: number;
-  showEntryWall: boolean;
-};
 
 type ChartApiResponse = {
   candles?: Array<{ time: number; close: number }>;
@@ -54,6 +44,9 @@ type ChartPanelProps = {
   isDark?: boolean;
   rangeKey: ChartRangeKey;
   onRangeChange: (nextRange: ChartRangeKey) => void;
+  // Optional compact PnL stats rendered in the header: beside the range
+  // switches on desktop, and in place of the "bars · window" caption on mobile.
+  statsSlot?: React.ReactNode;
   livePrice?: number | null;
   liveTimestamp?: number | null;
   liveConnected?: boolean;
@@ -234,6 +227,275 @@ const formatOverlayDecisionTs = (tsMs?: number | null) => {
   })}`;
 };
 
+// ── Position overlays as a canvas primitive ───────────────────────────────
+// Drawing the shaded position rectangles, entry/exit walls and the leverage /
+// PnL badge inside the chart canvas (rather than as absolutely-positioned HTML)
+// means the chart itself repaints them in lockstep with its own coordinate
+// system on every zoom/resize frame — so they can never drift or lag behind the
+// candles. The rich hover tooltip stays HTML and is driven by crosshair events.
+
+type OverlayTone = 'up' | 'down' | 'neutral';
+
+type OverlayTheme = {
+  fillUp: string;
+  fillDown: string;
+  fillNeutral: string;
+  strokeUp: string;
+  strokeDown: string;
+  strokeNeutral: string;
+  openWall: string;
+  badgeBg: string;
+  leverageText: string;
+  upText: string;
+  downText: string;
+  neutralText: string;
+};
+
+const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
+  fillUp: 'rgba(16,185,129,0.12)',
+  fillDown: 'rgba(248,113,113,0.12)',
+  fillNeutral: 'rgba(161,161,170,0.08)',
+  strokeUp: 'rgba(16,185,129,0.9)',
+  strokeDown: 'rgba(239,68,68,0.9)',
+  strokeNeutral: 'rgba(113,113,122,0.5)',
+  openWall: 'rgba(161,161,170,0.8)',
+  badgeBg: isDark ? 'rgba(24,24,27,0.9)' : 'rgba(255,255,255,0.9)',
+  leverageText: isDark ? 'rgb(212,212,216)' : 'rgb(51,65,85)',
+  upText: isDark ? 'rgb(52,211,153)' : 'rgb(4,120,87)',
+  downText: isDark ? 'rgb(251,113,133)' : 'rgb(190,18,60)',
+  neutralText: isDark ? 'rgb(212,212,216)' : 'rgb(51,65,85)',
+});
+
+type OverlayPrimitiveDatum = {
+  id: string;
+  entryTime: number;
+  exitTime: number;
+  showEntryWall: boolean;
+  closed: boolean;
+  side: 'long' | 'short' | null;
+  tone: OverlayTone;
+  leverageLabel: string | null;
+  pnlLabel: string | null;
+};
+
+const OVERLAY_INSET_Y = 12;
+const OVERLAY_RADIUS = 6;
+
+const overlayFill = (tone: OverlayTone, theme: OverlayTheme) =>
+  tone === 'up' ? theme.fillUp : tone === 'down' ? theme.fillDown : theme.fillNeutral;
+const overlayStroke = (tone: OverlayTone, theme: OverlayTheme) =>
+  tone === 'up' ? theme.strokeUp : tone === 'down' ? theme.strokeDown : theme.strokeNeutral;
+const overlayText = (tone: OverlayTone, theme: OverlayTheme) =>
+  tone === 'up' ? theme.upText : tone === 'down' ? theme.downText : theme.neutralText;
+
+const roundRectPath = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) => {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+};
+
+const drawOverlayBadge = (
+  ctx: CanvasRenderingContext2D,
+  rightX: number,
+  topY: number,
+  datum: OverlayPrimitiveDatum,
+  theme: OverlayTheme,
+) => {
+  const hasArrow = datum.side === 'long' || datum.side === 'short';
+  const parts: { text: string; color: string }[] = [];
+  if (datum.leverageLabel) parts.push({ text: datum.leverageLabel, color: theme.leverageText });
+  if (datum.pnlLabel) parts.push({ text: datum.pnlLabel, color: overlayText(datum.tone, theme) });
+  if (!hasArrow && !parts.length) return;
+
+  ctx.font = '600 10px system-ui, -apple-system, sans-serif';
+  ctx.textBaseline = 'middle';
+  const padX = 5;
+  const gap = 4;
+  const arrowW = hasArrow ? 8 : 0;
+  const textWidths = parts.map((p) => ctx.measureText(p.text).width);
+  const gaps = Math.max(0, (hasArrow ? 1 : 0) + parts.length - 1) * gap;
+  const contentW = arrowW + textWidths.reduce((a, b) => a + b, 0) + gaps;
+  const badgeW = contentW + padX * 2;
+  const badgeH = 15;
+  const bx = rightX - badgeW - 2;
+  const by = topY + 2;
+  const cy = by + badgeH / 2;
+
+  ctx.fillStyle = theme.badgeBg;
+  roundRectPath(ctx, bx, by, badgeW, badgeH, 3);
+  ctx.fill();
+
+  let cx = bx + padX;
+  if (hasArrow) {
+    const s = 4;
+    ctx.fillStyle = datum.side === 'long' ? theme.upText : theme.downText;
+    ctx.beginPath();
+    if (datum.side === 'long') {
+      ctx.moveTo(cx, cy + s);
+      ctx.lineTo(cx + s, cy - s);
+      ctx.lineTo(cx + 2 * s, cy + s);
+    } else {
+      ctx.moveTo(cx, cy - s);
+      ctx.lineTo(cx + s, cy + s);
+      ctx.lineTo(cx + 2 * s, cy - s);
+    }
+    ctx.closePath();
+    ctx.fill();
+    cx += arrowW + gap;
+  }
+  parts.forEach((p, i) => {
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, cx, cy);
+    cx += textWidths[i] + gap;
+  });
+};
+
+class PositionOverlayRenderer {
+  constructor(
+    private readonly items: { left: number; right: number; datum: OverlayPrimitiveDatum }[],
+    private readonly theme: OverlayTheme,
+  ) {}
+  draw(target: any) {
+    target.useMediaCoordinateSpace((scope: any) => {
+      const ctx = scope.context as CanvasRenderingContext2D;
+      const paneHeight = scope.mediaSize.height as number;
+      const top = OVERLAY_INSET_Y;
+      const height = Math.max(0, paneHeight - OVERLAY_INSET_Y * 2);
+      if (height <= 0) return;
+      for (const { left, right, datum } of this.items) {
+        const width = Math.max(4, right - left);
+        ctx.fillStyle = overlayFill(datum.tone, this.theme);
+        roundRectPath(ctx, left, top, width, height, OVERLAY_RADIUS);
+        ctx.fill();
+        const stroke = overlayStroke(datum.tone, this.theme);
+        if (datum.showEntryWall) {
+          ctx.fillStyle = stroke;
+          ctx.fillRect(left, top, 1, height);
+        }
+        ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
+        ctx.fillRect(right - 1, top, 1, height);
+        drawOverlayBadge(ctx, right, top, datum, this.theme);
+      }
+    });
+  }
+}
+
+class PositionOverlayPaneView {
+  private items: { left: number; right: number; datum: OverlayPrimitiveDatum }[] = [];
+  constructor(private readonly source: PositionOverlayPrimitive) {}
+  update() {
+    const chart = this.source.chart;
+    const data = this.source.data;
+    if (!chart || !data.length) {
+      this.items = [];
+      return;
+    }
+    const timeScale = chart.timeScale();
+    this.items = data
+      .map((datum) => {
+        const x1 = timeScale.timeToCoordinate(datum.entryTime);
+        const x2 = timeScale.timeToCoordinate(datum.exitTime);
+        if (x1 === null || x2 === null || !Number.isFinite(x1) || !Number.isFinite(x2)) {
+          return null;
+        }
+        return { left: Math.min(x1, x2), right: Math.max(x1, x2), datum };
+      })
+      .filter(Boolean) as { left: number; right: number; datum: OverlayPrimitiveDatum }[];
+  }
+  renderer() {
+    return new PositionOverlayRenderer(this.items, this.source.theme);
+  }
+}
+
+class PositionOverlayPrimitive {
+  chart: any = null;
+  data: OverlayPrimitiveDatum[] = [];
+  theme: OverlayTheme;
+  private requestUpdate: (() => void) | null = null;
+  private readonly paneView: PositionOverlayPaneView;
+  constructor(theme: OverlayTheme) {
+    this.theme = theme;
+    this.paneView = new PositionOverlayPaneView(this);
+  }
+  attached(param: any) {
+    this.chart = param.chart;
+    this.requestUpdate = param.requestUpdate;
+  }
+  detached() {
+    this.chart = null;
+    this.requestUpdate = null;
+  }
+  updateAllViews() {
+    this.paneView.update();
+  }
+  paneViews() {
+    return [this.paneView];
+  }
+  setData(data: OverlayPrimitiveDatum[]) {
+    this.data = data;
+    this.requestUpdate?.();
+  }
+  setTheme(theme: OverlayTheme) {
+    this.theme = theme;
+    this.requestUpdate?.();
+  }
+}
+
+// Snap each overlay's entry/exit to the nearest candle and package it (with the
+// badge labels) for the primitive. Depends only on the data, never the zoom.
+type SnappedOverlay = { pos: PositionOverlay; entryTime: number; exitTime: number };
+
+const buildOverlayPrimitiveData = (
+  chartData: { time: number; value: number }[],
+  positionOverlays: PositionOverlay[],
+): { data: OverlayPrimitiveDatum[]; snapped: SnappedOverlay[] } => {
+  if (!chartData.length || !positionOverlays.length) return { data: [], snapped: [] };
+  const minTime = chartData[0].time;
+  const maxTime = chartData[chartData.length - 1].time;
+  const candleTimes = chartData.map((c) => c.time);
+  const nearestTime = (target: number) =>
+    candleTimes.reduce(
+      (prev, curr) => (Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev),
+      candleTimes[0],
+    );
+  const data: OverlayPrimitiveDatum[] = [];
+  const snapped: SnappedOverlay[] = [];
+  for (const pos of positionOverlays) {
+    const boundedEntry = Math.min(Math.max(pos.entryTime ?? minTime, minTime), maxTime);
+    const boundedExit = pos.exitTime ? Math.min(Math.max(pos.exitTime, minTime), maxTime) : maxTime;
+    const entryTime = nearestTime(boundedEntry);
+    const exitTime = pos.exitTime ? nearestTime(boundedExit) : maxTime;
+    const pnlValue = getOverlayPnlValue(pos);
+    const tone: OverlayTone =
+      pnlValue === null ? 'neutral' : pnlValue >= 0 ? 'up' : 'down';
+    data.push({
+      id: pos.id,
+      entryTime,
+      exitTime,
+      showEntryWall: pos.entryTime !== null && pos.entryTime >= minTime,
+      closed: pos.status === 'closed',
+      side: pos.side ?? null,
+      tone,
+      leverageLabel: typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null,
+      pnlLabel: formatOverlayPnl(pos),
+    });
+    snapped.push({ pos, entryTime, exitTime });
+  }
+  return { data, snapped };
+};
+
 export default function ChartPanel(props: ChartPanelProps) {
   const {
     symbol,
@@ -243,6 +505,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     isDark = false,
     rangeKey,
     onRangeChange,
+    statsSlot = null,
     livePrice = null,
     liveTimestamp = null,
     liveConnected = false,
@@ -254,8 +517,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartAttempted, setChartAttempted] = useState(false);
-  const [renderedOverlays, setRenderedOverlays] = useState<RenderedOverlay[]>([]);
-  const [hoveredOverlay, setHoveredOverlay] = useState<RenderedOverlay | null>(null);
+  const [hoveredOverlay, setHoveredOverlay] = useState<PositionOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [livePulseY, setLivePulseY] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -266,6 +528,9 @@ export default function ChartPanel(props: ChartPanelProps) {
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
   const chartSeriesRef = useRef<any>(null);
+  const overlayPrimitiveRef = useRef<PositionOverlayPrimitive | null>(null);
+  const snappedOverlaysRef = useRef<SnappedOverlay[]>([]);
+  const pinnedOverlayIdRef = useRef<string | null>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
@@ -326,7 +591,9 @@ export default function ChartPanel(props: ChartPanelProps) {
       setChartAttempted(false);
       setChartData([]);
       setPositionOverlays([]);
-      setRenderedOverlays([]);
+      overlayPrimitiveRef.current?.setData([]);
+      snappedOverlaysRef.current = [];
+      pinnedOverlayIdRef.current = null;
       setHoveredOverlay(null);
       setHoverX(null);
       return;
@@ -550,6 +817,70 @@ export default function ChartPanel(props: ChartPanelProps) {
 
       chartSeriesRef.current = series;
       series.setData(chartData);
+
+      // Attach the position-overlay canvas primitive so the chart paints the
+      // overlays in lockstep with its own coordinate system — no layout drift
+      // on zoom/resize, no per-event React state churn.
+      try {
+        const primitive = new PositionOverlayPrimitive(buildOverlayTheme(isDark));
+        series.attachPrimitive?.(primitive);
+        overlayPrimitiveRef.current = primitive;
+        const { data, snapped } = buildOverlayPrimitiveData(chartData, positionOverlays);
+        snappedOverlaysRef.current = snapped;
+        primitive.setData(data);
+      } catch (err) {
+        console.warn('[chart] failed to attach position overlays primitive', err);
+      }
+
+      // Hover/click for the HTML tooltip, driven by the chart's own crosshair so
+      // it stays aligned with the canvas overlays at any zoom/size.
+      const handleCrosshairMove = (param: any) => {
+        if (pinnedOverlayIdRef.current) return;
+        const point = param?.point;
+        const time = param?.time;
+        if (!point || time == null) {
+          setHoveredOverlay(null);
+          setHoverX(null);
+          return;
+        }
+        const t = Number(time);
+        const hit = snappedOverlaysRef.current.find((o) => t >= o.entryTime && t <= o.exitTime);
+        if (hit) {
+          setHoveredOverlay(hit.pos);
+          setHoverX(point.x);
+        } else {
+          setHoveredOverlay(null);
+          setHoverX(null);
+        }
+      };
+      const handleClick = (param: any) => {
+        const point = param?.point;
+        const time = param?.time;
+        if (!point || time == null) {
+          pinnedOverlayIdRef.current = null;
+          setHoveredOverlay(null);
+          setHoverX(null);
+          return;
+        }
+        const t = Number(time);
+        const hit = snappedOverlaysRef.current.find((o) => t >= o.entryTime && t <= o.exitTime);
+        if (!hit) {
+          pinnedOverlayIdRef.current = null;
+          setHoveredOverlay(null);
+          setHoverX(null);
+          return;
+        }
+        if (pinnedOverlayIdRef.current === hit.pos.id) {
+          pinnedOverlayIdRef.current = null;
+        } else {
+          pinnedOverlayIdRef.current = hit.pos.id;
+          setHoveredOverlay(hit.pos);
+          setHoverX(point.x);
+        }
+      };
+      chart.subscribeCrosshairMove(handleCrosshairMove);
+      chart.subscribeClick(handleClick);
+
       chart.timeScale().fitContent();
       setChartInitToken((t) => t + 1);
     })();
@@ -572,6 +903,8 @@ export default function ChartPanel(props: ChartPanelProps) {
         chartInstanceRef.current = null;
       }
       chartSeriesRef.current = null;
+      overlayPrimitiveRef.current = null;
+      pinnedOverlayIdRef.current = null;
     };
   }, [
     symbol,
@@ -592,61 +925,23 @@ export default function ChartPanel(props: ChartPanelProps) {
     series.setData(chartData);
   }, [chartData]);
 
+  // Feed overlays to the canvas primitive. Snapping to candles depends only on
+  // the data, so it happens here (once per data change); the chart itself
+  // repaints the primitive on every zoom/resize frame — no manual projection,
+  // no drift. Clearing the hover if the pinned/hovered overlay disappears.
   useEffect(() => {
-    const recalcOverlays = () => {
-      const chart = chartInstanceRef.current;
-      const layer = overlayLayerRef.current;
-      if (!chart || !layer || !chartData.length || !positionOverlays.length) {
-        setRenderedOverlays([]);
-        return;
-      }
-      const timeScale = chart.timeScale?.();
-      if (!timeScale?.timeToCoordinate) return;
-      const minTime = chartData[0].time;
-      const maxTime = chartData[chartData.length - 1].time;
-      const candleTimes = chartData.map((c) => c.time);
-      const nearestTime = (target: number) => {
-        return candleTimes.reduce((prev, curr) => {
-          return Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev;
-        }, candleTimes[0]);
-      };
-      const mapped = positionOverlays
-        .map((pos) => {
-          const boundedEntry = Math.min(Math.max(pos.entryTime ?? minTime, minTime), maxTime);
-          const boundedExit = pos.exitTime ? Math.min(Math.max(pos.exitTime, minTime), maxTime) : maxTime;
-          const entryTime = nearestTime(boundedEntry);
-          const exitTime = pos.exitTime ? nearestTime(boundedExit) : maxTime;
-          const showEntryWall = pos.entryTime !== null && pos.entryTime >= minTime;
-          const startCoord = timeScale.timeToCoordinate(entryTime as any);
-          const endCoord = timeScale.timeToCoordinate(exitTime as any);
-          if (
-            startCoord === null ||
-            endCoord === null ||
-            !Number.isFinite(startCoord as number) ||
-            !Number.isFinite(endCoord as number)
-          ) {
-            return null;
-          }
-          const left = Math.min(startCoord as number, endCoord as number);
-          const width = Math.max(4, Math.abs((endCoord as number) - (startCoord as number)));
-          return {
-            ...pos,
-            left,
-            width,
-            startX: startCoord as number,
-            endX: endCoord as number,
-            clampedEntry: boundedEntry,
-            clampedExit: boundedExit,
-            showEntryWall,
-          };
-        })
-        .filter(Boolean) as RenderedOverlay[];
-      setRenderedOverlays(mapped);
-    };
-    recalcOverlays();
-    window.addEventListener('resize', recalcOverlays);
-    return () => window.removeEventListener('resize', recalcOverlays);
+    const { data, snapped } = buildOverlayPrimitiveData(chartData, positionOverlays);
+    snappedOverlaysRef.current = snapped;
+    overlayPrimitiveRef.current?.setData(data);
+    const stillExists = (id: string | null) =>
+      id !== null && snapped.some((o) => o.pos.id === id);
+    if (!stillExists(pinnedOverlayIdRef.current)) pinnedOverlayIdRef.current = null;
+    setHoveredOverlay((cur) => (cur && stillExists(cur.id) ? cur : null));
   }, [positionOverlays, chartData, chartInitToken]);
+
+  useEffect(() => {
+    overlayPrimitiveRef.current?.setTheme(buildOverlayTheme(isDark));
+  }, [isDark]);
 
   useEffect(() => {
     const recalcLivePulse = () => {
@@ -675,9 +970,35 @@ export default function ChartPanel(props: ChartPanelProps) {
       setLivePulseY(clampedY);
     };
 
+    // Same rAF-batched + observer approach as the position overlays so the
+    // pulse marker tracks the chart on resize/zoom without event thrash.
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        recalcLivePulse();
+      });
+    };
+
     recalcLivePulse();
-    window.addEventListener('resize', recalcLivePulse);
-    return () => window.removeEventListener('resize', recalcLivePulse);
+
+    const container = chartContainerRef.current;
+    const timeScale = chartInstanceRef.current?.timeScale?.();
+    timeScale?.subscribeVisibleLogicalRangeChange?.(schedule);
+    window.addEventListener('resize', schedule);
+    let resizeObserver: ResizeObserver | null = null;
+    if (container && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(schedule);
+      resizeObserver.observe(container);
+    }
+
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      timeScale?.unsubscribeVisibleLogicalRangeChange?.(schedule);
+      window.removeEventListener('resize', schedule);
+      resizeObserver?.disconnect();
+    };
   }, [chartData, livePrice, liveConnected, chartInitToken]);
 
   if (!adminGranted || !symbol) return null;
@@ -694,29 +1015,39 @@ export default function ChartPanel(props: ChartPanelProps) {
           : 'rounded-2xl border border-slate-200 shadow-sm lg:col-span-2'
       }`}
     >
-      <div className="flex items-center justify-between">
-        <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
-          {CHART_RANGE_ORDER.map((key) => {
-            const active = key === rangeKey;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => onRangeChange(key)}
-                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
-                  active
-                    ? 'neutral-highlight shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
-                }`}
-                aria-pressed={active}
-                aria-label={`Switch chart range to ${key}`}
-              >
-                {key}
-              </button>
-            );
-          })}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <div className="inline-flex shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
+            {CHART_RANGE_ORDER.map((key) => {
+              const active = key === rangeKey;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onRangeChange(key)}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                    active
+                      ? 'neutral-highlight shadow-sm'
+                      : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                  }`}
+                  aria-pressed={active}
+                  aria-label={`Switch chart range to ${key}`}
+                >
+                  {key}
+                </button>
+              );
+            })}
+          </div>
+          {statsSlot ? (
+            <div className="hidden min-w-0 sm:block">{statsSlot}</div>
+          ) : null}
         </div>
-        <div className="text-xs text-slate-400">
+        {statsSlot ? (
+          <div className="min-w-0 sm:hidden">{statsSlot}</div>
+        ) : null}
+        <div
+          className={`shrink-0 text-xs text-slate-400 ${statsSlot ? 'hidden sm:block' : ''}`}
+        >
           {timeframe} bars · {rangeKey} window
           {liveConnected ? ' · live' : ''}
           {typeof livePrice === 'number' ? ` · ${livePrice.toFixed(2)}` : ''}
@@ -780,91 +1111,16 @@ export default function ChartPanel(props: ChartPanelProps) {
                   </span>
                 </div>
               ) : null}
-              {renderedOverlays.map((pos) => {
-                const pnlValue = getOverlayPnlValue(pos);
-                const profitable = typeof pnlValue === 'number' ? pnlValue >= 0 : null;
-                const pnlLabel = formatOverlayPnl(pos);
-                const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
-                const fill =
-                  profitable === null
-                    ? 'rgba(161,161,170,0.08)'
-                    : profitable
-                    ? 'rgba(16,185,129,0.12)'
-                    : 'rgba(248,113,113,0.12)';
-                const stroke =
-                  profitable === null
-                    ? 'rgba(113,113,122,0.4)'
-                    : profitable
-                    ? 'rgba(16,185,129,0.9)'
-                    : 'rgba(239,68,68,0.9)';
-                return (
-                  <div
-                    key={pos.id}
-                    className="absolute inset-y-3 rounded-md shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)]"
-                    style={{ left: pos.left, width: pos.width, background: fill, pointerEvents: 'auto' }}
-                    onMouseEnter={() => {
-                      setHoveredOverlay(pos);
-                      setHoverX(pos.left + pos.width / 2);
-                    }}
-                    onMouseLeave={() => {
-                      setHoveredOverlay(null);
-                      setHoverX(null);
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setHoveredOverlay((cur) => (cur?.id === pos.id ? null : pos));
-                      setHoverX(pos.left + pos.width / 2);
-                    }}
-                  >
-                    {pos.showEntryWall && (
-                      <div className="absolute top-0 bottom-0 w-px" style={{ left: 0, backgroundColor: stroke }} />
-                    )}
-                    {pos.status === 'closed' ? (
-                      <div className="absolute top-0 bottom-0 w-px" style={{ right: 0, backgroundColor: stroke }} />
-                    ) : (
-                      <div
-                        className="absolute top-0 bottom-0 w-px"
-                        style={{ right: 0, backgroundColor: 'rgba(161,161,170,0.8)' }}
-                      />
-                    )}
-                    <div className="pointer-events-none absolute right-1 top-1 flex items-center gap-1 bg-white/90 px-1.5 py-0.5 shadow-sm">
-                      {pos.side === 'long' ? (
-                        <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
-                      ) : pos.side === 'short' ? (
-                        <ArrowDownRight className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
-                      ) : null}
-                      {leverageLabel ? (
-                        <span className="text-[10px] font-semibold text-slate-700">
-                          {leverageLabel}
-                        </span>
-                      ) : null}
-                      {pnlLabel ? (
-                        <span
-                          className={`text-[10px] font-semibold ${
-                            profitable === null
-                              ? 'text-slate-700'
-                              : profitable
-                              ? 'text-emerald-700'
-                              : 'text-rose-700'
-                          }`}
-                        >
-                          {pnlLabel}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
             </div>
             {hoveredOverlay && hoverX !== null && (
               <div
-                className="absolute z-20"
+                className="pointer-events-none absolute z-40"
                 style={{
-                  left: Math.min(Math.max(hoverX - 130, 8), (overlayLayerRef.current?.clientWidth || 280) - 220),
+                  left: Math.min(Math.max(hoverX - 140, 8), (overlayLayerRef.current?.clientWidth || 320) - 288),
                   top: 10,
                 }}
               >
-                <div className="pointer-events-none rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
+                <div className="pointer-events-none w-[280px] rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-semibold text-slate-900">
                       {hoveredOverlay.status === 'open' ? 'Open position' : 'Closed position'}
