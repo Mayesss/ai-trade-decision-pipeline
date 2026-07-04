@@ -80,6 +80,7 @@ type EvaluationEntry = {
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
+  marketClosed?: boolean;
   lastDecisionTs?: number | null;
   lastDecision?: {
     action?: string;
@@ -128,6 +129,7 @@ type DashboardSummaryRow = {
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
+  marketClosed?: boolean;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -7048,11 +7050,30 @@ export default function Home() {
                         // decision was a real AI call (not a skip). Crons are
                         // hourly, so this means "the AI decided this in the last hour".
                         const aiDecisionRecent = tab?.lastWasAiCall === true;
+                        // Venue closed at the last cron tick: keep the tab
+                        // clickable/selectable but render it clearly
+                        // deactivated. Override the pnl tone entirely with a
+                        // muted grey, dashed border to read as "market shut".
+                        const marketClosed = tab?.marketClosed === true;
+                        // Deactivated look must survive the .theme-dark class
+                        // remap (slate-300/400/500 all collapse to one grey), so
+                        // lean on opacity — which is theme-independent — plus a
+                        // dashed border, grayscale and strikethrough.
+                        const toneClass = marketClosed
+                          ? isActive
+                            ? "border-dashed border-slate-300 bg-slate-50 text-slate-500"
+                            : "border-dashed border-slate-200 bg-transparent text-slate-500 hover:opacity-90"
+                          : boxToneClass;
                         return (
                           <button
                             key={sym}
                             onClick={() => setActive(i)}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${boxToneClass}`}
+                            title={marketClosed ? `${sym} — market closed` : undefined}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${
+                              marketClosed
+                                ? ` grayscale line-through decoration-1 ${isActive ? "opacity-70" : "opacity-40"}`
+                                : ""
+                            }`}
                           >
                             {aiDecisionRecent ? (
                               <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />

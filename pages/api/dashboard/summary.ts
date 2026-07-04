@@ -45,6 +45,11 @@ type SummaryEntry = {
   // signal-strength pre-AI skip). Crons run hourly, so this == "the AI decided
   // this symbol in the last hour". Drives the symbol-tab status dot.
   lastWasAiCall?: boolean;
+  // Whether the venue was closed at the most recent decision (Capital reports
+  // marketStatus != TRADEABLE → analyze.ts persists a capital_market_closed
+  // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
+  // Drives the deactivated look on the symbol tab.
+  marketClosed?: boolean;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -445,6 +450,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let lastNewsSource: string | null | undefined = config.newsSource;
       let forexEventContext: any | null = null;
       let lastWasAiCall = false;
+      let marketClosed = false;
 
       try {
         const history = await loadDecisionHistory(symbol, 120, platform);
@@ -455,6 +461,10 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
           ? (latest.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
             !(latest.aiDecision as any)?.promptSkipped
           : false;
+        // Venue closed at the last cron tick — analyze.ts skips before the AI
+        // with skipStage === 'capital_market_closed'. Crypto (bitget) never
+        // hits this gate, so it stays open 24/7.
+        marketClosed = (latest?.aiDecision as any)?.skipStage === 'capital_market_closed';
         if (latest) {
           category =
             typeof latest.category === 'string'
@@ -674,6 +684,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastPositionDirection,
         lastPositionLeverage,
         lastWasAiCall,
+        marketClosed,
         winRate,
         avgWinPct,
         avgLossPct,
