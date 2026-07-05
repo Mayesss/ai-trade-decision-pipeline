@@ -874,27 +874,8 @@ export default function ChartPanel(props: ChartPanelProps) {
         console.warn('[chart] failed to attach position overlays primitive', err);
       }
 
-      // Hover/click for the HTML tooltip, driven by the chart's own crosshair so
-      // it stays aligned with the canvas overlays at any zoom/size.
-      const handleCrosshairMove = (param: any) => {
-        if (pinnedOverlayIdRef.current) return;
-        const point = param?.point;
-        const time = param?.time;
-        if (!point || time == null) {
-          setHoveredOverlay(null);
-          setHoverX(null);
-          return;
-        }
-        const t = Number(time);
-        const hit = snappedOverlaysRef.current.find((o) => t >= o.entryTime && t <= o.exitTime);
-        if (hit) {
-          setHoveredOverlay(hit.pos);
-          setHoverX(point.x);
-        } else {
-          setHoveredOverlay(null);
-          setHoverX(null);
-        }
-      };
+      // Click/tap drives the HTML tooltip. Hover is intentionally ignored so the
+      // overlay does not flash open while scanning the chart on desktop.
       const handleClick = (param: any) => {
         const point = param?.point;
         const time = param?.time;
@@ -920,7 +901,6 @@ export default function ChartPanel(props: ChartPanelProps) {
           setHoverX(point.x);
         }
       };
-      chart.subscribeCrosshairMove(handleCrosshairMove);
       chart.subscribeClick(handleClick);
 
       chart.timeScale().fitContent();
@@ -1166,7 +1146,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                   role="button"
                   tabIndex={0}
                   aria-label="Close position tooltip"
-                  className="pointer-events-auto w-[280px] cursor-pointer rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur"
+                  className="pointer-events-auto max-h-[min(70vh,360px)] w-[280px] cursor-pointer overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur"
                   onClick={(event) => {
                     event.stopPropagation();
                     closeOverlayTooltip();
@@ -1210,27 +1190,6 @@ export default function ChartPanel(props: ChartPanelProps) {
                     ) : null}
                   </div>
 
-                  {hoveredOverlay.partialCloses?.length ? (
-                    <div className="mt-2 space-y-1 rounded-lg bg-amber-50/80 p-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-                        Partial closes
-                      </div>
-                      <div className="space-y-1 text-[11px] text-amber-950">
-                        {hoveredOverlay.partialCloses.map((partial, idx) => (
-                          <div key={`${partial.timestamp ?? idx}-${partial.closePct ?? 'trim'}`}>
-                            <span className="font-semibold">
-                              {typeof partial.closePct === 'number' ? `${partial.closePct.toFixed(0)}%` : 'Partial'} close
-                            </span>
-                            <span className="text-amber-800">
-                              {' '}· {formatOverlayDecisionTs(partial.timestamp || null)}
-                            </span>
-                            {partial.summary ? <span>{` · ${partial.summary}`}</span> : null}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
                   {hoveredOverlay.entryDecision && (
                     <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
                       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -1251,6 +1210,33 @@ export default function ChartPanel(props: ChartPanelProps) {
                       </div>
                     </div>
                   )}
+
+                  {hoveredOverlay.partialCloses?.map((partial, idx) => (
+                    <div
+                      key={`${partial.timestamp ?? idx}-${partial.closePct ?? 'trim'}`}
+                      className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2"
+                    >
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Partial close AI decision
+                      </div>
+                      <div className="text-[11px] text-slate-800">
+                        <span
+                          className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${actionPillToneClass(
+                            partial.action || 'CLOSE',
+                            getOverlayPnlValue(hoveredOverlay),
+                          )}`}
+                        >
+                          {typeof partial.closePct === 'number'
+                            ? `${partial.closePct.toFixed(0)}% ${partial.action || 'CLOSE'}`
+                            : partial.action || 'CLOSE'}
+                        </span>
+                        {partial.summary ? ` · ${partial.summary}` : ''}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {formatOverlayDecisionTs(partial.timestamp || null)}
+                      </div>
+                    </div>
+                  ))}
 
                   {hoveredOverlay.exitDecision && (
                     <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
