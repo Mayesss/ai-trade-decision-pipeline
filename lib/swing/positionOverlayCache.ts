@@ -11,7 +11,7 @@ import { chartTimeframeToSeconds } from './chartCache';
 // a short window, so repeat loads skip the Neon read (cutting Neon data transfer)
 // and the broker round-trip. Aligned with the client's ~60s chart cache; a
 // just-opened/closed position may lag by up to the TTL, which is fine for a chart.
-const PREFIX = 'swing:chart:overlay:v1';
+const PREFIX = 'swing:chart:overlay:v3';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -87,6 +87,7 @@ export async function writePositionOverlayCache(params: {
 }
 
 function finiteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
@@ -122,6 +123,45 @@ function findNearestDecision(history: any[], tsMs?: number | null) {
   };
 }
 
+function getPartialClosePct(entry: any): number | null {
+  const pct =
+    finiteNumber(entry?.execResult?.partialClosePct) ??
+    finiteNumber(entry?.aiDecision?.exit_size_pct) ??
+    finiteNumber(entry?.aiDecision?.close_size_pct) ??
+    finiteNumber(entry?.aiDecision?.partial_close_pct);
+  return pct !== null && pct > 0 && pct < 100 ? pct : null;
+}
+
+function buildPartialCloses(params: {
+  history: any[];
+  entryTsMs?: number | null;
+  exitTsMs?: number | null;
+  fromMs: number;
+  nowMs: number;
+}) {
+  const fromMs = finiteNumber(params.entryTsMs) ?? params.fromMs;
+  const toMs = finiteNumber(params.exitTsMs) ?? params.nowMs;
+  return (params.history || [])
+    .filter((h) => {
+      const ts = finiteNumber(h?.timestamp);
+      if (ts === null || ts < fromMs || ts > toMs) return false;
+      if (String(h?.aiDecision?.action || '').toUpperCase() !== 'CLOSE') return false;
+      if (h?.execResult?.placed !== true || h?.execResult?.closed !== true || h?.execResult?.partial !== true) {
+        return false;
+      }
+      return getPartialClosePct(h) !== null;
+    })
+    .map((h) => ({
+      timestamp: finiteNumber(h.timestamp),
+      action: h.aiDecision?.action,
+      summary: h.aiDecision?.summary,
+      reason: h.aiDecision?.reason,
+      closePct: getPartialClosePct(h),
+      size: finiteNumber(h.execResult?.size),
+    }))
+    .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+}
+
 function normalizeOverlayPositions(params: {
   symbol: string;
   platform: AnalysisPlatform;
@@ -129,6 +169,8 @@ function normalizeOverlayPositions(params: {
   openPositionInfo?: OpenPositionInfo | null;
   history: any[];
   leverageFromHistory: number | null;
+  fromMs: number;
+  nowMs: number;
 }): ChartPositionOverlay[] {
   const closedNormalized =
     params.platform === 'bitget' && params.symbol.toUpperCase() === BTC_SYMBOL
@@ -195,6 +237,13 @@ function normalizeOverlayPositions(params: {
       leverage: positiveNumber(p.leverage),
       entryDecision: findNearestDecision(params.history, p.entryTimestamp),
       exitDecision: findNearestDecision(params.history, p.exitTimestamp),
+      partialCloses: buildPartialCloses({
+        history: params.history,
+        entryTsMs: p.entryTimestamp,
+        exitTsMs: p.exitTimestamp,
+        fromMs: params.fromMs,
+        nowMs: params.nowMs,
+      }),
     };
   });
 }
@@ -267,6 +316,8 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
           openPositionInfo: params.openPositionInfo,
           history,
           leverageFromHistory,
+          fromMs: preset.fromMs,
+          nowMs: params.nowMs,
         });
         await writePositionOverlayCache({
           symbol,

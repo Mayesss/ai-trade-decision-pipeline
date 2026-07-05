@@ -351,6 +351,7 @@ export function computeSwingState(
     category?: string | null,
     platform?: string | null,
     lastClosedPosition?: LastClosedPosition | null,
+    nowMs?: number,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -717,7 +718,18 @@ export function computeSwingState(
 
     // ---- Single structured payload: one encoding (JSON), no duplicated keys ----
     // STATE = derived signals (what to reason over). MARKET = raw inputs (price/tape/news).
+    // Explicit UTC "now" so the model reasons over an unambiguous anchor instead of
+    // reconstructing it from scattered ISO timestamps. All fields are UTC; awareness
+    // only — no time-based rule is enforced here (those stay in code gates if/when added).
+    const nowDate = new Date(Number.isFinite(nowMs) ? (nowMs as number) : Date.now());
+    const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const state = {
+        time: {
+            iso_utc: nowDate.toISOString(),
+            date_utc: nowDate.toISOString().slice(0, 10),
+            day_of_week_utc: DOW[nowDate.getUTCDay()],
+            hour_utc: nowDate.getUTCHours(),
+        },
         biases: {
             micro: microBiasLabel,
             micro_source: microBiasSource,

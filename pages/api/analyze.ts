@@ -1001,6 +1001,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             category,
             platform,
             lastClosedPosition,
+            Date.now(),
         );
         const { context, actionability } = swingState;
 

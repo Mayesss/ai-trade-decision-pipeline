@@ -7,6 +7,11 @@ type DecisionBrief = {
   reason?: string;
 };
 
+type PartialCloseBrief = DecisionBrief & {
+  closePct?: number | null;
+  size?: number | null;
+};
+
 type PositionOverlay = {
   id: string;
   status: 'open' | 'closed';
@@ -20,6 +25,7 @@ type PositionOverlay = {
   exitPrice?: number | null;
   entryDecision?: DecisionBrief | null;
   exitDecision?: DecisionBrief | null;
+  partialCloses?: PartialCloseBrief[];
 };
 
 
@@ -249,6 +255,8 @@ type OverlayTheme = {
   upText: string;
   downText: string;
   neutralText: string;
+  partialStroke: string;
+  partialText: string;
 };
 
 const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
@@ -264,6 +272,8 @@ const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
   upText: isDark ? 'rgb(52,211,153)' : 'rgb(4,120,87)',
   downText: isDark ? 'rgb(251,113,133)' : 'rgb(190,18,60)',
   neutralText: isDark ? 'rgb(212,212,216)' : 'rgb(51,65,85)',
+  partialStroke: isDark ? 'rgba(251,191,36,0.95)' : 'rgba(217,119,6,0.95)',
+  partialText: isDark ? 'rgb(253,230,138)' : 'rgb(146,64,14)',
 });
 
 type OverlayPrimitiveDatum = {
@@ -276,6 +286,8 @@ type OverlayPrimitiveDatum = {
   tone: OverlayTone;
   leverageLabel: string | null;
   pnlLabel: string | null;
+  partialLabel: string | null;
+  partialTimes: number[];
 };
 
 const OVERLAY_INSET_Y = 12;
@@ -317,6 +329,7 @@ const drawOverlayBadge = (
   const parts: { text: string; color: string }[] = [];
   if (datum.leverageLabel) parts.push({ text: datum.leverageLabel, color: theme.leverageText });
   if (datum.pnlLabel) parts.push({ text: datum.pnlLabel, color: overlayText(datum.tone, theme) });
+  if (datum.partialLabel) parts.push({ text: datum.partialLabel, color: theme.partialText });
   if (!hasArrow && !parts.length) return;
 
   ctx.font = '600 10px system-ui, -apple-system, sans-serif';
@@ -364,7 +377,7 @@ const drawOverlayBadge = (
 
 class PositionOverlayRenderer {
   constructor(
-    private readonly items: { left: number; right: number; datum: OverlayPrimitiveDatum }[],
+    private readonly items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[],
     private readonly theme: OverlayTheme,
   ) {}
   draw(target: any) {
@@ -374,7 +387,7 @@ class PositionOverlayRenderer {
       const top = OVERLAY_INSET_Y;
       const height = Math.max(0, paneHeight - OVERLAY_INSET_Y * 2);
       if (height <= 0) return;
-      for (const { left, right, datum } of this.items) {
+      for (const { left, right, partials, datum } of this.items) {
         const width = Math.max(4, right - left);
         ctx.fillStyle = overlayFill(datum.tone, this.theme);
         roundRectPath(ctx, left, top, width, height, OVERLAY_RADIUS);
@@ -383,6 +396,14 @@ class PositionOverlayRenderer {
         if (datum.showEntryWall) {
           ctx.fillStyle = stroke;
           ctx.fillRect(left, top, 1, height);
+        }
+        if (partials.length) {
+          ctx.fillStyle = this.theme.partialStroke;
+          for (const x of partials) {
+            if (x < left || x > right) continue;
+            const markerX = Math.round(x);
+            ctx.fillRect(markerX - 1, top + 3, 2, Math.max(4, height - 6));
+          }
         }
         ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
         ctx.fillRect(right - 1, top, 1, height);
@@ -393,7 +414,7 @@ class PositionOverlayRenderer {
 }
 
 class PositionOverlayPaneView {
-  private items: { left: number; right: number; datum: OverlayPrimitiveDatum }[] = [];
+  private items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[] = [];
   constructor(private readonly source: PositionOverlayPrimitive) {}
   update() {
     const chart = this.source.chart;
@@ -410,9 +431,14 @@ class PositionOverlayPaneView {
         if (x1 === null || x2 === null || !Number.isFinite(x1) || !Number.isFinite(x2)) {
           return null;
         }
-        return { left: Math.min(x1, x2), right: Math.max(x1, x2), datum };
+        const left = Math.min(x1, x2);
+        const right = Math.max(x1, x2);
+        const partials = datum.partialTimes
+          .map((time) => timeScale.timeToCoordinate(time))
+          .filter((x): x is number => x !== null && Number.isFinite(x) && x >= left && x <= right);
+        return { left, right, partials, datum };
       })
-      .filter(Boolean) as { left: number; right: number; datum: OverlayPrimitiveDatum }[];
+      .filter(Boolean) as { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[];
   }
   renderer() {
     return new PositionOverlayRenderer(this.items, this.source.theme);
@@ -480,6 +506,15 @@ const buildOverlayPrimitiveData = (
     const pnlValue = getOverlayPnlValue(pos);
     const tone: OverlayTone =
       pnlValue === null ? 'neutral' : pnlValue >= 0 ? 'up' : 'down';
+    const partialTimes = (pos.partialCloses || [])
+      .map((partial) => {
+        const raw = Number(partial.timestamp);
+        if (!Number.isFinite(raw) || raw <= 0) return null;
+        return nearestTime(Math.floor(raw / 1000));
+      })
+      .filter((time): time is number => time !== null && time >= entryTime && time <= exitTime);
+    const partialLabel =
+      partialTimes.length === 1 ? '1 trim' : partialTimes.length > 1 ? `${partialTimes.length} trims` : null;
     data.push({
       id: pos.id,
       entryTime,
@@ -490,6 +525,8 @@ const buildOverlayPrimitiveData = (
       tone,
       leverageLabel: typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null,
       pnlLabel: formatOverlayPnl(pos),
+      partialLabel,
+      partialTimes,
     });
     snapped.push({ pos, entryTime, exitTime });
   }
@@ -542,6 +579,11 @@ export default function ChartPanel(props: ChartPanelProps) {
   const chartAreaTopColor = isDark ? 'rgba(212,212,216,0.3)' : 'rgba(71,85,105,0.3)';
   const chartAreaBottomColor = isDark ? 'rgba(161,161,170,0.09)' : 'rgba(71,85,105,0.07)';
   const hasChartData = chartData.length > 0;
+  const closeOverlayTooltip = () => {
+    pinnedOverlayIdRef.current = null;
+    setHoveredOverlay(null);
+    setHoverX(null);
+  };
 
   const applyPayload = (payload: ChartApiResponse) => {
     const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
@@ -1120,7 +1162,22 @@ export default function ChartPanel(props: ChartPanelProps) {
                   top: 10,
                 }}
               >
-                <div className="pointer-events-none w-[280px] rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Close position tooltip"
+                  className="pointer-events-auto w-[280px] cursor-pointer rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeOverlayTooltip();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Escape') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeOverlayTooltip();
+                  }}
+                >
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-semibold text-slate-900">
                       {hoveredOverlay.status === 'open' ? 'Open position' : 'Closed position'}
@@ -1152,6 +1209,27 @@ export default function ChartPanel(props: ChartPanelProps) {
                       <span>Exit {hoveredOverlay.exitPrice.toFixed(2)}</span>
                     ) : null}
                   </div>
+
+                  {hoveredOverlay.partialCloses?.length ? (
+                    <div className="mt-2 space-y-1 rounded-lg bg-amber-50/80 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                        Partial closes
+                      </div>
+                      <div className="space-y-1 text-[11px] text-amber-950">
+                        {hoveredOverlay.partialCloses.map((partial, idx) => (
+                          <div key={`${partial.timestamp ?? idx}-${partial.closePct ?? 'trim'}`}>
+                            <span className="font-semibold">
+                              {typeof partial.closePct === 'number' ? `${partial.closePct.toFixed(0)}%` : 'Partial'} close
+                            </span>
+                            <span className="text-amber-800">
+                              {' '}· {formatOverlayDecisionTs(partial.timestamp || null)}
+                            </span>
+                            {partial.summary ? <span>{` · ${partial.summary}`}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {hoveredOverlay.entryDecision && (
                     <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">

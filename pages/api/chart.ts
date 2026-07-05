@@ -223,6 +223,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const capturedLevs = extractCapturedLeverages(history);
     const leverageFromHistory = capturedLevs[0]?.leverage ?? null;
     const finiteNumber = (value: unknown): number | null => {
+      if (value === null || value === undefined || value === '') return null;
       const n = Number(value);
       return Number.isFinite(n) ? n : null;
     };
@@ -250,6 +251,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         summary: best.aiDecision?.summary,
         reason: best.aiDecision?.reason,
       };
+    };
+    const getPartialClosePct = (entry: any): number | null => {
+      const pct =
+        finiteNumber(entry?.execResult?.partialClosePct) ??
+        finiteNumber(entry?.aiDecision?.exit_size_pct) ??
+        finiteNumber(entry?.aiDecision?.close_size_pct) ??
+        finiteNumber(entry?.aiDecision?.partial_close_pct);
+      return pct !== null && pct > 0 && pct < 100 ? pct : null;
+    };
+    const buildPartialCloses = (entryTsMs?: number | null, exitTsMs?: number | null) => {
+      const fromMs = finiteNumber(entryTsMs) ?? windowStartMs;
+      const toMs = finiteNumber(exitTsMs) ?? nowMs;
+      return (history || [])
+        .filter((h) => {
+          const ts = finiteNumber(h?.timestamp);
+          if (ts === null || ts < fromMs || ts > toMs) return false;
+          if (String(h?.aiDecision?.action || '').toUpperCase() !== 'CLOSE') return false;
+          if (h?.execResult?.placed !== true || h?.execResult?.closed !== true || h?.execResult?.partial !== true) {
+            return false;
+          }
+          return getPartialClosePct(h) !== null;
+        })
+        .map((h) => ({
+          timestamp: finiteNumber(h.timestamp),
+          action: h.aiDecision?.action,
+          summary: h.aiDecision?.summary,
+          reason: h.aiDecision?.reason,
+          closePct: getPartialClosePct(h),
+          size: finiteNumber(h.execResult?.size),
+        }))
+        .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
     };
 
     let positions: any[] = [];
@@ -351,6 +383,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             leverage: positiveNumber(p.leverage),
             entryDecision: findNearestDecision(p.entryTimestamp),
             exitDecision: findNearestDecision(p.exitTimestamp),
+            partialCloses: buildPartialCloses(p.entryTimestamp, p.exitTimestamp),
           };
         });
         // Cache only on success so an error path retries rather than caching empty.
