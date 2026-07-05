@@ -1,7 +1,9 @@
 import { kvGetJson, kvSetJson } from '../kv';
 import { extractCapturedLeverages, loadSymbolMarkerHistory } from '../history';
+import { fetchRecentPositionWindows } from '../analytics';
 import type { AnalysisPlatform } from '../platform';
 import { loadClosedSwingPositions } from './pg';
+import { syncSwingClosedPositions, mergePositionWindows } from './sync';
 import { chartTimeframeToSeconds } from './chartCache';
 
 // Chart position-overlay cache. The chart endpoint builds its position overlays
@@ -120,6 +122,9 @@ function findNearestDecision(history: any[], tsMs?: number | null) {
     action: best.aiDecision?.action,
     summary: best.aiDecision?.summary,
     reason: best.aiDecision?.reason,
+    // Carry the partial-close pct so a trim renders as "Close 30%" rather than a
+    // bare "Close" in the overlay tooltip's exit/entry decision label.
+    closePct: getPartialClosePct(best),
   };
 }
 
@@ -297,6 +302,25 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
   } catch (err) {
     console.warn(`chart overlay warm source load failed for ${symbol}:`, err);
     return;
+  }
+
+  // Bitget closes aren't persisted to the Neon mirror at close time (only Capital
+  // is), so the mirror lags the newest close — and this warm write happens on the
+  // same analyze tick that closed it. Pull recent broker windows, write them
+  // through, and merge so the cached overlay includes the just-closed position
+  // instead of dropping it (it's gone from the open feed and not yet mirrored).
+  if (params.platform === 'bitget') {
+    try {
+      const historyHours = Math.max(1, Math.ceil((params.nowMs - earliestFromMs) / (60 * 60 * 1000)));
+      const capturedLevs = extractCapturedLeverages(allHistory);
+      const liveWindows = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
+      if (liveWindows.length) {
+        await syncSwingClosedPositions(params.platform, liveWindows, capturedLevs);
+        allClosed = mergePositionWindows(allClosed, liveWindows);
+      }
+    } catch (err) {
+      console.warn(`chart overlay warm broker merge failed for ${symbol}:`, err);
+    }
   }
 
   await Promise.all(

@@ -8,6 +8,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/swing/analyze?symbol=BGBUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "0 * * * *"
+    },
+    {
       "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
       "schedule": "0 * * * *"
     },

@@ -9,7 +9,7 @@ import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages 
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
-import { syncSwingClosedPositions } from '../../lib/swing/sync';
+import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
   readChartCandlesCache,
   writeChartCandlesCache,
@@ -109,7 +109,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const nowMsForCandles = Date.now();
     let candleCacheStatus: 'hit' | 'miss' | 'short' = 'miss';
     let overlayCacheStatus: 'hit' | 'miss' = 'miss';
-    let closedPositionSource: 'cache' | 'persisted' | 'broker' | 'none' = 'none';
+    let closedPositionSource: 'cache' | 'persisted' | 'broker' | 'merged' | 'none' = 'none';
     let candleLoadMs = 0;
     let markerLoadMs = 0;
     let overlayLoadMs = 0;
@@ -250,6 +250,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         action: best.aiDecision?.action,
         summary: best.aiDecision?.summary,
         reason: best.aiDecision?.reason,
+        // Carry the partial-close pct so a trim renders as "Close 30%" rather than
+        // a bare "Close" in the overlay tooltip's exit/entry decision label.
+        closePct: getPartialClosePct(best),
       };
     };
     const getPartialClosePct = (entry: any): number | null => {
@@ -309,12 +312,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (closed.length) {
           closedPositionSource = 'persisted';
         }
-        if (!closed.length && platform === 'bitget') {
-          closed = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
-          closedPositionSource = closed.length ? 'broker' : 'none';
-          // Keep the mirror warm for the next chart load. Best-effort; never blocks
-          // chart rendering beyond the fallback broker read we already had to do.
-          await syncSwingClosedPositions(platform, closed, capturedLevs);
+        if (platform === 'bitget') {
+          // Bitget closes are NOT persisted at close time (only Capital is), so the
+          // Neon mirror lags the newest close — it's only warmed opportunistically by
+          // dashboard-summary loads. Gating the broker read on an empty mirror meant a
+          // just-closed position vanished from the chart (gone from the open feed, not
+          // yet mirrored) whenever the mirror already held older in-window closes.
+          // So always pull recent broker windows, write them through, and merge —
+          // matching the dashboard-summary read path.
+          try {
+            const liveWindows = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
+            if (liveWindows.length) {
+              await syncSwingClosedPositions(platform, liveWindows, capturedLevs);
+              closed = closed.length ? mergePositionWindows(closed, liveWindows) : liveWindows;
+              closedPositionSource = closedPositionSource === 'persisted' ? 'merged' : 'broker';
+            }
+          } catch (err) {
+            console.warn(`Could not merge broker position windows for ${symbol}:`, err);
+          }
         }
         const closedNormalized =
           platform === 'bitget' && symbol === BTC_SYMBOL

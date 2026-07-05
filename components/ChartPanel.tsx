@@ -5,6 +5,7 @@ type DecisionBrief = {
   action?: string;
   summary?: string;
   reason?: string;
+  closePct?: number | null;
 };
 
 type PartialCloseBrief = DecisionBrief & {
@@ -221,6 +222,17 @@ const actionPillToneClass = (action?: string | null, pnlValue?: number | null) =
     return 'neutral-highlight';
   }
   return 'neutral-highlight';
+};
+
+// Render a decision's action label, annotating a partial close as e.g. "30% CLOSE"
+// so a trim isn't shown as a bare "Close" (mirrors the partial-close pill format
+// and the AI-prompt-feed annotation).
+const formatDecisionActionLabel = (decision?: DecisionBrief | null): string => {
+  const action = decision?.action;
+  if (action === 'CLOSE' && typeof decision?.closePct === 'number') {
+    return `${decision.closePct.toFixed(0)}% ${action}`;
+  }
+  return action || 'Decision';
 };
 
 const formatOverlayDecisionTs = (tsMs?: number | null) => {
@@ -1201,7 +1213,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                             hoveredOverlay.entryDecision.action,
                           )}`}
                         >
-                          {hoveredOverlay.entryDecision.action || 'Decision'}
+                          {formatDecisionActionLabel(hoveredOverlay.entryDecision)}
                         </span>
                         {hoveredOverlay.entryDecision.summary ? ` · ${hoveredOverlay.entryDecision.summary}` : ''}
                       </div>
@@ -1250,7 +1262,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                             getOverlayPnlValue(hoveredOverlay),
                           )}`}
                         >
-                          {hoveredOverlay.exitDecision.action || 'Decision'}
+                          {formatDecisionActionLabel(hoveredOverlay.exitDecision)}
                         </span>
                         {hoveredOverlay.exitDecision.summary ? ` · ${hoveredOverlay.exitDecision.summary}` : ''}
                       </div>

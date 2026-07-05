@@ -12,6 +12,11 @@ export interface SymbolMeta {
     volumePlace: number;
     minTradeNum: string;
     sizeMultiplier?: string;
+    // Exchange leverage bounds for the contract. Present on the raw Bitget
+    // contracts row; surfaced here so the profit-lock margin-recycle maneuver can
+    // clamp a leverage raise to the symbol's real ceiling (not the 1–5 entry cap).
+    maxLever?: string;
+    minLever?: string;
 }
 
 export type PositionInfo =
@@ -28,6 +33,7 @@ export type PositionInfo =
           total?: string;
           currentPnl?: string;
           leverage?: number | null;
+          markPrice?: number | null;
       };
 
 export type PositionWindow = {
@@ -224,6 +230,8 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
 
     const levRaw = Number(chosen.leverage ?? chosen.marginLeverage ?? chosen.lever);
     const leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
+    const markRaw = Number(chosen.markPrice);
+    const markPrice = Number.isFinite(markRaw) && markRaw > 0 ? markRaw : null;
 
     return {
         status: 'open',
@@ -237,6 +245,7 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         total: chosen.total,
         currentPnl: calculatePnLPercent(chosen),
         leverage,
+        markPrice,
     };
 }
 function calculatePnLPercent(data: RawPosition): string {

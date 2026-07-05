@@ -890,7 +890,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const recentHistory = await loadDecisionHistory(symbol, 5, platform);
         const recentActions = recentHistory
             .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
-            .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
+            .map((h) => {
+                const d = h.aiDecision as any;
+                // Preserve the close size so a partial trim (e.g. 30%) is distinguishable
+                // from a full exit in the model's recent-actions feedback. Kept as a
+                // separate field so the raw `action` string stays clean for the
+                // anti-flip guard in postprocessDecision (which matches on `action`).
+                const rawPct = d?.exit_size_pct ?? d?.close_size_pct ?? d?.partial_close_pct;
+                const pctNum = Number(rawPct);
+                const closePct = Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : null;
+                return { action: d?.action, timestamp: h.timestamp, closePct };
+            })
             .filter((a) => a.action);
         // Session/day/week levels and the macro-event calendar are both valuable for any
         // session-traded, fiat-macro-sensitive Capital.com instrument (forex, metals,
@@ -1076,6 +1086,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             policy: decisionPolicy,
             lastClosedPosition,
         });
+
+        // The profit-lock margin-recycle maneuver is crypto/Bitget only (set-leverage
+        // + position TP/SL amend). Null the fields on any other venue so they never
+        // reach execution or the decision history for a non-crypto instrument.
+        if (platform !== 'bitget') {
+            (decision as any).raise_leverage_to = null;
+            (decision as any).move_stop_to_be = false;
+        }
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
         const execLeverage = capitalLeverage ?? getTargetLeverage(decision);

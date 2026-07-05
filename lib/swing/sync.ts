@@ -47,6 +47,24 @@ export async function recordSwingAccountSnapshot(params: {
     }
 }
 
+// Merge persisted (Neon mirror) and live (broker) closed-position windows,
+// deduped by stable id — live wins on conflict since the broker is freshest.
+// Shared by the dashboard-summary and chart-overlay read paths so both surface a
+// just-closed Bitget position without waiting for the mirror to catch up.
+export function mergePositionWindows(persisted: PositionWindow[], live: PositionWindow[]): PositionWindow[] {
+    const byId = new Map<string, PositionWindow>();
+    for (const w of persisted) {
+        byId.set(String(w.id || `${w.symbol}-${w.entryTimestamp ?? 'nots'}`), w);
+    }
+    for (const w of live) {
+        byId.set(String(w.id || `${w.symbol}-${w.entryTimestamp ?? 'nots'}`), w);
+    }
+    return Array.from(byId.values()).sort(
+        (a, b) =>
+            Number(a.entryTimestamp ?? a.exitTimestamp ?? 0) - Number(b.entryTimestamp ?? b.exitTimestamp ?? 0),
+    );
+}
+
 // Persist a batch of closed position windows. Best-effort: never throws into
 // the caller's path (a read endpoint shouldn't fail because a mirror write did).
 export async function syncSwingClosedPositions(

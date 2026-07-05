@@ -343,7 +343,7 @@ export function computeSwingState(
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
-    recentActions: { action: string; timestamp: number }[] = [],
+    recentActions: { action: string; timestamp: number; closePct?: number | null }[] = [],
     realizedRoiPct?: number | null,
     dryRun?: boolean,
     spreadBpsOverride?: number,
@@ -674,6 +674,17 @@ export function computeSwingState(
     // Capital: omit the leverage key entirely (no comma). Bitget: include it.
     const leverageJsonField = isCapital ? '' : ',"leverage":null|1|2|3|4|5';
 
+    // Profit-lock margin-recycle maneuver (crypto only). The crypto schema always
+    // carries these keys (nullable); the maneuver is only *explained* to the model
+    // when ENABLE_CRYPTO_MARGIN_RECYCLE is set — otherwise it's told to null them.
+    const marginRecycleEnabled = !isCapital && process.env.ENABLE_CRYPTO_MARGIN_RECYCLE === 'true';
+    const manageJsonField = isCapital ? '' : ',"raise_leverage_to":null|int,"move_stop_to_be":true|false|null';
+    const manageGuidance = isCapital
+        ? ''
+        : marginRecycleEnabled
+          ? 'Margin recycle (only with a real profit cushion): on HOLD or a partial CLOSE you MAY move the stop to breakeven (move_stop_to_be=true) and raise leverage (raise_leverage_to, up to the symbol exchange max — the system clamps your value to [current, max]). On isolated margin this frees margin for future trades WITHOUT cutting size, and the breakeven stop caps the remainder’s risk. A leverage raise always forces a breakeven stop first. Not in profit → null both.'
+          : 'Always output raise_leverage_to=null and move_stop_to_be=null (feature disabled).';
+
     // signal_strength is OWNED BY CODE (computeSignalStrength). It is NOT shown to the
     // model (we don't want it anchoring the model's analysis) — it drives only the
     // pre-prompt budget gate and postprocessDecision's exception thresholds.
@@ -832,9 +843,16 @@ export function computeSwingState(
             .map((v: any) => ({ price: clampNumber(v.price, 2), volume: v.volume })),
         news: { sentiment: normalizedNewsSentiment, headlines: normalizedHeadlines },
         recent_actions: recentActionsExists
-            ? recentActions
-                  .slice(-1 * actionsToShow)
-                  .map((a) => ({ action: a.action, ts: new Date(a.timestamp).toISOString() }))
+            ? recentActions.slice(-1 * actionsToShow).map((a) => {
+                  // Annotate partial closes (e.g. "CLOSE 30%") so the model can tell a
+                  // trim from a full exit; a 100%/absent pct stays a bare "CLOSE".
+                  const partial =
+                      a.action === 'CLOSE' && a.closePct != null && a.closePct > 0 && a.closePct < 100;
+                  return {
+                      action: partial ? `CLOSE ${Math.round(a.closePct as number)}%` : a.action,
+                      ts: new Date(a.timestamp).toISOString(),
+                  };
+              })
             : [],
     };
     if (forex_event_context && typeof forex_event_context === 'object') {
@@ -896,7 +914,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.
-- ${leverageGuidance}
+- ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
 OUTPUT
@@ -922,7 +940,7 @@ TASKS:
 4) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100${leverageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -994,7 +1012,7 @@ export async function buildPrompt(
     gates: any,
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
-    recentActions: { action: string; timestamp: number }[] = [],
+    recentActions: { action: string; timestamp: number; closePct?: number | null }[] = [],
     realizedRoiPct?: number | null,
     dryRun?: boolean,
     spreadBpsOverride?: number,
@@ -1088,7 +1106,7 @@ export function postprocessDecision(params: {
     context: PromptDecisionContext;
     gates: { spread_ok: boolean; liquidity_ok: boolean; atr_ok: boolean; slippage_ok: boolean };
     positionOpen: boolean;
-    recentActions: { action: string; timestamp: number }[];
+    recentActions: { action: string; timestamp: number; closePct?: number | null }[];
     positionContext: PositionContext | null;
     policy?: DecisionPolicy;
     lastClosedPosition?: LastClosedPosition | null;
@@ -1185,11 +1203,28 @@ export function postprocessDecision(params: {
                 : null
             : null;
 
+    // Profit-lock margin-recycle fields (crypto only; caller strips for non-crypto).
+    // Eligible on HOLD or a PARTIAL close (a full close has nothing to manage).
+    // Execution owns the authoritative [current, symbol max] leverage clamp — here
+    // we only gate by action + feature flag and coerce types.
+    const manageEligible =
+        process.env.ENABLE_CRYPTO_MARGIN_RECYCLE === 'true' &&
+        (action === 'HOLD' || (action === 'CLOSE' && exit_size_pct != null && exit_size_pct < 100));
+    const raise_leverage_to =
+        manageEligible &&
+        Number.isFinite(Number(decision?.raise_leverage_to)) &&
+        Number(decision.raise_leverage_to) > 0
+            ? Math.round(Number(decision.raise_leverage_to))
+            : null;
+    const move_stop_to_be = manageEligible ? decision?.move_stop_to_be === true : false;
+
     return {
         ...decision,
         action,
         leverage,
         exit_size_pct,
+        raise_leverage_to,
+        move_stop_to_be,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
@@ -1210,13 +1245,17 @@ export const SWING_DECISION_SCHEMA = {
     schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['action', 'summary', 'reason', 'exit_size_pct', 'leverage'],
+        required: ['action', 'summary', 'reason', 'exit_size_pct', 'leverage', 'raise_leverage_to', 'move_stop_to_be'],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
             reason: { type: 'string' },
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
             leverage: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+            // Profit-lock margin-recycle maneuver (crypto only). Execution clamps
+            // raise_leverage_to to [current, symbol max]; 125 is a generous ceiling.
+            raise_leverage_to: { type: ['integer', 'null'], minimum: 1, maximum: 125 },
+            move_stop_to_be: { type: ['boolean', 'null'] },
         },
     },
 } as const;

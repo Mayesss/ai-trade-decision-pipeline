@@ -12,7 +12,7 @@ import {
   type CapitalTradeTransactionRow,
 } from '../../../lib/capital';
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
-import { syncSwingClosedPositions } from '../../../lib/swing/sync';
+import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition } from '../../../lib/swing/pg';
 import { kvGetJson, kvSetJson } from '../../../lib/kv';
 import { requireAdminAccess } from '../../../lib/admin';
@@ -86,19 +86,6 @@ const scalePct = (value: number | null | undefined, factor: number): number | nu
   if (typeof value !== 'number') return value;
   return value * factor;
 };
-
-function mergePositionWindows(persisted: PositionWindow[], live: PositionWindow[]): PositionWindow[] {
-  const byId = new Map<string, PositionWindow>();
-  for (const w of persisted) {
-    byId.set(String(w.id || `${w.symbol}-${w.entryTimestamp ?? 'nots'}`), w);
-  }
-  for (const w of live) {
-    byId.set(String(w.id || `${w.symbol}-${w.entryTimestamp ?? 'nots'}`), w);
-  }
-  return Array.from(byId.values()).sort(
-    (a, b) => Number(a.entryTimestamp ?? a.exitTimestamp ?? 0) - Number(b.entryTimestamp ?? b.exitTimestamp ?? 0),
-  );
-}
 
 function mergeCapitalPositionWindows(windows: PositionWindow[]): PositionWindow[] {
   const sorted = windows
