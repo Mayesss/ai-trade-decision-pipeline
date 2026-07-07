@@ -14,6 +14,18 @@ import type { MultiTFIndicators } from './indicators';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import { setEvaluation, getEvaluation } from './utils';
 
+// The AI's own prior rationale attached to the open position: the decision that
+// opened it, and any partial trims since. Prior reasoning fed back verbatim —
+// not a code-computed verdict — so it stays inside the measurements-not-verdicts
+// prompt contract.
+export type PositionDecisionNote = {
+    action: string;
+    ts?: string;
+    summary?: string;
+    reason?: string;
+    exit_size_pct?: number;
+};
+
 export type PositionContext = {
     side: 'long' | 'short';
     entry_price?: number;
@@ -24,6 +36,8 @@ export type PositionContext = {
     max_profit_pct?: number;
     breakeven_price?: number;
     taker_fee_rate?: number;
+    opening_decision?: PositionDecisionNote | null;
+    partial_closes?: PositionDecisionNote[];
 };
 
 export type MomentumSignals = {
@@ -913,7 +927,11 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
-- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.
+- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
+        position_context?.opening_decision
+            ? `\n- Entry thesis: state.position.opening_decision is your own rationale that opened this position${position_context.partial_closes?.length ? ', and state.position.partial_closes are the trims you took since, with their reasons' : ''}. Manage against that thesis — HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict.`
+            : ''
+    }
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 

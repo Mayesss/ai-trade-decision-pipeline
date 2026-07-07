@@ -40,7 +40,7 @@ import {
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
-import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
+import type { DecisionPolicy, LastClosedPosition, MomentumSignals, PositionDecisionNote } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
@@ -48,7 +48,8 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
-import { loadClosedSwingPositions, upsertSwingPosition } from '../../lib/swing/pg';
+import { loadClosedSwingPositions, loadSwingPositionDecisions, upsertSwingPosition } from '../../lib/swing/pg';
+import type { SwingPositionDecision } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
 import { warmPositionOverlayCacheFromAnalyze } from '../../lib/swing/positionOverlayCache';
@@ -858,12 +859,70 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               })
             : {};
 
+        // Original entry thesis + partial-close rationale, fed back into the
+        // in-position prompt so the model manages the trade against the theory it
+        // opened on instead of re-deriving one per tick. Postgres, not KV: swing
+        // holds (1–10d) can outlive the 7-day KV history TTL. Fails open — a read
+        // error just omits the thesis.
+        let openingDecision: PositionDecisionNote | null = null;
+        let partialCloses: PositionDecisionNote[] = [];
+        const thesisEntryTs = Number(
+            pstate.enteredAt ?? (positionInfo.status === 'open' ? positionInfo.entryTimestamp : undefined),
+        );
+        if (positionOpen && Number.isFinite(thesisEntryTs) && thesisEntryTs > 0) {
+            try {
+                // Same 6h pre-entry lookback the swing.positions decision link uses:
+                // the opening decision is decided shortly BEFORE the broker entry ts.
+                const decisions = await loadSwingPositionDecisions({
+                    platform,
+                    symbol,
+                    fromMs: thesisEntryTs - 6 * 60 * 60 * 1000,
+                });
+                const clip = (value: string | null, max: number) => {
+                    const t = String(value ?? '').trim();
+                    if (!t) return undefined;
+                    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+                };
+                const toNote = (d: SwingPositionDecision): PositionDecisionNote => ({
+                    action: d.action,
+                    ts: new Date(d.decidedAtMs).toISOString(),
+                    summary: clip(d.summary, 200),
+                    reason: clip(d.reason, 300),
+                    ...(d.exitSizePct != null ? { exit_size_pct: Math.round(d.exitSizePct) } : {}),
+                });
+                const ENTRY_SLACK_MS = 5 * 60_000;
+                const opening = [...decisions]
+                    .reverse()
+                    .find(
+                        (d) =>
+                            (d.action === 'BUY' || d.action === 'SELL' || d.action === 'REVERSE') &&
+                            d.decidedAtMs <= thesisEntryTs + ENTRY_SLACK_MS,
+                    );
+                if (opening) openingDecision = toNote(opening);
+                partialCloses = decisions
+                    .filter(
+                        (d) =>
+                            d.action === 'CLOSE' &&
+                            d.exitSizePct != null &&
+                            d.exitSizePct > 0 &&
+                            d.exitSizePct < 100 &&
+                            d.decidedAtMs > (opening?.decidedAtMs ?? thesisEntryTs),
+                    )
+                    .slice(-3)
+                    .map(toNote);
+            } catch (err) {
+                console.warn(`Could not load position decision thesis for ${symbol}:`, err);
+            }
+        }
+
         const positionContext = composePositionContext({
             position: positionInfo,
             pnlPct,
             maxDrawdownPct: positionExtrema.maxDrawdownPct,
             maxProfitPct: positionExtrema.maxProfitPct,
             enteredAt: pstate.enteredAt,
+            openingDecision,
+            partialCloses,
         });
         // Re-entry cooldown input: most recent close on this symbol (AI close,
         // auto-close or broker stop — swing.positions records them all). Only needed

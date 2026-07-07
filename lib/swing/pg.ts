@@ -274,6 +274,60 @@ export async function loadRecentSwingDecisions(
     }));
 }
 
+export type SwingPositionDecision = {
+    decidedAtMs: number;
+    action: string;
+    summary: string | null;
+    reason: string | null;
+    exitSizePct: number | null;
+};
+
+// Entry/exit decisions with the AI's own rationale for one symbol since a
+// timestamp — feeds the original entry thesis + partial-close reasons back into
+// the in-position prompt. Sourced from Postgres rather than KV because swing
+// holds (1–10 days) can outlive the 7-day KV history TTL. Projects only the few
+// small JSON fields it needs (never full ai_decision_json/prompt_json).
+export async function loadSwingPositionDecisions(opts: {
+    platform?: string | null;
+    symbol: string;
+    fromMs: number;
+    limit?: number;
+}): Promise<SwingPositionDecision[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const symbol = String(opts.symbol).toUpperCase();
+    const fromMs = finite(opts.fromMs) ?? 0;
+    const limit = Math.max(1, Math.min(200, Math.floor(Number(opts.limit) || 50)));
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT
+            decided_at_ms,
+            action,
+            ai_decision_json->>'summary' AS summary,
+            ai_decision_json->>'reason' AS reason,
+            COALESCE(
+                ai_decision_json->>'exit_size_pct',
+                ai_decision_json->>'close_size_pct',
+                ai_decision_json->>'partial_close_pct'
+            ) AS exit_size_pct
+        FROM swing.decisions
+        WHERE symbol = ${symbol}
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND decided_at_ms >= ${fromMs}
+          AND action IN ('BUY', 'SELL', 'CLOSE', 'REVERSE')
+        ORDER BY decided_at_ms ASC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((r) => ({
+        decidedAtMs: Number(r.decided_at_ms),
+        action: String(r.action),
+        summary: r.summary == null ? null : String(r.summary),
+        reason: r.reason == null ? null : String(r.reason),
+        exitSizePct: finite(r.exit_size_pct),
+    }));
+}
+
 // --------------------------------------------------------------------------
 // Positions
 // --------------------------------------------------------------------------

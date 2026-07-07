@@ -1,6 +1,6 @@
 // lib/positionContext.ts
 
-import type { PositionContext } from './ai';
+import type { PositionContext, PositionDecisionNote } from './ai';
 import type { PositionInfo } from './analytics';
 import { DEFAULT_TAKER_FEE_RATE } from './constants';
 
@@ -15,6 +15,8 @@ export function composePositionContext(params: {
     maxDrawdownPct?: number;
     maxProfitPct?: number;
     enteredAt?: number;
+    openingDecision?: PositionDecisionNote | null;
+    partialCloses?: PositionDecisionNote[];
 }): PositionContext | null {
     if (params.position.status !== 'open') return null;
 
@@ -48,5 +50,7 @@ export function composePositionContext(params: {
         max_profit_pct: toFixedNumber(params.maxProfitPct, 2),
         breakeven_price: toFixedNumber(breakevenPrice ?? entryPriceNum, 6),
         taker_fee_rate: toFixedNumber(takerFeeRate, 6),
+        ...(params.openingDecision ? { opening_decision: params.openingDecision } : {}),
+        ...(params.partialCloses?.length ? { partial_closes: params.partialCloses } : {}),
     };
 }
