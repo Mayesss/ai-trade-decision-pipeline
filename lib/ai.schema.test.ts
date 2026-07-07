@@ -6,8 +6,8 @@ import { SWING_DECISION_SCHEMA } from './ai';
 // ---------------------------------------------------------------------------
 // Minimal JSON-Schema validator covering only the features SWING_DECISION_SCHEMA
 // uses (object / required / additionalProperties:false / string+enum /
-// number|integer with min/max / nullable type unions). Enough to assert the
-// decision contract without pulling in a runtime dependency.
+// number|integer with min/max / boolean / nullable type unions). Enough to
+// assert the decision contract without pulling in a runtime dependency.
 // ---------------------------------------------------------------------------
 function validate(value: any, schema: any): boolean {
     const types: string[] = Array.isArray(schema.type) ? schema.type : [schema.type];
@@ -33,6 +33,8 @@ function validate(value: any, schema: any): boolean {
         return true;
     }
 
+    if (typeof value === 'boolean') return types.includes('boolean');
+
     if (typeof value === 'number') {
         const numericOk = types.includes('number') || (types.includes('integer') && Number.isInteger(value));
         if (!numericOk) return false;
@@ -55,17 +57,38 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 });
 
 test('valid swing decisions conform to the schema', () => {
+    const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
     const valid = [
-        { action: 'BUY', summary: 'long', reason: 'breakout retest', exit_size_pct: null, leverage: 3 },
-        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null },
-        { action: 'CLOSE', summary: 'trim', reason: 'into resistance', exit_size_pct: 50, leverage: null },
-        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1 },
+        { action: 'BUY', summary: 'long', reason: 'breakout retest', exit_size_pct: null, leverage: 3, ...manageOff },
+        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff },
+        { action: 'CLOSE', summary: 'trim', reason: 'into resistance', exit_size_pct: 50, leverage: null, ...manageOff },
+        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1, ...manageOff },
+        // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
+        {
+            action: 'HOLD',
+            summary: 'lock profit',
+            reason: 'cushion, recycle margin',
+            exit_size_pct: null,
+            leverage: null,
+            raise_leverage_to: 50,
+            move_stop_to_be: true,
+        },
     ];
     for (const d of valid) assert.ok(validate(d, SWING_DECISION_SCHEMA.schema), `expected valid: ${JSON.stringify(d)}`);
 });
 
 test('invalid swing decisions are rejected', () => {
-    const base = { action: 'BUY', summary: 's', reason: 'r', exit_size_pct: null, leverage: 2 };
+    const base = {
+        action: 'BUY',
+        summary: 's',
+        reason: 'r',
+        exit_size_pct: null,
+        leverage: 2,
+        raise_leverage_to: null,
+        move_stop_to_be: null,
+    };
+    // the base itself is valid, so each case below fails for its intended reason
+    assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
     // action not in enum
     assert.ok(!validate({ ...base, action: 'WAIT' }, SWING_DECISION_SCHEMA.schema));
     // leverage out of range
@@ -74,6 +97,11 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(!validate({ ...base, leverage: 2.5 }, SWING_DECISION_SCHEMA.schema));
     // exit_size_pct out of range
     assert.ok(!validate({ ...base, exit_size_pct: 150 }, SWING_DECISION_SCHEMA.schema));
+    // raise_leverage_to above the 125 ceiling / not an integer
+    assert.ok(!validate({ ...base, raise_leverage_to: 200 }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, raise_leverage_to: 2.5 }, SWING_DECISION_SCHEMA.schema));
+    // move_stop_to_be must be boolean or null
+    assert.ok(!validate({ ...base, move_stop_to_be: 'yes' }, SWING_DECISION_SCHEMA.schema));
     // missing required key
     const { reason, ...missing } = base;
     assert.ok(!validate(missing, SWING_DECISION_SCHEMA.schema));
