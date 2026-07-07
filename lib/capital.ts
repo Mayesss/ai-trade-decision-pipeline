@@ -3669,50 +3669,49 @@ async function closeCapitalPosition(
     side === "long" ? "SELL" : side === "short" ? "BUY" : null;
   if (!closeDirection)
     throw new Error("Cannot resolve close direction for Capital position");
+  const epic = normalizeTicker(String(position?.market?.epic || ""));
+  if (!epic) throw new Error("Open Capital position missing epic");
   const requestedSize =
     partialClosePct !== null &&
     partialClosePct < 100 &&
     Number.isFinite(fullSize as number)
       ? Number(fullSize) * (partialClosePct / 100)
       : fullSize;
+  const isPartialClose = partialClosePct !== null && partialClosePct < 100;
 
-  // NOTE: Capital.com's documented REST API only supports a FULL close via
-  // `DELETE /api/v1/positions/{dealId}` (no body, all-or-nothing). There is no
-  // documented size-based partial close. The sized `DELETE /api/v1/positions`
-  // call below is undocumented and only used as a best-effort fallback if the
-  // primary close fails — it has NOT been verified against the live API. A real
-  // partial close on Capital.com likely needs an opposing POST order instead.
-  // TODO: verify partial-close behaviour against the live Capital.com API.
-  try {
-    const payload = await capitalFetch(
-      "DELETE",
-      `/api/v1/positions/${encodeURIComponent(dealId)}`,
-      {},
-      undefined,
-      true,
+  if (isPartialClose) {
+    const details = await loadMarketDetails(epic);
+    const partialSize = quantizeSize(
+      requestedSize as number,
+      details.minDealSize,
+      details.sizeDecimals,
     );
-    return {
-      payload,
-      orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
-      partial: false,
-    };
-  } catch (err) {
     if (
       !(
-        Number.isFinite(requestedSize as number) &&
-        (requestedSize as number) > 0
+        Number.isFinite(partialSize) &&
+        partialSize > 0 &&
+        Number.isFinite(fullSize as number) &&
+        partialSize < Number(fullSize)
       )
-    )
-      throw err;
+    ) {
+      throw new Error("Cannot resolve partial close size for Capital position");
+    }
+
+    // Capital's documented DELETE close endpoint is full-close only. Live prod
+    // validation showed the sized DELETE variant also closes the whole position.
+    // A market order in the opposite direction with forceOpen=false reduces the
+    // existing deal without opening a hedge when hedging is off.
     const payload = await capitalFetch(
-      "DELETE",
+      "POST",
       "/api/v1/positions",
       {},
       {
-        dealId,
+        epic,
         direction: closeDirection,
-        size: requestedSize,
+        size: partialSize,
         orderType: "MARKET",
+        currencyCode: "USD",
+        forceOpen: false,
         dealReference: clientOid,
       },
       true,
@@ -3720,9 +3719,22 @@ async function closeCapitalPosition(
     return {
       payload,
       orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
-      partial: partialClosePct !== null && partialClosePct < 100,
+      partial: true,
     };
   }
+
+  const payload = await capitalFetch(
+    "DELETE",
+    `/api/v1/positions/${encodeURIComponent(dealId)}`,
+    {},
+    undefined,
+    true,
+  );
+  return {
+    payload,
+    orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
+    partial: false,
+  };
 }
 
 export async function closeCapitalPositionByOwnership(params: {
