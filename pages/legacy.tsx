@@ -7192,12 +7192,32 @@ export default function Home() {
                             ? "border-dashed border-slate-300 bg-slate-50 text-slate-500"
                             : "border-dashed border-slate-200 bg-transparent text-slate-500 hover:opacity-90"
                           : boxToneClass;
+                        // Open position: make the tab stand out with a side-colored
+                        // ring (emerald long / rose short) plus a small direction
+                        // glyph, so held symbols are scannable at a glance. Ring
+                        // (no offset) survives the .theme-dark utility remap.
+                        const openDirection =
+                          !marketClosed &&
+                          (tab?.openDirection === "long" || tab?.openDirection === "short")
+                            ? tab.openDirection
+                            : null;
+                        const openRingClass = openDirection
+                          ? openDirection === "long"
+                            ? " ring-2 ring-emerald-500/80"
+                            : " ring-2 ring-rose-500/80"
+                          : "";
                         return (
                           <button
                             key={sym}
                             onClick={() => setActive(i)}
-                            title={marketClosed ? `${sym} — market closed` : undefined}
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${
+                            title={
+                              marketClosed
+                                ? `${sym} — market closed`
+                                : openDirection
+                                  ? `${sym} — open ${openDirection}`
+                                  : undefined
+                            }
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${openRingClass}${
                               marketClosed
                                 ? ` grayscale ${isActive ? "opacity-70" : "opacity-40"}`
                                 : ""
@@ -7207,6 +7227,15 @@ export default function Home() {
                               <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />
                             ) : null}
                             {sym}
+                            {openDirection ? (
+                              <span
+                                className={`text-[9px] leading-none ${
+                                  openDirection === "long" ? "text-emerald-600" : "text-rose-600"
+                                }`}
+                              >
+                                {openDirection === "long" ? "▲" : "▼"}
+                              </span>
+                            ) : null}
                           </button>
                         );
                       })}

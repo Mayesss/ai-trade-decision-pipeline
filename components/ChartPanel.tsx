@@ -27,6 +27,10 @@ type PositionOverlay = {
   entryDecision?: DecisionBrief | null;
   exitDecision?: DecisionBrief | null;
   partialCloses?: PartialCloseBrief[];
+  // Standing exchange-side bracket of the OPEN position (null/absent = no
+  // resting order on that leg). Drawn as thin horizontal price lines.
+  takeProfitPrice?: number | null;
+  stopLossPrice?: number | null;
 };
 
 
@@ -578,6 +582,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const chartInstanceRef = useRef<any>(null);
   const chartSeriesRef = useRef<any>(null);
   const overlayPrimitiveRef = useRef<PositionOverlayPrimitive | null>(null);
+  const bracketPriceLinesRef = useRef<any[]>([]);
   const snappedOverlaysRef = useRef<SnappedOverlay[]>([]);
   const pinnedOverlayIdRef = useRef<string | null>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
@@ -976,6 +981,45 @@ export default function ChartPanel(props: ChartPanelProps) {
   useEffect(() => {
     overlayPrimitiveRef.current?.setTheme(buildOverlayTheme(isDark));
   }, [isDark]);
+
+  // Standing exchange-side bracket of the open position: thin horizontal price
+  // lines — TP green, SL red. Recreated whenever the overlay payload or the
+  // chart instance changes (chartInitToken bumps after series init); the lines
+  // die with the series on re-init, so removal is best-effort.
+  useEffect(() => {
+    const series = chartSeriesRef.current;
+    if (!series) return;
+    for (const line of bracketPriceLinesRef.current) {
+      try {
+        series.removePriceLine?.(line);
+      } catch {
+        /* series/line already disposed */
+      }
+    }
+    bracketPriceLinesRef.current = [];
+    const open = positionOverlays.find((pos) => pos?.status === 'open');
+    if (!open || typeof series.createPriceLine !== 'function') return;
+    const drawLine = (price: unknown, color: string, title: string) => {
+      const value = Number(price);
+      if (!Number.isFinite(value) || value <= 0) return;
+      try {
+        bracketPriceLinesRef.current.push(
+          series.createPriceLine({
+            price: value,
+            color,
+            lineWidth: 1,
+            lineStyle: 2, // dashed — reads as a level, not a price path
+            axisLabelVisible: true,
+            title,
+          }),
+        );
+      } catch (err) {
+        console.warn('[chart] failed to draw bracket price line', err);
+      }
+    };
+    drawLine(open.takeProfitPrice, 'rgba(16,185,129,0.9)', 'TP');
+    drawLine(open.stopLossPrice, 'rgba(239,68,68,0.9)', 'SL');
+  }, [positionOverlays, chartInitToken]);
 
   useEffect(() => {
     const recalcLivePulse = () => {

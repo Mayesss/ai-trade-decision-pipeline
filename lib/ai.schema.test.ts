@@ -58,11 +58,32 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 
 test('valid swing decisions conform to the schema', () => {
     const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
+    const noBracket = { take_profit_price: null, stop_loss_price: null };
     const valid = [
-        { action: 'BUY', summary: 'long', reason: 'breakout retest', exit_size_pct: null, leverage: 3, ...manageOff },
-        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff },
-        { action: 'CLOSE', summary: 'trim', reason: 'into resistance', exit_size_pct: 50, leverage: null, ...manageOff },
-        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1, ...manageOff },
+        // entry with a resting exchange-side TP target
+        {
+            action: 'BUY',
+            summary: 'long',
+            reason: 'breakout retest',
+            exit_size_pct: null,
+            leverage: 3,
+            ...manageOff,
+            take_profit_price: 71250.5,
+            stop_loss_price: null,
+        },
+        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff, ...noBracket },
+        // in-position trim that also amends the standing bracket
+        {
+            action: 'CLOSE',
+            summary: 'trim',
+            reason: 'into resistance',
+            exit_size_pct: 50,
+            leverage: null,
+            ...manageOff,
+            take_profit_price: 72000,
+            stop_loss_price: 68000,
+        },
+        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1, ...manageOff, ...noBracket },
         // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
         {
             action: 'HOLD',
@@ -72,6 +93,7 @@ test('valid swing decisions conform to the schema', () => {
             leverage: null,
             raise_leverage_to: 50,
             move_stop_to_be: true,
+            ...noBracket,
         },
     ];
     for (const d of valid) assert.ok(validate(d, SWING_DECISION_SCHEMA.schema), `expected valid: ${JSON.stringify(d)}`);
@@ -86,6 +108,8 @@ test('invalid swing decisions are rejected', () => {
         leverage: 2,
         raise_leverage_to: null,
         move_stop_to_be: null,
+        take_profit_price: null,
+        stop_loss_price: null,
     };
     // the base itself is valid, so each case below fails for its intended reason
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
@@ -102,6 +126,9 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(!validate({ ...base, raise_leverage_to: 2.5 }, SWING_DECISION_SCHEMA.schema));
     // move_stop_to_be must be boolean or null
     assert.ok(!validate({ ...base, move_stop_to_be: 'yes' }, SWING_DECISION_SCHEMA.schema));
+    // bracket prices must be numbers ≥ 0 or null
+    assert.ok(!validate({ ...base, take_profit_price: 'above resistance' }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, stop_loss_price: -1 }, SWING_DECISION_SCHEMA.schema));
     // missing required key
     const { reason, ...missing } = base;
     assert.ok(!validate(missing, SWING_DECISION_SCHEMA.schema));

@@ -56,6 +56,9 @@ type CapitalPositionRow = {
     unrealisedProfitLoss?: number | string;
     upl?: number | string;
     profit?: number | string;
+    stopLevel?: number | string;
+    profitLevel?: number | string;
+    limitLevel?: number | string;
   };
   dealId?: string;
   dealReference?: string;
@@ -3042,6 +3045,18 @@ export async function fetchCapitalPositionInfo(
   if (!side || !entryPrice) return { status: "none" };
 
   const pnlPct = computeOpenPnlPct(open, details);
+  // Standing exchange-side bracket: Capital exposes the position's attached
+  // stop/limit levels on the positions row ("limitLevel" is the take-profit in
+  // some API versions, "profitLevel" in others — accept either).
+  const stopLevel = safePositiveNumber(
+    open?.position?.stopLevel ?? (open as any)?.stopLevel,
+  );
+  const profitLevel = safePositiveNumber(
+    open?.position?.profitLevel ??
+      open?.position?.limitLevel ??
+      (open as any)?.profitLevel ??
+      (open as any)?.limitLevel,
+  );
   return {
     status: "open",
     symbol: symbol.toUpperCase(),
@@ -3052,6 +3067,8 @@ export async function fetchCapitalPositionInfo(
       ? `${Number(pnlPct).toFixed(2)}%`
       : "0.00%",
     leverage: extractLeverage(open),
+    stopLossPrice: stopLevel,
+    takeProfitPrice: profitLevel,
   };
 }
 
@@ -3796,6 +3813,60 @@ export async function closeCapitalPositionByOwnership(params: {
   };
 }
 
+// Amend the standing exchange-side bracket (stop/profit levels) on the open
+// position for a symbol via Capital's position-update endpoint. Per-call
+// failures are surfaced, never thrown — a failed amend must not break the
+// decision path (the stop attached at entry still bounds the position).
+export async function updateCapitalPositionLevels(params: {
+  symbol: string;
+  stopLevel?: number | null;
+  profitLevel?: number | null;
+  dryRun?: boolean;
+}): Promise<{
+  updated: boolean;
+  dealId: string | null;
+  stopLevel: number | null;
+  profitLevel: number | null;
+  note?: string;
+  error?: string;
+}> {
+  const stopLevel = safePositiveNumber(params.stopLevel);
+  const profitLevel = safePositiveNumber(params.profitLevel);
+  if (stopLevel === null && profitLevel === null) {
+    return { updated: false, dealId: null, stopLevel, profitLevel, note: "no_levels" };
+  }
+  try {
+    const resolved = await resolveCapitalEpicRuntime(params.symbol);
+    const open = await findOpenCapitalPositionByEpic(resolved.epic);
+    const dealId = open ? extractDealId(open) : null;
+    if (!open || !dealId) {
+      return { updated: false, dealId: null, stopLevel, profitLevel, note: "no_open_position" };
+    }
+    if (params.dryRun) {
+      return { updated: false, dealId, stopLevel, profitLevel, note: "dry_run" };
+    }
+    const body: Record<string, unknown> = {};
+    if (stopLevel !== null) body.stopLevel = stopLevel;
+    if (profitLevel !== null) body.profitLevel = profitLevel;
+    await capitalFetch(
+      "PUT",
+      `/api/v1/positions/${encodeURIComponent(dealId)}`,
+      {},
+      body,
+      true,
+    );
+    return { updated: true, dealId, stopLevel, profitLevel };
+  } catch (err) {
+    return {
+      updated: false,
+      dealId: null,
+      stopLevel,
+      profitLevel,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function executeCapitalDecision(
   symbol: string,
   sideSizeUSDT: number,
@@ -3807,6 +3878,10 @@ export async function executeCapitalDecision(
   // ignored. Off (default) preserves the legacy contract for other callers (e.g.
   // the forex engine, which sizes notional and leverage itself).
   notionalLeverageByCategory = false,
+  // Resting exchange-side take-profit attached at entry (sanitized by the
+  // caller via sanitizeExchangeTpSl). In-position TP/SL amendments ride on the
+  // decision's take_profit_price / stop_loss_price fields instead.
+  takeProfitPrice: number | null = null,
 ) {
   const clientOid = `cap-${crypto.randomUUID()}`;
   // On the swing path leverage is broker-defined per asset class, not chosen by
@@ -3836,6 +3911,7 @@ export async function executeCapitalDecision(
       leverage,
       clientOid,
       stopLevel,
+      profitLevel: safePositiveNumber(takeProfitPrice),
       notionalLeverageByCategory,
     });
     if (!opened.accepted) {
@@ -3879,6 +3955,19 @@ export async function executeCapitalDecision(
         closed: false,
         note: "no open position",
       };
+    // Partial trim: amend the standing bracket BEFORE the trim so the remainder
+    // that keeps running is protected even if the trim order itself fails.
+    const isPartialTrim = partialClosePct !== null && partialClosePct < 100;
+    const trimTpsl =
+      isPartialTrim &&
+      (decision.take_profit_price != null || decision.stop_loss_price != null)
+        ? await updateCapitalPositionLevels({
+            symbol,
+            stopLevel: decision.stop_loss_price ?? null,
+            profitLevel: decision.take_profit_price ?? null,
+            dryRun,
+          })
+        : null;
     const closed = await closeCapitalPosition(open, partialClosePct, clientOid);
     return {
       placed: true,
@@ -3887,6 +3976,7 @@ export async function executeCapitalDecision(
       closed: true,
       partial: closed.partial,
       partialClosePct,
+      tpsl: trimTpsl,
     };
   }
 
@@ -3921,12 +4011,16 @@ export async function executeCapitalDecision(
 
     const closed = await closeCapitalPosition(open, 100, clientOid);
     const direction = side === "long" ? "SELL" : "BUY";
+    // The reversed position gets the same entry bracket as BUY/SELL — the
+    // caller computes stop/TP for the NEW side (opposite of the closed one).
     const opened = await openCapitalPosition({
       symbol,
       direction,
       sideSizeUSDT,
       leverage,
       clientOid,
+      stopLevel: safePositiveNumber(stopLossPrice),
+      profitLevel: safePositiveNumber(takeProfitPrice),
       notionalLeverageByCategory,
     });
     if (!opened.accepted) {
@@ -3953,5 +4047,20 @@ export async function executeCapitalDecision(
     };
   }
 
-  return { placed: false, orderId: null, clientOid };
+  // HOLD (+ exchange-side TP/SL bracket amend when the decision carries new levels)
+  const holdTpsl =
+    decision.take_profit_price != null || decision.stop_loss_price != null
+      ? await updateCapitalPositionLevels({
+          symbol,
+          stopLevel: decision.stop_loss_price ?? null,
+          profitLevel: decision.take_profit_price ?? null,
+          dryRun,
+        })
+      : null;
+  return {
+    placed: false,
+    orderId: null,
+    clientOid,
+    tpsl: holdTpsl,
+  };
 }

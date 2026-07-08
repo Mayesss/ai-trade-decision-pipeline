@@ -5,6 +5,7 @@ import {
   fetchRecentPositionWindows,
 } from '../../lib/analytics';
 import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/capital';
+import { fetchPositionTpsl, getTradeProductType } from '../../lib/trading';
 import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
@@ -357,6 +358,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (open.status === 'open') {
             const pnl = typeof open.currentPnl === 'string' ? open.currentPnl.replace('%', '') : open.currentPnl;
             const pnlVal = Number(pnl);
+            // Standing exchange-side bracket, drawn as TP/SL lines on the chart.
+            // Capital exposes it on the position row; Bitget resting TP/SL live
+            // as plan orders and need their own read. Best-effort — a failure
+            // just omits the lines.
+            let takeProfitPrice = positiveNumber((open as any).takeProfitPrice);
+            let stopLossPrice = positiveNumber((open as any).stopLossPrice);
+            if (platform === 'bitget') {
+              try {
+                const tpsl = await fetchPositionTpsl(symbol, getTradeProductType());
+                takeProfitPrice = tpsl.takeProfit?.price ?? null;
+                stopLossPrice = tpsl.stopLoss?.price ?? null;
+              } catch (err) {
+                console.warn(`Could not fetch standing TP/SL for ${symbol}:`, err);
+              }
+            }
             openOverlay = {
               id: `${platform}:${symbol}-open-position`,
               symbol,
@@ -367,6 +383,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               entryPrice: Number(open.entryPrice) || null,
               exitPrice: null,
               leverage: Number.isFinite(open.leverage as number) ? (open.leverage as number) : leverageFromHistory,
+              takeProfitPrice,
+              stopLossPrice,
             };
           }
         } catch (err) {
@@ -396,6 +414,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             entryPrice: positiveNumber(p.entryPrice),
             exitPrice: positiveNumber(p.exitPrice),
             leverage: positiveNumber(p.leverage),
+            takeProfitPrice: positiveNumber((p as any).takeProfitPrice),
+            stopLossPrice: positiveNumber((p as any).stopLossPrice),
             entryDecision: findNearestDecision(p.entryTimestamp),
             exitDecision: findNearestDecision(p.exitTimestamp),
             partialCloses: buildPartialCloses(p.entryTimestamp, p.exitTimestamp),

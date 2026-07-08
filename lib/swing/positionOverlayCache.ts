@@ -40,6 +40,10 @@ type OpenPositionInfo = {
   currentPnl?: string | number | null;
   entryPrice?: string | number | null;
   leverage?: number | null;
+  // Standing exchange-side bracket (Capital carries it on the position row;
+  // Bitget callers pass it explicitly via openTakeProfitPrice/openStopLossPrice).
+  takeProfitPrice?: number | null;
+  stopLossPrice?: number | null;
 };
 
 function cacheKey(
@@ -172,6 +176,11 @@ function normalizeOverlayPositions(params: {
   platform: AnalysisPlatform;
   closed: any[];
   openPositionInfo?: OpenPositionInfo | null;
+  // Standing exchange-side TP/SL for the open position; overrides any values on
+  // openPositionInfo when provided (Bitget reads them from plan orders, so the
+  // analyze warm path passes them explicitly).
+  openTakeProfitPrice?: number | null;
+  openStopLossPrice?: number | null;
   history: any[];
   leverageFromHistory: number | null;
   fromMs: number;
@@ -214,6 +223,8 @@ function normalizeOverlayPositions(params: {
         Number.isFinite(open.leverage as number) && Number(open.leverage) > 0
           ? Number(open.leverage)
           : params.leverageFromHistory,
+      takeProfitPrice: positiveNumber(params.openTakeProfitPrice ?? open.takeProfitPrice),
+      stopLossPrice: positiveNumber(params.openStopLossPrice ?? open.stopLossPrice),
     };
   }
 
@@ -240,6 +251,8 @@ function normalizeOverlayPositions(params: {
       entryPrice: positiveNumber(p.entryPrice),
       exitPrice: positiveNumber(p.exitPrice),
       leverage: positiveNumber(p.leverage),
+      takeProfitPrice: positiveNumber(p.takeProfitPrice),
+      stopLossPrice: positiveNumber(p.stopLossPrice),
       entryDecision: findNearestDecision(params.history, p.entryTimestamp),
       exitDecision: findNearestDecision(params.history, p.exitTimestamp),
       partialCloses: buildPartialCloses({
@@ -268,6 +281,10 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
   platform: AnalysisPlatform;
   nowMs: number;
   openPositionInfo?: OpenPositionInfo | null;
+  // Standing exchange-side TP/SL for the open position (drawn on the chart).
+  // Bitget keeps these as plan orders, so analyze passes what it read there.
+  openTakeProfitPrice?: number | null;
+  openStopLossPrice?: number | null;
 }): Promise<void> {
   const symbol = params.symbol.toUpperCase();
   const presetWindows = CHART_OVERLAY_WARM_PRESETS.map((preset) => {
@@ -338,6 +355,8 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
           platform: params.platform,
           closed,
           openPositionInfo: params.openPositionInfo,
+          openTakeProfitPrice: params.openTakeProfitPrice,
+          openStopLossPrice: params.openStopLossPrice,
           history,
           leverageFromHistory,
           fromMs: preset.fromMs,

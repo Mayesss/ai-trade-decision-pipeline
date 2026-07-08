@@ -34,6 +34,11 @@ export type PositionInfo =
           currentPnl?: string;
           leverage?: number | null;
           markPrice?: number | null;
+          // Standing exchange-side bracket, when the venue exposes it on the
+          // position row (Capital: stopLevel/profitLevel). Bitget resting TP/SL
+          // live as plan orders and are fetched separately (fetchPositionTpsl).
+          takeProfitPrice?: number | null;
+          stopLossPrice?: number | null;
       };
 
 export type PositionWindow = {

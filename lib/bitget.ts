@@ -239,6 +239,12 @@ export async function bitgetFetch(
         'Content-Type': 'application/json',
         locale: 'en-US',
       };
+      // Demo trading (validation scripts only — never set in prod): routes the
+      // request to Bitget's paper-trading environment. Demo product types are
+      // S-prefixed (SUSDT-FUTURES / SBTCSUSDT) and require demo API keys.
+      // Market-data endpoints serve demo symbols WITHOUT the header and reject
+      // requests carrying it (40034), so it only goes on trade/account paths.
+      if (process.env.BITGET_PAPTRADING === '1' && !path.includes('/market/')) headers.paptrading = '1';
 
       const controller = new AbortController();
       let timedOut = false;

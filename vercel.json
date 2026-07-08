@@ -5,55 +5,55 @@
   "crons": [
     {
       "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=BGBUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=USDJPY&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=US100&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=DE40&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=J225&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=NATURALGAS&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=COPPER&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=HK50&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=TLT&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/dashboard/summary-warm",

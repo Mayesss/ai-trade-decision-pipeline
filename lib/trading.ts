@@ -28,6 +28,11 @@ export interface TradeDecision {
     // risk-bounded. Honored only when ENABLE_CRYPTO_MARGIN_RECYCLE is set.
     move_stop_to_be?: boolean | null;
     raise_leverage_to?: number | null;
+    // Exchange-side bracket, sanitized upstream (sanitizeExchangeTpSl): on entry
+    // take_profit_price is attached with the order; on HOLD / partial CLOSE both
+    // fields amend the position's standing TP/SL plan orders (null = leave as-is).
+    take_profit_price?: number | null;
+    stop_loss_price?: number | null;
 }
 
 // Profit-lock margin-recycle feature flags (crypto only). Ships OFF; the Bitget
@@ -166,6 +171,138 @@ async function setPositionBreakevenStop(params: {
     }
 }
 
+// ------------------------------
+// Position-level TP/SL (resting exchange bracket)
+// ------------------------------
+
+export type PositionTpsl = {
+    takeProfit: { price: number; orderId: string | null; size: string | null } | null;
+    stopLoss: { price: number; orderId: string | null; size: string | null } | null;
+};
+
+// Read the position's standing TP/SL plan orders (including the presets attached
+// at entry, which Bitget materializes as pos_profit/pos_loss plans once filled).
+// Used both to show the current bracket to the model and to decide
+// modify-vs-place when amending.
+export async function fetchPositionTpsl(symbol: string, productType: ProductType): Promise<PositionTpsl> {
+    const res = await bitgetFetch('GET', '/api/v2/mix/order/orders-plan-pending', {
+        symbol,
+        productType: (productType as string).toUpperCase(),
+        planType: 'profit_loss',
+    });
+    const list = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
+    let takeProfit: PositionTpsl['takeProfit'] = null;
+    let stopLoss: PositionTpsl['stopLoss'] = null;
+    for (const o of list) {
+        const planType = String(o?.planType || '').toLowerCase();
+        const price = Number(o?.triggerPrice);
+        if (!(Number.isFinite(price) && price > 0)) continue;
+        const entry = {
+            price,
+            orderId: o?.orderId ? String(o.orderId) : null,
+            size: o?.size != null ? String(o.size) : null,
+        };
+        if (planType === 'pos_profit' || planType === 'profit_plan') takeProfit = entry;
+        else if (planType === 'pos_loss' || planType === 'loss_plan') stopLoss = entry;
+    }
+    return { takeProfit, stopLoss };
+}
+
+type TpslLegResult = {
+    requested: number;
+    applied: boolean;
+    mode: 'modify' | 'place' | 'dryRun';
+    error?: string;
+};
+
+// Amend the position's standing TP/SL: modify the existing plan order when one
+// is pending, otherwise place a new position-level (pos_profit/pos_loss) plan.
+// Per-leg failures are surfaced, never thrown — a failed amend must not break
+// the decision path (the catastrophe stop from entry still bounds the position).
+export async function updatePositionTpsl(params: {
+    symbol: string;
+    productType: ProductType;
+    takeProfitPrice?: number | null;
+    stopLossPrice?: number | null;
+    dryRun?: boolean;
+    pos?: PositionInfo;
+}): Promise<{ takeProfit?: TpslLegResult; stopLoss?: TpslLegResult; note?: string }> {
+    const { symbol, productType, dryRun } = params;
+    const tpTarget =
+        Number.isFinite(params.takeProfitPrice as number) && (params.takeProfitPrice as number) > 0
+            ? Number(params.takeProfitPrice)
+            : null;
+    const slTarget =
+        Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0
+            ? Number(params.stopLossPrice)
+            : null;
+    if (tpTarget == null && slTarget == null) return { note: 'no_tpsl_targets' };
+
+    const pos = params.pos ?? (await fetchPositionInfo(symbol));
+    if (pos.status !== 'open' || !pos.holdSide) return { note: 'no_open_position' };
+    const holdSide = pos.holdSide;
+    const marginCoin = pos.marginCoin ?? 'USDT';
+
+    const meta = await fetchSymbolMeta(symbol, productType);
+    const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
+    const quantize = (p: number) => Number(p).toFixed(Math.max(0, pricePlace));
+
+    let existing: PositionTpsl = { takeProfit: null, stopLoss: null };
+    try {
+        existing = await fetchPositionTpsl(symbol, productType);
+    } catch (err) {
+        console.warn(`Could not read pending TP/SL plans for ${symbol}:`, err);
+    }
+
+    const applyLeg = async (
+        target: number,
+        planType: 'pos_profit' | 'pos_loss',
+        current: PositionTpsl['takeProfit'],
+    ): Promise<TpslLegResult> => {
+        const trigger = quantize(target);
+        if (dryRun) return { requested: Number(trigger), applied: false, mode: 'dryRun' };
+        try {
+            if (current?.orderId) {
+                const body: any = {
+                    orderId: current.orderId,
+                    symbol,
+                    productType: (productType as string).toUpperCase(),
+                    marginCoin,
+                    triggerPrice: trigger,
+                    triggerType: 'mark_price',
+                    executePrice: '0',
+                };
+                if (current.size != null) body.size = current.size;
+                await bitgetFetch('POST', '/api/v2/mix/order/modify-tpsl-order', {}, body);
+                return { requested: Number(trigger), applied: true, mode: 'modify' };
+            }
+            await bitgetFetch('POST', '/api/v2/mix/order/place-tpsl-order', {}, {
+                symbol,
+                productType: (productType as string).toUpperCase(),
+                marginCoin,
+                planType,
+                triggerPrice: trigger,
+                triggerType: 'mark_price',
+                executePrice: '0',
+                holdSide,
+            });
+            return { requested: Number(trigger), applied: true, mode: 'place' };
+        } catch (err) {
+            return {
+                requested: Number(trigger),
+                applied: false,
+                mode: current?.orderId ? 'modify' : 'place',
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    };
+
+    const out: { takeProfit?: TpslLegResult; stopLoss?: TpslLegResult } = {};
+    if (tpTarget != null) out.takeProfit = await applyLeg(tpTarget, 'pos_profit', existing.takeProfit);
+    if (slTarget != null) out.stopLoss = await applyLeg(slTarget, 'pos_loss', existing.stopLoss);
+    return out;
+}
+
 type PlaceOrderBody = {
     symbol: string;
     productType: ProductType;
@@ -179,9 +316,10 @@ type PlaceOrderBody = {
     holdSide?: 'long' | 'short';
     // Bitget mix v2 expects the string 'YES'/'NO' here, not a boolean.
     reduceOnly?: 'YES' | 'NO';
-    // Preset stop-loss trigger price (string) attached at entry. When hit,
-    // Bitget closes the position at market. Optional.
+    // Preset stop-loss / take-profit trigger prices (strings) attached at entry.
+    // When hit, Bitget closes the position at market. Optional.
     presetStopLossPrice?: string;
+    presetStopSurplusPrice?: string;
 };
 
 async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
@@ -338,6 +476,7 @@ export async function executeDecision(
     productType: ProductType,
     dryRun = true,
     stopLossPrice: number | null = null,
+    takeProfitPrice: number | null = null,
 ) {
     const clientOid = `cfw-${crypto.randomUUID()}`;
     const partialClosePct =
@@ -368,14 +507,18 @@ export async function executeDecision(
         // In hedge mode Bitget expects holdSide to distinguish open vs reduce
         if (decision.action === 'BUY') body['holdSide'] = 'long';
         if (decision.action === 'SELL') body['holdSide'] = 'short';
-        // Attach a protective (catastrophe) stop at entry so the position is
-        // bounded during the gap between AI evaluations. The stop is sized and
-        // placed on the correct side of entry by the caller; here we just
-        // quantize it to the symbol's price precision.
-        if (Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0) {
+        // Attach the exchange-side bracket at entry: a protective (catastrophe)
+        // stop plus a resting take-profit, so the position is bounded — and the
+        // upside captured — during the gap between AI evaluations. Both are
+        // sized and placed on the correct side of entry by the caller; here we
+        // just quantize them to the symbol's price precision.
+        const hasSl = Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0;
+        const hasTp = Number.isFinite(takeProfitPrice as number) && (takeProfitPrice as number) > 0;
+        if (hasSl || hasTp) {
             const meta = await fetchSymbolMeta(symbol, productType);
             const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
-            body['presetStopLossPrice'] = Number(stopLossPrice).toFixed(Math.max(0, pricePlace));
+            if (hasSl) body['presetStopLossPrice'] = Number(stopLossPrice).toFixed(Math.max(0, pricePlace));
+            if (hasTp) body['presetStopSurplusPrice'] = Number(takeProfitPrice).toFixed(Math.max(0, pricePlace));
         }
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return {
@@ -494,6 +637,18 @@ export async function executeDecision(
             force: 'gtc',
         };
         body['holdSide'] = oppositeSide;
+        // The reversed position gets the same entry bracket as BUY/SELL — the
+        // caller computes stop/TP for the NEW side. (The partial-reverse path
+        // above intentionally does not attach presets: its netting open order
+        // has murkier semantics, and the prompt mandates full reverses anyway.)
+        const revHasSl = Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0;
+        const revHasTp = Number.isFinite(takeProfitPrice as number) && (takeProfitPrice as number) > 0;
+        if (revHasSl || revHasTp) {
+            const meta = await fetchSymbolMeta(symbol, productType);
+            const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
+            if (revHasSl) body['presetStopLossPrice'] = Number(stopLossPrice).toFixed(Math.max(0, pricePlace));
+            if (revHasTp) body['presetStopSurplusPrice'] = Number(takeProfitPrice).toFixed(Math.max(0, pricePlace));
+        }
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return {
             placed: true,
@@ -529,8 +684,25 @@ export async function executeDecision(
             // keeps running is protected. Reuses the already-fetched position.
             const trimMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun, pos });
             const trimMgmtLev = trimMgmt && (trimMgmt as any).managed ? (trimMgmt as any).leverage : undefined;
+            // Bracket amend targets the remainder that keeps running, so it runs
+            // even if the trim order itself fails below (protective either way).
+            // When the margin-recycle BE stop just moved the stop this tick, the
+            // AI's stop amend is skipped rather than fighting it.
+            const trimBeMoved = Boolean(trimMgmt && (trimMgmt as any).managed && decision.move_stop_to_be === true);
+            const trimTpsl =
+                decision.take_profit_price != null || decision.stop_loss_price != null
+                    ? await updatePositionTpsl({
+                          symbol,
+                          productType,
+                          takeProfitPrice: decision.take_profit_price ?? null,
+                          stopLossPrice: trimBeMoved ? null : decision.stop_loss_price ?? null,
+                          dryRun,
+                          pos,
+                      })
+                    : null;
             const mgmtFields = {
                 ...(trimMgmt ? { management: trimMgmt } : {}),
+                ...(trimTpsl ? { tpsl: trimTpsl } : {}),
                 ...(Number.isFinite(Number(trimMgmtLev)) && Number(trimMgmtLev) > 0
                     ? { leverage: Number(trimMgmtLev) }
                     : {}),
@@ -622,14 +794,27 @@ export async function executeDecision(
         return { placed: ok, orderId, clientOid, closed: ok, raw: res };
     }
 
-    // HOLD (+ optional in-place profit-lock / margin-recycle management for crypto)
+    // HOLD (+ optional in-place profit-lock / margin-recycle management for crypto,
+    // + exchange-side TP/SL bracket amend when the decision carries new levels)
     const holdMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun });
     const holdMgmtLev = holdMgmt && (holdMgmt as any).managed ? (holdMgmt as any).leverage : undefined;
+    const holdBeMoved = Boolean(holdMgmt && (holdMgmt as any).managed && decision.move_stop_to_be === true);
+    const holdTpsl =
+        decision.take_profit_price != null || decision.stop_loss_price != null
+            ? await updatePositionTpsl({
+                  symbol,
+                  productType,
+                  takeProfitPrice: decision.take_profit_price ?? null,
+                  stopLossPrice: holdBeMoved ? null : decision.stop_loss_price ?? null,
+                  dryRun,
+              })
+            : null;
     return {
         placed: false,
         orderId: null,
         clientOid,
         ...(holdMgmt ? { management: holdMgmt } : {}),
+        ...(holdTpsl ? { tpsl: holdTpsl } : {}),
         ...(Number.isFinite(Number(holdMgmtLev)) && Number(holdMgmtLev) > 0 ? { leverage: Number(holdMgmtLev) } : {}),
     };
 }

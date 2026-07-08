@@ -37,6 +37,11 @@ export type PositionContext = {
     max_profit_pct?: number;
     breakeven_price?: number;
     taker_fee_rate?: number;
+    // Standing exchange-side bracket on the open position (null = no resting
+    // order on that side). Shown to the model so TP/SL amendments are made
+    // against the actual current levels.
+    take_profit_price?: number | null;
+    stop_loss_price?: number | null;
     opening_decision?: PositionDecisionNote | null;
     partial_closes?: PositionDecisionNote[];
 };
@@ -240,12 +245,21 @@ const ACTIONABILITY_ROOM_ATR = (() => {
     const n = Number(process.env.SWING_ACTIONABILITY_ROOM_ATR);
     return Number.isFinite(n) && n > 0 ? n : 1.5;
 })();
-// A confirmed setup pressing within this ATR distance of a near, unbroken MAJOR
-// (context) opposing level is rejected (the AI HOLDs those). 0.3 = 0 opens lost
-// in backtest; 0.5 saves more holds but costs ~1 marginal open/week.
+// A setup pressing within this ATR distance of a near, unbroken MAJOR (context)
+// opposing level is rejected (the AI HOLDs those: "confirmed breakdown but
+// sitting on major weekly support" and the bullish mirror). Re-validated
+// 2026-07-08 over 8 weeks / 800 flat AI calls: at 0.5 the check (applied to
+// both the confirmed and bounce branches) skips 72 more S/R-flavored HOLD
+// calls than 0.3 and blocks exactly 1 recorded open — a GOLD short into weekly
+// support that lost money (pnl_net −11.87, same-day stop). 0.6 skips ~21 more
+// but blocks a second open of unknown outcome. Distances measured on the
+// CONTEXT timeframe's own ATR (state.location.context_*_dist_atr). Do NOT
+// extend this to PRIMARY opposing levels: opens routinely push through those
+// (7/39 recorded opens sat <0.3 primary-ATR from one), and a both-sides
+// primary pinch (<0.3 each) still contained 5 real opens.
 const ACTIONABILITY_WALL_ATR = (() => {
     const n = Number(process.env.SWING_ACTIONABILITY_WALL_ATR);
-    return Number.isFinite(n) && n > 0 ? n : 0.3;
+    return Number.isFinite(n) && n > 0 ? n : 0.5;
 })();
 
 // ------------------------------
@@ -353,6 +367,28 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
         sup != null && res != null && sup <= ACTIONABILITY_NEAR_ATR && res >= ACTIONABILITY_ROOM_ATR && microUp;
     const shortBounce =
         sup != null && res != null && res <= ACTIONABILITY_NEAR_ATR && sup >= ACTIONABILITY_ROOM_ATR && microDown;
+    // Same context-wall rejection as the confirmed branch: a bounce whose room
+    // runs straight into a near, unbroken MAJOR (context/weekly) wall is a HOLD.
+    // (The primary opposing level is already required to be ≥ ROOM away above.)
+    const blockingBounce = (s?: string | null) => !!s && s !== 'broken' && s !== 'retesting';
+    const bounceCsd = Number.isFinite(x.contextSupportDistAtr as number) ? (x.contextSupportDistAtr as number) : null;
+    const bounceCrd = Number.isFinite(x.contextResistanceDistAtr as number) ? (x.contextResistanceDistAtr as number) : null;
+    if (
+        longBounce &&
+        bounceCrd != null &&
+        bounceCrd <= ACTIONABILITY_WALL_ATR &&
+        blockingBounce(x.contextResistanceState)
+    ) {
+        return { actionable: false, reason: 'bounce_into_context_wall' };
+    }
+    if (
+        shortBounce &&
+        bounceCsd != null &&
+        bounceCsd <= ACTIONABILITY_WALL_ATR &&
+        blockingBounce(x.contextSupportState)
+    ) {
+        return { actionable: false, reason: 'bounce_into_context_wall' };
+    }
     if (longBounce) return { actionable: true, reason: 'bounce_long' };
     if (shortBounce) return { actionable: true, reason: 'bounce_short' };
     // sandwiched / no break → the AI HOLDs these; skip the call.
@@ -954,6 +990,10 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
             ? `\n- Entry thesis: state.position.opening_decision is your own rationale that opened this position${position_context.partial_closes?.length ? ', and state.position.partial_closes are the trims you took since, with their reasons' : ''}. Manage against that thesis — HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict.`
             : ''
     }
+- Exchange-side TP/SL bracket (fills 24/7 between these evaluations):
+  • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. Output stop_loss_price=null on entries — a ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe stop is attached automatically.
+  • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
+  • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price. Invalid values are clamped or dropped in code — don't waste them.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -977,10 +1017,11 @@ TASKS:
 1) Output exactly one allowed action (see DECISION OWNERSHIP): flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE.
 2) ${leverageTask}
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
-4) summary ≤3 lines; reason = brief rationale.
+4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: only to amend the stop while in a position (null = unchanged); always null on entries/REVERSE.
+5) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -1258,6 +1299,23 @@ export function postprocessDecision(params: {
             : null;
     const move_stop_to_be = manageEligible ? decision?.move_stop_to_be === true : false;
 
+    // Exchange-side TP/SL targets. Here we only gate by action and coerce types;
+    // price-level sanity (correct side of price, min/max ATR distance, entry-TP
+    // fallback) is enforced by sanitizeExchangeTpSl in the API route, which has
+    // the live price + ATR. Entry SL stays code-owned (catastrophe stop), so it
+    // is nulled on BUY/SELL/REVERSE (REVERSE opens a fresh position and gets the
+    // same entry bracket, targeted for the NEW side).
+    const coercePrice = (v: unknown) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const isEntryAction = action === 'BUY' || action === 'SELL' || action === 'REVERSE';
+    const tpslAmendEligible =
+        positionOpen && (action === 'HOLD' || (action === 'CLOSE' && exit_size_pct != null && exit_size_pct < 100));
+    const take_profit_price =
+        isEntryAction || tpslAmendEligible ? coercePrice(decision?.take_profit_price) : null;
+    const stop_loss_price = tpslAmendEligible ? coercePrice(decision?.stop_loss_price) : null;
+
     return {
         ...decision,
         action,
@@ -1265,12 +1323,138 @@ export function postprocessDecision(params: {
         exit_size_pct,
         raise_leverage_to,
         move_stop_to_be,
+        take_profit_price,
+        stop_loss_price,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
         macro_bias: macroBias,
         context_bias: contextBias,
     };
+}
+
+// ------------------------------
+// Exchange-side TP/SL sanitation
+// ------------------------------
+
+// Entry TP fallback mirrors the 3×ATR catastrophe stop in /api/analyze, so an
+// entry the model leaves without a target still gets a symmetric (~1:1 R)
+// exchange-side bracket instead of an unbounded upside leg.
+export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
+// A stop may never sit wider than the catastrophe distance from CURRENT price —
+// amendments can tighten protection, never loosen it past the entry risk model.
+export const EXCHANGE_SL_MAX_ATR_MULT = 3;
+const ENTRY_TP_MIN_ATR = 0.5;
+const TP_MAX_ATR = 10;
+const AMEND_MIN_GAP_ATR = 0.1;
+
+export type ExchangeTpSl = {
+    takeProfitPrice: number | null;
+    stopLossPrice: number | null;
+    notes: string[];
+};
+
+/**
+ * Validate the model's exchange-side TP/SL price targets against the live
+ * price + primary ATR. Wrong-side or too-close levels are dropped, too-far
+ * levels are clamped, and entries without a usable TP fall back to a wide
+ * 3×ATR target so every entry ships with a resting exchange TP.
+ *
+ * Entries: `side` is derived from the action; stop_loss_price is always null
+ * (the catastrophe stop is code-owned). REVERSE is an entry for the OPPOSITE
+ * of the current position side — same treatment (TP with fallback, SL
+ * code-owned). In-position (HOLD / partial CLOSE): both legs may amend the
+ * standing bracket; null = leave unchanged.
+ */
+export function sanitizeExchangeTpSl(params: {
+    action: string;
+    positionOpen: boolean;
+    side: 'long' | 'short' | null;
+    price: number;
+    primaryAtr: number | null;
+    takeProfitPrice: number | null;
+    stopLossPrice: number | null;
+    exitSizePct?: number | null;
+}): ExchangeTpSl {
+    const notes: string[] = [];
+    const action = String(params.action || '').toUpperCase();
+    const price = Number(params.price);
+    const atr = Number.isFinite(params.primaryAtr as number) && (params.primaryAtr as number) > 0 ? Number(params.primaryAtr) : null;
+
+    const isReverse =
+        params.positionOpen && action === 'REVERSE' && (params.side === 'long' || params.side === 'short');
+    const isEntry = (!params.positionOpen && (action === 'BUY' || action === 'SELL')) || isReverse;
+    const isAmend =
+        params.positionOpen &&
+        (params.side === 'long' || params.side === 'short') &&
+        (action === 'HOLD' ||
+            (action === 'CLOSE' && params.exitSizePct != null && params.exitSizePct < 100));
+    if (!(price > 0) || (!isEntry && !isAmend)) {
+        return { takeProfitPrice: null, stopLossPrice: null, notes: ['tpsl_not_applicable'] };
+    }
+
+    const side: 'long' | 'short' = isReverse
+        ? params.side === 'long'
+            ? 'short'
+            : 'long'
+        : isEntry
+          ? action === 'BUY'
+              ? 'long'
+              : 'short'
+          : (params.side as 'long' | 'short');
+    const dir = side === 'long' ? 1 : -1;
+
+    // Take profit: must sit on the profit side of price; entries need real room
+    // (≥0.5 ATR) so the resting TP isn't an instant fill, amends just need to
+    // clear the current price by a noise buffer.
+    let tp = Number.isFinite(params.takeProfitPrice as number) && (params.takeProfitPrice as number) > 0 ? Number(params.takeProfitPrice) : null;
+    if (tp != null) {
+        if (dir * (tp - price) <= 0) {
+            notes.push('tp_wrong_side_dropped');
+            tp = null;
+        } else if (atr) {
+            const distAtr = Math.abs(tp - price) / atr;
+            const minAtr = isEntry ? ENTRY_TP_MIN_ATR : AMEND_MIN_GAP_ATR;
+            if (distAtr < minAtr) {
+                notes.push('tp_too_close_dropped');
+                tp = null;
+            } else if (distAtr > TP_MAX_ATR) {
+                tp = price + dir * TP_MAX_ATR * atr;
+                notes.push('tp_clamped_max_atr');
+            }
+        }
+    }
+    if (tp == null && isEntry && atr) {
+        const fallback = price + dir * EXCHANGE_TP_FALLBACK_ATR_MULT * atr;
+        if (fallback > 0) {
+            tp = fallback;
+            notes.push('tp_entry_fallback_3atr');
+        }
+    }
+    if (tp != null && !(tp > 0)) tp = null;
+
+    // Stop loss: amend-only (entry SL is the code-owned catastrophe stop). Must
+    // be protective vs current price and never wider than the catastrophe
+    // distance from current price.
+    let sl = !isEntry && Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0 ? Number(params.stopLossPrice) : null;
+    if (sl != null) {
+        if (dir * (price - sl) <= 0) {
+            notes.push('sl_wrong_side_dropped');
+            sl = null;
+        } else if (atr) {
+            const distAtr = Math.abs(price - sl) / atr;
+            if (distAtr < AMEND_MIN_GAP_ATR) {
+                notes.push('sl_too_close_dropped');
+                sl = null;
+            } else if (distAtr > EXCHANGE_SL_MAX_ATR_MULT) {
+                sl = price - dir * EXCHANGE_SL_MAX_ATR_MULT * atr;
+                notes.push('sl_clamped_max_atr');
+            }
+        }
+    }
+    if (sl != null && !(sl > 0)) sl = null;
+
+    return { takeProfitPrice: tp, stopLossPrice: sl, notes };
 }
 
 // ------------------------------
@@ -1285,7 +1469,17 @@ export const SWING_DECISION_SCHEMA = {
     schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['action', 'summary', 'reason', 'exit_size_pct', 'leverage', 'raise_leverage_to', 'move_stop_to_be'],
+        required: [
+            'action',
+            'summary',
+            'reason',
+            'exit_size_pct',
+            'leverage',
+            'raise_leverage_to',
+            'move_stop_to_be',
+            'take_profit_price',
+            'stop_loss_price',
+        ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
@@ -1296,6 +1490,12 @@ export const SWING_DECISION_SCHEMA = {
             // raise_leverage_to to [current, symbol max]; 125 is a generous ceiling.
             raise_leverage_to: { type: ['integer', 'null'], minimum: 1, maximum: 125 },
             move_stop_to_be: { type: ['boolean', 'null'] },
+            // Exchange-side bracket. Entry: take_profit_price is the resting TP
+            // attached with the order. In-position: either field amends the
+            // standing bracket (null = leave unchanged). Price-level sanity
+            // (side/distance vs live price+ATR) is enforced in code after parse.
+            take_profit_price: { type: ['number', 'null'], minimum: 0 },
+            stop_loss_price: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;
@@ -1308,12 +1508,15 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
     schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['action', 'summary', 'reason', 'exit_size_pct'],
+        required: ['action', 'summary', 'reason', 'exit_size_pct', 'take_profit_price', 'stop_loss_price'],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
             reason: { type: 'string' },
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
+            // Exchange-side bracket (see SWING_DECISION_SCHEMA).
+            take_profit_price: { type: ['number', 'null'], minimum: 0 },
+            stop_loss_price: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;

@@ -37,6 +37,7 @@ import {
     postprocessDecision,
     resolveDecisionPolicy,
     resolveExtensionThresholds,
+    sanitizeExchangeTpSl,
     REENTRY_COOLDOWN_MIN,
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
@@ -44,7 +45,7 @@ import {
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals, PositionDecisionNote } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
-import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
+import { executeDecision, fetchPositionTpsl, getTargetLeverage, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
@@ -154,6 +155,34 @@ function isAutomationCronRequest(req: NextApiRequest): boolean {
     const userAgent = firstHeaderValue(req.headers['user-agent']).toLowerCase();
     return userAgent.includes('vercel-cron');
 }
+
+// Crons fire every 15 minutes (see vercel.json); the :15/:30/:45 firings are
+// "quarter ticks". FLAT symbols scan for entry windows 4x/hour (cheap: the full
+// gate stack runs before any AI call, plus a no-new-information dedupe below).
+// IN-POSITION quarter ticks are event-driven: the exchange-side TP/SL bracket
+// already fences the position 24/7, so the AI is only asked mid-hour when price
+// has moved enough since its last look to plausibly change the answer — quiet
+// quarter ticks keep the current bracket until the hourly tick. Tolerance
+// mirrors isPrimaryCloseTime (cron jitter around the hour).
+function isQuarterHourTick(now = new Date(), toleranceMinutes = 2): boolean {
+    const minute = now.getUTCMinutes();
+    return minute > toleranceMinutes && minute < 60 - toleranceMinutes;
+}
+
+// Flat quarter-tick dedupe: skip the AI call when price has barely moved since
+// the last flat AI call that already answered HOLD for the SAME actionability
+// branch under an hour ago. The 15m flat cadence exists to catch NEW entry
+// windows early, not to re-ask about a standing "sitting on support" setup 4x
+// an hour. 55min ceiling means hourly ticks are never deduped; fails open.
+const FLAT_DEDUPE_MAX_AGE_MIN = 55;
+const FLAT_DEDUPE_MAX_MOVE_ATR = 0.25;
+// In-position quarter ticks run the full evaluation only when price has moved
+// at least this many primary ATR from the last AI call's snapshot price
+// (fallback: entry price). Below it, the standing TP/SL keeps managing.
+const IN_POSITION_QUARTER_MOVE_ATR = (() => {
+    const n = Number(process.env.SWING_INPOS_QUARTER_MOVE_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 0.5;
+})();
 
 // ------------------------------------------------------------------
 // In-memory position tracking for best-effort hold timing (resets on cold start).
@@ -283,6 +312,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform,
             instrumentId,
         });
+        const automationCron = isAutomationCronRequest(req);
+        // Quarter ticks (:15/:30/:45, automation crons only) exist to scan FLAT
+        // symbols for new entry windows; manual/API calls are never quarter
+        // ticks and always run the full path.
+        const quarterTick = automationCron && isQuarterHourTick();
         const persistPreAiSkip = async (params: {
             stage: string;
             decision: Record<string, any>;
@@ -292,6 +326,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             usedTape?: boolean;
             snapshot?: Record<string, any>;
         }) => {
+            // Quarter ticks don't persist skips: gate short-circuits already get
+            // recorded on the hourly tick, and 3 more identical rows/hour/symbol
+            // would only be noise. Real AI calls (past all gates) always persist.
+            if (quarterTick) return;
             const reason = typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage;
             await appendDecisionHistory({
                 timestamp: Date.now(),
@@ -334,7 +372,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // next load reflects it. Best-effort; never blocks the trading path.
             await invalidateSwingSummaryCache();
         };
-        const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && isAutomationCronRequest(req);
+        const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && automationCron;
         if (isSwingCronAnalyzeRequest) {
             const swingCronControl = await loadSwingCronControlState();
             if (swingCronControl.hardDeactivated) {
@@ -353,19 +391,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     reason: 'swing_cron_hard_deactivated',
                 };
                 const execRes = { placed: false, orderId: null, clientOid: null, reason: 'swing_cron_hard_deactivated' };
-                await persistPreAiSkip({
-                    stage: 'swing_cron_hard_deactivated',
-                    decision,
-                    execResult: execRes,
-                    snapshot: {
-                        cronControl: {
-                            hardDeactivated: true,
-                            updatedAtMs: swingCronControl.updatedAtMs,
-                            updatedBy: swingCronControl.updatedBy,
-                            reason: swingCronControl.reason,
+                // Quarter ticks skip persistence: with 15m crons this branch would
+                // otherwise write 4 identical skip rows/hour/symbol while deactivated.
+                if (!quarterTick) {
+                    await persistPreAiSkip({
+                        stage: 'swing_cron_hard_deactivated',
+                        decision,
+                        execResult: execRes,
+                        snapshot: {
+                            cronControl: {
+                                hardDeactivated: true,
+                                updatedAtMs: swingCronControl.updatedAtMs,
+                                updatedBy: swingCronControl.updatedBy,
+                                reason: swingCronControl.reason,
+                            },
                         },
-                    },
-                });
+                    });
+                }
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -413,12 +455,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     reason: `capital_market_closed:${tradeability.status ?? 'unknown'}`,
                 };
                 const execRes = { placed: false, orderId: null, clientOid: null, reason: 'capital_market_closed' };
-                await persistPreAiSkip({
-                    stage: 'capital_market_closed',
-                    decision,
-                    execResult: execRes,
-                    snapshot: { marketStatus: tradeability.status },
-                });
+                // Quarter ticks skip persistence: with 15m crons a closed market
+                // (nights/weekends) would otherwise write 4 skip rows/hour/symbol.
+                if (!quarterTick) {
+                    await persistPreAiSkip({
+                        stage: 'capital_market_closed',
+                        decision,
+                        execResult: execRes,
+                        snapshot: { marketStatus: tradeability.status },
+                    });
+                }
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -447,14 +493,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
-        // Bounded account-leverage history: one snapshot per analyze tick (~hourly
-        // per symbol). Best-effort; never blocks the trading path on failure.
-        await recordSwingAccountSnapshot({
-            platform,
-            symbol,
-            capturedAtMs: Date.now(),
-            positionInfo: positionInfo as any,
-        });
+        // Bounded account-leverage history: one snapshot per HOURLY tick per
+        // symbol (quarter ticks skip it so the flat 15m cadence doesn't 4x the
+        // table). Best-effort; never blocks the trading path on failure.
+        if (!quarterTick) {
+            await recordSwingAccountSnapshot({
+                platform,
+                symbol,
+                capturedAtMs: Date.now(),
+                positionInfo: positionInfo as any,
+            });
+        }
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
         const primaryCloseGateBlocked = !positionOpen && !primaryCloseTime;
         if (primaryCloseGateBlocked && enforcePrimaryCloseGate) {
@@ -580,6 +629,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 1) Product & parallel baseline fetches (fast)
         const productType = platform === 'bitget' ? getTradeProductType() : null;
 
+        // Standing exchange-side bracket: fed into the prompt (so TP/SL
+        // amendments are made against the actual resting levels) AND into the
+        // chart overlay warm below (drawn as TP/SL lines in the UI). Capital
+        // exposes it on the position row; Bitget resting TP/SL live as plan
+        // orders and need their own read. Best-effort — a failure omits them.
+        let currentTakeProfit: number | null = null;
+        let currentStopLoss: number | null = null;
+        if (positionOpen) {
+            if (platform === 'bitget' && productType) {
+                try {
+                    const standingTpsl = await fetchPositionTpsl(symbol, productType);
+                    currentTakeProfit = standingTpsl.takeProfit?.price ?? null;
+                    currentStopLoss = standingTpsl.stopLoss?.price ?? null;
+                } catch (err) {
+                    console.warn(`Could not read standing TP/SL plans for ${symbol}:`, err);
+                }
+            } else if (positionInfo.status === 'open') {
+                currentTakeProfit = positionInfo.takeProfitPrice ?? null;
+                currentStopLoss = positionInfo.stopLossPrice ?? null;
+            }
+        }
+
         // News is the AI's ONLY consumer — defer fetching it until we know the AI
         // will actually be called (past the signal-strength gate), so flat sub-MEDIUM
         // ticks don't hit the news API. Assigned just before callAI below.
@@ -629,10 +700,82 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     platform,
                     nowMs,
                     openPositionInfo: positionInfo,
+                    openTakeProfitPrice: currentTakeProfit,
+                    openStopLossPrice: currentStopLoss,
                 }),
             ]);
         } catch (err) {
             console.warn(`chart cache warm failed for ${symbol}:`, err);
+        }
+
+        // In-position quarter ticks are event-driven: the resting TP/SL bracket
+        // fences the position between hourly evaluations, so the AI is only
+        // asked mid-hour ("is the setting still fine?") when price has moved at
+        // least IN_POSITION_QUARTER_MOVE_ATR primary ATR since its last look.
+        // Reference = last real AI call's snapshot price (any tick — the entry
+        // decision counts), falling back to entry price. Missing price/ATR fails
+        // OPEN (call the AI rather than fly blind); the skip is not persisted.
+        if (positionOpen && quarterTick) {
+            const tickerLight = Array.isArray(bundleLight?.ticker) ? bundleLight.ticker[0] : bundleLight?.ticker;
+            const priceNow = Number(
+                tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
+            );
+            const atrNow = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+            let refPrice: number | null = null;
+            try {
+                const recent = await loadDecisionHistory(symbol, 5, platform);
+                const lastAiCall = [...recent].reverse().find((h) => {
+                    const d = h.aiDecision as any;
+                    return d && d.decision_source !== 'pre_ai_skip' && !d.promptSkipped;
+                });
+                const p = Number((lastAiCall?.snapshot as any)?.price);
+                if (Number.isFinite(p) && p > 0) refPrice = p;
+            } catch (err) {
+                console.warn(`Could not load last AI-call price for ${symbol}:`, err);
+            }
+            if (refPrice == null && positionInfo.status === 'open') {
+                const entry = Number(positionInfo.entryPrice);
+                if (Number.isFinite(entry) && entry > 0) refPrice = entry;
+            }
+            const moveAtr =
+                refPrice != null && Number.isFinite(priceNow) && priceNow > 0 && Number.isFinite(atrNow) && atrNow > 0
+                    ? Math.abs(priceNow - refPrice) / atrNow
+                    : null;
+            if (moveAtr != null && moveAtr < IN_POSITION_QUARTER_MOVE_ATR) {
+                emitGateDebug('quarter_tick_in_position_quiet', {
+                    gate: 'QUARTER_TICK_IN_POSITION_QUIET',
+                    moveAtr: Number(moveAtr.toFixed(3)),
+                    thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+                    refPrice,
+                    priceNow,
+                });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'quarter_tick_quiet_position',
+                    reason: `in_position_skip_quiet_quarter_tick_move_${moveAtr.toFixed(2)}atr`,
+                };
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'quarter_tick_quiet_position' },
+                    usedTape: false,
+                    promptSkipped: true,
+                });
+            }
+            emitGateDebug('quarter_tick_in_position_triggered', {
+                gate: 'QUARTER_TICK_IN_POSITION_TRIGGERED',
+                moveAtr: moveAtr != null ? Number(moveAtr.toFixed(3)) : null,
+                thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+            });
         }
 
         const positionForPrompt =
@@ -923,6 +1066,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxDrawdownPct: positionExtrema.maxDrawdownPct,
             maxProfitPct: positionExtrema.maxProfitPct,
             enteredAt: pstate.enteredAt,
+            takeProfitPrice: currentTakeProfit,
+            stopLossPrice: currentStopLoss,
             openingDecision,
             partialCloses,
         });
@@ -1231,6 +1376,71 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // Flat quarter-tick dedupe: actionable-but-HOLD configurations ("sitting
+        // on support") persist for hours; without this, the 15m flat cadence
+        // would re-ask the AI about the same standing setup 4x an hour. If the
+        // last flat AI call is under an hour old, answered HOLD, was admitted by
+        // the SAME actionability branch and price has barely moved since, this
+        // tick adds no information — skip without persisting. 55min ceiling
+        // means hourly ticks are never deduped; any missing input fails open.
+        if (!positionOpen && quarterTick) {
+            const lastFlatAiCall = [...recentHistory]
+                .reverse()
+                .find((h) => {
+                    const d = h.aiDecision as any;
+                    if (!d || d.decision_source === 'pre_ai_skip' || d.promptSkipped) return false;
+                    return !(h.snapshot as any)?.positionContext;
+                });
+            const lastSnap = (lastFlatAiCall?.snapshot ?? null) as any;
+            const lastAction = String((lastFlatAiCall?.aiDecision as any)?.action || '').toUpperCase();
+            const ageMin = lastFlatAiCall ? (Date.now() - Number(lastFlatAiCall.timestamp)) / 60_000 : Infinity;
+            const lastPrice = Number(lastSnap?.price);
+            const dedupeAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+            const priceMoveAtr =
+                Number.isFinite(lastPrice) && lastPrice > 0 && Number.isFinite(dedupeAtr) && dedupeAtr > 0
+                    ? Math.abs(effectivePrice - lastPrice) / dedupeAtr
+                    : null;
+            const sameBranch =
+                typeof lastSnap?.actionability?.reason === 'string' &&
+                lastSnap.actionability.reason === actionability.reason;
+            if (
+                ageMin < FLAT_DEDUPE_MAX_AGE_MIN &&
+                lastAction === 'HOLD' &&
+                sameBranch &&
+                priceMoveAtr != null &&
+                priceMoveAtr <= FLAT_DEDUPE_MAX_MOVE_ATR
+            ) {
+                emitGateDebug('flat_quarter_tick_dedupe', {
+                    gate: 'FLAT_DEDUPE',
+                    ageMin: Number(ageMin.toFixed(1)),
+                    priceMoveAtr: Number(priceMoveAtr.toFixed(3)),
+                    actionabilityReason: actionability.reason,
+                });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'no_new_information',
+                    reason: `flat_skip_dedupe_same_setup_${actionability.reason}`,
+                };
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'flat_dedupe' },
+                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+        }
+
         // Past the gates → the AI will be called, and news is its only consumer. Fetch
         // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
         newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category });
@@ -1261,6 +1471,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             (decision as any).raise_leverage_to = null;
             (decision as any).move_stop_to_be = false;
         }
+
+        // Exchange-side TP/SL: validate the model's price targets against live
+        // price + primary ATR (correct side of price, min/max distance; stop
+        // amendments never wider than the catastrophe distance), with a 3×ATR
+        // fallback TP on entries so every entry ships with a resting exchange TP.
+        const tpslAtrRaw = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+        const exchangeTpsl = sanitizeExchangeTpSl({
+            action: decision.action,
+            positionOpen,
+            side: positionInfo.status === 'open' ? positionInfo.holdSide : null,
+            price: Number.isFinite(lastPrice) ? lastPrice : effectivePrice,
+            primaryAtr: Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null,
+            takeProfitPrice: (decision as any).take_profit_price ?? null,
+            stopLossPrice: (decision as any).stop_loss_price ?? null,
+            exitSizePct: (decision as any).exit_size_pct ?? null,
+        });
+        (decision as any).take_profit_price = exchangeTpsl.takeProfitPrice;
+        (decision as any).stop_loss_price = exchangeTpsl.stopLossPrice;
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
         const execLeverage = capitalLeverage ?? getTargetLeverage(decision);
@@ -1330,20 +1558,49 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // not to get wicked out of trades the AI would otherwise manage.
         const CATASTROPHE_STOP_ATR_MULT = 3;
         let stopLossPrice: number | null = null;
-        if (decision.action === 'BUY' || decision.action === 'SELL') {
+        // Any action that opens fresh exposure gets the catastrophe stop —
+        // including REVERSE, whose new position is the OPPOSITE of the current
+        // side (it previously opened unprotected; gap closed 2026-07-08).
+        const bracketEntrySide: 'long' | 'short' | null =
+            decision.action === 'BUY'
+                ? 'long'
+                : decision.action === 'SELL'
+                  ? 'short'
+                  : decision.action === 'REVERSE' && positionInfo.status === 'open'
+                    ? positionInfo.holdSide === 'long'
+                        ? 'short'
+                        : 'long'
+                    : null;
+        if (bracketEntrySide) {
             const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
             const anchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
             if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
                 const dist = CATASTROPHE_STOP_ATR_MULT * primaryAtr;
-                const raw = decision.action === 'BUY' ? anchor - dist : anchor + dist;
+                const raw = bracketEntrySide === 'long' ? anchor - dist : anchor + dist;
                 stopLossPrice = raw > 0 ? raw : null;
             }
         }
 
         const execRes =
             platform === 'capital'
-                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun, stopLossPrice, true)
-                : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun, stopLossPrice);
+                ? await executeCapitalDecision(
+                      symbol,
+                      sideSizeUSDT,
+                      decision,
+                      dryRun,
+                      stopLossPrice,
+                      true,
+                      exchangeTpsl.takeProfitPrice,
+                  )
+                : await executeDecision(
+                      symbol,
+                      sideSizeUSDT,
+                      decision,
+                      productType!,
+                      dryRun,
+                      stopLossPrice,
+                      exchangeTpsl.takeProfitPrice,
+                  );
         const executedAtMs = Date.now();
         if (platform === 'capital' && !dryRun) {
             await persistCapitalClosedPositionSnapshot({
@@ -1385,6 +1642,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // it here makes per-branch outcome tracking a SQL query instead of a
             // reverse-engineering job over prompt STATE.
             actionability,
+            // Sanitized exchange-side bracket that actually went to execution,
+            // plus any clamp/drop notes (e.g. tp_wrong_side_dropped) — makes
+            // "what did the model ask for vs what shipped" a SQL query.
+            exchangeTpsl: {
+                takeProfitPrice: exchangeTpsl.takeProfitPrice,
+                stopLossPrice: exchangeTpsl.stopLossPrice,
+                standing: { takeProfitPrice: currentTakeProfit, stopLossPrice: currentStopLoss },
+                notes: exchangeTpsl.notes,
+            },
         };
 
         await appendDecisionHistory({
@@ -1413,11 +1679,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         try {
             const overlayPositionInfo =
                 !dryRun && execRes?.placed ? await fetchPositionInfo(symbol).catch(() => positionInfo) : positionInfo;
+            // Post-decision bracket for the chart overlay: a fresh entry (incl.
+            // REVERSE) carries the bracket just attached; an applied in-position
+            // amend carries the new levels; otherwise the pre-decision standing
+            // bracket still holds. Handles both venue result shapes (Bitget
+            // per-leg {applied}, Capital {updated, stopLevel, profitLevel}).
+            const tpslExec = (execRes as any)?.tpsl;
+            const entryPlaced =
+                execRes?.placed === true &&
+                (decision.action === 'BUY' || decision.action === 'SELL' || decision.action === 'REVERSE');
+            const tpAmended =
+                tpslExec?.takeProfit?.applied === true ||
+                (tpslExec?.updated === true && tpslExec?.profitLevel != null);
+            const slAmended =
+                tpslExec?.stopLoss?.applied === true || (tpslExec?.updated === true && tpslExec?.stopLevel != null);
+            const overlayTakeProfit = entryPlaced
+                ? exchangeTpsl.takeProfitPrice
+                : tpAmended
+                  ? exchangeTpsl.takeProfitPrice
+                  : currentTakeProfit;
+            const overlayStopLoss = entryPlaced
+                ? stopLossPrice
+                : slAmended
+                  ? exchangeTpsl.stopLossPrice
+                  : currentStopLoss;
             await warmPositionOverlayCacheFromAnalyze({
                 symbol,
                 platform,
                 nowMs: Date.now(),
                 openPositionInfo: overlayPositionInfo,
+                openTakeProfitPrice: overlayTakeProfit,
+                openStopLossPrice: overlayStopLoss,
             });
         } catch (err) {
             console.warn(`chart overlay post-decision warm failed for ${symbol}:`, err);

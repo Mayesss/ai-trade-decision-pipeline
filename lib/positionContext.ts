@@ -15,6 +15,10 @@ export function composePositionContext(params: {
     maxDrawdownPct?: number;
     maxProfitPct?: number;
     enteredAt?: number;
+    // Standing exchange-side bracket (resting TP/SL orders) on the position, so
+    // the model amends against the actual current levels. null = none resting.
+    takeProfitPrice?: number | null;
+    stopLossPrice?: number | null;
     openingDecision?: PositionDecisionNote | null;
     partialCloses?: PositionDecisionNote[];
 }): PositionContext | null {
@@ -50,6 +54,8 @@ export function composePositionContext(params: {
         max_profit_pct: toFixedNumber(params.maxProfitPct, 2),
         breakeven_price: toFixedNumber(breakevenPrice ?? entryPriceNum, 6),
         taker_fee_rate: toFixedNumber(takerFeeRate, 6),
+        take_profit_price: toFixedNumber(params.takeProfitPrice, 6) ?? null,
+        stop_loss_price: toFixedNumber(params.stopLossPrice, 6) ?? null,
         ...(params.openingDecision ? { opening_decision: params.openingDecision } : {}),
         ...(params.partialCloses?.length ? { partial_closes: params.partialCloses } : {}),
     };
