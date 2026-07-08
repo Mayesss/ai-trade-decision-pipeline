@@ -87,6 +87,24 @@ export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
     return raw === 'balanced' ? 'balanced' : 'strict';
 }
 
+// Extension (distance from EMA20, in ATRs) thresholds per decision policy.
+// Single source of truth for BOTH the prompt's soft-judgment prose and the
+// pre-AI extension hard gate in /api/analyze: beyond `avoid` the prompt tells
+// the model to avoid fresh entries — empirically it always HOLDs there, so the
+// gate skips the call entirely when flat.
+export function resolveExtensionThresholds(policy?: DecisionPolicy | string | null): {
+    microAvoid: number;
+    microNoEntry: number;
+    primaryAvoid: number;
+} {
+    const strict = resolveDecisionPolicy(typeof policy === 'string' ? policy : (policy ?? undefined)) === 'strict';
+    return {
+        microAvoid: strict ? 2.5 : 2.8,
+        microNoEntry: strict ? 3 : 3.3,
+        primaryAvoid: strict ? 2.5 : 2.8,
+    };
+}
+
 const indicatorRegexCache = new Map<string, RegExp>();
 
 function readIndicator(name: string, src: string): number | null {
@@ -668,11 +686,14 @@ export function computeSwingState(
         ? { blocked_side: cooldownNow.blockedSide, minutes_left: cooldownNow.minutesLeft }
         : null;
 
-    // Extension thresholds: single source of truth. Referenced in the soft-judgment
+    // Extension thresholds: single source of truth (shared with the pre-AI
+    // extension hard gate in /api/analyze). Referenced in the soft-judgment
     // guidance below so the prose can never drift from the numbers we actually use.
-    const extensionMicroAvoid = strictPolicy ? 2.5 : 2.8;
-    const extensionMicroNoEntry = strictPolicy ? 3 : 3.3;
-    const extensionPrimaryAvoid = strictPolicy ? 2.5 : 2.8;
+    const {
+        microAvoid: extensionMicroAvoid,
+        microNoEntry: extensionMicroNoEntry,
+        primaryAvoid: extensionPrimaryAvoid,
+    } = resolveExtensionThresholds(resolvedDecisionPolicy);
 
     const modeLabel = dryRun ? 'simulation' : 'live';
     const baseSymbol = symbol.replace(/USDT$/i, '');

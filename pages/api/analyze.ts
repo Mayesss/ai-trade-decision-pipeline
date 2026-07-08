@@ -36,6 +36,7 @@ import {
     computeMomentumSignals,
     postprocessDecision,
     resolveDecisionPolicy,
+    resolveExtensionThresholds,
     REENTRY_COOLDOWN_MIN,
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
@@ -1151,6 +1152,66 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 gate: 'SIGNAL_STRENGTH',
                 reason: 'below_medium',
                 signalStrength: context.signal_strength,
+                positionOpen,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes,
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                usedTape,
+                promptSkipped: true,
+            });
+        }
+
+        // 6d) Extension hard gate: flat + price extremely extended from EMA20 → no
+        // AI call. The prompt already tells the model to avoid fresh entries beyond
+        // these thresholds (same numbers via resolveExtensionThresholds), and it
+        // complies: every extension-flavored flat HOLD observed (micro |ext| 2.7–5.5
+        // ATR, RSI 12–29 / 69–79) was the AI re-deriving this rule — a wasted call.
+        // Flat entries only — in-position ticks always proceed (exits/trims can be
+        // needed regardless, and extension often argues FOR taking profit).
+        const extThresholds = resolveExtensionThresholds(decisionPolicy);
+        const microExtAtr = Number(context.micro_extension_atr);
+        const primaryExtAtr = Number(context.primary_extension_atr);
+        const microOverextended = Number.isFinite(microExtAtr) && Math.abs(microExtAtr) >= extThresholds.microAvoid;
+        const primaryOverextended =
+            Number.isFinite(primaryExtAtr) && Math.abs(primaryExtAtr) >= extThresholds.primaryAvoid;
+        if (!positionOpen && (microOverextended || primaryOverextended)) {
+            const extDetail = [
+                microOverextended ? `micro_${microExtAtr.toFixed(2)}atr` : null,
+                primaryOverextended ? `primary_${primaryExtAtr.toFixed(2)}atr` : null,
+            ]
+                .filter(Boolean)
+                .join('_');
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                summary: 'overextended',
+                reason: `flat_skip_overextended_${extDetail}`,
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'overextended' };
+            await persistPreAiSkip({
+                stage: 'extension_gate',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: { price: effectivePrice, actionability, momentumSignals },
+            });
+            emitGateDebug('extension_gate', {
+                gate: 'EXTENSION',
+                reason: extDetail,
+                microExtensionAtr: microExtAtr,
+                primaryExtensionAtr: primaryExtAtr,
                 positionOpen,
             });
             return res.status(200).json({
