@@ -81,6 +81,7 @@ type EvaluationEntry = {
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
   marketClosed?: boolean;
+  lastScanAt?: number | null;
   lastDecisionTs?: number | null;
   lastDecision?: {
     action?: string;
@@ -130,6 +131,7 @@ type DashboardSummaryRow = {
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
   marketClosed?: boolean;
+  lastScanAt?: number | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -7211,11 +7213,21 @@ export default function Home() {
                             key={sym}
                             onClick={() => setActive(i)}
                             title={
-                              marketClosed
-                                ? `${sym} — market closed`
-                                : openDirection
-                                  ? `${sym} — open ${openDirection}`
-                                  : undefined
+                              [
+                                marketClosed
+                                  ? `${sym} — market closed`
+                                  : openDirection
+                                    ? `${sym} — open ${openDirection}`
+                                    : null,
+                                // Cron liveness: quarter-tick scans don't write
+                                // decision rows, so the KV last-scan marker is
+                                // the only evidence the 15m cadence ran.
+                                typeof tab?.lastScanAt === "number" && tab.lastScanAt > 0
+                                  ? `last scan ${new Date(tab.lastScanAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ") || undefined
                             }
                             className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${openRingClass}${
                               marketClosed

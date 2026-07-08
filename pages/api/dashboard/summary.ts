@@ -12,6 +12,7 @@ import {
   type CapitalTradeTransactionRow,
 } from '../../../lib/capital';
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
+import { readSwingLastScan } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition } from '../../../lib/swing/pg';
 import { kvGetJson, kvSetJson } from '../../../lib/kv';
@@ -50,6 +51,10 @@ type SummaryEntry = {
   // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
   // Drives the deactivated look on the symbol tab.
   marketClosed?: boolean;
+  // Timestamp of the most recent analyze cron scan of this symbol (KV marker,
+  // written on EVERY automation tick including unpersisted quarter-tick skips).
+  // Decision history only shows meaningful outcomes; this shows liveness.
+  lastScanAt?: number | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -438,9 +443,14 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let forexEventContext: any | null = null;
       let lastWasAiCall = false;
       let marketClosed = false;
+      let lastScanAt: number | null = null;
 
       try {
-        const history = await loadDecisionHistory(symbol, 120, platform);
+        const [history, lastScan] = await Promise.all([
+          loadDecisionHistory(symbol, 120, platform),
+          readSwingLastScan(platform, symbol),
+        ]);
+        lastScanAt = lastScan;
         const latest = history[0];
         // Was the most recent decision (history is newest-first) a real AI call,
         // or a calm-market / below-min-signal-strength pre-AI skip?
@@ -672,6 +682,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastPositionLeverage,
         lastWasAiCall,
         marketClosed,
+        lastScanAt,
         winRate,
         avgWinPct,
         avgLossPct,

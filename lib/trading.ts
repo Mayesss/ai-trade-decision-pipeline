@@ -147,16 +147,15 @@ function clampManagementLeverage(target: unknown, current: number, symbolMax: nu
 async function setPositionBreakevenStop(params: {
     symbol: string;
     productType: ProductType;
-    holdSide: 'long' | 'short';
     triggerPrice: number;
-    marginCoin: string;
+    pos: PositionInfo;
 }): Promise<{ ok: boolean; triggerPrice: number; mode?: 'modify' | 'place' | 'dryRun'; error?: string }> {
-    const { symbol, productType, holdSide, triggerPrice, marginCoin } = params;
+    const { symbol, productType, triggerPrice, pos } = params;
     const res = await updatePositionTpsl({
         symbol,
         productType,
         stopLossPrice: triggerPrice,
-        pos: { status: 'open', symbol, holdSide, entryPrice: '0', marginCoin },
+        pos,
     });
     const leg = res.stopLoss;
     if (!leg) return { ok: false, triggerPrice, error: res.note || 'stop_leg_missing' };
@@ -239,6 +238,12 @@ export async function updatePositionTpsl(params: {
     if (pos.status !== 'open' || !pos.holdSide) return { note: 'no_open_position' };
     const holdSide = pos.holdSide;
     const marginCoin = pos.marginCoin ?? 'USDT';
+    // Bitget's place-tpsl-order expects holdSide long/short in HEDGE mode but
+    // buy/sell in ONE-WAY mode (live accounts run one-way; sending long/short
+    // there is rejected with 43011 "holdSide error"). Default to one-way when
+    // posMode is unknown — that matches production reality.
+    const planHoldSide =
+        pos.posMode === 'hedge_mode' ? holdSide : holdSide === 'long' ? 'buy' : 'sell';
 
     const meta = await fetchSymbolMeta(symbol, productType);
     const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
@@ -260,6 +265,18 @@ export async function updatePositionTpsl(params: {
         if (dryRun) return { requested: Number(trigger), applied: false, mode: 'dryRun' };
         try {
             if (current?.orderId) {
+                // modify-tpsl-order REQUIRES a size (400172 without one), and it
+                // must match the plan's own size semantics (both validated on
+                // demo): plans created by place-tpsl-order carry size "0"
+                // ("whole position") and must be modified with size "0"; plans
+                // created by entry presets carry a concrete size and must be
+                // modified with the CURRENT position size — echoing the plan's
+                // recorded size goes stale after trims (43023 "Insufficient
+                // position").
+                const wholePositionPlan = current.size != null && Number(current.size) === 0;
+                const modifySize = wholePositionPlan
+                    ? '0'
+                    : ((pos.status === 'open' ? pos.total ?? pos.available : null) ?? current.size);
                 const body: any = {
                     orderId: current.orderId,
                     symbol,
@@ -269,7 +286,7 @@ export async function updatePositionTpsl(params: {
                     triggerType: 'mark_price',
                     executePrice: '0',
                 };
-                if (current.size != null) body.size = current.size;
+                if (modifySize != null) body.size = String(modifySize);
                 await bitgetFetch('POST', '/api/v2/mix/order/modify-tpsl-order', {}, body);
                 return { requested: Number(trigger), applied: true, mode: 'modify' };
             }
@@ -281,7 +298,7 @@ export async function updatePositionTpsl(params: {
                 triggerPrice: trigger,
                 triggerType: 'mark_price',
                 executePrice: '0',
-                holdSide,
+                holdSide: planHoldSide,
             });
             return { requested: Number(trigger), applied: true, mode: 'place' };
         } catch (err) {
@@ -425,9 +442,8 @@ async function maybeManagePosition(args: {
         beResult = await setPositionBreakevenStop({
             symbol,
             productType,
-            holdSide: side,
             triggerPrice: beTrigger,
-            marginCoin,
+            pos,
         });
         if (!beResult.ok) {
             return { managed: false, beStop: beResult, leverageRaised: false, note: 'be_stop_failed_leverage_skipped' };

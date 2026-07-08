@@ -151,6 +151,22 @@ async function main() {
     const symbol = String(process.env.BITGET_DEMO_SYMBOL || 'BTCUSDT').toUpperCase();
     info(`symbol=${symbol} productType=${DEMO_PT}`);
 
+    // Optional: flip the demo account's position mode before validating, so both
+    // one-way (live production reality — holdSide buy/sell on TPSL plans) and
+    // hedge (holdSide long/short) semantics can be certified. Requires flat.
+    const wantPosMode = String(process.env.BITGET_DEMO_SET_POSMODE || '').trim();
+    if (wantPosMode === 'one_way_mode' || wantPosMode === 'hedge_mode') {
+        try {
+            await bitgetFetch('POST', '/api/v2/mix/account/set-position-mode', {}, {
+                productType: DEMO_PT,
+                posMode: wantPosMode,
+            });
+            info(`position mode set to ${wantPosMode}`);
+        } catch (err) {
+            info('set-position-mode failed (continuing with current mode)', err instanceof Error ? err.message : String(err));
+        }
+    }
+
     const price = await getLastPrice(symbol);
     info(`demo last price = ${price}`);
     const posMode = await detectPosMode(symbol);
@@ -212,6 +228,8 @@ async function main() {
         check('D2 TP placed on bare position', upD.takeProfit?.applied === true && upD.takeProfit?.mode === 'place', upD.takeProfit);
         check('D3 SL placed on bare position', upD.stopLoss?.applied === true && upD.stopLoss?.mode === 'place', upD.stopLoss);
         await sleep(2_000);
+        const plansD1 = await fetchPositionTpsl(symbol, DEMO_PT);
+        info('D4 inputs', { pos: posD, plans: plansD1 });
         const upD2 = await updatePositionTpsl({
             symbol,
             productType: DEMO_PT,

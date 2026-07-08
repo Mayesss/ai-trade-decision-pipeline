@@ -27,6 +27,7 @@ import {
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
+import { recordSwingLastScan } from '../../lib/swing/lastScan';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
@@ -317,6 +318,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // symbols for new entry windows; manual/API calls are never quarter
         // ticks and always run the full path.
         const quarterTick = automationCron && isQuarterHourTick();
+        // Freshness marker for the dashboard: quarter-tick scans don't persist
+        // decision rows, so this is the only evidence the 15m cadence ran.
+        // Fire-and-forget — never blocks the trading path.
+        if (automationCron) void recordSwingLastScan(platform, symbol);
         const persistPreAiSkip = async (params: {
             stage: string;
             decision: Record<string, any>;
@@ -1379,10 +1384,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Flat quarter-tick dedupe: actionable-but-HOLD configurations ("sitting
         // on support") persist for hours; without this, the 15m flat cadence
         // would re-ask the AI about the same standing setup 4x an hour. If the
-        // last flat AI call is under an hour old, answered HOLD, was admitted by
-        // the SAME actionability branch and price has barely moved since, this
-        // tick adds no information — skip without persisting. 55min ceiling
-        // means hourly ticks are never deduped; any missing input fails open.
+        // last flat AI call is under an hour old, answered HOLD and price has
+        // barely moved since, this tick adds no information — skip without
+        // persisting. Deliberately does NOT require the same actionability
+        // branch: on 2026-07-08 GOLD flapped between confirmed_primary and
+        // bounce_* on near-identical prices and burned 7 quarter-tick AI calls
+        // in one evening — a branch flip on an unmoved price is the same
+        // standing setup, and a genuinely fresh break moves price past the
+        // 0.25-ATR gate anyway (the hourly tick is the backstop regardless).
+        // 55min ceiling means hourly ticks are never deduped; missing inputs
+        // fail open.
         if (!positionOpen && quarterTick) {
             const lastFlatAiCall = [...recentHistory]
                 .reverse()
@@ -1400,13 +1411,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 Number.isFinite(lastPrice) && lastPrice > 0 && Number.isFinite(dedupeAtr) && dedupeAtr > 0
                     ? Math.abs(effectivePrice - lastPrice) / dedupeAtr
                     : null;
-            const sameBranch =
-                typeof lastSnap?.actionability?.reason === 'string' &&
-                lastSnap.actionability.reason === actionability.reason;
             if (
                 ageMin < FLAT_DEDUPE_MAX_AGE_MIN &&
                 lastAction === 'HOLD' &&
-                sameBranch &&
                 priceMoveAtr != null &&
                 priceMoveAtr <= FLAT_DEDUPE_MAX_MOVE_ATR
             ) {
