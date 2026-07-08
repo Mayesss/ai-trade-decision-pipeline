@@ -1123,7 +1123,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // Past the gate → the AI will be called, and news is its only consumer. Fetch
+        // 6c) Signal-strength hard gate: flat + sub-MEDIUM strength → no AI call,
+        // even when structurally actionable (6b). signal_strength is code-owned
+        // (computeSignalStrength, never shown to the model), so this is a pure
+        // budget gate stacked on actionability: both must pass before we spend the
+        // call. Flat entries only — in-position ticks always proceed (exits/trims
+        // can be needed regardless).
+        if (!positionOpen && context.signal_strength === 'LOW') {
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                summary: 'weak_signal',
+                reason: 'flat_skip_signal_strength_low',
+            };
+            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'weak_signal' };
+            await persistPreAiSkip({
+                stage: 'signal_strength_gate',
+                decision,
+                execResult: execRes,
+                gates: gatesOut.gates,
+                metrics: gatesOut.metrics,
+                usedTape,
+                snapshot: { price: effectivePrice, actionability, momentumSignals },
+            });
+            emitGateDebug('signal_strength_gate', {
+                gate: 'SIGNAL_STRENGTH',
+                reason: 'below_medium',
+                signalStrength: context.signal_strength,
+                positionOpen,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes,
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                usedTape,
+                promptSkipped: true,
+            });
+        }
+
+        // Past the gates → the AI will be called, and news is its only consumer. Fetch
         // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
         newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category });
         const { system, user } = swingState.assemble(newsBundle?.sentiment ?? null, newsBundle?.headlines ?? []);
