@@ -3736,6 +3736,18 @@ export default function Home() {
     setShowPrompt(false);
   }, [active, symbols]);
 
+  // Action label for the Latest Decision pill: a partial CLOSE (trim) shows its
+  // size, e.g. "CLOSE 40%"; a full close (pct absent or 100) stays "CLOSE".
+  const formatLastDecisionAction = (decision: any): string => {
+    const action = String(decision?.action || "");
+    if (action !== "CLOSE") return action;
+    const rawPct =
+      decision?.exit_size_pct ?? decision?.close_size_pct ?? decision?.partial_close_pct;
+    const pct = Number(rawPct);
+    if (Number.isFinite(pct) && pct > 0 && pct < 100) return `CLOSE ${Math.round(pct)}%`;
+    return action;
+  };
+
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return "";
     const d = new Date(ts);
@@ -8272,7 +8284,7 @@ export default function Home() {
                           current.lastPositionPnl,
                         )}`}
                       >
-                        {((current.lastDecision as any)?.action || "").toString() || "—"}
+                        {formatLastDecisionAction(current.lastDecision) || "—"}
                       </span>
                       {(current.lastDecision as any)?.summary
                         ? ` · ${(current.lastDecision as any).summary}`
