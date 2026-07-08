@@ -138,37 +138,34 @@ function clampManagementLeverage(target: unknown, current: number, symbolMax: nu
     return clamped > current ? clamped : null;
 }
 
-// Move a position's stop-loss to (just past) breakeven via Bitget's position-level
-// TP/SL loss plan. This supersedes the entry presetStopLossPrice for the position.
-// planType 'pos_loss' targets the whole position; executePrice '0' = close at market.
-// NOTE: exact place-vs-modify semantics of this endpoint must be verified on
-// testnet before enabling in production (see ENABLE_CRYPTO_MARGIN_RECYCLE).
+// Move a position's stop-loss to (just past) breakeven via the position-level
+// TP/SL plan. Delegates to updatePositionTpsl, which MODIFIES the existing
+// pos_loss plan when one is pending (the entry presetStopLossPrice materializes
+// as exactly one such plan — validated on demo, scripts/validate-bitget-tpsl.ts)
+// and places a fresh plan otherwise — so the BE move can never stack a second
+// stop on top of the entry one.
 async function setPositionBreakevenStop(params: {
     symbol: string;
     productType: ProductType;
     holdSide: 'long' | 'short';
     triggerPrice: number;
     marginCoin: string;
-    pricePlace: number;
-}): Promise<{ ok: boolean; triggerPrice: number; raw?: any; error?: string }> {
-    const { symbol, productType, holdSide, triggerPrice, marginCoin, pricePlace } = params;
-    const trigger = Number(triggerPrice.toFixed(Math.max(0, pricePlace)));
-    const body: any = {
+}): Promise<{ ok: boolean; triggerPrice: number; mode?: 'modify' | 'place' | 'dryRun'; error?: string }> {
+    const { symbol, productType, holdSide, triggerPrice, marginCoin } = params;
+    const res = await updatePositionTpsl({
         symbol,
-        productType: (productType as string).toUpperCase(),
-        marginCoin,
-        planType: 'pos_loss',
-        triggerPrice: trigger.toString(),
-        triggerType: 'mark_price',
-        executePrice: '0',
-        holdSide,
+        productType,
+        stopLossPrice: triggerPrice,
+        pos: { status: 'open', symbol, holdSide, entryPrice: '0', marginCoin },
+    });
+    const leg = res.stopLoss;
+    if (!leg) return { ok: false, triggerPrice, error: res.note || 'stop_leg_missing' };
+    return {
+        ok: leg.applied,
+        triggerPrice: leg.requested,
+        mode: leg.mode,
+        ...(leg.error ? { error: leg.error } : {}),
     };
-    try {
-        const raw = await bitgetFetch('POST', '/api/v2/mix/order/place-tpsl-order', {}, body);
-        return { ok: true, triggerPrice: trigger, raw };
-    } catch (err) {
-        return { ok: false, triggerPrice: trigger, error: err instanceof Error ? err.message : String(err) };
-    }
 }
 
 // ------------------------------
@@ -431,7 +428,6 @@ async function maybeManagePosition(args: {
             holdSide: side,
             triggerPrice: beTrigger,
             marginCoin,
-            pricePlace,
         });
         if (!beResult.ok) {
             return { managed: false, beStop: beResult, leverageRaised: false, note: 'be_stop_failed_leverage_skipped' };
