@@ -280,6 +280,7 @@ export type SwingPositionDecision = {
     summary: string | null;
     reason: string | null;
     exitSizePct: number | null;
+    price: number | null; // market price at decision time (snapshot_json.price)
 };
 
 // Entry/exit decisions with the AI's own rationale for one symbol since a
@@ -310,7 +311,8 @@ export async function loadSwingPositionDecisions(opts: {
                 ai_decision_json->>'exit_size_pct',
                 ai_decision_json->>'close_size_pct',
                 ai_decision_json->>'partial_close_pct'
-            ) AS exit_size_pct
+            ) AS exit_size_pct,
+            snapshot_json->>'price' AS price
         FROM swing.decisions
         WHERE symbol = ${symbol}
           AND (${platform}::text IS NULL OR platform = ${platform})
@@ -325,6 +327,7 @@ export async function loadSwingPositionDecisions(opts: {
         summary: r.summary == null ? null : String(r.summary),
         reason: r.reason == null ? null : String(r.reason),
         exitSizePct: finite(r.exit_size_pct),
+        price: finite(r.price),
     }));
 }
 

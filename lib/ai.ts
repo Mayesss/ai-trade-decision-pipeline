@@ -21,6 +21,7 @@ import { setEvaluation, getEvaluation } from './utils';
 export type PositionDecisionNote = {
     action: string;
     ts?: string;
+    price?: number; // market price when the decision was made
     summary?: string;
     reason?: string;
     exit_size_pct?: number;

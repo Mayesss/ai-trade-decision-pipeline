@@ -886,6 +886,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const toNote = (d: SwingPositionDecision): PositionDecisionNote => ({
                     action: d.action,
                     ts: new Date(d.decidedAtMs).toISOString(),
+                    ...(d.price != null && d.price > 0 ? { price: Number(d.price.toFixed(6)) } : {}),
                     summary: clip(d.summary, 200),
                     reason: clip(d.reason, 300),
                     ...(d.exitSizePct != null ? { exit_size_pct: Math.round(d.exitSizePct) } : {}),

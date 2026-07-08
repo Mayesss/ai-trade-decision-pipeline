@@ -16,12 +16,14 @@ test('composePositionContext: opening decision + partial closes flow into the co
     const opening = {
         action: 'BUY',
         ts: '2026-07-01T10:00:00.000Z',
+        price: 97.85,
         summary: 'breakout retest held',
         reason: 'primary breakout confirmed with micro turn up off retest',
     };
     const trim = {
         action: 'CLOSE',
         ts: '2026-07-03T14:00:00.000Z',
+        price: 103.4,
         reason: 'into context resistance, banking partial',
         exit_size_pct: 40,
     };
