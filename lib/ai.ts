@@ -12,6 +12,8 @@ import {
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
+import { computeWaveGeometry } from './swing/waveGeometry';
+import type { NanoContext } from './swing/waveGeometry';
 import { setEvaluation, getEvaluation } from './utils';
 
 // The AI's own prior rationale attached to the open position: the decision that
@@ -438,6 +440,12 @@ export function computeSwingState(
             gates,
             primaryTimeframe,
         });
+    // Wave geometry (regression channel, pivot trendlines, last swing points)
+    // on the entry-relevant timeframes, from candles already fetched for the
+    // indicators — zero extra I/O. Nano (15m) geometry is fetched separately by
+    // the caller only once all gates pass, and enters via assemble().
+    const microGeometry = computeWaveGeometry(indicators.rawCandles?.[microTimeframe]);
+    const primaryGeometry = computeWaveGeometry(indicators.rawCandles?.[primaryTimeframe]);
     const spreadAbsRaw = Number(analytics?.spreadAbs ?? analytics?.spread);
     const spreadBpsFromAnalytics = Number(analytics?.spreadBps);
     const spreadBpsCanonical = Number.isFinite(spreadBpsOverride as number)
@@ -783,7 +791,11 @@ export function computeSwingState(
     // expensive part (two JSON.stringify + a large template), so it's deferred behind
     // this closure and only run once we know the AI will be called. Captures the
     // derivation scope above, so no state needs threading through. News enters here.
-    const assemble = (news_sentiment: string | null = null, news_headlines: string[] = []) => {
+    const assemble = (
+        news_sentiment: string | null = null,
+        news_headlines: string[] = [],
+        nano_context: NanoContext | null = null,
+    ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
     const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
@@ -879,6 +891,15 @@ export function computeSwingState(
             primary: { support: srLevel(primarySR?.support), resistance: srLevel(primarySR?.resistance) },
             context: { support: srLevel(contextSR?.support), resistance: srLevel(contextSR?.resistance) },
         },
+        // Wave geometry per timeframe: regression channel (slope_atr, channel_pos
+        // 0=low..1=high, width), pivot trendlines (live price + slope + touches)
+        // and last swing high/low (price, signed ATR distance, bars ago). nano =
+        // 15m entry timing, present only when the AI is actually being called.
+        geometry: {
+            ...(nano_context ? { nano: nano_context } : {}),
+            ...(microGeometry ? { micro: microGeometry } : {}),
+            ...(primaryGeometry ? { primary: primaryGeometry } : {}),
+        },
         gates: {
             spread_ok: gates.spread_ok,
             liquidity_ok: gates.liquidity_ok,
@@ -963,7 +984,7 @@ You are an expert swing-trading market-structure analyst. Decide one action and 
 ${assetNote}
 
 TIMEFRAMES (fixed)
-- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever).
+- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${nano_context ? ', nano=15m (state.geometry.nano — wave/entry timing only, never a setup by itself)' : ''}.
 Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
 INPUTS
@@ -984,6 +1005,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
+- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context?.opening_decision
@@ -1004,7 +1026,7 @@ OUTPUT
 
     const user = `
 You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}, asset_class=${assetClass}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. Called ~once per ${microTimeframe}. Decision policy: ${decisionPolicyLabel}.
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Called ~once per ${microTimeframe}. Decision policy: ${decisionPolicyLabel}.
 S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 
 STATE (derived signals — single source of truth):

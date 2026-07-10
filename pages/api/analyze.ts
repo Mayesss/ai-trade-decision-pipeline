@@ -28,6 +28,7 @@ import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type A
 import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { recordSwingLastScan } from '../../lib/swing/lastScan';
+import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
@@ -1464,10 +1465,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        // Past the gates → the AI will be called, and news is its only consumer. Fetch
-        // it now (KV-cached up to the TTL) and assemble the prompt once, with news.
-        newsBundle = await fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category });
-        const { system, user } = swingState.assemble(newsBundle?.sentiment ?? null, newsBundle?.headlines ?? []);
+        // Past the gates → the AI will be called. Fetch its two remaining inputs
+        // together: news (its only consumer is the prompt) and the nano (15m)
+        // candles for wave/entry-timing geometry. Both are deferred to here so
+        // gated ticks never pay for them; nano fails open (prompt just omits it).
+        const [newsBundleRes, nanoContext] = await Promise.all([
+            fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
+            (async () => {
+                try {
+                    const nanoBundle = await fetchMarketBundle(symbol, '15m', {
+                        includeTrades: false,
+                        candleLimit: 110,
+                    });
+                    return computeNanoContext((nanoBundle as any)?.candles ?? []);
+                } catch (err) {
+                    console.warn(`Could not build nano (15m) context for ${symbol}:`, err);
+                    return null;
+                }
+            })(),
+        ]);
+        newsBundle = newsBundleRes;
+        const { system, user } = swingState.assemble(
+            newsBundle?.sentiment ?? null,
+            newsBundle?.headlines ?? [],
+            nanoContext,
+        );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
         // Capital decides leverage by asset class, so it uses the leverage-free schema.
