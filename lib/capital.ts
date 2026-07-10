@@ -3286,6 +3286,12 @@ async function openCapitalPosition(params: {
   // asset class (notional = sideSizeUSDT * category leverage). Off (default) keeps
   // the scalp contract where sideSizeUSDT IS the target notional.
   notionalLeverageByCategory?: boolean;
+  // Pullback limit entry: place a resting LIMIT working order (documented
+  // /api/v1/workingorders endpoint) instead of an immediate position. Requires
+  // orderType LIMIT + limitLevel. goodTillMs sets a venue-side expiry as a
+  // backstop behind the caller-owned one-tick TTL.
+  asWorkingOrder?: boolean;
+  goodTillMs?: number | null;
 }) {
   const {
     symbol,
@@ -3299,6 +3305,8 @@ async function openCapitalPosition(params: {
     profitLevel = null,
     forceOpen = true,
     notionalLeverageByCategory = false,
+    asWorkingOrder = false,
+    goodTillMs = null,
   } = params;
   const resolved = await resolveCapitalEpicRuntime(symbol);
   const details = await loadMarketDetails(resolved.epic);
@@ -3435,6 +3443,65 @@ async function openCapitalPosition(params: {
       ? accountLeverageCap
       : leverage;
     if (explicitLeverage) body.leverage = explicitLeverage;
+  }
+
+  // Pullback limit entry: resting working order instead of an immediate
+  // position. Uses the documented /workingorders endpoint (the /positions
+  // orderType=LIMIT variant is undocumented) and reuses all the sizing above.
+  if (asWorkingOrder) {
+    const level = safeNumber(limitLevel, NaN);
+    if (orderType !== "LIMIT" || !(Number.isFinite(level) && level > 0)) {
+      throw new Error(`working order requires LIMIT orderType + level for ${symbol}`);
+    }
+    const woBody: Record<string, unknown> = {
+      epic: details.epic,
+      direction,
+      size,
+      level,
+      type: "LIMIT",
+      currencyCode: "USD",
+      dealReference: clientOid,
+    };
+    if (Number.isFinite(goodTillMs as number) && (goodTillMs as number) > Date.now()) {
+      woBody.goodTillDate = new Date(goodTillMs as number).toISOString().slice(0, 19);
+    }
+    if (stopLevelNumber !== null) woBody.stopLevel = stopLevelNumber;
+    if (profitLevelNumber !== null) woBody.profitLevel = profitLevelNumber;
+    const woPayload = await capitalFetch("POST", "/api/v1/workingorders", {}, woBody, true);
+    const dealReference = String(woPayload?.dealReference ?? clientOid);
+    let dealId: string | null = null;
+    let dealStatus: string | null = null;
+    let rejectReason: string | null = null;
+    try {
+      const confirm = await capitalFetch(
+        "GET",
+        `/api/v1/confirms/${encodeURIComponent(dealReference)}`,
+        {},
+        undefined,
+        true,
+      );
+      dealId = confirm?.dealId ? String(confirm.dealId) : null;
+      dealStatus = confirm?.dealStatus ? String(confirm.dealStatus) : null;
+      rejectReason = confirm?.rejectReason ?? confirm?.reason ?? null;
+    } catch {
+      /* confirm is best-effort; the order may still be resting */
+    }
+    const accepted = dealStatus ? dealStatus.toUpperCase() !== "REJECTED" : true;
+    return {
+      payload: woPayload,
+      orderId: dealId ?? dealReference,
+      dealId,
+      dealReference,
+      notionalUsd: orderNotional,
+      size,
+      epic: details.epic,
+      dealStatus,
+      confirmStatus: null,
+      rejectReason,
+      reasonCodes: sizingReasonCodes,
+      accepted,
+      pending: true,
+    };
   }
 
   const submittedAtMs = Date.now();
@@ -3813,6 +3880,66 @@ export async function closeCapitalPositionByOwnership(params: {
   };
 }
 
+// ------------------------------
+// Pending entry working orders (pullback limit entries, one-tick TTL)
+// ------------------------------
+
+export type CapitalPendingEntryOrder = {
+  dealId: string;
+  direction: string | null;
+  level: number | null;
+  size: number | null;
+};
+
+// The pipeline is the only writer on this account, so every working order on a
+// symbol's epic is one of our resting pullback entries.
+export async function listCapitalPendingEntryOrders(symbol: string): Promise<CapitalPendingEntryOrder[]> {
+  const resolved = await resolveCapitalEpicRuntime(symbol);
+  const payload = await capitalFetch("GET", "/api/v1/workingorders", {}, undefined, true);
+  const rows = Array.isArray(payload?.workingOrders) ? payload.workingOrders : [];
+  return rows
+    .map((row: any): CapitalPendingEntryOrder | null => {
+      const data = row?.workingOrderData ?? row;
+      const epic = normalizeTicker(String(data?.epic ?? row?.marketData?.epic ?? ""));
+      if (epic !== resolved.epic) return null;
+      const dealId = data?.dealId ? String(data.dealId) : null;
+      if (!dealId) return null;
+      const level = safeNumber(data?.orderLevel ?? data?.level, NaN);
+      const size = safeNumber(data?.orderSize ?? data?.size, NaN);
+      return {
+        dealId,
+        direction: data?.direction ? String(data.direction) : null,
+        level: Number.isFinite(level) ? level : null,
+        size: Number.isFinite(size) ? size : null,
+      };
+    })
+    .filter((o: CapitalPendingEntryOrder | null): o is CapitalPendingEntryOrder => o !== null);
+}
+
+// Cancel all resting entry working orders for a symbol (one-tick TTL /
+// supersede-on-new-evaluation). Never throws.
+export async function cancelCapitalPendingEntryOrders(
+  symbol: string,
+): Promise<{ found: number; cancelled: number; errors: string[] }> {
+  let orders: CapitalPendingEntryOrder[] = [];
+  try {
+    orders = await listCapitalPendingEntryOrders(symbol);
+  } catch (err) {
+    return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+  }
+  let cancelled = 0;
+  const errors: string[] = [];
+  for (const order of orders) {
+    try {
+      await capitalFetch("DELETE", `/api/v1/workingorders/${encodeURIComponent(order.dealId)}`, {}, undefined, true);
+      cancelled++;
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return { found: orders.length, cancelled, errors };
+}
+
 // Amend the standing exchange-side bracket (stop/profit levels) on the open
 // position for a symbol via Capital's position-update endpoint. Per-call
 // failures are surfaced, never thrown — a failed amend must not break the
@@ -3929,6 +4056,10 @@ export async function executeCapitalDecision(
       Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0
         ? Number(stopLossPrice)
         : null;
+    // Pullback limit entry (sanitized upstream): rest a LIMIT working order
+    // with the bracket attached; the caller owns the one-tick TTL and the
+    // goodTillDate is a venue-side backstop just past one hourly tick.
+    const entryLimitPrice = safePositiveNumber(decision.entry_limit_price);
     const opened = await openCapitalPosition({
       symbol,
       direction,
@@ -3938,6 +4069,14 @@ export async function executeCapitalDecision(
       stopLevel,
       profitLevel: safePositiveNumber(takeProfitPrice),
       notionalLeverageByCategory,
+      ...(entryLimitPrice != null
+        ? {
+            orderType: "LIMIT" as const,
+            limitLevel: entryLimitPrice,
+            asWorkingOrder: true,
+            goodTillMs: Date.now() + 70 * 60_000,
+          }
+        : {}),
     });
     if (!opened.accepted) {
       return {
@@ -3958,6 +4097,7 @@ export async function executeCapitalDecision(
       leverage,
       size: opened.size,
       epic: opened.epic,
+      ...((opened as any).pending ? { pendingEntry: true, entryLimitPrice } : {}),
     };
   }
 

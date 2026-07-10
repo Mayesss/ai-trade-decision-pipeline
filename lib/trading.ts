@@ -33,6 +33,10 @@ export interface TradeDecision {
     // fields amend the position's standing TP/SL plan orders (null = leave as-is).
     take_profit_price?: number | null;
     stop_loss_price?: number | null;
+    // Pullback limit entry (flat BUY/SELL, sanitized upstream via
+    // sanitizeEntryLimit): rest a LIMIT at this price instead of a market
+    // entry. The caller owns the one-tick TTL (cancelPendingEntryOrders).
+    entry_limit_price?: number | null;
 }
 
 // Profit-lock margin-recycle feature flags (crypto only). Ships OFF; the Bitget
@@ -317,6 +321,73 @@ export async function updatePositionTpsl(params: {
     return out;
 }
 
+// ------------------------------
+// Pending entry orders (pullback limit entries, one-tick TTL)
+// ------------------------------
+
+export type PendingEntryOrder = {
+    orderId: string;
+    clientOid: string | null;
+    side: string | null;
+    price: number | null;
+    size: string | null;
+};
+
+// The pipeline is the only writer on this account, so every pending NORMAL
+// order on a symbol is one of our resting pullback entries (TP/SL live as
+// plan orders, listed separately).
+export async function fetchPendingEntryOrders(symbol: string, productType: ProductType): Promise<PendingEntryOrder[]> {
+    const res = await bitgetFetch('GET', '/api/v2/mix/order/orders-pending', {
+        symbol,
+        productType: (productType as string).toUpperCase(),
+    });
+    const list = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
+    return list
+        .map((o: any): PendingEntryOrder | null => {
+            const orderId = o?.orderId ? String(o.orderId) : null;
+            if (!orderId) return null;
+            const price = Number(o?.price ?? o?.priceAvg);
+            return {
+                orderId,
+                clientOid: o?.clientOid ? String(o.clientOid) : null,
+                side: o?.side ? String(o.side) : null,
+                price: Number.isFinite(price) && price > 0 ? price : null,
+                size: o?.size != null ? String(o.size) : null,
+            };
+        })
+        .filter((o: PendingEntryOrder | null): o is PendingEntryOrder => o !== null);
+}
+
+// Cancel all resting entry orders for a symbol (one-tick TTL / supersede-on-
+// new-evaluation). Never throws; per-order failures are surfaced so the caller
+// can detect the filled-while-cancelling race via the error text.
+export async function cancelPendingEntryOrders(
+    symbol: string,
+    productType: ProductType,
+): Promise<{ found: number; cancelled: number; errors: string[] }> {
+    let orders: PendingEntryOrder[] = [];
+    try {
+        orders = await fetchPendingEntryOrders(symbol, productType);
+    } catch (err) {
+        return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+    }
+    let cancelled = 0;
+    const errors: string[] = [];
+    for (const order of orders) {
+        try {
+            await bitgetFetch('POST', '/api/v2/mix/order/cancel-order', {}, {
+                symbol,
+                productType: (productType as string).toUpperCase(),
+                orderId: order.orderId,
+            });
+            cancelled++;
+        } catch (err) {
+            errors.push(err instanceof Error ? err.message : String(err));
+        }
+    }
+    return { found: orders.length, cancelled, errors };
+}
+
 type PlaceOrderBody = {
     symbol: string;
     productType: ProductType;
@@ -327,6 +398,7 @@ type PlaceOrderBody = {
     size: string;
     clientOid: string;
     force: string;
+    price?: string;
     holdSide?: 'long' | 'short';
     // Bitget mix v2 expects the string 'YES'/'NO' here, not a boolean.
     reduceOnly?: 'YES' | 'NO';
@@ -500,6 +572,10 @@ export async function executeDecision(
     // BUY / SELL
     if (decision.action === 'BUY' || decision.action === 'SELL') {
         const holdSide: 'long' | 'short' = decision.action === 'BUY' ? 'long' : 'short';
+        const entryLimitPrice =
+            Number.isFinite(decision.entry_limit_price as number) && (decision.entry_limit_price as number) > 0
+                ? Number(decision.entry_limit_price)
+                : null;
         const leverageResult = await applyLeverage({ symbol, productType, leverage: targetLeverage, holdSide, dryRun });
         if (dryRun) return { placed: false, orderId: null, clientOid, leverage: leverageResult.leverage };
         const orderNotionalUSDT = deriveOrderNotional(sideSizeUSDT, targetLeverage);
@@ -511,7 +587,10 @@ export async function executeDecision(
             marginCoin: 'USDT',
             marginMode: 'isolated',
             side: decision.action.toLowerCase(),
-            orderType: 'market',
+            // Pullback limit entry: rest at the sanitized limit instead of
+            // taking the market. The caller cancels it at the next evaluation
+            // if unfilled (one-tick TTL).
+            orderType: entryLimitPrice != null ? 'limit' : 'market',
             size: size.toString(),
             clientOid,
             force: 'gtc',
@@ -522,15 +601,17 @@ export async function executeDecision(
         // Attach the exchange-side bracket at entry: a protective (catastrophe)
         // stop plus a resting take-profit, so the position is bounded — and the
         // upside captured — during the gap between AI evaluations. Both are
-        // sized and placed on the correct side of entry by the caller; here we
-        // just quantize them to the symbol's price precision.
+        // sized and placed on the correct side of entry by the caller (anchored
+        // at the limit price for pullback entries); here we just quantize them
+        // to the symbol's price precision.
         const hasSl = Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0;
         const hasTp = Number.isFinite(takeProfitPrice as number) && (takeProfitPrice as number) > 0;
-        if (hasSl || hasTp) {
+        if (hasSl || hasTp || entryLimitPrice != null) {
             const meta = await fetchSymbolMeta(symbol, productType);
             const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
             if (hasSl) body['presetStopLossPrice'] = Number(stopLossPrice).toFixed(Math.max(0, pricePlace));
             if (hasTp) body['presetStopSurplusPrice'] = Number(takeProfitPrice).toFixed(Math.max(0, pricePlace));
+            if (entryLimitPrice != null) body['price'] = entryLimitPrice.toFixed(Math.max(0, pricePlace));
         }
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return {
@@ -540,6 +621,7 @@ export async function executeDecision(
             leverage: leverageResult.leverage,
             leverageApplied: leverageResult.applied,
             leverageError: leverageResult.error,
+            ...(entryLimitPrice != null ? { pendingEntry: true, entryLimitPrice } : {}),
         };
     }
 

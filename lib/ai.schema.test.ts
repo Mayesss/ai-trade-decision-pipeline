@@ -58,7 +58,7 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 
 test('valid swing decisions conform to the schema', () => {
     const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
-    const noBracket = { take_profit_price: null, stop_loss_price: null };
+    const noBracket = { take_profit_price: null, stop_loss_price: null, entry_limit_price: null };
     const valid = [
         // entry with a resting exchange-side TP target
         {
@@ -70,6 +70,7 @@ test('valid swing decisions conform to the schema', () => {
             ...manageOff,
             take_profit_price: 71250.5,
             stop_loss_price: null,
+            entry_limit_price: 70100,
         },
         { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff, ...noBracket },
         // in-position trim that also amends the standing bracket
@@ -82,6 +83,7 @@ test('valid swing decisions conform to the schema', () => {
             ...manageOff,
             take_profit_price: 72000,
             stop_loss_price: 68000,
+            entry_limit_price: null,
         },
         { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1, ...manageOff, ...noBracket },
         // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
@@ -110,6 +112,7 @@ test('invalid swing decisions are rejected', () => {
         move_stop_to_be: null,
         take_profit_price: null,
         stop_loss_price: null,
+        entry_limit_price: null,
     };
     // the base itself is valid, so each case below fails for its intended reason
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));

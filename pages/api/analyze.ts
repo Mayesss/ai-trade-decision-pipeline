@@ -21,6 +21,7 @@ import {
     fetchCapitalMarketTradeability,
     fetchCapitalPositionInfo,
     fetchCapitalRealizedRoi,
+    cancelCapitalPendingEntryOrders,
     resolveCapitalEpic,
     resolveCapitalEpicRuntime,
 } from '../../lib/capital';
@@ -39,6 +40,7 @@ import {
     postprocessDecision,
     resolveDecisionPolicy,
     resolveExtensionThresholds,
+    sanitizeEntryLimit,
     sanitizeExchangeTpSl,
     REENTRY_COOLDOWN_MIN,
     SWING_DECISION_SCHEMA,
@@ -47,7 +49,13 @@ import {
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals, PositionDecisionNote } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
-import { executeDecision, fetchPositionTpsl, getTargetLeverage, getTradeProductType } from '../../lib/trading';
+import {
+    cancelPendingEntryOrders,
+    executeDecision,
+    fetchPositionTpsl,
+    getTargetLeverage,
+    getTradeProductType,
+} from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
@@ -662,6 +670,56 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             } else if (positionInfo.status === 'open') {
                 currentTakeProfit = positionInfo.takeProfitPrice ?? null;
                 currentStopLoss = positionInfo.stopLossPrice ?? null;
+            }
+        }
+
+        // Resting pullback entries (one-tick TTL). Sweep = cancel whatever the
+        // PREVIOUS evaluation left resting. Hourly flat ticks always sweep
+        // (TTL expiry, even when the gates then skip the AI); quarter ticks
+        // sweep later, only when they actually reach a new AI evaluation
+        // (supersede) — a gate-skipped quarter tick leaves the order resting.
+        // If a cancel fails because the order just FILLED, the tick stops:
+        // a position now exists and the next tick manages it.
+        const sweepPendingEntries = async () => {
+            try {
+                return platform === 'capital'
+                    ? await cancelCapitalPendingEntryOrders(symbol)
+                    : await cancelPendingEntryOrders(symbol, productType!);
+            } catch (err) {
+                console.warn(`pending entry sweep failed for ${symbol}:`, err);
+                return null;
+            }
+        };
+        const pendingEntryFilledMidTick = async (
+            sweep: Awaited<ReturnType<typeof sweepPendingEntries>>,
+        ): Promise<boolean> => {
+            if (!sweep || sweep.found === 0 || sweep.cancelled >= sweep.found) return false;
+            const recheck = await fetchPositionInfo(symbol).catch(() => null);
+            return recheck?.status === 'open';
+        };
+        if (!positionOpen && !quarterTick) {
+            const sweep = await sweepPendingEntries();
+            if (await pendingEntryFilledMidTick(sweep)) {
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'pending_entry_filled',
+                        reason: 'pending_entry_filled_during_ttl_sweep',
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                    usedTape: false,
+                    promptSkipped: true,
+                });
             }
         }
 
@@ -1465,6 +1523,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Supersede sweep for quarter ticks: this tick reaches a fresh AI
+        // evaluation, so the previous evaluation's resting pullback order (if
+        // any) is stale — cancel it before the new decision executes. Hourly
+        // ticks already swept above; the second call is a cheap no-op then.
+        if (!positionOpen && quarterTick) {
+            const sweep = await sweepPendingEntries();
+            if (await pendingEntryFilledMidTick(sweep)) {
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'pending_entry_filled',
+                        reason: 'pending_entry_filled_during_supersede_sweep',
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+        }
+
         // Past the gates → the AI will be called. Fetch its two remaining inputs
         // together: news (its only consumer is the prompt) and the nano (15m)
         // candles for wave/entry-timing geometry. Both are deferred to here so
@@ -1517,17 +1605,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             (decision as any).move_stop_to_be = false;
         }
 
-        // Exchange-side TP/SL: validate the model's price targets against live
-        // price + primary ATR (correct side of price, min/max distance; stop
-        // amendments never wider than the catastrophe distance), with a 3×ATR
-        // fallback TP on entries so every entry ships with a resting exchange TP.
+        // Pullback entry limit first (its price anchors everything downstream):
+        // validate the model's limit against live price + ATR — wrong side or
+        // too close falls back to a market entry, too far clamps.
         const tpslAtrRaw = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+        const primaryAtrSane = Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null;
+        const marketAnchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
+        const entryLimit = sanitizeEntryLimit({
+            action: decision.action,
+            positionOpen,
+            price: marketAnchor,
+            primaryAtr: primaryAtrSane,
+            entryLimitPrice: (decision as any).entry_limit_price ?? null,
+        });
+        (decision as any).entry_limit_price = entryLimit.entryLimitPrice;
+        // Bracket anchor: for a resting pullback entry the catastrophe stop and
+        // TP must be sized from the LIMIT price (where the position would
+        // actually open), not from the current price.
+        const bracketAnchor = entryLimit.entryLimitPrice ?? marketAnchor;
+
+        // Exchange-side TP/SL: validate the model's price targets against the
+        // bracket anchor + primary ATR (correct side of price, min/max distance;
+        // stop amendments never wider than the catastrophe distance), with a
+        // 3×ATR fallback TP on entries so every entry ships with a resting TP.
         const exchangeTpsl = sanitizeExchangeTpSl({
             action: decision.action,
             positionOpen,
             side: positionInfo.status === 'open' ? positionInfo.holdSide : null,
-            price: Number.isFinite(lastPrice) ? lastPrice : effectivePrice,
-            primaryAtr: Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null,
+            price: bracketAnchor,
+            primaryAtr: primaryAtrSane,
             takeProfitPrice: (decision as any).take_profit_price ?? null,
             stopLossPrice: (decision as any).stop_loss_price ?? null,
             exitSizePct: (decision as any).exit_size_pct ?? null,
@@ -1618,7 +1724,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     : null;
         if (bracketEntrySide) {
             const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
-            const anchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
+            // Anchored at the pullback limit when one is resting — the stop
+            // protects the position from where it would actually open.
+            const anchor = bracketAnchor;
             if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
                 const dist = CATASTROPHE_STOP_ATR_MULT * primaryAtr;
                 const raw = bracketEntrySide === 'long' ? anchor - dist : anchor + dist;
@@ -1695,6 +1803,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 stopLossPrice: exchangeTpsl.stopLossPrice,
                 standing: { takeProfitPrice: currentTakeProfit, stopLossPrice: currentStopLoss },
                 notes: exchangeTpsl.notes,
+            },
+            entryLimit: {
+                price: entryLimit.entryLimitPrice,
+                notes: entryLimit.notes,
             },
         };
 

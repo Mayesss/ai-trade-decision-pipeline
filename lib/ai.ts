@@ -1016,6 +1016,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. Output stop_loss_price=null on entries — a ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe stop is attached automatically.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price. Invalid values are clamped or dropped in code — don't waste them.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and the automatic catastrophe stop are anchored at the LIMIT price. null = enter at market now. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1040,10 +1041,11 @@ TASKS:
 2) ${leverageTask}
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
 4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: only to amend the stop while in a position (null = unchanged); always null on entries/REVERSE.
-5) summary ≤3 lines; reason = brief rationale.
+5) entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.
+6) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -1337,6 +1339,11 @@ export function postprocessDecision(params: {
     const take_profit_price =
         isEntryAction || tpslAmendEligible ? coercePrice(decision?.take_profit_price) : null;
     const stop_loss_price = tpslAmendEligible ? coercePrice(decision?.stop_loss_price) : null;
+    // Pullback limit entry: flat BUY/SELL only (REVERSE stays market — it must
+    // actually flip the exposure, not maybe-flip it). Price-side/distance
+    // sanity is enforced by sanitizeEntryLimit in the API route.
+    const entry_limit_price =
+        !positionOpen && (action === 'BUY' || action === 'SELL') ? coercePrice(decision?.entry_limit_price) : null;
 
     return {
         ...decision,
@@ -1347,6 +1354,7 @@ export function postprocessDecision(params: {
         move_stop_to_be,
         take_profit_price,
         stop_loss_price,
+        entry_limit_price,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
@@ -1480,6 +1488,61 @@ export function sanitizeExchangeTpSl(params: {
 }
 
 // ------------------------------
+// Pullback limit entry sanitation
+// ------------------------------
+
+// A pullback limit must be a genuine pullback: at least MIN_ATR below (BUY) /
+// above (SELL) current price — anything closer is effectively a market order,
+// so we just market it. Beyond MAX_ATR the fill odds within the one-tick TTL
+// are negligible and the bracket math distorts, so it clamps.
+const ENTRY_LIMIT_MIN_ATR = 0.1;
+const ENTRY_LIMIT_MAX_ATR = 1.5;
+
+/**
+ * Validate the model's pullback entry limit against live price + primary ATR.
+ * Returns the usable limit price or null (= market entry), with notes.
+ * Only flat BUY/SELL qualifies; a missing ATR fails open to market entry.
+ */
+export function sanitizeEntryLimit(params: {
+    action: string;
+    positionOpen: boolean;
+    price: number;
+    primaryAtr: number | null;
+    entryLimitPrice: number | null;
+}): { entryLimitPrice: number | null; notes: string[] } {
+    const notes: string[] = [];
+    const action = String(params.action || '').toUpperCase();
+    const price = Number(params.price);
+    const atr =
+        Number.isFinite(params.primaryAtr as number) && (params.primaryAtr as number) > 0
+            ? Number(params.primaryAtr)
+            : null;
+    const raw =
+        Number.isFinite(params.entryLimitPrice as number) && (params.entryLimitPrice as number) > 0
+            ? Number(params.entryLimitPrice)
+            : null;
+    if (raw == null) return { entryLimitPrice: null, notes };
+    if (params.positionOpen || (action !== 'BUY' && action !== 'SELL') || !(price > 0)) {
+        return { entryLimitPrice: null, notes: ['limit_not_applicable'] };
+    }
+    if (!atr) return { entryLimitPrice: null, notes: ['limit_dropped_no_atr'] };
+
+    const dir = action === 'BUY' ? 1 : -1;
+    // Pullback distance: positive = on the pullback side of price.
+    const distAtr = (dir * (price - raw)) / atr;
+    if (distAtr < ENTRY_LIMIT_MIN_ATR) {
+        notes.push('limit_too_close_market_entry');
+        return { entryLimitPrice: null, notes };
+    }
+    if (distAtr > ENTRY_LIMIT_MAX_ATR) {
+        const clamped = price - dir * ENTRY_LIMIT_MAX_ATR * atr;
+        notes.push('limit_clamped_max_atr');
+        return { entryLimitPrice: clamped > 0 ? clamped : null, notes };
+    }
+    return { entryLimitPrice: raw, notes };
+}
+
+// ------------------------------
 // OpenAI API Call
 // ------------------------------
 
@@ -1501,6 +1564,7 @@ export const SWING_DECISION_SCHEMA = {
             'move_stop_to_be',
             'take_profit_price',
             'stop_loss_price',
+            'entry_limit_price',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
@@ -1518,6 +1582,10 @@ export const SWING_DECISION_SCHEMA = {
             // (side/distance vs live price+ATR) is enforced in code after parse.
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
+            // Pullback limit entry (flat BUY/SELL only): rest a LIMIT at this
+            // price instead of entering at market. One-tick TTL — cancelled at
+            // the next AI evaluation / hourly tick if unfilled. null = market.
+            entry_limit_price: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;
@@ -1530,7 +1598,7 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
     schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['action', 'summary', 'reason', 'exit_size_pct', 'take_profit_price', 'stop_loss_price'],
+        required: ['action', 'summary', 'reason', 'exit_size_pct', 'take_profit_price', 'stop_loss_price', 'entry_limit_price'],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
@@ -1539,6 +1607,7 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             // Exchange-side bracket (see SWING_DECISION_SCHEMA).
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
+            entry_limit_price: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;
