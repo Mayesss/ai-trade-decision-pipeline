@@ -163,6 +163,9 @@ export type DecisionHistoryEntry = {
         macro?: string;
         primary?: string;
         micro?: string;
+        // Present only on decisions where the nano (15m) block was fetched
+        // (real AI calls) — drives the Nano bias chip in the dashboard.
+        nano?: string;
     };
 };
 

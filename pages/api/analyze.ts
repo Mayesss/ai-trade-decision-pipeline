@@ -1604,6 +1604,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             (decision as any).raise_leverage_to = null;
             (decision as any).move_stop_to_be = false;
         }
+        // Nano (15m) bias measured at decision time — persisted on the decision
+        // so the dashboard can render a Nano chip next to the other TF biases.
+        (decision as any).nano_bias = nanoContext?.bias ?? null;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — wrong side or
@@ -1828,6 +1831,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 macro: macroTimeFrame,
                 primary: timeFrame,
                 micro: microTimeFrame,
+                ...(nanoContext ? { nano: '15m' } : {}),
             },
         });
         // New decision recorded → bust the dashboard summary cache so the next load

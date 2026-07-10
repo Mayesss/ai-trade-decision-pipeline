@@ -752,6 +752,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const cached = await kvGetJson<CachedSummary>(swingSummaryCacheKey(range));
       if (cached?.payload) {
+        // The blob can be up to an hour old and quarter-tick scans don't
+        // invalidate it (they persist no decision rows) — so overlay the live
+        // last-scan markers, which are the whole point of scan freshness.
+        // 13 cheap KV reads; failures just keep the cached values.
+        try {
+          const rows = Array.isArray(cached.payload.data) ? cached.payload.data : [];
+          const markers = await Promise.all(
+            rows.map((row) => readSwingLastScan(String(row.lastPlatform || 'bitget'), row.symbol).catch(() => null)),
+          );
+          markers.forEach((marker, i) => {
+            if (!marker) return;
+            rows[i].lastScanAt = marker.ts;
+            rows[i].lastScanStage = marker.stage ?? null;
+            rows[i].lastScanReason = marker.reason ?? null;
+          });
+        } catch (err) {
+          console.warn('last-scan overlay on cached summary failed:', err);
+        }
         return res.status(200).json({ ...cached.payload, cached: true, generatedAtMs: cached.generatedAtMs });
       }
     } catch (err) {

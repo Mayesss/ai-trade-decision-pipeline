@@ -4110,6 +4110,9 @@ export default function Home() {
     { key: "macro_bias", label: "Macro" },
     { key: "primary_bias", label: "Primary" },
     { key: "micro_bias", label: "Micro" },
+    // Nano (15m) wave/entry-timing bias — measured only on real AI calls, so
+    // skip decisions render it as "—" like any missing bias.
+    { key: "nano_bias", label: "Nano" },
   ] as const;
   const isInitialLoading = loading && !symbols.length;
   const loadingLabel =
@@ -8348,7 +8351,23 @@ export default function Home() {
                         {(current.lastDecision as any).reason}
                       </p>
                     ) : null}
-                    <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
+                    {typeof current.lastScanAt === "number" &&
+                    current.lastScanAt > Number(current.lastDecisionTs || 0) ? (
+                      // Quarter-tick scans don't persist decision rows, so when
+                      // the KV last-scan marker is NEWER than the decision above
+                      // it is the freshest thing that happened to this symbol —
+                      // show when the cron looked and why it stopped.
+                      <p className="mt-2 text-xs text-slate-500">
+                        <span className="font-semibold uppercase tracking-wide text-slate-500">
+                          Last scan{" "}
+                        </span>
+                        {formatDecisionTime(current.lastScanAt)}
+                        {current.lastScanStage
+                          ? ` · skipped: ${current.lastScanReason || current.lastScanStage}`
+                          : " · evaluated"}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
                       {biasOrder.map(({ key, label }) => {
                         const raw = (current.lastDecision as any)?.[key];
                         const val =
@@ -8356,7 +8375,7 @@ export default function Home() {
                         const tfLabel =
                           current.lastBiasTimeframes?.[
                             key.replace("_bias", "")
-                          ] || null;
+                          ] || (key === "nano_bias" ? "15m" : null);
                         const displayLabel = tfLabel
                           ? `${label} (${tfLabel})`
                           : label;
