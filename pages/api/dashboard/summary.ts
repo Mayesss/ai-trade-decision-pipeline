@@ -51,10 +51,13 @@ type SummaryEntry = {
   // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
   // Drives the deactivated look on the symbol tab.
   marketClosed?: boolean;
-  // Timestamp of the most recent analyze cron scan of this symbol (KV marker,
-  // written on EVERY automation tick including unpersisted quarter-tick skips).
-  // Decision history only shows meaningful outcomes; this shows liveness.
+  // Most recent analyze cron scan of this symbol (KV marker, written on EVERY
+  // automation tick including unpersisted quarter-tick skips). Decision history
+  // only shows meaningful outcomes; this shows liveness — and, when the scan
+  // ended in an unpersisted quarter-tick skip, which gate stopped it and why.
   lastScanAt?: number | null;
+  lastScanStage?: string | null;
+  lastScanReason?: string | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -444,13 +447,17 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let lastWasAiCall = false;
       let marketClosed = false;
       let lastScanAt: number | null = null;
+      let lastScanStage: string | null = null;
+      let lastScanReason: string | null = null;
 
       try {
         const [history, lastScan] = await Promise.all([
           loadDecisionHistory(symbol, 120, platform),
           readSwingLastScan(platform, symbol),
         ]);
-        lastScanAt = lastScan;
+        lastScanAt = lastScan?.ts ?? null;
+        lastScanStage = lastScan?.stage ?? null;
+        lastScanReason = lastScan?.reason ?? null;
         const latest = history[0];
         // Was the most recent decision (history is newest-first) a real AI call,
         // or a calm-market / below-min-signal-strength pre-AI skip?
@@ -683,6 +690,8 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastWasAiCall,
         marketClosed,
         lastScanAt,
+        lastScanStage,
+        lastScanReason,
         winRate,
         avgWinPct,
         avgLossPct,

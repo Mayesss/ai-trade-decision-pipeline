@@ -3817,6 +3817,12 @@ export async function closeCapitalPositionByOwnership(params: {
 // position for a symbol via Capital's position-update endpoint. Per-call
 // failures are surfaced, never thrown — a failed amend must not break the
 // decision path (the stop attached at entry still bounds the position).
+//
+// IMPORTANT: Capital's PUT /positions/{dealId} REPLACES the whole bracket —
+// omitting a key CLEARS that leg on the venue. Observed live 2026-07-09/10
+// (COPPER): an SL-only amend erased the TP, the next tick's TP-only re-set
+// erased the SL, ping-ponging one leg off every tick. So an amend that changes
+// one leg must echo the STANDING value of the other leg back into the body.
 export async function updateCapitalPositionLevels(params: {
   symbol: string;
   stopLevel?: number | null;
@@ -3830,18 +3836,37 @@ export async function updateCapitalPositionLevels(params: {
   note?: string;
   error?: string;
 }> {
-  const stopLevel = safePositiveNumber(params.stopLevel);
-  const profitLevel = safePositiveNumber(params.profitLevel);
-  if (stopLevel === null && profitLevel === null) {
-    return { updated: false, dealId: null, stopLevel, profitLevel, note: "no_levels" };
+  const requestedStop = safePositiveNumber(params.stopLevel);
+  const requestedProfit = safePositiveNumber(params.profitLevel);
+  if (requestedStop === null && requestedProfit === null) {
+    return { updated: false, dealId: null, stopLevel: null, profitLevel: null, note: "no_levels" };
   }
   try {
     const resolved = await resolveCapitalEpicRuntime(params.symbol);
     const open = await findOpenCapitalPositionByEpic(resolved.epic);
     const dealId = open ? extractDealId(open) : null;
     if (!open || !dealId) {
-      return { updated: false, dealId: null, stopLevel, profitLevel, note: "no_open_position" };
+      return {
+        updated: false,
+        dealId: null,
+        stopLevel: requestedStop,
+        profitLevel: requestedProfit,
+        note: "no_open_position",
+      };
     }
+    // Preserve the untouched leg: fall back to the level currently standing on
+    // the position row so a single-leg amend never clears the other leg.
+    const standingStop = safePositiveNumber(
+      open?.position?.stopLevel ?? (open as any)?.stopLevel,
+    );
+    const standingProfit = safePositiveNumber(
+      open?.position?.profitLevel ??
+        open?.position?.limitLevel ??
+        (open as any)?.profitLevel ??
+        (open as any)?.limitLevel,
+    );
+    const stopLevel = requestedStop ?? standingStop;
+    const profitLevel = requestedProfit ?? standingProfit;
     if (params.dryRun) {
       return { updated: false, dealId, stopLevel, profitLevel, note: "dry_run" };
     }
@@ -3860,8 +3885,8 @@ export async function updateCapitalPositionLevels(params: {
     return {
       updated: false,
       dealId: null,
-      stopLevel,
-      profitLevel,
+      stopLevel: requestedStop,
+      profitLevel: requestedProfit,
       error: err instanceof Error ? err.message : String(err),
     };
   }

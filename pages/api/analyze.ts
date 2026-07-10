@@ -333,8 +333,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }) => {
             // Quarter ticks don't persist skips: gate short-circuits already get
             // recorded on the hourly tick, and 3 more identical rows/hour/symbol
-            // would only be noise. Real AI calls (past all gates) always persist.
-            if (quarterTick) return;
+            // would only be noise. The skip stage/reason still lands on the KV
+            // last-scan marker so the UI can show WHY the quarter tick stopped.
+            // Real AI calls (past all gates) always persist.
+            if (quarterTick) {
+                void recordSwingLastScan(platform, symbol, {
+                    stage: params.stage,
+                    reason: typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage,
+                });
+                return;
+            }
             const reason = typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage;
             await appendDecisionHistory({
                 timestamp: Date.now(),
@@ -761,6 +769,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'quarter_tick_quiet_position',
                     reason: `in_position_skip_quiet_quarter_tick_move_${moveAtr.toFixed(2)}atr`,
                 };
+                void recordSwingLastScan(platform, symbol, {
+                    stage: 'quiet_position',
+                    reason: decision.reason,
+                });
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -1430,6 +1442,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'no_new_information',
                     reason: `flat_skip_dedupe_same_setup_${actionability.reason}`,
                 };
+                void recordSwingLastScan(platform, symbol, {
+                    stage: 'flat_dedupe',
+                    reason: decision.reason,
+                });
                 return res.status(200).json({
                     symbol,
                     platform,

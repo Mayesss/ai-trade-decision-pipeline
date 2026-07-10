@@ -240,6 +240,14 @@ function normalizeOverlayPositions(params: {
       Math.abs(pnlPct) < 0.005 &&
       pnlNet !== null &&
       Math.abs(pnlNet) > 0.005;
+    const entryDecision = findNearestDecision(params.history, p.entryTimestamp);
+    let exitDecision = findNearestDecision(params.history, p.exitTimestamp);
+    // An exchange-side TP/SL exit has no AI decision of its own — the nearest
+    // match is then the ENTRY decision, which rendered the same decision twice
+    // in the overlay tooltip. Show no exit decision instead.
+    if (exitDecision && entryDecision && exitDecision.timestamp === entryDecision.timestamp) {
+      exitDecision = null;
+    }
     return {
       id: p.id,
       status: p.exitTimestamp ? 'closed' : 'open',
@@ -253,8 +261,8 @@ function normalizeOverlayPositions(params: {
       leverage: positiveNumber(p.leverage),
       takeProfitPrice: positiveNumber(p.takeProfitPrice),
       stopLossPrice: positiveNumber(p.stopLossPrice),
-      entryDecision: findNearestDecision(params.history, p.entryTimestamp),
-      exitDecision: findNearestDecision(params.history, p.exitTimestamp),
+      entryDecision,
+      exitDecision,
       partialCloses: buildPartialCloses({
         history: params.history,
         entryTsMs: p.entryTimestamp,

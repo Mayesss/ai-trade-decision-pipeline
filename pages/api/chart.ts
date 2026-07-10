@@ -403,6 +403,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             Math.abs(pnlPct) < 0.005 &&
             pnlNet !== null &&
             Math.abs(pnlNet) > 0.005;
+          const entryDecision = findNearestDecision(p.entryTimestamp);
+          let exitDecision = findNearestDecision(p.exitTimestamp);
+          // An exchange-side TP/SL exit has no AI decision of its own — the
+          // nearest match is then the ENTRY decision, which rendered the same
+          // decision twice in the overlay tooltip. Show no exit decision instead.
+          if (exitDecision && entryDecision && exitDecision.timestamp === entryDecision.timestamp) {
+            exitDecision = null;
+          }
           return {
             id: p.id,
             status: p.exitTimestamp ? 'closed' : 'open',
@@ -416,8 +424,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             leverage: positiveNumber(p.leverage),
             takeProfitPrice: positiveNumber((p as any).takeProfitPrice),
             stopLossPrice: positiveNumber((p as any).stopLossPrice),
-            entryDecision: findNearestDecision(p.entryTimestamp),
-            exitDecision: findNearestDecision(p.exitTimestamp),
+            entryDecision,
+            exitDecision,
             partialCloses: buildPartialCloses(p.entryTimestamp, p.exitTimestamp),
           };
         });

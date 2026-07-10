@@ -82,6 +82,8 @@ type EvaluationEntry = {
   lastWasAiCall?: boolean;
   marketClosed?: boolean;
   lastScanAt?: number | null;
+  lastScanStage?: string | null;
+  lastScanReason?: string | null;
   lastDecisionTs?: number | null;
   lastDecision?: {
     action?: string;
@@ -132,6 +134,8 @@ type DashboardSummaryRow = {
   lastWasAiCall?: boolean;
   marketClosed?: boolean;
   lastScanAt?: number | null;
+  lastScanStage?: string | null;
+  lastScanReason?: string | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -7221,9 +7225,14 @@ export default function Home() {
                                     : null,
                                 // Cron liveness: quarter-tick scans don't write
                                 // decision rows, so the KV last-scan marker is
-                                // the only evidence the 15m cadence ran.
+                                // the only evidence the 15m cadence ran — plus
+                                // which gate stopped it and why, when it skipped.
                                 typeof tab?.lastScanAt === "number" && tab.lastScanAt > 0
-                                  ? `last scan ${new Date(tab.lastScanAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                  ? `last scan ${new Date(tab.lastScanAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${
+                                      tab?.lastScanStage
+                                        ? ` — skipped: ${tab.lastScanReason || tab.lastScanStage}`
+                                        : ""
+                                    }`
                                   : null,
                               ]
                                 .filter(Boolean)
