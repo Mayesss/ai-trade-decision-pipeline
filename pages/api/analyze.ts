@@ -680,11 +680,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // (supersede) — a gate-skipped quarter tick leaves the order resting.
         // If a cancel fails because the order just FILLED, the tick stops:
         // a position now exists and the next tick manages it.
+        // What the sweep found, normalized for the prompt: the AI decides fresh
+        // each evaluation, but it should KNOW its previous pullback limit rested
+        // without filling (re-issue vs chase vs drop is its call to make).
+        let sweptPendingEntry: { side: 'BUY' | 'SELL' | null; price: number | null; age_min: number | null } | null =
+            null;
         const sweepPendingEntries = async () => {
             try {
-                return platform === 'capital'
-                    ? await cancelCapitalPendingEntryOrders(symbol)
-                    : await cancelPendingEntryOrders(symbol, productType!);
+                const result =
+                    platform === 'capital'
+                        ? await cancelCapitalPendingEntryOrders(symbol)
+                        : await cancelPendingEntryOrders(symbol, productType!);
+                const first: any = result.orders?.[0];
+                if (first) {
+                    const sideRaw = String(first.side ?? first.direction ?? '').toUpperCase();
+                    const price = Number(first.price ?? first.level);
+                    const createdAtMs = Number(first.createdAtMs);
+                    sweptPendingEntry = {
+                        side: sideRaw === 'BUY' || sideRaw === 'SELL' ? (sideRaw as 'BUY' | 'SELL') : null,
+                        price: Number.isFinite(price) && price > 0 ? price : null,
+                        age_min:
+                            Number.isFinite(createdAtMs) && createdAtMs > 0
+                                ? Math.max(0, Math.round((Date.now() - createdAtMs) / 60_000))
+                                : null,
+                    };
+                }
+                return result;
             } catch (err) {
                 console.warn(`pending entry sweep failed for ${symbol}:`, err);
                 return null;
@@ -1577,6 +1598,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsBundle?.sentiment ?? null,
             newsBundle?.headlines ?? [],
             nanoContext,
+            sweptPendingEntry,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).

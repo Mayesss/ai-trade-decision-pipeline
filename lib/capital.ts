@@ -3889,6 +3889,7 @@ export type CapitalPendingEntryOrder = {
   direction: string | null;
   level: number | null;
   size: number | null;
+  createdAtMs: number | null;
 };
 
 // The pipeline is the only writer on this account, so every working order on a
@@ -3906,11 +3907,14 @@ export async function listCapitalPendingEntryOrders(symbol: string): Promise<Cap
       if (!dealId) return null;
       const level = safeNumber(data?.orderLevel ?? data?.level, NaN);
       const size = safeNumber(data?.orderSize ?? data?.size, NaN);
+      const createdRaw = data?.createdDateUTC ?? data?.createdDate;
+      const createdAtMs = createdRaw ? Date.parse(String(createdRaw)) : NaN;
       return {
         dealId,
         direction: data?.direction ? String(data.direction) : null,
         level: Number.isFinite(level) ? level : null,
         size: Number.isFinite(size) ? size : null,
+        createdAtMs: Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : null,
       };
     })
     .filter((o: CapitalPendingEntryOrder | null): o is CapitalPendingEntryOrder => o !== null);
@@ -3920,12 +3924,12 @@ export async function listCapitalPendingEntryOrders(symbol: string): Promise<Cap
 // supersede-on-new-evaluation). Never throws.
 export async function cancelCapitalPendingEntryOrders(
   symbol: string,
-): Promise<{ found: number; cancelled: number; errors: string[] }> {
+): Promise<{ found: number; cancelled: number; errors: string[]; orders: CapitalPendingEntryOrder[] }> {
   let orders: CapitalPendingEntryOrder[] = [];
   try {
     orders = await listCapitalPendingEntryOrders(symbol);
   } catch (err) {
-    return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+    return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)], orders: [] };
   }
   let cancelled = 0;
   const errors: string[] = [];
@@ -3937,7 +3941,8 @@ export async function cancelCapitalPendingEntryOrders(
       errors.push(err instanceof Error ? err.message : String(err));
     }
   }
-  return { found: orders.length, cancelled, errors };
+  // Orders returned so the caller can tell the AI what was resting.
+  return { found: orders.length, cancelled, errors, orders };
 }
 
 // Amend the standing exchange-side bracket (stop/profit levels) on the open

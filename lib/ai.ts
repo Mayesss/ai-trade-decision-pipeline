@@ -795,6 +795,9 @@ export function computeSwingState(
         news_sentiment: string | null = null,
         news_headlines: string[] = [],
         nano_context: NanoContext | null = null,
+        // The pullback limit from the PREVIOUS evaluation that rested without
+        // filling and was just cancelled for this re-evaluation (flat only).
+        cancelled_pending_entry: { side: 'BUY' | 'SELL' | null; price: number | null; age_min: number | null } | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -914,7 +917,12 @@ export function computeSwingState(
         },
         position: position_context
             ? { open: true, ...position_context }
-            : { open: false, status: position_status, reentry_cooldown: reentryCooldown },
+            : {
+                  open: false,
+                  status: position_status,
+                  reentry_cooldown: reentryCooldown,
+                  ...(cancelled_pending_entry ? { cancelled_pending_entry } : {}),
+              },
         closing_guardrails: position_context ? closingGuidance : null,
     };
 
@@ -1016,7 +1024,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. Output stop_loss_price=null on entries — a ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe stop is attached automatically.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and the automatic catastrophe stop are anchored at the LIMIT price. null = enter at market now. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and the automatic catastrophe stop are anchored at the LIMIT price. null = enter at market now. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 

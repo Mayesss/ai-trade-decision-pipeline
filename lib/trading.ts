@@ -331,6 +331,7 @@ export type PendingEntryOrder = {
     side: string | null;
     price: number | null;
     size: string | null;
+    createdAtMs: number | null;
 };
 
 // The pipeline is the only writer on this account, so every pending NORMAL
@@ -347,12 +348,14 @@ export async function fetchPendingEntryOrders(symbol: string, productType: Produ
             const orderId = o?.orderId ? String(o.orderId) : null;
             if (!orderId) return null;
             const price = Number(o?.price ?? o?.priceAvg);
+            const createdAt = Number(o?.cTime ?? o?.ctime);
             return {
                 orderId,
                 clientOid: o?.clientOid ? String(o.clientOid) : null,
                 side: o?.side ? String(o.side) : null,
                 price: Number.isFinite(price) && price > 0 ? price : null,
                 size: o?.size != null ? String(o.size) : null,
+                createdAtMs: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
             };
         })
         .filter((o: PendingEntryOrder | null): o is PendingEntryOrder => o !== null);
@@ -364,12 +367,12 @@ export async function fetchPendingEntryOrders(symbol: string, productType: Produ
 export async function cancelPendingEntryOrders(
     symbol: string,
     productType: ProductType,
-): Promise<{ found: number; cancelled: number; errors: string[] }> {
+): Promise<{ found: number; cancelled: number; errors: string[]; orders: PendingEntryOrder[] }> {
     let orders: PendingEntryOrder[] = [];
     try {
         orders = await fetchPendingEntryOrders(symbol, productType);
     } catch (err) {
-        return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)] };
+        return { found: 0, cancelled: 0, errors: [err instanceof Error ? err.message : String(err)], orders: [] };
     }
     let cancelled = 0;
     const errors: string[] = [];
@@ -385,7 +388,9 @@ export async function cancelPendingEntryOrders(
             errors.push(err instanceof Error ? err.message : String(err));
         }
     }
-    return { found: orders.length, cancelled, errors };
+    // Orders returned so the caller can tell the AI what was resting (it decides
+    // fresh each evaluation: re-issue, chase with market, or drop).
+    return { found: orders.length, cancelled, errors, orders };
 }
 
 type PlaceOrderBody = {
