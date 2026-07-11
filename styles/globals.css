@@ -347,3 +347,114 @@ body {
   background-color: rgb(255 255 255 / 1);
   box-shadow: 0 0 0 1px rgb(255 255 255 / 0.28);
 }
+
+/* Horizontal scroll rows (symbol pills, decision timeline) hide the scrollbar —
+   content is swipe/wheel scrollable without a bar eating a line of height. */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Decision timeline dots. Fill encodes the tick outcome (grey = not actionable,
+   full-contrast = AI decision, green/red/amber = BUY/SELL/trim); the stroke is
+   the selection/hover affordance in full contrast — black on light, white on
+   dark — so it reads on any fill color.
+
+   Two deliberate exceptions to the terminal aesthetic above: the dots stay
+   CIRCLES despite the global sharp-corner rule, and the stroke uses `outline`
+   because box-shadow is globally disabled. */
+.timeline-dot {
+  border-radius: 9999px !important;
+}
+
+/* Each fill also defines its outline-color: hover shows a stroke in the DOT'S
+   OWN color (see hover rule below), selection overrides it with full contrast. */
+.timeline-dot-skip {
+  background-color: rgb(226 232 240 / 1); /* slate-200 */
+  outline-color: rgb(226 232 240 / 1);
+}
+
+.theme-dark .timeline-dot-skip {
+  background-color: rgb(63 63 70 / 1); /* zinc-700 */
+  outline-color: rgb(63 63 70 / 1);
+}
+
+.timeline-dot-ai {
+  background-color: rgb(15 23 42 / 1);
+  outline-color: rgb(15 23 42 / 1);
+}
+
+.theme-dark .timeline-dot-ai {
+  background-color: rgb(255 255 255 / 1);
+  outline-color: rgb(255 255 255 / 1);
+}
+
+/* Trim/partial-close keeps its amber in BOTH themes — a custom property so the
+   dark-theme accent desaturation (bg-amber-* -> grey) can't wash it out.
+   Light mode uses a lighter amber; dark keeps the stronger one for contrast. */
+.timeline-dot-trim {
+  background-color: rgb(251 191 36 / 1); /* amber-400 */
+  outline-color: rgb(251 191 36 / 1);
+}
+
+.theme-dark .timeline-dot-trim {
+  background-color: rgb(245 158 11 / 1); /* amber-500 */
+  outline-color: rgb(245 158 11 / 1);
+}
+
+.timeline-dot-buy {
+  background-color: rgb(5 150 105 / 1); /* emerald-600 */
+  outline-color: rgb(5 150 105 / 1);
+}
+
+.timeline-dot-sell {
+  background-color: rgb(225 29 72 / 1); /* rose-600 */
+  outline-color: rgb(225 29 72 / 1);
+}
+
+/* Connector line between timeline dots — theme-aware contrast (bg-slate-300
+   has no dark remap and would glare on the dark card). */
+.timeline-connector {
+  background-color: rgb(203 213 225 / 1); /* slate-300 */
+}
+
+.theme-dark .timeline-connector {
+  background-color: rgb(82 82 91 / 1); /* zinc-600 */
+}
+
+/* Partial-close (trim) action pill in the decision card: amber in both themes,
+   exempt from the dark-theme accent desaturation. */
+.action-pill-trim {
+  border-color: rgb(252 211 77 / 1); /* amber-300 */
+  background-color: rgb(254 243 199 / 1); /* amber-100 */
+  color: rgb(146 64 14 / 1); /* amber-800 */
+}
+
+.theme-dark .action-pill-trim {
+  border-color: rgb(245 158 11 / 0.5);
+  background-color: rgb(120 53 15 / 0.35);
+  color: rgb(252 211 77 / 1);
+}
+
+/* Hover: stroke in the dot's own color (outline-color set per fill class
+   above), with a hair of offset so it reads as a ring, not a bigger dot. */
+.timeline-tick:hover .timeline-dot:not(.timeline-dot-selected) {
+  outline-width: 2px;
+  outline-style: solid;
+  outline-offset: 1px;
+}
+
+/* Selected: full-contrast stroke with a visible gap to the circle. Declared
+   AFTER the fill classes so its outline-color wins. */
+.timeline-dot-selected {
+  outline: 2px solid rgb(15 23 42 / 1);
+  outline-offset: 2px;
+}
+
+.theme-dark .timeline-dot-selected {
+  outline-color: rgb(255 255 255 / 1);
+}

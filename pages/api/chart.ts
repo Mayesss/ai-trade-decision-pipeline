@@ -4,8 +4,12 @@ import {
   fetchPositionInfo as fetchBitgetPositionInfo,
   fetchRecentPositionWindows,
 } from '../../lib/analytics';
-import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/capital';
-import { fetchPositionTpsl, getTradeProductType } from '../../lib/trading';
+import {
+  fetchCapitalMarketBundle,
+  fetchCapitalPositionInfo,
+  listCapitalPendingEntryOrders,
+} from '../../lib/capital';
+import { fetchPendingEntryOrders, fetchPositionTpsl, getTradeProductType } from '../../lib/trading';
 import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
@@ -256,6 +260,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         closePct: getPartialClosePct(best),
       };
     };
+    // Bracket-close inference: an exchange-side TP/SL exit has no AI decision
+    // of its own, so a closed position with no CLOSE/REVERSE decision near its
+    // exit was closed by the resting bracket — TP vs SL by realized pnl sign.
+    // Only claimed inside the KV history window; older exits are unknowable
+    // (the decision rows have expired, so "no decision found" means nothing).
+    const CLOSE_REASON_HISTORY_MS = 7 * 24 * 60 * 60 * 1000;
+    const AI_CLOSE_MATCH_MS = 20 * 60 * 1000;
+    const nearestCloseActionDiffMs = (tsMs?: number | null): number => {
+      if (!tsMs || !history?.length) return Number.POSITIVE_INFINITY;
+      let best = Number.POSITIVE_INFINITY;
+      for (const h of history) {
+        const action = String(h.aiDecision?.action || '').toUpperCase();
+        if (action !== 'CLOSE' && action !== 'REVERSE') continue;
+        const diff = Math.abs(Number(h.timestamp) - tsMs);
+        if (diff < best) best = diff;
+      }
+      return best;
+    };
+    const inferCloseReason = (
+      exitTsMs: number | null,
+      pnlValue: number | null,
+    ): 'tp' | 'sl' | null => {
+      if (!exitTsMs || typeof pnlValue !== 'number') return null;
+      if (exitTsMs < nowMs - CLOSE_REASON_HISTORY_MS) return null;
+      if (nearestCloseActionDiffMs(exitTsMs) <= AI_CLOSE_MATCH_MS) return null;
+      return pnlValue >= 0 ? 'tp' : 'sl';
+    };
     const getPartialClosePct = (entry: any): number | null => {
       const pct =
         finiteNumber(entry?.execResult?.partialClosePct) ??
@@ -411,12 +442,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (exitDecision && entryDecision && exitDecision.timestamp === entryDecision.timestamp) {
             exitDecision = null;
           }
+          const closeReason = p.exitTimestamp
+            ? inferCloseReason(p.exitTimestamp, pnlPct ?? pnlNet)
+            : null;
+          // A bracket close means the nearest-decision match above is noise
+          // (some HOLD row hours away) — the tooltip shows the TP/SL-hit line
+          // instead of a misleading "exit AI decision".
+          if (closeReason) exitDecision = null;
           return {
             id: p.id,
             status: p.exitTimestamp ? 'closed' : 'open',
             side: p.side ?? null,
             entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
             exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
+            closeReason,
             pnlPct: capitalPctLooksPlaceholder ? null : pnlPct,
             pnlNet,
             entryPrice: positiveNumber(p.entryPrice),
@@ -438,6 +477,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     overlayLoadMs = Date.now() - overlayLoadStartedAt;
 
+    // Resting pullback limit entries, drawn as dotted entry-level lines on the
+    // chart. Always read live (never cached): they carry a one-tick TTL and are
+    // cancelled/superseded on every evaluation. Best-effort — a broker error
+    // just omits the lines.
+    let pendingOrders: Array<{ side: 'buy' | 'sell' | null; price: number; size: string | null }> = [];
+    try {
+      if (platform === 'capital') {
+        pendingOrders = (await listCapitalPendingEntryOrders(symbol))
+          .filter((o) => typeof o.level === 'number' && o.level > 0)
+          .map((o) => ({
+            side: o.direction ? (o.direction.toUpperCase() === 'SELL' ? 'sell' : 'buy') : null,
+            price: o.level as number,
+            size: o.size != null ? String(o.size) : null,
+          }));
+      } else {
+        pendingOrders = (await fetchPendingEntryOrders(symbol, getTradeProductType()))
+          .filter((o) => typeof o.price === 'number' && o.price > 0)
+          .map((o) => ({
+            side: o.side ? (o.side.toLowerCase().includes('sell') ? 'sell' : 'buy') : null,
+            price: o.price as number,
+            size: o.size,
+          }));
+      }
+    } catch (err) {
+      console.warn(`Could not fetch pending entry orders for ${symbol}:`, err);
+      pendingOrders = [];
+    }
+
     res.setHeader(
       'x-swing-chart-cache',
       `candles=${candleCacheStatus}; overlay=${overlayCacheStatus}; closedPositions=${closedPositionSource}`,
@@ -446,7 +513,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'x-swing-chart-timing-ms',
       `candles=${candleLoadMs}; markers=${markerLoadMs}; overlay=${overlayLoadMs}; total=${Date.now() - requestStartedAt}`,
     );
-    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions });
+    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });

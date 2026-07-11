@@ -227,6 +227,12 @@ export async function kvListTrim(key: string, start: number, stop: number) {
     return kvLTrim(key, start, stop);
 }
 
+// Refresh a key's TTL. Lists have no SETEX equivalent, so callers that append to
+// capped lists use this to keep abandoned keys from living forever.
+export async function kvExpire(key: string, ttlSeconds: number) {
+    return kvCommand('EXPIRE', key, ttlSeconds);
+}
+
 export async function kvListRangeJson<T>(key: string, start: number, stop: number): Promise<T[]> {
     try {
         const raw = await kvLRange(key, start, stop);

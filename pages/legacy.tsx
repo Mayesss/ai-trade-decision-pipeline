@@ -698,6 +698,29 @@ type DashboardEvaluationResponse = {
   evaluationTs?: number | null;
 };
 
+// One tick on the swing decision timeline (mirrors /api/dashboard/timeline).
+// `hasDetails` ticks have a persisted decision row fetchable by exact ts;
+// scan-only ticks carry their gate stage/reason inline (quarter-tick skips are
+// never persisted as decision rows).
+type TimelineTickUi = {
+  ts: number;
+  source: "decision" | "scan";
+  hourly: boolean;
+  kind: "action" | "ai_call" | "gate_skip" | "scan_skip" | "scan";
+  action?: string;
+  summary?: string;
+  stage?: string;
+  reason?: string;
+  hasDetails: boolean;
+};
+
+type DashboardTimelineResponse = {
+  symbol: string;
+  platform?: string | null;
+  hours?: number;
+  ticks?: TimelineTickUi[];
+};
+
 type EvaluateJobStatus = "queued" | "running" | "succeeded" | "failed";
 
 type EvaluateJobRecord = {
@@ -2484,6 +2507,8 @@ const AgGridReact = dynamic(
   { ssr: false },
 );
 
+type ChartRangeKey = import("../components/ChartPanel").ChartRangeKey;
+
 const ChartPanel = dynamic(() => import("../components/ChartPanel"), {
   ssr: false,
   loading: () => (
@@ -2538,7 +2563,28 @@ export default function Home() {
   const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<
     string | null
   >(null);
-  const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("7D");
+  const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("1D");
+  // Chart-only range: superset of DashboardRangeKey ("4H" shows 5m bars but the
+  // summary pipeline only warms 1D/7D/30D/6M caches, so 4H maps to 1D for PnL).
+  // Desktop defaults to 1D; phones drop to 4H on mount (effect below).
+  const [chartRange, setChartRange] = useState<ChartRangeKey>("1D");
+  // Decision timeline (per symbol): recent hourly + quarter ticks. Selecting an
+  // older tick loads that decision into the card; null = newest (live) tick.
+  const [symbolTimelines, setSymbolTimelines] = useState<
+    Record<string, TimelineTickUi[]>
+  >({});
+  const [selectedTickTs, setSelectedTickTs] = useState<number | null>(null);
+  const [selectedTickDecision, setSelectedTickDecision] =
+    useState<DashboardDecisionResponse | null>(null);
+  const [selectedTickLoading, setSelectedTickLoading] = useState(false);
+  // Fetched historical decisions, keyed `${symbol}:${ts}` — clicking back and
+  // forth on the timeline shouldn't refetch.
+  const tickDecisionCacheRef = useRef<Map<string, DashboardDecisionResponse>>(
+    new Map(),
+  );
+  // Latest tick the user asked for; a slower earlier fetch must not overwrite
+  // a newer selection.
+  const tickSelectionSeqRef = useRef(0);
   const [swingSummaryRange, setSwingSummaryRange] =
     useState<DashboardRangeKey | null>(null);
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("swing");
@@ -2723,12 +2769,14 @@ export default function Home() {
     };
   }, []);
 
-  // On phones, default the chart to the 1D range (desktop keeps 7D). Runs once
-  // on mount so it never overrides a range the user picks afterward.
+  // On phones, default the chart to the 4H range (desktop keeps 1D; PnL stays
+  // on the 1D summary since 4H is chart-only). Runs once on mount so it never
+  // overrides a range the user picks afterward.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.matchMedia("(max-width: 640px)").matches) {
       setDashboardRange("1D");
+      setChartRange("4H");
     }
   }, []);
 
@@ -2900,6 +2948,90 @@ export default function Home() {
       lastMetrics: json.lastMetrics ?? null,
       lastBiasTimeframes: json.lastBiasTimeframes ?? null,
     });
+  };
+
+  const loadSymbolTimeline = async (
+    symbol: string,
+    platform?: string | null,
+  ) => {
+    if (!symbol) return;
+    const params = new URLSearchParams({ symbol });
+    if (platform) params.set("platform", platform);
+    const res = await fetch(
+      `/api/swing/dashboard/timeline?${params.toString()}`,
+      {
+        headers: buildAdminHeaders(),
+        cache: "no-store",
+      },
+    );
+    if (res.status === 401) {
+      handleAuthExpired("Admin session expired. Re-enter ADMIN_ACCESS_SECRET.");
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to load timeline (${res.status})`);
+    }
+    const json: DashboardTimelineResponse = await res.json();
+    setSymbolTimelines((prev) => ({
+      ...prev,
+      [symbol]: Array.isArray(json.ticks) ? json.ticks : [],
+    }));
+  };
+
+  // Timeline tick click: newest tick returns to the live "Latest Decision"
+  // view; older decision ticks fetch that exact row (cached per symbol+ts);
+  // scan-only ticks carry their gate stage/reason inline — nothing to fetch.
+  const handleTimelineTickSelect = async (
+    symbol: string,
+    tick: TimelineTickUi,
+    isNewest: boolean,
+  ) => {
+    const seq = ++tickSelectionSeqRef.current;
+    if (isNewest) {
+      setSelectedTickTs(null);
+      setSelectedTickDecision(null);
+      return;
+    }
+    setSelectedTickTs(tick.ts);
+    if (!tick.hasDetails) {
+      setSelectedTickDecision(null);
+      return;
+    }
+    const cacheKey = `${symbol}:${tick.ts}`;
+    const cached = tickDecisionCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSelectedTickDecision(cached);
+      return;
+    }
+    setSelectedTickLoading(true);
+    setSelectedTickDecision(null);
+    try {
+      const params = new URLSearchParams({ symbol, ts: String(tick.ts) });
+      const platform = tabData[symbol]?.lastPlatform;
+      if (platform) params.set("platform", platform);
+      const res = await fetch(
+        `/api/swing/dashboard/decision?${params.toString()}`,
+        {
+          headers: buildAdminHeaders(),
+          cache: "no-store",
+        },
+      );
+      if (res.status === 401) {
+        handleAuthExpired(
+          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
+        );
+        return;
+      }
+      if (!res.ok) return;
+      const json: DashboardDecisionResponse = await res.json();
+      tickDecisionCacheRef.current.set(cacheKey, json);
+      // Only apply if this is still the tick the user is looking at.
+      if (tickSelectionSeqRef.current === seq) setSelectedTickDecision(json);
+    } catch {
+      // tick stays selected with an empty body; the timeline itself is intact
+    } finally {
+      if (tickSelectionSeqRef.current === seq) setSelectedTickLoading(false);
+    }
   };
 
   const loadSymbolEvaluation = async (symbol: string) => {
@@ -3712,12 +3844,18 @@ export default function Home() {
     if (strategyMode !== "swing") return;
     if (!adminGranted || !symbol) return;
     const platform = tabData[symbol]?.lastPlatform ?? null;
+    // Switching symbols returns the decision card to its live "latest" view.
+    setSelectedTickTs(null);
+    setSelectedTickDecision(null);
     let cancelled = false;
     (async () => {
       try {
         await Promise.all([
           loadSymbolDecision(symbol, platform),
           loadSymbolEvaluation(symbol),
+          // Timeline is decoration around the decision card — a failure there
+          // must not blank the whole card.
+          loadSymbolTimeline(symbol, platform).catch(() => undefined),
         ]);
         if (!cancelled) setError(null);
       } catch (err: any) {
@@ -3876,6 +4014,80 @@ export default function Home() {
       ? `${effectiveRangePnlWithOpen.toFixed(2)}%`
       : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
+  // Attention-first pill ordering: the header row gets scanned for "what's up"
+  // on every visit — open positions first, then symbols whose last tick was a
+  // real AI decision, then the rest by |range pnl|, idle tail, market-closed
+  // last. Stable within each bucket (original symbol order), and clicks keep
+  // working because each pill carries its original index into `symbols`.
+  const rangePnlForPill = (tab?: EvaluationEntry): number | null => {
+    if (!swingSummaryMatchesRange || !tab) return null;
+    if (typeof tab.pnl7dWithOpen === "number") return tab.pnl7dWithOpen;
+    if (typeof tab.pnl7d === "number") return tab.pnl7d;
+    return null;
+  };
+  const orderedSymbolPills = symbols
+    .map((sym, index) => {
+      const tab = tabData[sym];
+      const marketClosed = tab?.marketClosed === true;
+      const openDirection =
+        !marketClosed &&
+        (tab?.openDirection === "long" || tab?.openDirection === "short")
+          ? tab.openDirection
+          : null;
+      const pnl = rangePnlForPill(tab);
+      const rank = marketClosed
+        ? 4
+        : openDirection
+          ? 0
+          : tab?.lastWasAiCall === true
+            ? 1
+            : typeof pnl === "number"
+              ? 2
+              : 3;
+      return { sym, index, tab, marketClosed, openDirection, pnl, rank };
+    })
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.rank === 2) {
+        const diff = Math.abs(b.pnl ?? 0) - Math.abs(a.pnl ?? 0);
+        if (diff !== 0) return diff;
+      }
+      return a.index - b.index;
+    });
+  // All-symbols rollup for the selected range. Net PnL sums pnl7dNet (USD) —
+  // the percent figures are per-position leveraged numbers and don't aggregate
+  // across symbols, so the strip sticks to cash + counts.
+  const swingHeaderTotals = (() => {
+    if (strategyMode !== "swing" || !swingSummaryMatchesRange || !symbols.length)
+      return null;
+    let net = 0;
+    let hasNet = false;
+    let trades = 0;
+    let open = 0;
+    for (const sym of symbols) {
+      const tab = tabData[sym];
+      if (!tab) continue;
+      if (typeof tab.pnl7dNet === "number") {
+        net += tab.pnl7dNet;
+        hasNet = true;
+      }
+      if (typeof tab.pnl7dTrades === "number") trades += tab.pnl7dTrades;
+      if (tab.openDirection === "long" || tab.openDirection === "short")
+        open += 1;
+    }
+    if (!hasNet && trades === 0 && open === 0) return null;
+    return { net: hasNet ? net : null, trades, open };
+  })();
+  // The pill row is one horizontally-scrollable line; keep the active pill in
+  // view when selection changes (not on every render — live ticks re-render
+  // constantly and must not fight the user's scroll position).
+  const pillRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const row = pillRowRef.current;
+    if (!row) return;
+    const activePill = row.querySelector<HTMLElement>('[data-active-pill="true"]');
+    activePill?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active, strategyMode]);
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   // Compact PnL stats (range / open) that ride alongside the chart's range
   // switches. Rendered inside ChartPanel so it no longer costs its own header
@@ -4100,6 +4312,41 @@ export default function Home() {
       "lastMetrics" in current ||
       "lastBiasTimeframes" in current)
   );
+  // Decision timeline for the active symbol + what the card body shows: the
+  // live latest decision by default, or the selected tick — a fetched decision
+  // row for `hasDetails` ticks, the tick's own gate stage/reason for
+  // quarter-tick scans (those were never persisted as decision rows).
+  const activeTimeline = activeSymbol
+    ? symbolTimelines[activeSymbol] ?? []
+    : [];
+  const selectedTick =
+    selectedTickTs !== null
+      ? activeTimeline.find((tick) => tick.ts === selectedTickTs) ?? null
+      : null;
+  const displayDecision = selectedTick
+    ? selectedTick.hasDetails
+      ? selectedTickDecision?.lastDecision ?? null
+      : null
+    : current?.lastDecision ?? null;
+  const displayDecisionTs = selectedTick
+    ? selectedTick.ts
+    : current?.lastDecisionTs ?? null;
+  const displayPrompt = selectedTick
+    ? selectedTickDecision?.lastPrompt ?? null
+    : current?.lastPrompt ?? null;
+  const displayBiasTimeframes = selectedTick
+    ? selectedTickDecision?.lastBiasTimeframes ?? null
+    : current?.lastBiasTimeframes ?? null;
+  // Partial close (e.g. CLOSE 50%): the action pill goes amber — trims carry
+  // the same yellow as their timeline dot and chart marker.
+  const displayIsTrim = (() => {
+    const d = displayDecision as any;
+    if (!d || String(d.action || "").toUpperCase() !== "CLOSE") return false;
+    const pct = Number(
+      d.exit_size_pct ?? d.close_size_pct ?? d.partial_close_pct,
+    );
+    return Number.isFinite(pct) && pct > 0 && pct < 100;
+  })();
   const hasDetails = !!(
     current?.evaluation?.what_went_well?.length ||
     current?.evaluation?.issues?.length ||
@@ -7141,7 +7388,7 @@ export default function Home() {
           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   {strategyMode === "swing" && currentEvalJob ? (
                     <span className="text-[11px] text-slate-500">
                       eval:{" "}
@@ -7155,70 +7402,101 @@ export default function Home() {
                       {loadingLabel}
                     </span>
                   ) : null}
-                  {strategyMode === "swing" && !error && symbols.length ? (
-                    <div className="ml-1 flex flex-wrap items-center gap-1">
-                      {symbols.map((sym, i) => {
-                        const isActive = i === active;
-                        const tab = tabData[sym];
-                        const pnl7dValue =
-                          swingSummaryMatchesRange &&
-                          typeof tab?.pnl7dWithOpen === "number"
-                            ? tab.pnl7dWithOpen
-                            : swingSummaryMatchesRange &&
-                                typeof tab?.pnl7d === "number"
-                              ? tab.pnl7d
-                              : swingSummaryMatchesRange &&
-                                  typeof tab?.pnl7dNet === "number"
-                                ? tab.pnl7dNet
-                                : null;
-                        const boxToneClass =
-                          typeof pnl7dValue === "number"
-                            ? pnl7dValue > 0
-                              ? isActive
-                                ? "border-emerald-500 bg-emerald-100 text-emerald-800"
-                                : "border-emerald-200 bg-emerald-50 text-emerald-800 hover:border-emerald-300 hover:bg-emerald-100"
-                              : isActive
-                                ? "border-rose-500 bg-rose-100 text-rose-800"
-                                : "border-rose-200 bg-rose-50 text-rose-800 hover:border-rose-300 hover:bg-rose-100"
-                            : isActive
-                              ? "border-slate-400 bg-slate-100 text-slate-900"
-                              : "border-slate-200 text-slate-500 hover:text-slate-800";
-                        // Show the status square only when the symbol's most recent
-                        // decision was a real AI call (not a skip). Crons are
-                        // hourly, so this means "the AI decided this in the last hour".
+                  {swingHeaderTotals ? (
+                    // All-symbols rollup for the selected range. Net is USD
+                    // (percent PnL is per-position leveraged and doesn't sum).
+                    <span className="flex items-center gap-1.5 text-[11px] tabular-nums text-slate-500">
+                      <span className="font-semibold uppercase tracking-wide text-slate-400">
+                        {dashboardRange}
+                      </span>
+                      {typeof swingHeaderTotals.net === "number" ? (
+                        <span
+                          className={`font-semibold ${
+                            swingHeaderTotals.net >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                          }`}
+                        >
+                          net {swingHeaderTotals.net >= 0 ? "+" : ""}
+                          {formatUsd(swingHeaderTotals.net)}
+                        </span>
+                      ) : null}
+                      <span>· {swingHeaderTotals.trades} trades</span>
+                      <span>· {swingHeaderTotals.open} open</span>
+                    </span>
+                  ) : null}
+                </div>
+                {strategyMode === "swing" &&
+                !error &&
+                (symbols.length || isInitialLoading) ? (
+                  // One always-single-line, horizontally scrollable pill row —
+                  // attention-sorted (open → fresh AI → |pnl| → idle → closed),
+                  // so "what's up" sits at the left edge without hunting.
+                  <div
+                    ref={pillRowRef}
+                    className="scrollbar-none mt-1.5 flex flex-nowrap items-center gap-1 overflow-x-auto"
+                  >
+                    {orderedSymbolPills.map(
+                      ({ sym, index, tab, marketClosed, openDirection, pnl }) => {
+                        const isActive = index === active;
+                        // "The AI decided this in the last hour" — pulse dot on
+                        // the symbol segment (skips don't light it).
                         const aiDecisionRecent = tab?.lastWasAiCall === true;
-                        // Venue closed at the last cron tick: keep the tab
-                        // clickable/selectable but render it clearly
-                        // deactivated. Override the pnl tone entirely with a
-                        // muted grey, dashed border to read as "market shut".
-                        const marketClosed = tab?.marketClosed === true;
-                        // Deactivated look must survive the .theme-dark class
-                        // remap (slate-300/400/500 all collapse to one grey), so
-                        // lean on opacity — which is theme-independent — plus a
-                        // dashed border, grayscale and strikethrough.
-                        const toneClass = marketClosed
-                          ? isActive
-                            ? "border-dashed border-slate-300 bg-slate-50 text-slate-500"
-                            : "border-dashed border-slate-200 bg-transparent text-slate-500 hover:opacity-90"
-                          : boxToneClass;
-                        // Open position: make the tab stand out with a side-colored
-                        // ring (emerald long / rose short) plus a small direction
-                        // glyph, so held symbols are scannable at a glance. Ring
-                        // (no offset) survives the .theme-dark utility remap.
-                        const openDirection =
-                          !marketClosed &&
-                          (tab?.openDirection === "long" || tab?.openDirection === "short")
-                            ? tab.openDirection
+                        const openPnlValue =
+                          openDirection && typeof tab?.openPnl === "number"
+                            ? tab.openPnl
                             : null;
-                        const openRingClass = openDirection
-                          ? openDirection === "long"
-                            ? " ring-2 ring-emerald-500/80"
-                            : " ring-2 ring-rose-500/80"
-                          : "";
+                        // Split pill: neutral symbol segment + one signal
+                        // segment carrying the most important number. Color
+                        // lives in the segment, not the whole pill, so the row
+                        // reads calmer while still scannable.
+                        const containerClass = marketClosed
+                          ? `border-dashed border-slate-200 grayscale ${isActive ? "opacity-70" : "opacity-45"}`
+                          : isActive
+                            ? "border-slate-400 shadow-sm"
+                            : "border-slate-200 hover:border-slate-300";
+                        const symbolSegClass = isActive
+                          ? "bg-slate-100 text-slate-900"
+                          : "text-slate-600 hover:text-slate-900";
+                        let signalSegClass = "border-slate-100 text-slate-400";
+                        let signalContent: React.ReactNode = "–";
+                        if (marketClosed) {
+                          signalContent = (
+                            <Moon className="h-2.5 w-2.5" aria-hidden="true" />
+                          );
+                        } else if (openDirection) {
+                          // Arrow shape = side (▲ long / ▼ short); segment tone
+                          // = open PnL sign.
+                          signalSegClass =
+                            (openPnlValue ?? 0) >= 0
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-rose-200 bg-rose-50 text-rose-700";
+                          signalContent = (
+                            <>
+                              {typeof openPnlValue === "number"
+                                ? `${openPnlValue >= 0 ? "+" : ""}${openPnlValue.toFixed(1)}%`
+                                : "open"}
+                              <span className="text-[9px] leading-none">
+                                {openDirection === "long" ? "▲" : "▼"}
+                              </span>
+                            </>
+                          );
+                        } else if (typeof pnl === "number") {
+                          // Full-strength bg-emerald-50/rose-50 (no /60): the
+                          // opacity variants aren't covered by the .theme-dark
+                          // remap and would render as light-mode mint/pink on
+                          // the dark background.
+                          signalSegClass =
+                            pnl >= 0
+                              ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+                              : "border-rose-100 bg-rose-50 text-rose-700";
+                          signalContent = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%`;
+                        }
                         return (
                           <button
                             key={sym}
-                            onClick={() => setActive(i)}
+                            data-active-pill={isActive ? "true" : undefined}
+                            onClick={() => setActive(index)}
                             title={
                               [
                                 marketClosed
@@ -7241,40 +7519,37 @@ export default function Home() {
                                 .filter(Boolean)
                                 .join(" · ") || undefined
                             }
-                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition ${toneClass}${openRingClass}${
-                              marketClosed
-                                ? ` grayscale ${isActive ? "opacity-70" : "opacity-40"}`
-                                : ""
-                            }`}
+                            className={`inline-flex shrink-0 items-stretch overflow-hidden rounded-full border text-[11px] font-semibold transition ${containerClass}`}
                           >
-                            {aiDecisionRecent ? (
-                              <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />
-                            ) : null}
-                            {sym}
-                            {openDirection ? (
-                              <span
-                                className={`text-[9px] leading-none ${
-                                  openDirection === "long" ? "text-emerald-600" : "text-rose-600"
-                                }`}
-                              >
-                                {openDirection === "long" ? "▲" : "▼"}
-                              </span>
-                            ) : null}
+                            <span
+                              className={`flex items-center gap-1 px-2 py-0.5 ${symbolSegClass}`}
+                            >
+                              {aiDecisionRecent ? (
+                                <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />
+                              ) : null}
+                              {sym}
+                            </span>
+                            <span
+                              className={`flex items-center gap-0.5 border-l px-1.5 py-0.5 text-[10px] tabular-nums ${signalSegClass}`}
+                            >
+                              {signalContent}
+                            </span>
                           </button>
                         );
-                      })}
-                      {isInitialLoading &&
-                        Array.from({ length: 3 }).map((_, idx) => (
-                          <span
-                            key={`tab-skeleton-${idx}`}
-                            className="h-5 w-16 animate-pulse rounded-full border border-slate-200 bg-slate-100"
-                          />
-                        ))}
-                    </div>
-                  ) : null}
-                </div>
+                      },
+                    )}
+                    {isInitialLoading &&
+                      Array.from({ length: 3 }).map((_, idx) => (
+                        <span
+                          key={`tab-skeleton-${idx}`}
+                          className="h-5 w-16 shrink-0 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                        />
+                      ))}
+                  </div>
+                ) : null}
               </div>
-              <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:gap-3">
+              {/* Cron + theme switches: always stacked, one per line. */}
+              <div className="flex flex-col items-end gap-2">
               {strategyMode === "swing" ? (
                 <div className="relative flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -8295,8 +8570,12 @@ export default function Home() {
                     adminSecret={resolveAdminSecret()}
                     adminGranted={adminGranted}
                     isDark={resolvedTheme === "dark"}
-                    rangeKey={dashboardRange}
-                    onRangeChange={setDashboardRange}
+                    rangeKey={chartRange}
+                    onRangeChange={(next) => {
+                      setChartRange(next);
+                      // 4H is chart-only; PnL/summary ranges stay at 1D.
+                      setDashboardRange(next === "4H" ? "1D" : next);
+                    }}
                     statsSlot={swingChartStats}
                     livePrice={livePriceNow}
                     liveTimestamp={livePriceTs}
@@ -8307,132 +8586,198 @@ export default function Home() {
                     onPositionSummaryChange={(summary) =>
                       handleChartPositionSummaryChange(activeSymbol, summary)
                     }
+                    highlightTimeMs={selectedTick ? selectedTick.ts : null}
+                    timelineTicks={activeTimeline}
+                    selectedTimelineTs={
+                      selectedTick
+                        ? selectedTick.ts
+                        : activeTimeline[0]?.ts ?? null
+                    }
+                    onTimelineTickSelect={(ts) => {
+                      if (!activeSymbol) return;
+                      const tick = activeTimeline.find((t) => t.ts === ts);
+                      if (!tick) return;
+                      void handleTimelineTickSelect(
+                        activeSymbol,
+                        tick,
+                        tick.ts === activeTimeline[0].ts,
+                      );
+                    }}
+                    onTimeSelect={(tsMs) => {
+                      // Chart click → nearest decision-timeline tick. Clicking
+                      // near the newest tick returns to the live view.
+                      if (!activeSymbol || !activeTimeline.length) return;
+                      let nearest = activeTimeline[0];
+                      let bestDiff = Math.abs(nearest.ts - tsMs);
+                      for (const tick of activeTimeline) {
+                        const diff = Math.abs(tick.ts - tsMs);
+                        if (diff < bestDiff) {
+                          bestDiff = diff;
+                          nearest = tick;
+                        }
+                      }
+                      void handleTimelineTickSelect(
+                        activeSymbol,
+                        nearest,
+                        nearest.ts === activeTimeline[0].ts,
+                      );
+                    }}
                   />
                 ) : null}
 
-                {hasLastDecision && (
+                {(hasLastDecision || activeTimeline.length > 0) && (
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                    {/* The tick timeline lives INSIDE the chart panel
+                        (time-aligned under the axis); this is the classic
+                        title/time + strength header. */}
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                        <span>Latest Decision</span>
-                        {current.lastDecisionTs ? (
+                        <span>
+                          {selectedTick ? "Decision" : "Latest Decision"}
+                        </span>
+                        {displayDecisionTs ? (
                           <span className="lowercase text-slate-400">
-                            {formatDecisionTime(current.lastDecisionTs)}
+                            {formatDecisionTime(displayDecisionTs)}
                           </span>
                         ) : null}
                       </div>
                       <div className="flex items-center gap-2">
-                        {current.lastDecision?.signal_strength && (
+                        {displayDecision?.signal_strength && (
                           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                            Strength: {current.lastDecision.signal_strength}
+                            Strength: {displayDecision.signal_strength}
                           </span>
                         )}
                       </div>
                     </div>
-                    <div className="mt-3 text-sm text-slate-800">
-                      Action:{" "}
-                      <span
-                        className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${actionPillToneClass(
-                          (current.lastDecision as any)?.action,
-                          current.lastPositionPnl,
-                        )}`}
-                      >
-                        {formatLastDecisionAction(current.lastDecision) || "—"}
-                      </span>
-                      {(current.lastDecision as any)?.summary
-                        ? ` · ${(current.lastDecision as any).summary}`
-                        : ""}
-                    </div>
-                    {(current.lastDecision as any)?.reason ? (
-                      <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
-                        <span className="font-semibold text-slate-800">
-                          Reason:{" "}
-                        </span>
-                        {(current.lastDecision as any).reason}
-                      </p>
-                    ) : null}
-                    {typeof current.lastScanAt === "number" &&
-                    current.lastScanAt > Number(current.lastDecisionTs || 0) ? (
-                      // Quarter-tick scans don't persist decision rows, so when
-                      // the KV last-scan marker is NEWER than the decision above
-                      // it is the freshest thing that happened to this symbol —
-                      // show when the cron looked and why it stopped.
-                      <p className="mt-2 text-xs text-slate-500">
-                        <span className="font-semibold uppercase tracking-wide text-slate-500">
-                          Last scan{" "}
-                        </span>
-                        {formatDecisionTime(current.lastScanAt)}
-                        {current.lastScanStage
-                          ? ` · skipped: ${current.lastScanReason || current.lastScanStage}`
-                          : " · evaluated"}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
-                      {biasOrder.map(({ key, label }) => {
-                        const raw = (current.lastDecision as any)?.[key];
-                        const val =
-                          typeof raw === "string" ? raw.toUpperCase() : raw;
-                        const tfLabel =
-                          current.lastBiasTimeframes?.[
-                            key.replace("_bias", "")
-                          ] || (key === "nano_bias" ? "15m" : null);
-                        const displayLabel = tfLabel
-                          ? `${label} (${tfLabel})`
-                          : label;
-                        const meta =
-                          val === "UP"
-                            ? { color: "text-emerald-600", Icon: ArrowUpRight }
-                            : val === "DOWN"
-                              ? { color: "text-rose-600", Icon: ArrowDownRight }
-                              : { color: "text-slate-500", Icon: Circle };
-                        const Icon = meta.Icon;
-                        return (
-                          <div
-                            key={key}
-                            className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
-                          >
-                            <span className="whitespace-nowrap text-[8px] font-semibold uppercase leading-tight tracking-tight text-slate-500 sm:text-[10px] sm:tracking-wide">
-                              {displayLabel}
-                            </span>
-                            <span
-                              className={`flex items-center gap-0.5 text-xs font-semibold sm:gap-1 sm:text-sm ${meta.color}`}
-                            >
-                              <Icon className="h-3 w-3 sm:h-4 sm:w-4" />
-                              <span className="hidden sm:inline">
-                                {val || "—"}
-                              </span>
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3">
-                      <button
-                        onClick={() => setShowPrompt((prev) => !prev)}
-                        className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                      >
-                        {showPrompt ? "Hide prompt" : "Show prompt"}
-                      </button>
-                    </div>
-                    {showPrompt && (
-                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            System
-                          </div>
-                          <div className="mt-2">
-                            {renderPromptContent(current.lastPrompt?.system)}
-                          </div>
+                    {selectedTick && !selectedTick.hasDetails ? (
+                      // Quarter-tick scan: never persisted as a decision row —
+                      // the gate verdict travels on the tick itself.
+                      <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Quarter-tick scan
                         </div>
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            User
-                          </div>
-                          <div className="mt-2">
-                            {renderPromptContent(current.lastPrompt?.user)}
-                          </div>
+                        <div className="mt-1">
+                          {selectedTick.stage ? (
+                            <>
+                              <span className="inline-flex rounded border border-slate-200 bg-white px-1.5 py-0.5 font-semibold text-slate-700">
+                                {selectedTick.stage}
+                              </span>
+                              {selectedTick.reason &&
+                              selectedTick.reason !== selectedTick.stage
+                                ? ` · ${selectedTick.reason}`
+                                : ""}
+                            </>
+                          ) : (
+                            "Scanned — no gate skip recorded (tick proceeded or ended without a persisted verdict)."
+                          )}
                         </div>
                       </div>
+                    ) : selectedTickLoading ? (
+                      <div className="mt-3 space-y-2">
+                        <div className="h-4 w-56 animate-pulse rounded-full bg-slate-200" />
+                        <div className="h-3 w-full animate-pulse rounded-full bg-slate-100" />
+                      </div>
+                    ) : selectedTick && !selectedTickDecision ? (
+                      <div className="mt-3 text-sm text-slate-500">
+                        Decision details unavailable (expired from the 7-day
+                        history window).
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mt-3 text-sm text-slate-800">
+                          Action:{" "}
+                          <span
+                            className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${
+                              displayIsTrim
+                                ? "action-pill-trim"
+                                : actionPillToneClass(
+                                    (displayDecision as any)?.action,
+                                    current.lastPositionPnl,
+                                  )
+                            }`}
+                          >
+                            {formatLastDecisionAction(displayDecision) || "—"}
+                          </span>
+                          {(displayDecision as any)?.summary
+                            ? ` · ${(displayDecision as any).summary}`
+                            : ""}
+                        </div>
+                        {(displayDecision as any)?.reason ? (
+                          <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                            <span className="font-semibold text-slate-800">
+                              Reason:{" "}
+                            </span>
+                            {(displayDecision as any).reason}
+                          </p>
+                        ) : null}
+                        <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
+                          {biasOrder.map(({ key, label }) => {
+                            const raw = (displayDecision as any)?.[key];
+                            const val =
+                              typeof raw === "string" ? raw.toUpperCase() : raw;
+                            const tfLabel =
+                              displayBiasTimeframes?.[
+                                key.replace("_bias", "")
+                              ] || (key === "nano_bias" ? "15m" : null);
+                            const displayLabel = tfLabel
+                              ? `${label} (${tfLabel})`
+                              : label;
+                            const meta =
+                              val === "UP"
+                                ? { color: "text-emerald-600", Icon: ArrowUpRight }
+                                : val === "DOWN"
+                                  ? { color: "text-rose-600", Icon: ArrowDownRight }
+                                  : { color: "text-slate-500", Icon: Circle };
+                            const Icon = meta.Icon;
+                            return (
+                              <div
+                                key={key}
+                                className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
+                              >
+                                <span className="whitespace-nowrap text-[8px] font-semibold uppercase leading-tight tracking-tight text-slate-500 sm:text-[10px] sm:tracking-wide">
+                                  {displayLabel}
+                                </span>
+                                <span
+                                  className={`flex items-center gap-0.5 text-xs font-semibold sm:gap-1 sm:text-sm ${meta.color}`}
+                                >
+                                  <Icon className="h-3 w-3 sm:h-4 sm:w-4" />
+                                  <span className="hidden sm:inline">
+                                    {val || "—"}
+                                  </span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3">
+                          <button
+                            onClick={() => setShowPrompt((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                          >
+                            {showPrompt ? "Hide prompt" : "Show prompt"}
+                          </button>
+                        </div>
+                        {showPrompt && (
+                          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                System
+                              </div>
+                              <div className="mt-2">
+                                {renderPromptContent(displayPrompt?.system)}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                User
+                              </div>
+                              <div className="mt-2">
+                                {renderPromptContent(displayPrompt?.user)}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
