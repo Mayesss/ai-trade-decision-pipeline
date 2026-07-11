@@ -7296,7 +7296,7 @@ export default function Home() {
   // prompt button). The bias cells copy the real cells' box model exactly —
   // same border/padding/inner sizes — so nothing jumps when data lands.
   const renderDecisionBodySkeleton = () => (
-    <div className="animate-pulse">
+    <div className="skeleton-shimmer">
       <div className="mt-3 flex items-center gap-2">
         <div className="h-3 w-12 rounded-full bg-slate-200" />
         <div className="h-5 w-16 rounded bg-slate-200" />
@@ -7324,7 +7324,7 @@ export default function Home() {
   // Full decision card skeleton: header (title + strength pill) + body.
   const renderDecisionCardSkeleton = () => (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-      <div className="flex animate-pulse items-center justify-between gap-3">
+      <div className="skeleton-shimmer flex items-center justify-between gap-3">
         <div className="h-3 w-40 rounded-full bg-slate-200" />
         <div className="h-6 w-28 rounded-full bg-slate-100" />
       </div>
@@ -7338,7 +7338,7 @@ export default function Home() {
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
         <div className="flex items-center justify-between">
-          <div className="inline-flex animate-pulse items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
+          <div className="skeleton-shimmer inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
             {Array.from({ length: 5 }).map((_, idx) => (
               <div
                 key={`range-skeleton-${idx}`}
@@ -7346,7 +7346,7 @@ export default function Home() {
               />
             ))}
           </div>
-          <div className="h-3 w-36 animate-pulse rounded-full bg-slate-200" />
+          <div className="skeleton-shimmer h-3 w-36 rounded-full bg-slate-200" />
         </div>
         <div
           className="relative mt-3 h-[260px] w-full"
@@ -7385,7 +7385,7 @@ export default function Home() {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </Head>
       <div
-        className={`relative min-h-screen overflow-x-hidden px-4 py-6 sm:px-6 lg:px-8 ${
+        className={`relative min-h-screen overflow-x-hidden px-0 py-6 sm:px-6 lg:px-8 ${
           resolvedTheme === "dark"
             ? "theme-dark bg-slate-950 text-slate-100"
             : "theme-light bg-slate-50 text-slate-900"
@@ -7457,7 +7457,7 @@ export default function Home() {
                   !error ? (
                     // Rollup strip skeleton — covers the initial load and the
                     // gap while a range switch refetches the summary.
-                    <span className="flex animate-pulse items-center gap-1.5">
+                    <span className="skeleton-shimmer flex items-center gap-1.5">
                       <span className="h-2.5 w-6 rounded-full bg-slate-200" />
                       <span className="h-2.5 w-20 rounded-full bg-slate-200" />
                       <span className="h-2.5 w-14 rounded-full bg-slate-100" />
@@ -7611,7 +7611,7 @@ export default function Home() {
                       Array.from({ length: 3 }).map((_, idx) => (
                         <span
                           key={`tab-skeleton-${idx}`}
-                          className="h-5 w-16 shrink-0 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                          className="skeleton-shimmer h-5 w-16 shrink-0 rounded-full border border-slate-200 bg-slate-100"
                         />
                       ))}
                   </div>

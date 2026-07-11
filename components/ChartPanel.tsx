@@ -692,6 +692,14 @@ export default function ChartPanel(props: ChartPanelProps) {
   const timeframe = rangePreset.timeframe;
   const timeframeSeconds = timeframeToSeconds(timeframe);
   const resolvedLimit = Math.max(32, rangePreset.limit);
+  // Right price-scale width: tighter on phones to win horizontal chart space
+  // (it's a minimum — the scale still grows if a label needs more). The same
+  // value insets the overlay layer and the timeline strip so they stay aligned
+  // with the pane.
+  const priceScaleWidth =
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches
+      ? 40
+      : 56;
   const chartTextColor = isDark ? '#d4d4d8' : '#0f172a';
   const chartGridColor = isDark ? '#3f3f46' : '#e2e8f0';
   const chartLineColor = isDark ? '#d4d4d8' : '#475569';
@@ -945,7 +953,6 @@ export default function ChartPanel(props: ChartPanelProps) {
           : null;
       if (!createChart || disposed) return;
 
-      const priceScaleWidth = 56;
       const initialHeight = Math.max(260, Math.floor(container.clientHeight || 260));
       chart = createChart(container, {
         width: container.clientWidth,
@@ -1387,7 +1394,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   return (
     <div
       ref={panelRef}
-      className={`bg-white p-4 ${
+      className={`bg-white px-2 py-4 sm:p-4 ${
         isFullscreen
           ? 'fixed inset-0 z-[90] rounded-none border-0 shadow-none'
           : 'rounded-2xl border border-slate-200 shadow-sm lg:col-span-2'
@@ -1462,27 +1469,6 @@ export default function ChartPanel(props: ChartPanelProps) {
         ) : null}
         <button
           type="button"
-          onClick={resetChartView}
-          className="absolute bottom-0 right-12 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-600 shadow-sm backdrop-blur transition hover:border-sky-300 hover:text-sky-700"
-          aria-label="Reset chart zoom"
-          title="Reset zoom (or double-click chart)"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-4 w-4"
-            aria-hidden="true"
-          >
-            <path d="M3 12a9 9 0 1 0 2.6-6.4" />
-            <path d="M3 4v4h4" />
-          </svg>
-        </button>
-        <button
-          type="button"
           onClick={() => setIsFullscreen((prev) => !prev)}
           className="absolute bottom-0 right-3 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-600 shadow-sm backdrop-blur transition hover:border-sky-300 hover:text-sky-700"
           aria-label={isFullscreen ? 'Exit fullscreen chart' : 'Enter fullscreen chart'}
@@ -1515,7 +1501,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         ) : null}
         {hasChartData && (
           <>
-            <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0" style={{ right: 56 }}>
+            <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0" style={{ right: priceScaleWidth }}>
               {highlightX !== null ? (
                 // Time marker for the selected decision-timeline tick.
                 <div
@@ -1680,7 +1666,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         )}
       </div>
       {showSkeleton || (timelineLoading && !timelineDots.length) ? (
-        <TimelineSkeleton />
+        <TimelineSkeleton rightInset={priceScaleWidth} />
       ) : hasChartData && timelineDots.length > 0 ? (
         // Decision timeline, time-aligned under the chart's own time axis.
         // Dots sit at their tick's bar position and stretch with zoom/pan;
@@ -1688,7 +1674,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         <div className="relative mt-1 h-6" aria-label="Decision timeline">
           <div
             className="timeline-connector absolute top-1/2 h-[2px] -translate-y-1/2"
-            style={{ left: 0, right: 56 }}
+            style={{ left: 0, right: priceScaleWidth }}
           />
           {timelineDots.map(({ x, tick }) => {
             const isSelected = tick.ts === selectedTimelineTs;

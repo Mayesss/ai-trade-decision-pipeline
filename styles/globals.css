@@ -351,13 +351,25 @@ body {
 /* Chart loading shimmer: an empty panel with a soft highlight sweeping
    left → right. Plain background-image (not a bg-gradient-* utility) so the
    terminal gradient-flattening rule above doesn't strip it. */
+/* Desktop band. */
 @keyframes skeleton-sweep {
   0% {
     transform: translateX(-100%);
   }
   100% {
-    /* band is 12% wide → 950% of its own width clears the right edge */
-    transform: translateX(950%);
+    /* band is 18% wide → 660% of its own width clears the right edge */
+    transform: translateX(660%);
+  }
+}
+
+/* Mobile: wider, calmer band (panel is narrower, a 12% sliver reads jittery). */
+@keyframes skeleton-sweep-wide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    /* band is 30% wide → 450% of its own width clears the right edge */
+    transform: translateX(450%);
   }
 }
 
@@ -372,7 +384,7 @@ body {
   top: 0;
   bottom: 0;
   left: 0;
-  width: 12%;
+  width: 18%;
   transform: translateX(-100%);
   background-image: linear-gradient(
     90deg,
@@ -380,7 +392,34 @@ body {
     rgb(15 23 42 / 0.08),
     transparent
   );
-  animation: skeleton-sweep 0.7s linear infinite;
+  animation: skeleton-sweep 1.4s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .skeleton-shimmer::after {
+    width: 30%;
+    animation: skeleton-sweep-wide 1.1s linear infinite;
+  }
+}
+
+/* Timeline strip skeleton: the shimmer runs along the bare 2px baseline, so
+   the highlight needs far more contrast than on a whole panel. */
+.timeline-skeleton-line.skeleton-shimmer::after {
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgb(15 23 42 / 0.3),
+    transparent
+  );
+}
+
+.theme-dark .timeline-skeleton-line.skeleton-shimmer::after {
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 0.4),
+    transparent
+  );
 }
 
 .theme-dark .skeleton-shimmer::after {

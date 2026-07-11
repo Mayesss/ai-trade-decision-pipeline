@@ -15,29 +15,16 @@ export function ChartSkeleton({ minHeight = 260 }: { minHeight?: number }) {
   );
 }
 
-// Placeholder for the decision-timeline strip under the chart: baseline plus a
-// spread of grey dots in the real hourly/quarter size rhythm. The timeline-dot
-// classes keep the circles round under the global sharp-corner rule.
-export function TimelineSkeleton() {
+// Placeholder for the decision-timeline strip under the chart: just the
+// baseline with the shimmer band running along it (no fake dots). rightInset
+// matches the chart's price-scale width so the line ends where the pane does.
+export function TimelineSkeleton({ rightInset = 56 }: { rightInset?: number }) {
   return (
-    <div className="relative mt-1 h-6 overflow-hidden" aria-hidden="true">
+    <div className="relative mt-1 h-6" aria-hidden="true">
       <div
-        className="timeline-connector absolute top-1/2 h-[2px] -translate-y-1/2"
-        style={{ left: 0, right: 56 }}
+        className="skeleton-shimmer timeline-skeleton-line timeline-connector absolute top-1/2 h-[2px] -translate-y-1/2"
+        style={{ left: 0, right: rightInset }}
       />
-      <div
-        className="flex h-full animate-pulse items-center justify-between"
-        style={{ marginRight: 56 }}
-      >
-        {Array.from({ length: 16 }).map((_, idx) => (
-          <span
-            key={idx}
-            className={`timeline-dot timeline-dot-skip rounded-full ${
-              idx % 4 === 0 ? 'h-3.5 w-3.5' : 'h-2 w-2'
-            }`}
-          />
-        ))}
-      </div>
     </div>
   );
 }
