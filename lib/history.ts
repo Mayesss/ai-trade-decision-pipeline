@@ -226,6 +226,29 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
     }
 }
 
+// Fetch one decision by its exact timestamp — the history key is fully
+// reconstructible (decision:{ts}:{platform}:{symbol}), so this is a single KV
+// GET with no index scan. Used by the dashboard timeline to load the decision
+// behind a clicked tick. Returns null when missing/expired (7d KV TTL).
+export async function loadDecisionAt(
+    symbol: string,
+    timestamp: number,
+    platform?: string,
+): Promise<DecisionHistoryEntry | null> {
+    ensureKvConfig();
+    const ts = Math.floor(Number(timestamp));
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    try {
+        const raw = await kvGet(keyFor(symbol, ts, platform));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as DecisionHistoryEntry;
+        return parsed?.symbol?.toUpperCase() === symbol.toUpperCase() ? parsed : null;
+    } catch (err) {
+        console.warn('loadDecisionAt failed:', err);
+        return null;
+    }
+}
+
 export async function loadDecisionHistory(symbol?: string, limit = 20, platform?: string): Promise<DecisionHistoryEntry[]> {
     ensureKvConfig();
     const upperSymbol = symbol?.toUpperCase();

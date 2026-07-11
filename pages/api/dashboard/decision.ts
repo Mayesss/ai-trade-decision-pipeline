@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
-import { loadDecisionHistory } from '../../../lib/history';
+import { loadDecisionAt, loadDecisionHistory } from '../../../lib/history';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/platform';
 
@@ -53,11 +53,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     lastNewsSource: null,
   };
 
+  // Optional exact-timestamp lookup (timeline tick click) — a single direct KV
+  // GET instead of the latest-entry index scan. Falls through to the empty
+  // payload when the entry is missing/expired.
+  const tsParam = Array.isArray(req.query.ts) ? req.query.ts[0] : req.query.ts;
+  const requestedTs = Number(tsParam);
+
   try {
-    const history = platform
-      ? await loadDecisionHistory(symbolRaw, 1, platform)
-      : await loadDecisionHistory(symbolRaw, 1);
-    const latest = history[0];
+    const latest =
+      Number.isFinite(requestedTs) && requestedTs > 0
+        ? await loadDecisionAt(symbolRaw, requestedTs, platform ?? undefined)
+        : (platform
+            ? await loadDecisionHistory(symbolRaw, 1, platform)
+            : await loadDecisionHistory(symbolRaw, 1))[0];
     if (latest) {
       payload = {
         symbol: symbolRaw,

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 type DecisionBrief = {
   timestamp?: number | null;
@@ -31,6 +31,9 @@ type PositionOverlay = {
   // resting order on that leg). Drawn as thin horizontal price lines.
   takeProfitPrice?: number | null;
   stopLossPrice?: number | null;
+  // Inferred close cause for CLOSED positions: exchange-side bracket hit
+  // ('tp'/'sl') vs. AI-driven close (null). Server-side inference.
+  closeReason?: 'tp' | 'sl' | null;
 };
 
 
@@ -38,14 +41,69 @@ type ChartApiResponse = {
   candles?: Array<{ time: number; close: number }>;
   markers?: any[];
   positions?: PositionOverlay[];
+  pendingOrders?: PendingOrderLine[];
 };
+
+// A resting pullback limit entry (Bitget normal order / Capital working order),
+// drawn as a dotted entry-level line on the chart.
+type PendingOrderLine = {
+  side: 'buy' | 'sell' | null;
+  price: number;
+  size?: string | null;
+};
+
+// A decision-timeline tick rendered as a time-aligned dot under the chart's
+// time axis. Structurally compatible with the dashboard's TimelineTickUi.
+export type ChartTimelineTick = {
+  ts: number;
+  hourly: boolean;
+  kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan';
+  action?: string;
+  stage?: string;
+  reason?: string;
+};
+
+const timelineDotFillClass = (tick: ChartTimelineTick): string =>
+  tick.kind === 'action'
+    ? tick.action === 'BUY'
+      ? 'timeline-dot-buy'
+      : tick.action === 'SELL'
+        ? 'timeline-dot-sell'
+        : 'timeline-dot-trim'
+    : tick.kind === 'ai_call'
+      ? 'timeline-dot-ai'
+      : 'timeline-dot-skip';
+
+const timelineTickLabel = (tick: ChartTimelineTick): string => {
+  const time = new Intl.DateTimeFormat('de-DE', {
+    timeZone: BERLIN_TZ,
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(tick.ts));
+  return `${time}${
+    tick.kind === 'action'
+      ? ` · ${tick.action}`
+      : tick.kind === 'ai_call'
+        ? ` · AI ${tick.action || 'decision'}`
+        : tick.stage
+          ? ` · skipped: ${tick.reason || tick.stage}`
+          : ' · scanned'
+  }`;
+};
+
+// Minimum px between dot centers before lower-priority dots get culled on
+// wide zooms. Priority: selected > BUY/SELL/trim > AI call > hourly skip >
+// quarter skip.
+const TIMELINE_MIN_GAP_PX = 14;
 
 type CachedChartEntry = {
   payload: ChartApiResponse;
   fetchedAt: number;
 };
 
-export type ChartRangeKey = '1D' | '7D' | '30D' | '6M';
+export type ChartRangeKey = '4H' | '1D' | '7D' | '30D' | '6M';
 
 type ChartPanelProps = {
   symbol: string | null;
@@ -79,13 +137,24 @@ type ChartPanelProps = {
     openLeverage: number | null;
     openEntryPrice: number | null;
   }) => void;
+  // Vertical marker for the decision-timeline selection (ms epoch); null hides it.
+  highlightTimeMs?: number | null;
+  // Chart click → nearest-tick selection on the decision timeline (ms epoch).
+  onTimeSelect?: (tsMs: number) => void;
+  // Decision-timeline ticks rendered time-aligned under the chart's time axis.
+  timelineTicks?: ChartTimelineTick[];
+  // Tick that renders with the full-contrast selection stroke.
+  selectedTimelineTs?: number | null;
+  // Click on a timeline dot (ms epoch of that tick).
+  onTimelineTickSelect?: (tsMs: number) => void;
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
 const CHART_CACHE_TTL_MS = 60_000;
 const CHART_FETCH_DEFER_MS = 120;
-const CHART_RANGE_ORDER: ChartRangeKey[] = ['1D', '7D', '30D', '6M'];
+const CHART_RANGE_ORDER: ChartRangeKey[] = ['4H', '1D', '7D', '30D', '6M'];
 const CHART_RANGE_PRESETS: Record<ChartRangeKey, { timeframe: string; limit: number }> = {
+  '4H': { timeframe: '5m', limit: 48 },
   '1D': { timeframe: '15m', limit: 96 },
   '7D': { timeframe: '1H', limit: 168 },
   '30D': { timeframe: '4H', limit: 180 },
@@ -158,7 +227,7 @@ const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
       month: '2-digit',
     }).format(date);
   }
-  if (rangeKey === '1D') {
+  if (rangeKey === '1D' || rangeKey === '4H') {
     return new Intl.DateTimeFormat('de-DE', {
       timeZone: BERLIN_TZ,
       hour: '2-digit',
@@ -288,7 +357,7 @@ const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
   upText: isDark ? 'rgb(52,211,153)' : 'rgb(4,120,87)',
   downText: isDark ? 'rgb(251,113,133)' : 'rgb(190,18,60)',
   neutralText: isDark ? 'rgb(212,212,216)' : 'rgb(51,65,85)',
-  partialStroke: isDark ? 'rgba(251,191,36,0.95)' : 'rgba(217,119,6,0.95)',
+  partialStroke: isDark ? 'rgba(251,191,36,0.95)' : 'rgba(245,158,11,0.9)',
   partialText: isDark ? 'rgb(253,230,138)' : 'rgb(146,64,14)',
 });
 
@@ -298,6 +367,7 @@ type OverlayPrimitiveDatum = {
   exitTime: number;
   showEntryWall: boolean;
   closed: boolean;
+  closeReason: 'tp' | 'sl' | null;
   side: 'long' | 'short' | null;
   tone: OverlayTone;
   leverageLabel: string | null;
@@ -418,11 +488,19 @@ class PositionOverlayRenderer {
           for (const x of partials) {
             if (x < left || x > right) continue;
             const markerX = Math.round(x);
-            ctx.fillRect(markerX - 1, top + 3, 2, Math.max(4, height - 6));
+            ctx.fillRect(markerX, top + 3, 1, Math.max(4, height - 6));
           }
         }
-        ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
-        ctx.fillRect(right - 1, top, 1, height);
+        if (datum.closeReason) {
+          // Bracket-hit exit: a stronger, TP/SL-colored vertical line so the
+          // "hit" moment stands out from AI-driven closes.
+          ctx.fillStyle =
+            datum.closeReason === 'tp' ? 'rgba(16,185,129,0.95)' : 'rgba(239,68,68,0.95)';
+          ctx.fillRect(right - 2, top, 2, height);
+        } else {
+          ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
+          ctx.fillRect(right - 1, top, 1, height);
+        }
         drawOverlayBadge(ctx, right, top, datum, this.theme);
       }
     });
@@ -537,6 +615,7 @@ const buildOverlayPrimitiveData = (
       exitTime,
       showEntryWall: pos.entryTime !== null && pos.entryTime >= minTime,
       closed: pos.status === 'closed',
+      closeReason: pos.status === 'closed' ? pos.closeReason ?? null : null,
       side: pos.side ?? null,
       tone,
       leverageLabel: typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null,
@@ -564,15 +643,25 @@ export default function ChartPanel(props: ChartPanelProps) {
     liveConnected = false,
     onOpenPositionChange,
     onPositionSummaryChange,
+    highlightTimeMs = null,
+    onTimeSelect,
+    timelineTicks,
+    selectedTimelineTs = null,
+    onTimelineTickSelect,
   } = props;
 
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<PendingOrderLine[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartAttempted, setChartAttempted] = useState(false);
   const [hoveredOverlay, setHoveredOverlay] = useState<PositionOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [livePulseY, setLivePulseY] = useState<number | null>(null);
+  const [highlightX, setHighlightX] = useState<number | null>(null);
+  const [timelineDots, setTimelineDots] = useState<
+    Array<{ x: number; tick: ChartTimelineTick }>
+  >([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [chartInitToken, setChartInitToken] = useState(0);
 
@@ -583,8 +672,16 @@ export default function ChartPanel(props: ChartPanelProps) {
   const chartSeriesRef = useRef<any>(null);
   const overlayPrimitiveRef = useRef<PositionOverlayPrimitive | null>(null);
   const bracketPriceLinesRef = useRef<any[]>([]);
+  const pendingOrderLinesRef = useRef<any[]>([]);
+  // Identity of the currently-rendered dataset — dataset swaps re-fit the
+  // time scale, live appends don't (see the setData effect).
+  const lastDatasetRef = useRef<{ first: number; length: number } | null>(null);
   const snappedOverlaysRef = useRef<SnappedOverlay[]>([]);
   const pinnedOverlayIdRef = useRef<string | null>(null);
+  // Prop callbacks used inside chart event handlers registered once at init —
+  // read through a ref so the handlers never close over stale props.
+  const onTimeSelectRef = useRef<typeof onTimeSelect>(onTimeSelect);
+  onTimeSelectRef.current = onTimeSelect;
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
@@ -607,6 +704,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     setChartData(mapped.filter((c) => Number.isFinite(c.time) && Number.isFinite(c.value)));
     const nextPositions = Array.isArray(payload.positions) ? payload.positions : [];
     setPositionOverlays(nextPositions);
+    setPendingOrders(Array.isArray(payload.pendingOrders) ? payload.pendingOrders : []);
     const openPosition = nextPositions.find((pos) => pos?.status === 'open') ?? null;
     const closedPositions = nextPositions.filter((pos) => pos?.status === 'closed');
     const closedPcts = closedPositions
@@ -746,6 +844,37 @@ export default function ChartPanel(props: ChartPanelProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isFullscreen]);
 
+  // Fullscreen must be escapable on mobile too: lock the page scroll behind the
+  // overlay and let the browser/hardware back button exit fullscreen instead of
+  // leaving the dashboard (pushState on enter, popstate exits).
+  useEffect(() => {
+    if (!isFullscreen || typeof window === 'undefined') return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.history.pushState({ ...(window.history.state ?? {}), chartFullscreen: true }, '');
+    const onPopState = () => setIsFullscreen(false);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('popstate', onPopState);
+      // Exit via button/Escape leaves our pushed entry on the stack — pop it so
+      // the next back press doesn't need a no-op step. When the exit itself came
+      // from popstate the flag is already gone.
+      if ((window.history.state as any)?.chartFullscreen) {
+        window.history.back();
+      }
+    };
+  }, [isFullscreen]);
+
+  // Reset any pan/zoom back to the full loaded window.
+  const resetChartView = useCallback(() => {
+    try {
+      chartInstanceRef.current?.timeScale?.()?.fitContent?.();
+    } catch {
+      // best-effort — a disposed chart just ignores the reset
+    }
+  }, []);
+
   useEffect(() => {
     if (!adminGranted || !symbol) return;
     const price = Number(livePrice);
@@ -816,8 +945,20 @@ export default function ChartPanel(props: ChartPanelProps) {
       chart = createChart(container, {
         width: container.clientWidth,
         height: initialHeight,
-        handleScroll: false,
-        handleScale: false,
+        // Interactive pan/zoom: wheel + pinch zoom, drag to pan. Vertical touch
+        // drag stays with the page so mobile scrolling over the chart works.
+        handleScroll: {
+          pressedMouseMove: true,
+          mouseWheel: false,
+          horzTouchDrag: true,
+          vertTouchDrag: false,
+        },
+        handleScale: {
+          mouseWheel: true,
+          pinch: true,
+          axisPressedMouseMove: true,
+          axisDoubleClickReset: true,
+        },
         layout: {
           background: { type: 'solid', color: 'transparent' },
           textColor: chartTextColor,
@@ -903,6 +1044,9 @@ export default function ChartPanel(props: ChartPanelProps) {
           return;
         }
         const t = Number(time);
+        // Chart click drives the decision timeline too: hand the clicked bar
+        // time to the parent so it can select the nearest tick.
+        if (Number.isFinite(t)) onTimeSelectRef.current?.(t * 1000);
         const hit = snappedOverlaysRef.current.find((o) => t >= o.entryTime && t <= o.exitTime);
         if (!hit) {
           pinnedOverlayIdRef.current = null;
@@ -962,7 +1106,26 @@ export default function ChartPanel(props: ChartPanelProps) {
     const series = chartSeriesRef.current;
     if (!series || !chartData.length) return;
     series.setData(chartData);
-  }, [chartData]);
+    // With interactive zoom enabled the visible logical range survives
+    // setData, so a dataset SWAP (range/timeframe switch, symbol change)
+    // would keep showing the old window width. Re-fit only when the data
+    // identity really changed — live tick appends (and the occasional
+    // ring-buffer head trim) must NOT reset the user's zoom.
+    const first = chartData[0]?.time ?? 0;
+    const prev = lastDatasetRef.current;
+    const swapped =
+      !prev ||
+      Math.abs(prev.first - first) > timeframeSeconds * 2 ||
+      Math.abs(prev.length - chartData.length) > 2;
+    lastDatasetRef.current = { first, length: chartData.length };
+    if (swapped) {
+      try {
+        chartInstanceRef.current?.timeScale?.()?.fitContent?.();
+      } catch {
+        /* chart mid-teardown */
+      }
+    }
+  }, [chartData, timeframeSeconds]);
 
   // Feed overlays to the canvas primitive. Snapping to candles depends only on
   // the data, so it happens here (once per data change); the chart itself
@@ -1021,6 +1184,39 @@ export default function ChartPanel(props: ChartPanelProps) {
     drawLine(open.stopLossPrice, 'rgba(239,68,68,0.9)', 'SL');
   }, [positionOverlays, chartInitToken]);
 
+  // Resting pullback limit entries as dotted entry-level lines — side-colored
+  // so a waiting BUY reads green, a waiting SELL red.
+  useEffect(() => {
+    const series = chartSeriesRef.current;
+    if (!series) return;
+    for (const line of pendingOrderLinesRef.current) {
+      try {
+        series.removePriceLine?.(line);
+      } catch {
+        /* series/line already disposed */
+      }
+    }
+    pendingOrderLinesRef.current = [];
+    if (!pendingOrders.length || typeof series.createPriceLine !== 'function') return;
+    for (const order of pendingOrders) {
+      if (!Number.isFinite(order.price) || order.price <= 0) continue;
+      try {
+        pendingOrderLinesRef.current.push(
+          series.createPriceLine({
+            price: order.price,
+            color: order.side === 'sell' ? 'rgba(225,29,72,0.75)' : 'rgba(5,150,105,0.75)',
+            lineWidth: 1,
+            lineStyle: 1, // dotted — a waiting order, not an active level
+            axisLabelVisible: true,
+            title: `${(order.side || 'entry').toUpperCase()} LIMIT`,
+          }),
+        );
+      } catch (err) {
+        console.warn('[chart] failed to draw pending order line', err);
+      }
+    }
+  }, [pendingOrders, chartInitToken]);
+
   useEffect(() => {
     const recalcLivePulse = () => {
       if (!liveConnected) {
@@ -1048,6 +1244,93 @@ export default function ChartPanel(props: ChartPanelProps) {
       setLivePulseY(clampedY);
     };
 
+    // Vertical marker at the decision-timeline selection: snap the selected
+    // tick's time to the nearest bar and project it to an X coordinate.
+    const recalcHighlightX = () => {
+      const timeScaleNow = chartInstanceRef.current?.timeScale?.();
+      if (
+        highlightTimeMs == null ||
+        !timeScaleNow ||
+        !chartData.length ||
+        typeof timeScaleNow.timeToCoordinate !== 'function'
+      ) {
+        setHighlightX(null);
+        return;
+      }
+      const targetSec = highlightTimeMs / 1000;
+      let nearest = chartData[0].time;
+      let bestDiff = Math.abs(chartData[0].time - targetSec);
+      for (const bar of chartData) {
+        const diff = Math.abs(bar.time - targetSec);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          nearest = bar.time;
+        }
+      }
+      const x = Number(timeScaleNow.timeToCoordinate(nearest));
+      setHighlightX(Number.isFinite(x) ? x : null);
+    };
+
+    // Snap a ms timestamp to the nearest bar time (chartData is ascending).
+    const nearestBarTime = (tsMs: number): number => {
+      const target = tsMs / 1000;
+      let lo = 0;
+      let hi = chartData.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (chartData[mid].time < target) lo = mid + 1;
+        else hi = mid;
+      }
+      const below = Math.max(0, lo - 1);
+      return Math.abs(chartData[below].time - target) <=
+        Math.abs(chartData[lo].time - target)
+        ? chartData[below].time
+        : chartData[lo].time;
+    };
+
+    // Project timeline ticks onto the time axis. Zoom/pan re-runs this via the
+    // shared schedule, so the strip stretches with the chart; on wide zooms,
+    // lower-priority dots inside TIMELINE_MIN_GAP_PX of a kept dot are culled.
+    const recalcTimelineDots = () => {
+      const timeScaleNow = chartInstanceRef.current?.timeScale?.();
+      if (
+        !timelineTicks?.length ||
+        !timeScaleNow ||
+        !chartData.length ||
+        typeof timeScaleNow.timeToCoordinate !== 'function'
+      ) {
+        setTimelineDots([]);
+        return;
+      }
+      const paneWidth = overlayLayerRef.current?.clientWidth ?? 0;
+      const projected: Array<{ x: number; tick: ChartTimelineTick }> = [];
+      for (const tick of timelineTicks) {
+        const x = Number(timeScaleNow.timeToCoordinate(nearestBarTime(tick.ts)));
+        if (!Number.isFinite(x) || x < 0 || (paneWidth > 0 && x > paneWidth)) continue;
+        projected.push({ x, tick });
+      }
+      const priority = (tick: ChartTimelineTick): number =>
+        tick.ts === selectedTimelineTs
+          ? -1
+          : tick.kind === 'action'
+            ? 0
+            : tick.kind === 'ai_call'
+              ? 1
+              : tick.hourly
+                ? 2
+                : 3;
+      projected.sort(
+        (a, b) => priority(a.tick) - priority(b.tick) || b.tick.ts - a.tick.ts,
+      );
+      const kept: Array<{ x: number; tick: ChartTimelineTick }> = [];
+      for (const candidate of projected) {
+        if (kept.some((k) => Math.abs(k.x - candidate.x) < TIMELINE_MIN_GAP_PX)) continue;
+        kept.push(candidate);
+      }
+      kept.sort((a, b) => a.x - b.x);
+      setTimelineDots(kept);
+    };
+
     // Same rAF-batched + observer approach as the position overlays so the
     // pulse marker tracks the chart on resize/zoom without event thrash.
     let raf = 0;
@@ -1056,10 +1339,14 @@ export default function ChartPanel(props: ChartPanelProps) {
       raf = window.requestAnimationFrame(() => {
         raf = 0;
         recalcLivePulse();
+        recalcHighlightX();
+        recalcTimelineDots();
       });
     };
 
     recalcLivePulse();
+    recalcHighlightX();
+    recalcTimelineDots();
 
     const container = chartContainerRef.current;
     const timeScale = chartInstanceRef.current?.timeScale?.();
@@ -1077,7 +1364,15 @@ export default function ChartPanel(props: ChartPanelProps) {
       window.removeEventListener('resize', schedule);
       resizeObserver?.disconnect();
     };
-  }, [chartData, livePrice, liveConnected, chartInitToken]);
+  }, [
+    chartData,
+    livePrice,
+    liveConnected,
+    chartInitToken,
+    highlightTimeMs,
+    timelineTicks,
+    selectedTimelineTs,
+  ]);
 
   if (!adminGranted || !symbol) return null;
 
@@ -1133,9 +1428,54 @@ export default function ChartPanel(props: ChartPanelProps) {
         </div>
       </div>
       <div
-        className={`relative mt-3 w-full ${isFullscreen ? 'h-[calc(100vh-96px)]' : 'h-[260px]'}`}
+        className={`relative mt-3 w-full ${isFullscreen ? 'h-[calc(100dvh-96px)]' : 'h-[260px]'}`}
         style={{ minHeight: 260 }}
+        onDoubleClick={resetChartView}
       >
+        {isFullscreen ? (
+          <button
+            type="button"
+            onClick={() => setIsFullscreen(false)}
+            className="absolute right-3 top-0 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-600 shadow-sm backdrop-blur transition hover:border-rose-300 hover:text-rose-600"
+            aria-label="Exit fullscreen chart"
+            title="Exit fullscreen"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4"
+              aria-hidden="true"
+            >
+              <path d="M6 6l12 12" />
+              <path d="M18 6L6 18" />
+            </svg>
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={resetChartView}
+          className="absolute bottom-0 right-12 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-600 shadow-sm backdrop-blur transition hover:border-sky-300 hover:text-sky-700"
+          aria-label="Reset chart zoom"
+          title="Reset zoom (or double-click chart)"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+            aria-hidden="true"
+          >
+            <path d="M3 12a9 9 0 1 0 2.6-6.4" />
+            <path d="M3 4v4h4" />
+          </svg>
+        </button>
         <button
           type="button"
           onClick={() => setIsFullscreen((prev) => !prev)}
@@ -1181,6 +1521,16 @@ export default function ChartPanel(props: ChartPanelProps) {
         {hasChartData && (
           <>
             <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0" style={{ right: 56 }}>
+              {highlightX !== null ? (
+                // Time marker for the selected decision-timeline tick.
+                <div
+                  className="pointer-events-none absolute bottom-0 top-0 w-px"
+                  style={{
+                    left: highlightX,
+                    backgroundColor: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(15,23,42,0.35)',
+                  }}
+                />
+              ) : null}
               {liveConnected && livePulseY !== null ? (
                 <div className="pointer-events-none absolute" style={{ top: livePulseY - 14, right: 1 }}>
                   <span className="relative inline-flex h-2 w-2">
@@ -1245,6 +1595,19 @@ export default function ChartPanel(props: ChartPanelProps) {
                       <span>Exit {hoveredOverlay.exitPrice.toFixed(2)}</span>
                     ) : null}
                   </div>
+
+                  {hoveredOverlay.status === 'closed' && hoveredOverlay.closeReason ? (
+                    <div className="mt-2 rounded-lg bg-slate-50/80 p-2 text-[11px]">
+                      <span
+                        className={`font-semibold ${
+                          hoveredOverlay.closeReason === 'tp' ? 'text-emerald-600' : 'text-rose-600'
+                        }`}
+                      >
+                        {hoveredOverlay.closeReason === 'tp' ? 'Take-profit hit' : 'Stop-loss hit'}
+                      </span>
+                      <span className="text-slate-500"> · closed by exchange-side bracket</span>
+                    </div>
+                  ) : null}
 
                   {hoveredOverlay.entryDecision && (
                     <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
@@ -1321,6 +1684,39 @@ export default function ChartPanel(props: ChartPanelProps) {
           </>
         )}
       </div>
+      {hasChartData && timelineDots.length > 0 ? (
+        // Decision timeline, time-aligned under the chart's own time axis.
+        // Dots sit at their tick's bar position and stretch with zoom/pan;
+        // wide zooms cull the least important overlapping dots.
+        <div className="relative mt-1 h-6" aria-label="Decision timeline">
+          <div
+            className="timeline-connector absolute top-1/2 h-[2px] -translate-y-1/2"
+            style={{ left: 0, right: 56 }}
+          />
+          {timelineDots.map(({ x, tick }) => {
+            const isSelected = tick.ts === selectedTimelineTs;
+            const label = timelineTickLabel(tick);
+            return (
+              <button
+                key={tick.ts}
+                type="button"
+                onClick={() => onTimelineTickSelect?.(tick.ts)}
+                title={label}
+                aria-label={label}
+                aria-pressed={isSelected}
+                className="timeline-tick absolute top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+                style={{ left: x }}
+              >
+                <span
+                  className={`timeline-dot ${tick.hourly ? 'h-3.5 w-3.5' : 'h-2 w-2'} rounded-full ${timelineDotFillClass(
+                    tick,
+                  )} ${isSelected ? 'timeline-dot-selected' : ''}`}
+                />
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
