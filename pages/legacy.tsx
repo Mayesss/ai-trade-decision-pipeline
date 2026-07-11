@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
+import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
 import {
   AllCommunityModule,
   ModuleRegistry,
@@ -742,17 +743,24 @@ type ScalpEntrySessionProfileUi =
   | "sydney";
 type ScalpEntrySessionFilterUi = "all" | ScalpEntrySessionProfileUi;
 
-const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
-const formatUsd = (value: number) => {
+// Fallback EURUSD rate for the header rollup when the live quote isn't
+// available — the strip is explicitly approximate, so a ballpark is fine.
+const EUR_USD_FALLBACK_RATE = 1.1;
+// Cash PnL is venue-denominated: Bitget settles in USDT (shown as $), the
+// Capital.com ledger is in the account currency, EUR. Symbol picked per
+// platform — never sum across the two.
+const platformCurrencySymbol = (platform?: string | null): "$" | "€" =>
+  String(platform || "").toLowerCase() === "capital" ? "€" : "$";
+const formatCash = (value: number, currencySymbol: "$" | "€" = "$") => {
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
   const v = Math.abs(value);
   if (abs >= 1_000_000)
-    return `${sign}${CURRENCY_SYMBOL}${(v / 1_000_000).toFixed(1)}M`;
+    return `${sign}${currencySymbol}${(v / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000)
-    return `${sign}${CURRENCY_SYMBOL}${(v / 1_000).toFixed(1)}K`;
-  return `${sign}${CURRENCY_SYMBOL}${v.toFixed(0)}`;
+    return `${sign}${currencySymbol}${(v / 1_000).toFixed(1)}K`;
+  return `${sign}${currencySymbol}${v.toFixed(0)}`;
 };
 const formatSignedR = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
@@ -2515,30 +2523,23 @@ const ChartPanel = dynamic(() => import("../components/ChartPanel"), {
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
       <div className="flex items-center justify-between">
         <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1 text-[11px] font-semibold text-slate-500">
+          <span className="px-2.5 py-1">4H</span>
           <span className="rounded-full bg-slate-200 px-2.5 py-1 text-slate-700">
-            7D
+            1D
           </span>
+          <span className="px-2.5 py-1">7D</span>
           <span className="px-2.5 py-1">30D</span>
           <span className="px-2.5 py-1">6M</span>
         </div>
-        <div className="text-xs text-slate-400">1H bars · 7D window</div>
+        <div className="text-xs text-slate-400">15m bars · 1D window</div>
       </div>
       <div
         className="relative mt-3 h-[260px] w-full"
         style={{ minHeight: 260 }}
       >
-        <div className="h-full w-full rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-          <div className="flex h-full w-full animate-pulse flex-col justify-between">
-            <div className="h-3 w-28 rounded-full bg-slate-200" />
-            <div className="space-y-2">
-              <div className="h-2.5 w-full rounded-full bg-slate-200" />
-              <div className="h-2.5 w-11/12 rounded-full bg-slate-200" />
-              <div className="h-2.5 w-10/12 rounded-full bg-slate-200" />
-            </div>
-            <div className="h-3 w-40 rounded-full bg-slate-200" />
-          </div>
-        </div>
+        <ChartSkeleton />
       </div>
+      <TimelineSkeleton />
     </div>
   ),
 });
@@ -2568,6 +2569,9 @@ export default function Home() {
   // summary pipeline only warms 1D/7D/30D/6M caches, so 4H maps to 1D for PnL).
   // Desktop defaults to 1D; phones drop to 4H on mount (effect below).
   const [chartRange, setChartRange] = useState<ChartRangeKey>("1D");
+  // Live EURUSD used to fold the Bitget USDT net into the € header rollup.
+  // Fetched once per session; EUR_USD_FALLBACK_RATE covers the gap.
+  const [eurUsdRate, setEurUsdRate] = useState<number | null>(null);
   // Decision timeline (per symbol): recent hourly + quarter ticks. Selecting an
   // older tick loads that decision into the card; null = newest (live) tick.
   const [symbolTimelines, setSymbolTimelines] = useState<
@@ -2779,6 +2783,33 @@ export default function Home() {
       setChartRange("4H");
     }
   }, []);
+
+  // EURUSD quote for the header rollup's $→€ conversion. Once per session —
+  // the figure is approximate by design, so no polling.
+  useEffect(() => {
+    if (!adminGranted || strategyMode !== "swing" || eurUsdRate !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          "/api/swing/dashboard/live-price?symbol=EURUSD&platform=capital",
+          { headers: buildAdminHeaders(), cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        const price = Number(json?.price);
+        // Sanity band so a bad quote can't nuke the rollup.
+        if (!cancelled && Number.isFinite(price) && price > 0.5 && price < 2) {
+          setEurUsdRate(price);
+        }
+      } catch {
+        // fallback rate covers it
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [adminGranted, strategyMode, eurUsdRate]);
 
   const resolveSystemTheme = (): ResolvedTheme => {
     if (typeof window === "undefined") return "light";
@@ -4060,23 +4091,43 @@ export default function Home() {
   const swingHeaderTotals = (() => {
     if (strategyMode !== "swing" || !swingSummaryMatchesRange || !symbols.length)
       return null;
-    let net = 0;
-    let hasNet = false;
+    // Cash nets are venue-denominated (Bitget USDT ≈ $, Capital account
+    // currency €) — keep two running sums, never one mixed number.
+    let netUsd = 0;
+    let hasNetUsd = false;
+    let netEur = 0;
+    let hasNetEur = false;
     let trades = 0;
     let open = 0;
     for (const sym of symbols) {
       const tab = tabData[sym];
       if (!tab) continue;
       if (typeof tab.pnl7dNet === "number") {
-        net += tab.pnl7dNet;
-        hasNet = true;
+        if (platformCurrencySymbol(tab.lastPlatform) === "€") {
+          netEur += tab.pnl7dNet;
+          hasNetEur = true;
+        } else {
+          netUsd += tab.pnl7dNet;
+          hasNetUsd = true;
+        }
       }
       if (typeof tab.pnl7dTrades === "number") trades += tab.pnl7dTrades;
       if (tab.openDirection === "long" || tab.openDirection === "short")
         open += 1;
     }
-    if (!hasNet && trades === 0 && open === 0) return null;
-    return { net: hasNet ? net : null, trades, open };
+    if (!hasNetUsd && !hasNetEur && trades === 0 && open === 0) return null;
+    // One € figure for the strip: fold the USDT net in at the live EURUSD
+    // rate (fallback approximation when the quote hasn't loaded). Marked
+    // approximate whenever a conversion actually happened.
+    const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
+    const net =
+      (hasNetEur ? netEur : 0) + (hasNetUsd ? netUsd / rate : 0);
+    return {
+      net: hasNetUsd || hasNetEur ? net : null,
+      approximate: hasNetUsd,
+      trades,
+      open,
+    };
   })();
   // The pill row is one horizontally-scrollable line; keep the active pill in
   // view when selection changes (not on every render — live ticks re-render
@@ -4123,7 +4174,10 @@ export default function Home() {
             typeof current.pnl7dNet === "number" ? (
               <span className="hidden text-[11px] text-slate-500 sm:inline">
                 {current.pnl7dNet >= 0 ? "+" : ""}
-                {formatUsd(current.pnl7dNet)}
+                {formatCash(
+                  current.pnl7dNet,
+                  platformCurrencySymbol(current.lastPlatform),
+                )}
               </span>
             ) : null}
             {swingSummaryMatchesRange && current.pnl7dTrades ? (
@@ -4362,14 +4416,9 @@ export default function Home() {
     { key: "nano_bias", label: "Nano" },
   ] as const;
   const isInitialLoading = loading && !symbols.length;
-  const loadingLabel =
-    strategyMode === "scalp"
-      ? "Loading scalp dashboard..."
-      : !symbols.length
-        ? "Loading evaluations..."
-        : activeSymbol
-          ? `Loading ${activeSymbol}...`
-          : "Loading selected symbol...";
+  // Swing mode replaces loading text with per-section skeletons; only the
+  // scalp view still announces its load in the header.
+  const loadingLabel = "Loading scalp dashboard...";
   const scalpRows = Array.isArray(scalpSummary?.symbols)
     ? scalpSummary.symbols
     : [];
@@ -7243,71 +7292,71 @@ export default function Home() {
     );
   };
 
+  // Mirrors the real decision-card BODY (action row, reason lines, bias grid,
+  // prompt button). The bias cells copy the real cells' box model exactly —
+  // same border/padding/inner sizes — so nothing jumps when data lands.
+  const renderDecisionBodySkeleton = () => (
+    <div className="animate-pulse">
+      <div className="mt-3 flex items-center gap-2">
+        <div className="h-3 w-12 rounded-full bg-slate-200" />
+        <div className="h-5 w-16 rounded bg-slate-200" />
+        <div className="h-3 w-2/5 rounded-full bg-slate-100" />
+      </div>
+      <div className="mt-3 space-y-2">
+        <div className="h-3 w-full rounded-full bg-slate-100" />
+        <div className="h-3 w-11/12 rounded-full bg-slate-100" />
+      </div>
+      <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
+        {Array.from({ length: 5 }).map((_, idx) => (
+          <div
+            key={`bias-skeleton-${idx}`}
+            className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
+          >
+            <div className="h-2.5 w-10 rounded-full bg-slate-200" />
+            <div className="h-3 w-3 rounded-full bg-slate-200 sm:h-5 sm:w-9" />
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 h-7 w-28 rounded-full bg-slate-100" />
+    </div>
+  );
+
+  // Full decision card skeleton: header (title + strength pill) + body.
+  const renderDecisionCardSkeleton = () => (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+      <div className="flex animate-pulse items-center justify-between gap-3">
+        <div className="h-3 w-40 rounded-full bg-slate-200" />
+        <div className="h-6 w-28 rounded-full bg-slate-100" />
+      </div>
+      {renderDecisionBodySkeleton()}
+    </div>
+  );
+
+  // Full-page loading state, shaped like the real layout: chart panel (range
+  // chips + charty skeleton + timeline dots) above the decision card.
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
-      <div className="space-y-4 lg:col-span-2">
-        <div className="h-full rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {Array.from({ length: 3 }).map((_, idx) => (
-              <div
-                key={`summary-skeleton-${idx}`}
-                className="animate-pulse space-y-2"
-              >
-                <div className="h-3 w-20 rounded-full bg-slate-200" />
-                <div className="h-8 w-28 rounded-lg bg-slate-200" />
-                <div className="h-3 w-full max-w-[200px] rounded-full bg-slate-200" />
-                <div className="h-3 w-full max-w-[150px] rounded-full bg-slate-200" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-        <div className="animate-pulse">
-          <div className="h-3 w-24 rounded-full bg-slate-200" />
-          <div className="mt-2 h-3 w-44 rounded-full bg-slate-200" />
-          <div className="mt-3 h-[260px] w-full rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-            <div className="flex h-full w-full flex-col justify-between">
-              <div className="h-3 w-28 rounded-full bg-slate-200" />
-              <div className="space-y-2">
-                <div className="h-2.5 w-full rounded-full bg-slate-200" />
-                <div className="h-2.5 w-11/12 rounded-full bg-slate-200" />
-                <div className="h-2.5 w-10/12 rounded-full bg-slate-200" />
-              </div>
-              <div className="h-3 w-40 rounded-full bg-slate-200" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-        <div className="animate-pulse">
-          <div className="h-3 w-32 rounded-full bg-slate-200" />
-          <div className="mt-3 h-4 w-3/4 rounded-full bg-slate-200" />
-          <div className="mt-2 h-4 w-2/3 rounded-full bg-slate-200" />
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, idx) => (
+        <div className="flex items-center justify-between">
+          <div className="inline-flex animate-pulse items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
+            {Array.from({ length: 5 }).map((_, idx) => (
               <div
-                key={`bias-skeleton-${idx}`}
-                className="h-12 rounded-lg border border-slate-200 bg-slate-50"
+                key={`range-skeleton-${idx}`}
+                className={`h-5 w-8 rounded-full ${idx === 1 ? "bg-slate-200" : "bg-slate-100"}`}
               />
             ))}
           </div>
+          <div className="h-3 w-36 animate-pulse rounded-full bg-slate-200" />
         </div>
-      </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-        <div className="animate-pulse">
-          <div className="h-3 w-36 rounded-full bg-slate-200" />
-          <div className="mt-3 h-5 w-52 rounded-full bg-slate-200" />
-          <div className="mt-3 space-y-2">
-            <div className="h-3 w-full rounded-full bg-slate-200" />
-            <div className="h-3 w-11/12 rounded-full bg-slate-200" />
-            <div className="h-3 w-10/12 rounded-full bg-slate-200" />
-          </div>
+        <div
+          className="relative mt-3 h-[260px] w-full"
+          style={{ minHeight: 260 }}
+        >
+          <ChartSkeleton />
         </div>
+        <TimelineSkeleton />
       </div>
+      {renderDecisionCardSkeleton()}
     </div>
   );
 
@@ -7397,14 +7446,28 @@ export default function Home() {
                       </span>
                     </span>
                   ) : null}
-                  {loading ? (
+                  {strategyMode === "scalp" && loading ? (
                     <span className="text-[11px] text-slate-500">
                       {loadingLabel}
                     </span>
                   ) : null}
+                  {strategyMode === "swing" &&
+                  !swingHeaderTotals &&
+                  loading &&
+                  !error ? (
+                    // Rollup strip skeleton — covers the initial load and the
+                    // gap while a range switch refetches the summary.
+                    <span className="flex animate-pulse items-center gap-1.5">
+                      <span className="h-2.5 w-6 rounded-full bg-slate-200" />
+                      <span className="h-2.5 w-20 rounded-full bg-slate-200" />
+                      <span className="h-2.5 w-14 rounded-full bg-slate-100" />
+                    </span>
+                  ) : null}
                   {swingHeaderTotals ? (
-                    // All-symbols rollup for the selected range. Net is USD
-                    // (percent PnL is per-position leveraged and doesn't sum).
+                    // All-symbols rollup for the selected range, in € — the
+                    // Bitget USDT net is folded in at the EURUSD rate, so the
+                    // figure is prefixed ≈ when a conversion happened.
+                    // (Percent PnL is per-position leveraged and doesn't sum.)
                     <span className="flex items-center gap-1.5 text-[11px] tabular-nums text-slate-500">
                       <span className="font-semibold uppercase tracking-wide text-slate-400">
                         {dashboardRange}
@@ -7416,9 +7479,15 @@ export default function Home() {
                               ? "text-emerald-600"
                               : "text-rose-600"
                           }`}
+                          title={
+                            swingHeaderTotals.approximate
+                              ? `includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
+                              : undefined
+                          }
                         >
-                          net {swingHeaderTotals.net >= 0 ? "+" : ""}
-                          {formatUsd(swingHeaderTotals.net)}
+                          net {swingHeaderTotals.approximate ? "≈" : ""}
+                          {swingHeaderTotals.net >= 0 ? "+" : ""}
+                          {formatCash(swingHeaderTotals.net, "€")}
                         </span>
                       ) : null}
                       <span>· {swingHeaderTotals.trades} trades</span>
@@ -8588,6 +8657,9 @@ export default function Home() {
                     }
                     highlightTimeMs={selectedTick ? selectedTick.ts : null}
                     timelineTicks={activeTimeline}
+                    timelineLoading={
+                      !!activeSymbol && !(activeSymbol in symbolTimelines)
+                    }
                     selectedTimelineTs={
                       selectedTick
                         ? selectedTick.ts
@@ -8625,7 +8697,7 @@ export default function Home() {
                   />
                 ) : null}
 
-                {(hasLastDecision || activeTimeline.length > 0) && (
+                {hasLastDecision || activeTimeline.length > 0 ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                     {/* The tick timeline lives INSIDE the chart panel
                         (time-aligned under the axis); this is the classic
@@ -8673,10 +8745,9 @@ export default function Home() {
                         </div>
                       </div>
                     ) : selectedTickLoading ? (
-                      <div className="mt-3 space-y-2">
-                        <div className="h-4 w-56 animate-pulse rounded-full bg-slate-200" />
-                        <div className="h-3 w-full animate-pulse rounded-full bg-slate-100" />
-                      </div>
+                      // Full body skeleton so the bias grid & co. hold their
+                      // place instead of collapsing and jumping back in.
+                      renderDecisionBodySkeleton()
                     ) : selectedTick && !selectedTickDecision ? (
                       <div className="mt-3 text-sm text-slate-500">
                         Decision details unavailable (expired from the 7-day
@@ -8780,6 +8851,10 @@ export default function Home() {
                       </>
                     )}
                   </div>
+                ) : (
+                  // Decision data for this symbol hasn't arrived yet — hold
+                  // the card's shape instead of collapsing the layout.
+                  renderDecisionCardSkeleton()
                 )}
 
               </div>

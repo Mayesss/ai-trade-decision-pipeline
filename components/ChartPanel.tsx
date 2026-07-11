@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ChartSkeleton, TimelineSkeleton } from './ChartSkeleton';
 
 type DecisionBrief = {
   timestamp?: number | null;
@@ -143,6 +144,9 @@ type ChartPanelProps = {
   onTimeSelect?: (tsMs: number) => void;
   // Decision-timeline ticks rendered time-aligned under the chart's time axis.
   timelineTicks?: ChartTimelineTick[];
+  // True while the parent is still fetching the ticks — shows the dot skeleton
+  // instead of collapsing the strip.
+  timelineLoading?: boolean;
   // Tick that renders with the full-contrast selection stroke.
   selectedTimelineTs?: number | null;
   // Click on a timeline dot (ms epoch of that tick).
@@ -646,6 +650,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     highlightTimeMs = null,
     onTimeSelect,
     timelineTicks,
+    timelineLoading = false,
     selectedTimelineTs = null,
     onTimelineTickSelect,
   } = props;
@@ -1500,17 +1505,7 @@ export default function ChartPanel(props: ChartPanelProps) {
           </svg>
         </button>
         {showSkeleton ? (
-          <div className="h-full w-full rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-            <div className="flex h-full w-full animate-pulse flex-col justify-between">
-              <div className="h-3 w-28 rounded-full bg-slate-200" />
-              <div className="space-y-2">
-                <div className="h-2.5 w-full rounded-full bg-slate-200" />
-                <div className="h-2.5 w-11/12 rounded-full bg-slate-200" />
-                <div className="h-2.5 w-10/12 rounded-full bg-slate-200" />
-              </div>
-              <div className="h-3 w-40 rounded-full bg-slate-200" />
-            </div>
-          </div>
+          <ChartSkeleton />
         ) : hasChartData ? (
           <div ref={chartContainerRef} className="h-full w-full" style={{ minHeight: 260 }} />
         ) : showEmpty ? (
@@ -1684,7 +1679,9 @@ export default function ChartPanel(props: ChartPanelProps) {
           </>
         )}
       </div>
-      {hasChartData && timelineDots.length > 0 ? (
+      {showSkeleton || (timelineLoading && !timelineDots.length) ? (
+        <TimelineSkeleton />
+      ) : hasChartData && timelineDots.length > 0 ? (
         // Decision timeline, time-aligned under the chart's own time axis.
         // Dots sit at their tick's bar position and stretch with zoom/pan;
         // wide zooms cull the least important overlapping dots.
