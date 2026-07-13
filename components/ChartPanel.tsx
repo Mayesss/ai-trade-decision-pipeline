@@ -1761,6 +1761,12 @@ export default function ChartPanel(props: ChartPanelProps) {
           ))}
           {timelineDots.map(({ x, tick }) => {
             const isSelected = tick.ts === selectedTimelineTs;
+            const isContextSkip =
+              tick.kind !== 'action' &&
+              tick.kind !== 'ai_call' &&
+              threadSegments.some(
+                (segment) => x >= segment.left && x <= segment.left + segment.width,
+              );
             const label = timelineTickLabel(tick);
             return (
               <button
@@ -1776,7 +1782,9 @@ export default function ChartPanel(props: ChartPanelProps) {
                 <span
                   className={`timeline-dot ${tick.hourly ? 'h-3.5 w-3.5' : 'h-2 w-2'} rounded-full ${timelineDotFillClass(
                     tick,
-                  )} ${isSelected ? 'timeline-dot-selected' : ''}`}
+                  )} ${isContextSkip ? 'timeline-dot-context-skip' : ''} ${
+                    isSelected ? 'timeline-dot-selected' : ''
+                  }`}
                 />
               </button>
             );
