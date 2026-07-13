@@ -1006,10 +1006,10 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
             : ''
     }
 - Exchange-side TP/SL bracket (fills 24/7 between these evaluations):
-  • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. Output stop_loss_price=null on entries — a ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe stop is attached automatically.
+  • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
-  • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and the automatic catastrophe stop are anchored at the LIMIT price. null = enter at market now. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment.
+  • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1033,7 +1033,7 @@ TASKS:
 1) Output exactly one allowed action (see DECISION OWNERSHIP): flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE.
 2) ${leverageTask}
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
-4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: only to amend the stop while in a position (null = unchanged); always null on entries/REVERSE.
+4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: on BUY/SELL/REVERSE the structural invalidation stop (null = wide catastrophe default); on in-position HOLD/partial CLOSE amends the standing stop, tighten-only (null = unchanged); else null.
 5) entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.
 6) summary ≤3 lines; reason = brief rationale.
 
@@ -1318,10 +1318,11 @@ export function postprocessDecision(params: {
 
     // Exchange-side TP/SL targets. Here we only gate by action and coerce types;
     // price-level sanity (correct side of price, min/max ATR distance, entry-TP
-    // fallback) is enforced by sanitizeExchangeTpSl in the API route, which has
-    // the live price + ATR. Entry SL stays code-owned (catastrophe stop), so it
-    // is nulled on BUY/SELL/REVERSE (REVERSE opens a fresh position and gets the
-    // same entry bracket, targeted for the NEW side).
+    // fallback, tighten-only stop amends) is enforced by sanitizeExchangeTpSl in
+    // the API route, which has the live price + ATR. On entries (BUY/SELL/REVERSE
+    // — REVERSE opens a fresh position bracketed for the NEW side) the SL is the
+    // model's structural invalidation stop; when it is null or later dropped, the
+    // code-owned 3×ATR catastrophe stop is attached instead.
     const coercePrice = (v: unknown) => {
         const n = Number(v);
         return Number.isFinite(n) && n > 0 ? n : null;
@@ -1331,7 +1332,8 @@ export function postprocessDecision(params: {
         positionOpen && (action === 'HOLD' || (action === 'CLOSE' && exit_size_pct != null && exit_size_pct < 100));
     const take_profit_price =
         isEntryAction || tpslAmendEligible ? coercePrice(decision?.take_profit_price) : null;
-    const stop_loss_price = tpslAmendEligible ? coercePrice(decision?.stop_loss_price) : null;
+    const stop_loss_price =
+        isEntryAction || tpslAmendEligible ? coercePrice(decision?.stop_loss_price) : null;
     // Pullback limit entry: flat BUY/SELL only (REVERSE stays market — it must
     // actually flip the exposure, not maybe-flip it). Price-side/distance
     // sanity is enforced by sanitizeEntryLimit in the API route.
@@ -1364,10 +1366,15 @@ export function postprocessDecision(params: {
 // entry the model leaves without a target still gets a symmetric (~1:1 R)
 // exchange-side bracket instead of an unbounded upside leg.
 export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
-// A stop may never sit wider than the catastrophe distance from CURRENT price —
-// amendments can tighten protection, never loosen it past the entry risk model.
+// A stop may never sit wider than the catastrophe distance from CURRENT price,
+// and an amendment may never sit further from price than the STANDING stop —
+// amendments tighten protection, never loosen it (blocks walking the stop away
+// on a losing position).
 export const EXCHANGE_SL_MAX_ATR_MULT = 3;
 const ENTRY_TP_MIN_ATR = 0.5;
+// An entry stop closer than this is inside one bar's noise and would likely be
+// wicked out immediately — dropped in favour of the catastrophe default.
+const ENTRY_SL_MIN_ATR = 0.25;
 const TP_MAX_ATR = 10;
 const AMEND_MIN_GAP_ATR = 0.1;
 
@@ -1383,11 +1390,14 @@ export type ExchangeTpSl = {
  * levels are clamped, and entries without a usable TP fall back to a wide
  * 3×ATR target so every entry ships with a resting exchange TP.
  *
- * Entries: `side` is derived from the action; stop_loss_price is always null
- * (the catastrophe stop is code-owned). REVERSE is an entry for the OPPOSITE
- * of the current position side — same treatment (TP with fallback, SL
- * code-owned). In-position (HOLD / partial CLOSE): both legs may amend the
- * standing bracket; null = leave unchanged.
+ * Entries: `side` is derived from the action. stop_loss_price MAY be a
+ * structural invalidation stop (protective side, 0.25–3×ATR from the entry
+ * anchor); when absent or dropped, the caller attaches the code-owned 3×ATR
+ * catastrophe stop instead. REVERSE is an entry for the OPPOSITE of the
+ * current position side — same treatment. In-position (HOLD / partial CLOSE):
+ * both legs may amend the standing bracket (null = leave unchanged), and a
+ * stop amendment may only TIGHTEN protection vs `standingStopLossPrice` —
+ * never further from price than the stop already resting.
  */
 export function sanitizeExchangeTpSl(params: {
     action: string;
@@ -1398,6 +1408,9 @@ export function sanitizeExchangeTpSl(params: {
     takeProfitPrice: number | null;
     stopLossPrice: number | null;
     exitSizePct?: number | null;
+    // The stop currently resting on the position (null = none). Amend-only
+    // tighten guard; ignored on entries.
+    standingStopLossPrice?: number | null;
 }): ExchangeTpSl {
     const notes: string[] = [];
     const action = String(params.action || '').toUpperCase();
@@ -1456,23 +1469,36 @@ export function sanitizeExchangeTpSl(params: {
     }
     if (tp != null && !(tp > 0)) tp = null;
 
-    // Stop loss: amend-only (entry SL is the code-owned catastrophe stop). Must
-    // be protective vs current price and never wider than the catastrophe
-    // distance from current price.
-    let sl = !isEntry && Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0 ? Number(params.stopLossPrice) : null;
+    // Stop loss: entries may attach a structural invalidation stop (the caller
+    // falls back to the code-owned 3×ATR catastrophe stop when absent/dropped);
+    // amends must be protective vs current price, never wider than the
+    // catastrophe distance, and never looser than the standing stop.
+    let sl = Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0 ? Number(params.stopLossPrice) : null;
     if (sl != null) {
         if (dir * (price - sl) <= 0) {
             notes.push('sl_wrong_side_dropped');
             sl = null;
         } else if (atr) {
             const distAtr = Math.abs(price - sl) / atr;
-            if (distAtr < AMEND_MIN_GAP_ATR) {
+            const minAtr = isEntry ? ENTRY_SL_MIN_ATR : AMEND_MIN_GAP_ATR;
+            if (distAtr < minAtr) {
                 notes.push('sl_too_close_dropped');
                 sl = null;
             } else if (distAtr > EXCHANGE_SL_MAX_ATR_MULT) {
                 sl = price - dir * EXCHANGE_SL_MAX_ATR_MULT * atr;
                 notes.push('sl_clamped_max_atr');
             }
+        }
+        // Tighten-only guard on amends: a new stop below the standing stop
+        // (long) / above it (short) loosens protection — the martingale-style
+        // stop walk on a losing position. Dropped, standing stop stays.
+        const standingSl =
+            Number.isFinite(params.standingStopLossPrice as number) && (params.standingStopLossPrice as number) > 0
+                ? Number(params.standingStopLossPrice)
+                : null;
+        if (sl != null && isAmend && standingSl != null && dir * (sl - standingSl) < 0) {
+            notes.push('sl_loosened_dropped');
+            sl = null;
         }
     }
     if (sl != null && !(sl > 0)) sl = null;
@@ -1485,16 +1511,21 @@ export function sanitizeExchangeTpSl(params: {
 // ------------------------------
 
 // A pullback limit must be a genuine pullback: at least MIN_ATR below (BUY) /
-// above (SELL) current price — anything closer is effectively a market order,
-// so we just market it. Beyond MAX_ATR the fill odds within the one-tick TTL
-// are negligible and the bracket math distorts, so it clamps.
+// above (SELL) current price. An invalid limit (wrong side, inside the noise
+// band, or unverifiable without ATR) DROPS the entry for this tick instead of
+// silently converting to a market order — the model asked for a patience
+// price, and filling it at market is exactly the chase the prompt forbids
+// (null from the model is the only way to request market). Beyond MAX_ATR the
+// fill odds within the one-tick TTL are negligible and the bracket math
+// distorts, so it clamps.
 const ENTRY_LIMIT_MIN_ATR = 0.1;
 const ENTRY_LIMIT_MAX_ATR = 1.5;
 
 /**
  * Validate the model's pullback entry limit against live price + primary ATR.
- * Returns the usable limit price or null (= market entry), with notes.
- * Only flat BUY/SELL qualifies; a missing ATR fails open to market entry.
+ * Returns the usable limit price (null = market entry as requested), or
+ * dropEntry=true when the limit was invalid and the entry must be skipped
+ * this tick. Only flat BUY/SELL qualifies.
  */
 export function sanitizeEntryLimit(params: {
     action: string;
@@ -1502,7 +1533,7 @@ export function sanitizeEntryLimit(params: {
     price: number;
     primaryAtr: number | null;
     entryLimitPrice: number | null;
-}): { entryLimitPrice: number | null; notes: string[] } {
+}): { entryLimitPrice: number | null; dropEntry: boolean; notes: string[] } {
     const notes: string[] = [];
     const action = String(params.action || '').toUpperCase();
     const price = Number(params.price);
@@ -1514,25 +1545,29 @@ export function sanitizeEntryLimit(params: {
         Number.isFinite(params.entryLimitPrice as number) && (params.entryLimitPrice as number) > 0
             ? Number(params.entryLimitPrice)
             : null;
-    if (raw == null) return { entryLimitPrice: null, notes };
+    if (raw == null) return { entryLimitPrice: null, dropEntry: false, notes };
     if (params.positionOpen || (action !== 'BUY' && action !== 'SELL') || !(price > 0)) {
-        return { entryLimitPrice: null, notes: ['limit_not_applicable'] };
+        return { entryLimitPrice: null, dropEntry: false, notes: ['limit_not_applicable'] };
     }
-    if (!atr) return { entryLimitPrice: null, notes: ['limit_dropped_no_atr'] };
+    if (!atr) return { entryLimitPrice: null, dropEntry: true, notes: ['limit_no_atr_entry_dropped'] };
 
     const dir = action === 'BUY' ? 1 : -1;
     // Pullback distance: positive = on the pullback side of price.
     const distAtr = (dir * (price - raw)) / atr;
+    if (distAtr <= 0) {
+        notes.push('limit_wrong_side_entry_dropped');
+        return { entryLimitPrice: null, dropEntry: true, notes };
+    }
     if (distAtr < ENTRY_LIMIT_MIN_ATR) {
-        notes.push('limit_too_close_market_entry');
-        return { entryLimitPrice: null, notes };
+        notes.push('limit_too_close_entry_dropped');
+        return { entryLimitPrice: null, dropEntry: true, notes };
     }
     if (distAtr > ENTRY_LIMIT_MAX_ATR) {
         const clamped = price - dir * ENTRY_LIMIT_MAX_ATR * atr;
         notes.push('limit_clamped_max_atr');
-        return { entryLimitPrice: clamped > 0 ? clamped : null, notes };
+        return { entryLimitPrice: clamped > 0 ? clamped : null, dropEntry: false, notes };
     }
-    return { entryLimitPrice: raw, notes };
+    return { entryLimitPrice: raw, dropEntry: false, notes };
 }
 
 // ------------------------------
@@ -1570,8 +1605,10 @@ export const SWING_DECISION_SCHEMA = {
             raise_leverage_to: { type: ['integer', 'null'], minimum: 1, maximum: 125 },
             move_stop_to_be: { type: ['boolean', 'null'] },
             // Exchange-side bracket. Entry: take_profit_price is the resting TP
-            // attached with the order. In-position: either field amends the
-            // standing bracket (null = leave unchanged). Price-level sanity
+            // attached with the order; stop_loss_price is the structural
+            // invalidation stop (null = code-owned 3×ATR catastrophe default).
+            // In-position: either field amends the standing bracket (null =
+            // leave unchanged; stop amends tighten-only). Price-level sanity
             // (side/distance vs live price+ATR) is enforced in code after parse.
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },

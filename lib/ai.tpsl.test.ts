@@ -35,10 +35,25 @@ const amend = (
         ...overrides,
     });
 
-test('entry BUY keeps a valid structural TP and nulls the SL (catastrophe stop is code-owned)', () => {
+test('entry BUY keeps a valid structural TP and a valid structural SL', () => {
     const out = entry('BUY', 104, 97);
     assert.equal(out.takeProfitPrice, 104);
-    assert.equal(out.stopLossPrice, null);
+    assert.equal(out.stopLossPrice, 97);
+});
+
+test('entry SL on the wrong side or inside 0.25 ATR is dropped (caller falls back to catastrophe stop)', () => {
+    const wrongSide = entry('BUY', 104, 103); // SL above price on a long
+    assert.equal(wrongSide.stopLossPrice, null);
+    assert.ok(wrongSide.notes.includes('sl_wrong_side_dropped'));
+    const tooClose = entry('BUY', 104, 99.7); // 0.15 ATR below
+    assert.equal(tooClose.stopLossPrice, null);
+    assert.ok(tooClose.notes.includes('sl_too_close_dropped'));
+});
+
+test('entry SL beyond 3 ATR is clamped to the catastrophe distance', () => {
+    const out = entry('SELL', 95, 110); // 5 ATR above on a short
+    assert.equal(out.stopLossPrice, PRICE + 3 * ATR);
+    assert.ok(out.notes.includes('sl_clamped_max_atr'));
 });
 
 test('entry without a TP falls back to 3×ATR on the profit side', () => {
@@ -86,6 +101,24 @@ test('stop amendments are clamped to the 3×ATR catastrophe distance from curren
     assert.equal(short.stopLossPrice, PRICE + 3 * ATR);
 });
 
+test('stop amendments only tighten vs the standing stop', () => {
+    // Long with standing stop 96: 97 tightens (kept), 94 loosens (dropped).
+    const tighten = amend('long', null, 97, { standingStopLossPrice: 96 });
+    assert.equal(tighten.stopLossPrice, 97);
+    const loosen = amend('long', null, 94.5, { standingStopLossPrice: 96 });
+    assert.equal(loosen.stopLossPrice, null);
+    assert.ok(loosen.notes.includes('sl_loosened_dropped'));
+    // Short with standing stop 104: 103 tightens, 105 loosens.
+    const tightenShort = amend('short', null, 103, { standingStopLossPrice: 104 });
+    assert.equal(tightenShort.stopLossPrice, 103);
+    const loosenShort = amend('short', null, 105, { standingStopLossPrice: 104 });
+    assert.equal(loosenShort.stopLossPrice, null);
+    assert.ok(loosenShort.notes.includes('sl_loosened_dropped'));
+    // No standing stop → any protective level within the clamp is allowed.
+    const noStanding = amend('long', null, 94.5);
+    assert.equal(noStanding.stopLossPrice, 94.5);
+});
+
 test('amend applies on a partial CLOSE but not on a full CLOSE', () => {
     const partial = amend('long', 105, 96, { action: 'CLOSE', exitSizePct: 40 });
     assert.equal(partial.takeProfitPrice, 105);
@@ -95,8 +128,8 @@ test('amend applies on a partial CLOSE but not on a full CLOSE', () => {
     assert.equal(full.stopLossPrice, null);
 });
 
-test('REVERSE is an entry for the opposite side: TP validated for the NEW side, SL stays code-owned', () => {
-    // Reversing a LONG → new SHORT: TP must be below price.
+test('REVERSE is an entry for the opposite side: TP and SL validated for the NEW side', () => {
+    // Reversing a LONG → new SHORT: TP below price, SL above price.
     const good = sanitizeExchangeTpSl({
         action: 'REVERSE',
         positionOpen: true,
@@ -104,10 +137,10 @@ test('REVERSE is an entry for the opposite side: TP validated for the NEW side, 
         price: PRICE,
         primaryAtr: ATR,
         takeProfitPrice: 95,
-        stopLossPrice: 104, // ignored on entries — catastrophe stop is code-owned
+        stopLossPrice: 104, // 2 ATR above — valid structural stop for the new short
     });
     assert.equal(good.takeProfitPrice, 95);
-    assert.equal(good.stopLossPrice, null);
+    assert.equal(good.stopLossPrice, 104);
     // TP on the wrong side for the NEW short → fallback below price.
     const wrong = sanitizeExchangeTpSl({
         action: 'REVERSE',

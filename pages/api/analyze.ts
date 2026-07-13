@@ -1633,8 +1633,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         (decision as any).response_id = aiResponseId;
 
         // Pullback entry limit first (its price anchors everything downstream):
-        // validate the model's limit against live price + ATR — wrong side or
-        // too close falls back to a market entry, too far clamps.
+        // validate the model's limit against live price + ATR — too far clamps;
+        // wrong side / inside the noise band / unverifiable DROPS the entry for
+        // this tick (no silent market fallback — the model asked for a patience
+        // price, and null is its way to request market).
         const tpslAtrRaw = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
         const primaryAtrSane = Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null;
         const marketAnchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
@@ -1646,15 +1648,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             entryLimitPrice: (decision as any).entry_limit_price ?? null,
         });
         (decision as any).entry_limit_price = entryLimit.entryLimitPrice;
-        // Bracket anchor: for a resting pullback entry the catastrophe stop and
+        if (entryLimit.dropEntry && (decision.action === 'BUY' || decision.action === 'SELL')) {
+            (decision as any).action = 'HOLD';
+            (decision as any).reason = `${String((decision as any).reason ?? '')} [entry dropped: ${entryLimit.notes.join(',')}]`.trim();
+        }
+        // Bracket anchor: for a resting pullback entry the protective stop and
         // TP must be sized from the LIMIT price (where the position would
         // actually open), not from the current price.
         const bracketAnchor = entryLimit.entryLimitPrice ?? marketAnchor;
 
         // Exchange-side TP/SL: validate the model's price targets against the
         // bracket anchor + primary ATR (correct side of price, min/max distance;
-        // stop amendments never wider than the catastrophe distance), with a
-        // 3×ATR fallback TP on entries so every entry ships with a resting TP.
+        // stop never wider than the catastrophe distance, amendments tighten-only
+        // vs the standing stop), with a 3×ATR fallback TP on entries so every
+        // entry ships with a resting TP.
         const exchangeTpsl = sanitizeExchangeTpSl({
             action: decision.action,
             positionOpen,
@@ -1664,6 +1671,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             takeProfitPrice: (decision as any).take_profit_price ?? null,
             stopLossPrice: (decision as any).stop_loss_price ?? null,
             exitSizePct: (decision as any).exit_size_pct ?? null,
+            standingStopLossPrice: currentStopLoss,
         });
         (decision as any).take_profit_price = exchangeTpsl.takeProfitPrice;
         (decision as any).stop_loss_price = exchangeTpsl.stopLossPrice;
@@ -1729,14 +1737,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // Catastrophe stop: a deliberately WIDE ATR-based protective stop placed
-        // at entry so the position is bounded during the ~1h gap between AI
-        // evaluations. It is a circuit breaker, not a tactical exit — the AI
-        // remains the primary exit manager each hour, so it must be wide enough
-        // not to get wicked out of trades the AI would otherwise manage.
+        // Entry protective stop: the model's structural invalidation stop when it
+        // survived sanitation (sanitizeExchangeTpSl: protective side, 0.25–3×ATR
+        // from the bracket anchor), otherwise the deliberately WIDE ATR-based
+        // catastrophe stop — a circuit breaker bounding the position during the
+        // ~1h gap between AI evaluations, not a tactical exit.
         const CATASTROPHE_STOP_ATR_MULT = 3;
         let stopLossPrice: number | null = null;
-        // Any action that opens fresh exposure gets the catastrophe stop —
+        // Any action that opens fresh exposure gets a protective stop —
         // including REVERSE, whose new position is the OPPOSITE of the current
         // side (it previously opened unprotected; gap closed 2026-07-08).
         const bracketEntrySide: 'long' | 'short' | null =
@@ -1750,14 +1758,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         : 'long'
                     : null;
         if (bracketEntrySide) {
-            const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
-            // Anchored at the pullback limit when one is resting — the stop
-            // protects the position from where it would actually open.
-            const anchor = bracketAnchor;
-            if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
-                const dist = CATASTROPHE_STOP_ATR_MULT * primaryAtr;
-                const raw = bracketEntrySide === 'long' ? anchor - dist : anchor + dist;
-                stopLossPrice = raw > 0 ? raw : null;
+            if (exchangeTpsl.stopLossPrice != null) {
+                stopLossPrice = exchangeTpsl.stopLossPrice;
+            } else {
+                const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+                // Anchored at the pullback limit when one is resting — the stop
+                // protects the position from where it would actually open.
+                const anchor = bracketAnchor;
+                if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
+                    const dist = CATASTROPHE_STOP_ATR_MULT * primaryAtr;
+                    const raw = bracketEntrySide === 'long' ? anchor - dist : anchor + dist;
+                    stopLossPrice = raw > 0 ? raw : null;
+                }
             }
         }
 
