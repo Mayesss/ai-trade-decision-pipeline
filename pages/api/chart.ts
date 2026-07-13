@@ -15,6 +15,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
+import { assembleCapitalPositionWindows } from '../../lib/swing/capitalWindows';
 import {
   readChartCandlesCache,
   writeChartCandlesCache,
@@ -345,8 +346,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           closedPositionSource = 'persisted';
         }
         if (platform === 'bitget') {
-          // Bitget closes are NOT persisted at close time (only Capital is), so the
-          // Neon mirror lags the newest close — it's only warmed opportunistically by
+          // Bitget closes are NOT persisted at close time, so the Neon mirror lags
+          // the newest close — it's only warmed opportunistically by
           // dashboard-summary loads. Gating the broker read on an empty mirror meant a
           // just-closed position vanished from the chart (gone from the open feed, not
           // yet mirrored) whenever the mirror already held older in-window closes.
@@ -362,6 +363,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           } catch (err) {
             console.warn(`Could not merge broker position windows for ${symbol}:`, err);
           }
+        } else {
+          // Capital rows come in pairs: AI closes write a captured row (prices,
+          // pct) at close time AND a cash-only capital-tx: row lands later from
+          // the transaction reconcile; venue-bracket (TP/SL) closes get ONLY the
+          // tx row (no AI decision fires — the analyze-tick reconcile persists
+          // them). Raw rows would render AI closes twice and bracket closes with
+          // no side/entry/percent, so merge the pairs, enrich tx-only rows from
+          // decision history, and derive the missing percents.
+          closed = assembleCapitalPositionWindows(closed, history);
         }
         const closedNormalized =
           platform === 'bitget' && symbol === BTC_SYMBOL

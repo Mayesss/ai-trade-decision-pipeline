@@ -73,7 +73,11 @@ import {
 } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
-import { warmPositionOverlayCacheFromAnalyze } from '../../lib/swing/positionOverlayCache';
+import {
+    invalidatePositionOverlayCache,
+    warmPositionOverlayCacheFromAnalyze,
+} from '../../lib/swing/positionOverlayCache';
+import { reconcileCapitalClosedPositions } from '../../lib/swing/capitalWindows';
 import {
     CONTEXT_TIMEFRAME,
     DEFAULT_NOTIONAL_USDT,
@@ -718,6 +722,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         aiThreadResponseId = aiThread.lastResponseId;
                     } else if (aiThread.status === 'in_position') {
                         await endSwingAiThread(platform, symbol);
+                        // The previous tick had a position, now flat with no AI CLOSE
+                        // in between ⇒ the venue closed it (TP/SL bracket, stop-out,
+                        // manual). No execution path persisted that close, so pull it
+                        // from Capital's transaction history now — otherwise it stays
+                        // invisible to the chart and PnL until a dashboard-summary
+                        // load happens to reconcile it. (Bitget needs no equivalent:
+                        // its chart/summary reads always broker-merge recent windows.)
+                        // Best-effort: reconcile never throws, and a cache drop only
+                        // follows an actual write.
+                        if (platform === 'capital') {
+                            const persisted = await reconcileCapitalClosedPositions(symbol);
+                            if (persisted > 0) {
+                                await invalidatePositionOverlayCache({ symbol, platform });
+                            }
+                        }
                     } else {
                         aiThreadResponseId = aiThread.lastResponseId;
                     }

@@ -9,8 +9,14 @@ import {
   fetchCapitalPositionInfo,
   fetchCapitalRealizedRoi,
   fetchCapitalTradeTransactions,
-  type CapitalTradeTransactionRow,
 } from '../../../lib/capital';
+import {
+  capitalTransactionToWindow,
+  enrichCapitalWindowFromHistory,
+  mergeCapitalPositionWindows,
+  normalizeCapitalSymbolKey,
+  withDerivedPnlPct,
+} from '../../../lib/swing/capitalWindows';
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
 import { readSwingLastScan } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
@@ -104,42 +110,6 @@ const scalePct = (value: number | null | undefined, factor: number): number | nu
   return value * factor;
 };
 
-function mergeCapitalPositionWindows(windows: PositionWindow[]): PositionWindow[] {
-  const sorted = windows
-    .slice()
-    .sort((a, b) => Number(a.exitTimestamp ?? a.entryTimestamp ?? 0) - Number(b.exitTimestamp ?? b.entryTimestamp ?? 0));
-  const merged: PositionWindow[] = [];
-  for (const window of sorted) {
-    const ts = Number(window.exitTimestamp ?? window.entryTimestamp ?? 0);
-    const match = merged.find((row) => {
-      const rowTs = Number(row.exitTimestamp ?? row.entryTimestamp ?? 0);
-      return (
-        normalizeCapitalSymbolKey(row.symbol) === normalizeCapitalSymbolKey(window.symbol) &&
-        Number.isFinite(rowTs) &&
-        Number.isFinite(ts) &&
-        Math.abs(rowTs - ts) <= 5 * 60 * 1000
-      );
-    });
-    if (!match) {
-      merged.push({ ...window });
-      continue;
-    }
-    match.id = `${match.id}|${window.id}`;
-    match.entryTimestamp = match.entryTimestamp ?? window.entryTimestamp ?? null;
-    match.exitTimestamp = match.exitTimestamp ?? window.exitTimestamp ?? null;
-    match.entryPrice = match.entryPrice ?? window.entryPrice ?? null;
-    match.exitPrice = match.exitPrice ?? window.exitPrice ?? null;
-    match.side = match.side ?? window.side ?? null;
-    match.pnlNet = match.pnlNet ?? window.pnlNet ?? null;
-    match.pnlGross = match.pnlGross ?? window.pnlGross ?? null;
-    match.pnlPct = match.pnlPct ?? window.pnlPct ?? null;
-    match.pnlGrossPct = match.pnlGrossPct ?? window.pnlGrossPct ?? null;
-    match.notional = match.notional ?? window.notional ?? null;
-    match.leverage = match.leverage ?? window.leverage ?? null;
-  }
-  return merged;
-}
-
 function finiteNumber(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -150,113 +120,10 @@ function positiveNumber(value: unknown): number | null {
   return n !== null && n > 0 ? n : null;
 }
 
-function derivePnlPctFromNetExposure(window: PositionWindow): number | null {
-  const pnlNet = finiteNumber(window.pnlNet);
-  const notional = positiveNumber(window.notional);
-  if (pnlNet === null || notional === null) return null;
-  const leverage = positiveNumber(window.leverage);
-  const basis = leverage !== null ? notional / leverage : notional;
-  return basis > 0 ? (pnlNet / basis) * 100 : null;
-}
-
-function withDerivedPnlPct(window: PositionWindow): PositionWindow {
-  const derivedPct = derivePnlPctFromNetExposure(window);
-  if (derivedPct === null) return window;
-  const existingPct = finiteNumber(window.pnlPct);
-  const existingGrossPct = finiteNumber(window.pnlGrossPct);
-  const existingPctLooksPlaceholder =
-    existingPct !== null &&
-    Math.abs(existingPct) < 0.005 &&
-    finiteNumber(window.pnlNet) !== null &&
-    Math.abs(finiteNumber(window.pnlNet) as number) > 0.005;
-  const existingGrossPctLooksPlaceholder =
-    existingGrossPct !== null &&
-    Math.abs(existingGrossPct) < 0.005 &&
-    finiteNumber(window.pnlGross ?? window.pnlNet) !== null &&
-    Math.abs(finiteNumber(window.pnlGross ?? window.pnlNet) as number) > 0.005;
-  return {
-    ...window,
-    pnlPct: existingPct !== null && !existingPctLooksPlaceholder ? existingPct : derivedPct,
-    pnlGrossPct: existingGrossPct !== null && !existingGrossPctLooksPlaceholder ? existingGrossPct : derivedPct,
-  };
-}
-
-function normalizeCapitalSymbolKey(value: unknown): string {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-}
-
-function capitalTransactionToWindow(row: CapitalTradeTransactionRow): PositionWindow | null {
-  const ts = finiteNumber(row.dateUtcMs);
-  if (ts === null || ts <= 0) return null;
-  const status = String(row.status || '').trim().toUpperCase();
-  if (status && status !== 'PROCESSED') return null;
-  const type = String(row.transactionType || '').trim().toUpperCase();
-  if (type && type !== 'TRADE') return null;
-  const note = String(row.note || '').trim().toLowerCase();
-  if (note && !note.includes('closed')) return null;
-  const symbol = String(row.instrumentName || '').trim().toUpperCase();
-  if (!symbol) return null;
-  const pnlNet = finiteNumber(row.pnlNet);
-  if (pnlNet === null) return null;
-  const reference = String(row.reference || '').trim() || `${symbol}-${Math.floor(ts)}`;
-  return {
-    id: `capital-tx:${reference}:${Math.floor(ts)}`,
-    symbol,
-    side: null,
-    entryTimestamp: null,
-    exitTimestamp: ts,
-    entryPrice: null,
-    exitPrice: null,
-    pnlNet,
-    pnlGross: pnlNet,
-    pnlPct: null,
-    pnlGrossPct: null,
-    notional: null,
-    leverage: null,
-  };
-}
-
-function enrichCapitalWindowFromHistory(window: PositionWindow, history: any[]): PositionWindow {
-  if (window.entryTimestamp) return window;
-  const exitTs = Number(window.exitTimestamp);
-  if (!Number.isFinite(exitTs) || exitTs <= 0) return window;
-  const priorEntries = (history || [])
-    .filter((entry) => {
-      const ts = Number(entry?.timestamp);
-      if (!Number.isFinite(ts) || ts <= 0 || ts > exitTs) return false;
-      const action = String(entry?.aiDecision?.action || '').toUpperCase();
-      const placed = entry?.execResult?.placed === true;
-      return placed && (action === 'BUY' || action === 'SELL');
-    })
-    .sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
-  const entry = priorEntries[0];
-  if (!entry) return window;
-  const action = String(entry?.aiDecision?.action || '').toUpperCase();
-  const entryPrice =
-    finiteNumber(entry?.snapshot?.positionContext?.entry_price) ??
-    finiteNumber(entry?.snapshot?.price) ??
-    window.entryPrice ??
-    null;
-  const notional =
-    positiveNumber(window.notional) ??
-    positiveNumber(entry?.execResult?.notionalUsd) ??
-    positiveNumber(entry?.execResult?.notionalUSDT) ??
-    positiveNumber(entry?.execResult?.orderNotionalUsd) ??
-    positiveNumber(entry?.snapshot?.gates?.notionalUSDT) ??
-    positiveNumber(entry?.snapshot?.gates?.notionalUsd) ??
-    null;
-  return {
-    ...window,
-    entryTimestamp: Number(entry.timestamp),
-    entryPrice,
-    side: window.side ?? (action === 'BUY' ? 'long' : action === 'SELL' ? 'short' : null),
-    leverage: window.leverage ?? finiteNumber(entry?.execResult?.leverage) ?? finiteNumber(entry?.aiDecision?.leverage),
-    notional,
-  };
-}
+// mergeCapitalPositionWindows / withDerivedPnlPct / enrichCapitalWindowFromHistory /
+// capitalTransactionToWindow / normalizeCapitalSymbolKey now live in
+// lib/swing/capitalWindows.ts, shared with the chart overlay endpoint and the
+// analyze-tick bracket-close reconcile.
 
 function capitalTransactionCacheKey(range: SummaryRangeKey, nowMs: number): string {
   const hourBucket = Math.floor(nowMs / (60 * 60 * 1000));

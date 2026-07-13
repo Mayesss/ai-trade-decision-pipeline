@@ -1,9 +1,10 @@
-import { kvGetJson, kvSetJson } from '../kv';
+import { kvDel, kvGetJson, kvSetJson } from '../kv';
 import { extractCapturedLeverages, loadSymbolMarkerHistory } from '../history';
 import { fetchRecentPositionWindows } from '../analytics';
 import type { AnalysisPlatform } from '../platform';
 import { loadClosedSwingPositions } from './pg';
 import { syncSwingClosedPositions, mergePositionWindows } from './sync';
+import { assembleCapitalPositionWindows } from './capitalWindows';
 import { chartTimeframeToSeconds } from './chartCache';
 
 // Chart position-overlay cache. The chart endpoint builds its position overlays
@@ -15,7 +16,9 @@ import { chartTimeframeToSeconds } from './chartCache';
 // just-opened/closed position may lag by up to the TTL, which is fine for a chart.
 // v4: overlay rows gained `closeReason` (TP/SL bracket-hit inference) — bumping
 // the version invalidates pre-schema cached rows in one shot.
-const PREFIX = 'swing:chart:overlay:v4';
+// v5: Capital windows are now pair-merged (captured + capital-tx rows) with
+// derived percents — cached v4 overlays held duplicates/percent-less rows.
+const PREFIX = 'swing:chart:overlay:v5';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -74,6 +77,21 @@ export async function readPositionOverlayCache(params: {
   } catch {
     return null;
   }
+}
+
+// Drop the cached overlays for one symbol across the warm presets (the ranges
+// the UI actually requests) so the next chart load recomputes instead of
+// serving a pre-close overlay for up to the TTL. Non-preset (custom) ranges
+// just age out. Best-effort — never throws.
+export async function invalidatePositionOverlayCache(params: {
+  symbol: string;
+  platform: AnalysisPlatform;
+}): Promise<void> {
+  await Promise.all(
+    CHART_OVERLAY_WARM_PRESETS.map((preset) =>
+      kvDel(cacheKey(params.symbol, params.platform, preset.timeframe, preset.limit)).catch(() => {}),
+    ),
+  );
 }
 
 // Write the computed overlay array. Best-effort — never throws. Empty arrays are
@@ -333,8 +351,8 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
     return;
   }
 
-  // Bitget closes aren't persisted to the Neon mirror at close time (only Capital
-  // is), so the mirror lags the newest close — and this warm write happens on the
+  // Bitget closes aren't persisted to the Neon mirror at close time, so the
+  // mirror lags the newest close — and this warm write happens on the
   // same analyze tick that closed it. Pull recent broker windows, write them
   // through, and merge so the cached overlay includes the just-closed position
   // instead of dropping it (it's gone from the open feed and not yet mirrored).
@@ -350,6 +368,12 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
     } catch (err) {
       console.warn(`chart overlay warm broker merge failed for ${symbol}:`, err);
     }
+  } else {
+    // Capital: merge captured + capital-tx row pairs, enrich tx-only rows
+    // (venue-bracket closes) from decision history, derive missing percents —
+    // same assembly as the chart endpoint, or the warmed cache would serve
+    // duplicated/percent-less windows for 65 minutes.
+    allClosed = assembleCapitalPositionWindows(allClosed, allHistory);
   }
 
   await Promise.all(
