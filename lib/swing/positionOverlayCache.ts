@@ -13,12 +13,12 @@ import { chartTimeframeToSeconds } from './chartCache';
 // a short window, so repeat loads skip the Neon read (cutting Neon data transfer)
 // and the broker round-trip. Aligned with the client's ~60s chart cache; a
 // just-opened/closed position may lag by up to the TTL, which is fine for a chart.
-// v5 invalidates long-lived empty Capital overlays created before live close
-// reconciliation and the one-minute TTL correction.
-const PREFIX = 'swing:chart:overlay:v5';
+// v4: overlay rows gained `closeReason` (TP/SL bracket-hit inference) — bumping
+// the version invalidates pre-schema cached rows in one shot.
+const PREFIX = 'swing:chart:overlay:v4';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65;
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
 })();
 
 // Kept as an opaque array so the endpoint stays the single source of truth for the
