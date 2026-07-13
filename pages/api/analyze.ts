@@ -35,7 +35,7 @@ import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 
 import {
     computeSwingState,
-    callAI,
+    callAIThread,
     computeMomentumSignals,
     postprocessDecision,
     resolveDecisionPolicy,
@@ -46,7 +46,7 @@ import {
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
-import type { DecisionPolicy, LastClosedPosition, MomentumSignals, PositionDecisionNote } from '../../lib/ai';
+import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import {
@@ -60,8 +60,14 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
-import { loadClosedSwingPositions, loadSwingPositionDecisions, upsertSwingPosition } from '../../lib/swing/pg';
-import type { SwingPositionDecision } from '../../lib/swing/pg';
+import {
+    endSwingAiThread,
+    getSwingAiThread,
+    loadClosedSwingPositions,
+    markSwingAiThreadInPosition,
+    upsertSwingAiThread,
+    upsertSwingPosition,
+} from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
 import { warmPositionOverlayCacheFromAnalyze } from '../../lib/swing/positionOverlayCache';
@@ -673,6 +679,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Responses-API thread (per-position conversation chain). A thread starts
+        // when an entry order is placed, survives a pullback-limit fill into
+        // position management, and ends when the limit expires unfilled or the
+        // position closes. Reconciled here against broker reality:
+        //   in_position + no open position → closed since last tick (TP/SL fill,
+        //     manual close, executed CLOSE) → conversation over;
+        //   pending_entry + open position → the limit filled → same conversation
+        //     now manages the position.
+        // Best-effort: a thread hiccup degrades the tick to stateless, never fails it.
+        let aiThreadResponseId: string | null = null;
+        if (!dryRun) {
+            try {
+                const aiThread = await getSwingAiThread(platform, symbol);
+                if (aiThread) {
+                    if (positionOpen) {
+                        if (aiThread.status === 'pending_entry') {
+                            await markSwingAiThreadInPosition(platform, symbol);
+                        }
+                        aiThreadResponseId = aiThread.lastResponseId;
+                    } else if (aiThread.status === 'in_position') {
+                        await endSwingAiThread(platform, symbol);
+                    }
+                }
+            } catch (err) {
+                console.warn(`AI thread load failed for ${symbol}:`, err);
+            }
+        }
+
         // Resting pullback entries (one-tick TTL). Sweep = cancel whatever the
         // PREVIOUS evaluation left resting. Hourly flat ticks always sweep
         // (TTL expiry, even when the gates then skip the AI); quarter ticks
@@ -705,6 +739,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                                 : null,
                     };
                 }
+                // Resting entry cancelled without filling → its conversation ends
+                // here (the next entry decision starts a fresh thread). A cancel
+                // that raced a fill (cancelled < found) is handled by the caller
+                // via pendingEntryFilledMidTick.
+                if (!dryRun && result.found > 0 && result.cancelled >= result.found) {
+                    await endSwingAiThread(platform, symbol).catch((err) =>
+                        console.warn(`AI thread end failed for ${symbol}:`, err),
+                    );
+                }
                 return result;
             } catch (err) {
                 console.warn(`pending entry sweep failed for ${symbol}:`, err);
@@ -716,7 +759,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ): Promise<boolean> => {
             if (!sweep || sweep.found === 0 || sweep.cancelled >= sweep.found) return false;
             const recheck = await fetchPositionInfo(symbol).catch(() => null);
-            return recheck?.status === 'open';
+            const filled = recheck?.status === 'open';
+            // Limit filled while we were cancelling it → a position exists; the
+            // pending-entry conversation now manages it from the next tick on.
+            if (filled && !dryRun) {
+                await markSwingAiThreadInPosition(platform, symbol).catch((err) =>
+                    console.warn(`AI thread fill-transition failed for ${symbol}:`, err),
+                );
+            }
+            return filled;
         };
         if (!positionOpen && !quarterTick) {
             const sweep = await sweepPendingEntries();
@@ -1100,63 +1151,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               })
             : {};
 
-        // Original entry thesis + partial-close rationale, fed back into the
-        // in-position prompt so the model manages the trade against the theory it
-        // opened on instead of re-deriving one per tick. Postgres, not KV: swing
-        // holds (1–10d) can outlive the 7-day KV history TTL. Fails open — a read
-        // error just omits the thesis.
-        let openingDecision: PositionDecisionNote | null = null;
-        let partialCloses: PositionDecisionNote[] = [];
-        const thesisEntryTs = Number(
-            pstate.enteredAt ?? (positionInfo.status === 'open' ? positionInfo.entryTimestamp : undefined),
-        );
-        if (positionOpen && Number.isFinite(thesisEntryTs) && thesisEntryTs > 0) {
-            try {
-                // Same 6h pre-entry lookback the swing.positions decision link uses:
-                // the opening decision is decided shortly BEFORE the broker entry ts.
-                const decisions = await loadSwingPositionDecisions({
-                    platform,
-                    symbol,
-                    fromMs: thesisEntryTs - 6 * 60 * 60 * 1000,
-                });
-                const clip = (value: string | null, max: number) => {
-                    const t = String(value ?? '').trim();
-                    if (!t) return undefined;
-                    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-                };
-                const toNote = (d: SwingPositionDecision): PositionDecisionNote => ({
-                    action: d.action,
-                    ts: new Date(d.decidedAtMs).toISOString(),
-                    ...(d.price != null && d.price > 0 ? { price: Number(d.price.toFixed(6)) } : {}),
-                    summary: clip(d.summary, 200),
-                    reason: clip(d.reason, 300),
-                    ...(d.exitSizePct != null ? { exit_size_pct: Math.round(d.exitSizePct) } : {}),
-                });
-                const ENTRY_SLACK_MS = 5 * 60_000;
-                const opening = [...decisions]
-                    .reverse()
-                    .find(
-                        (d) =>
-                            (d.action === 'BUY' || d.action === 'SELL' || d.action === 'REVERSE') &&
-                            d.decidedAtMs <= thesisEntryTs + ENTRY_SLACK_MS,
-                    );
-                if (opening) openingDecision = toNote(opening);
-                partialCloses = decisions
-                    .filter(
-                        (d) =>
-                            d.action === 'CLOSE' &&
-                            d.exitSizePct != null &&
-                            d.exitSizePct > 0 &&
-                            d.exitSizePct < 100 &&
-                            d.decidedAtMs > (opening?.decidedAtMs ?? thesisEntryTs),
-                    )
-                    .slice(-3)
-                    .map(toNote);
-            } catch (err) {
-                console.warn(`Could not load position decision thesis for ${symbol}:`, err);
-            }
-        }
-
+        // Entry thesis + management history now live in the position's Responses-API
+        // conversation thread (previous_response_id) — no re-feed from Postgres.
         const positionContext = composePositionContext({
             position: positionInfo,
             pnlPct,
@@ -1165,8 +1161,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             enteredAt: pstate.enteredAt,
             takeProfitPrice: currentTakeProfit,
             stopLossPrice: currentStopLoss,
-            openingDecision,
-            partialCloses,
         });
         // Re-entry cooldown input: most recent close on this symbol (AI close,
         // auto-close or broker stop — swing.positions records them all). Only needed
@@ -1603,10 +1597,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
         // Capital decides leverage by asset class, so it uses the leverage-free schema.
-        const decisionRaw = await callAI(
+        // In-position ticks chain onto the position's stored conversation
+        // (previous_response_id) so the model manages the trade with memory of its
+        // own entry thesis and every prior management tick; entry scans stay
+        // stateless (flat ticks never carry a thread head — sweeps end it first).
+        const { json: decisionRaw, responseId: aiResponseId } = await callAIThread(
             system,
             user,
             platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
+            { previousResponseId: positionOpen ? aiThreadResponseId : null },
         );
         const decision = postprocessDecision({
             decision: decisionRaw,
@@ -1629,6 +1628,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Nano (15m) bias measured at decision time — persisted on the decision
         // so the dashboard can render a Nano chip next to the other TF biases.
         (decision as any).nano_bias = nanoContext?.bias ?? null;
+        // Responses-API id of this call — persisted in ai_decision_json so every
+        // decision row maps to its turn in the stored conversation chain.
+        (decision as any).response_id = aiResponseId;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — wrong side or
@@ -1780,6 +1782,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       exchangeTpsl.takeProfitPrice,
                   );
         const executedAtMs = Date.now();
+
+        // Thread lifecycle bookkeeping. An entry that actually placed an order
+        // STARTS a conversation (pending_entry while a pullback limit rests;
+        // straight to in_position on a market entry — a fresh entry replaces any
+        // stale thread row outright). An in-position tick ADVANCES the chain head
+        // (HOLD / partial CLOSE / REVERSE — the reversal keeps its conversation).
+        // A full CLOSE that executed ends it; TP/SL fills between ticks are caught
+        // by the reconcile at the top of the next tick. Best-effort, never blocks
+        // the trading path.
+        if (!dryRun && aiResponseId) {
+            try {
+                const entryPlacedNow =
+                    !positionOpen && execRes?.placed === true && (decision.action === 'BUY' || decision.action === 'SELL');
+                const fullCloseExecuted =
+                    positionOpen &&
+                    decision.action === 'CLOSE' &&
+                    execRes?.placed === true &&
+                    Number((decision as any).exit_size_pct ?? 100) >= 100;
+                if (fullCloseExecuted) {
+                    await endSwingAiThread(platform, symbol);
+                } else if (entryPlacedNow) {
+                    await upsertSwingAiThread({
+                        platform,
+                        symbol,
+                        status: (decision as any).entry_limit_price != null ? 'pending_entry' : 'in_position',
+                        lastResponseId: aiResponseId,
+                    });
+                } else if (positionOpen) {
+                    await upsertSwingAiThread({
+                        platform,
+                        symbol,
+                        status: 'in_position',
+                        lastResponseId: aiResponseId,
+                    });
+                }
+            } catch (err) {
+                console.warn(`AI thread update failed for ${symbol}:`, err);
+            }
+        }
+
         if (platform === 'capital' && !dryRun) {
             await persistCapitalClosedPositionSnapshot({
                 symbol,

@@ -1,6 +1,6 @@
 // lib/positionContext.ts
 
-import type { PositionContext, PositionDecisionNote } from './ai';
+import type { PositionContext } from './ai';
 import type { PositionInfo } from './analytics';
 import { DEFAULT_TAKER_FEE_RATE } from './constants';
 
@@ -19,8 +19,6 @@ export function composePositionContext(params: {
     // the model amends against the actual current levels. null = none resting.
     takeProfitPrice?: number | null;
     stopLossPrice?: number | null;
-    openingDecision?: PositionDecisionNote | null;
-    partialCloses?: PositionDecisionNote[];
 }): PositionContext | null {
     if (params.position.status !== 'open') return null;
 
@@ -56,7 +54,5 @@ export function composePositionContext(params: {
         taker_fee_rate: toFixedNumber(takerFeeRate, 6),
         take_profit_price: toFixedNumber(params.takeProfitPrice, 6) ?? null,
         stop_loss_price: toFixedNumber(params.stopLossPrice, 6) ?? null,
-        ...(params.openingDecision ? { opening_decision: params.openingDecision } : {}),
-        ...(params.partialCloses?.length ? { partial_closes: params.partialCloses } : {}),
     };
 }

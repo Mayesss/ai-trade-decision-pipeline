@@ -150,6 +150,24 @@ async function ensureSwingSchema(): Promise<void> {
               END IF;
             END $$`);
 
+        // ai_threads: one active Responses-API conversation per (platform, symbol).
+        // A thread starts when an entry order is placed (market fill or resting
+        // pullback limit), survives the limit fill into position management, and
+        // ends when the limit expires unfilled or the position closes. Holds only
+        // the chain head — the conversation itself is stored on OpenAI's side.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.ai_threads (
+              platform         TEXT NOT NULL,
+              symbol           TEXT NOT NULL,
+              status           TEXT NOT NULL,
+              last_response_id TEXT NOT NULL,
+              turns            INT NOT NULL DEFAULT 1,
+              created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT ai_threads_status_check CHECK (status IN ('pending_entry', 'in_position')),
+              CONSTRAINT ai_threads_key PRIMARY KEY (platform, symbol)
+            )`);
+
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
         await db.$executeRaw(sql`
@@ -177,6 +195,78 @@ async function ensureSwingSchema(): Promise<void> {
 
 // Exposed for healthchecks / scripts that want to provision the schema eagerly.
 export { ensureSwingSchema };
+
+// --------------------------------------------------------------------------
+// AI threads (Responses API conversation chains)
+// --------------------------------------------------------------------------
+export type SwingAiThreadStatus = 'pending_entry' | 'in_position';
+
+export type SwingAiThread = {
+    status: SwingAiThreadStatus;
+    lastResponseId: string;
+    turns: number;
+};
+
+export async function getSwingAiThread(platform: string, symbol: string): Promise<SwingAiThread | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ status: string; last_response_id: string; turns: number }>>(sql`
+        SELECT status, last_response_id, turns
+        FROM swing.ai_threads
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+    const row = rows?.[0];
+    if (!row || !row.last_response_id) return null;
+    const status = row.status === 'pending_entry' ? 'pending_entry' : 'in_position';
+    return { status, lastResponseId: row.last_response_id, turns: Number(row.turns) || 1 };
+}
+
+// Insert or advance the chain head. A fresh entry decision REPLACES any prior
+// thread outright (new conversation); an in-position tick advances turns.
+export async function upsertSwingAiThread(params: {
+    platform: string;
+    symbol: string;
+    status: SwingAiThreadStatus;
+    lastResponseId: string;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    if (!params.lastResponseId) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        INSERT INTO swing.ai_threads (platform, symbol, status, last_response_id)
+        VALUES (${normalizePlatform(params.platform)}, ${String(params.symbol || '').toUpperCase()}, ${params.status}, ${params.lastResponseId})
+        ON CONFLICT (platform, symbol) DO UPDATE SET
+            status = EXCLUDED.status,
+            last_response_id = EXCLUDED.last_response_id,
+            turns = swing.ai_threads.turns + 1,
+            updated_at = NOW()
+    `);
+}
+
+// Resting pullback limit filled → the same conversation now manages the position.
+export async function markSwingAiThreadInPosition(platform: string, symbol: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.ai_threads
+        SET status = 'in_position', updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
+
+// Limit expired unfilled, or position closed → conversation over.
+export async function endSwingAiThread(platform: string, symbol: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        DELETE FROM swing.ai_threads
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
 
 // --------------------------------------------------------------------------
 // Decisions
@@ -271,63 +361,6 @@ export async function loadRecentSwingDecisions(
         appliedLeverage: finite(r.applied_leverage),
         targetLeverage: finite(r.target_leverage),
         dryRun: Boolean(r.dry_run),
-    }));
-}
-
-export type SwingPositionDecision = {
-    decidedAtMs: number;
-    action: string;
-    summary: string | null;
-    reason: string | null;
-    exitSizePct: number | null;
-    price: number | null; // market price at decision time (snapshot_json.price)
-};
-
-// Entry/exit decisions with the AI's own rationale for one symbol since a
-// timestamp — feeds the original entry thesis + partial-close reasons back into
-// the in-position prompt. Sourced from Postgres rather than KV because swing
-// holds (1–10 days) can outlive the 7-day KV history TTL. Projects only the few
-// small JSON fields it needs (never full ai_decision_json/prompt_json).
-export async function loadSwingPositionDecisions(opts: {
-    platform?: string | null;
-    symbol: string;
-    fromMs: number;
-    limit?: number;
-}): Promise<SwingPositionDecision[]> {
-    if (!isSwingPgConfigured()) return [];
-    await ensureSwingSchema();
-    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
-    const symbol = String(opts.symbol).toUpperCase();
-    const fromMs = finite(opts.fromMs) ?? 0;
-    const limit = Math.max(1, Math.min(200, Math.floor(Number(opts.limit) || 50)));
-    const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
-        SELECT
-            decided_at_ms,
-            action,
-            ai_decision_json->>'summary' AS summary,
-            ai_decision_json->>'reason' AS reason,
-            COALESCE(
-                ai_decision_json->>'exit_size_pct',
-                ai_decision_json->>'close_size_pct',
-                ai_decision_json->>'partial_close_pct'
-            ) AS exit_size_pct,
-            snapshot_json->>'price' AS price
-        FROM swing.decisions
-        WHERE symbol = ${symbol}
-          AND (${platform}::text IS NULL OR platform = ${platform})
-          AND decided_at_ms >= ${fromMs}
-          AND action IN ('BUY', 'SELL', 'CLOSE', 'REVERSE')
-        ORDER BY decided_at_ms ASC
-        LIMIT ${limit};
-    `);
-    return (rows || []).map((r) => ({
-        decidedAtMs: Number(r.decided_at_ms),
-        action: String(r.action),
-        summary: r.summary == null ? null : String(r.summary),
-        reason: r.reason == null ? null : String(r.reason),
-        exitSizePct: finite(r.exit_size_pct),
-        price: finite(r.price),
     }));
 }
 

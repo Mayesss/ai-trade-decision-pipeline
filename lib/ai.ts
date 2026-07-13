@@ -16,19 +16,6 @@ import { computeWaveGeometry } from './swing/waveGeometry';
 import type { NanoContext } from './swing/waveGeometry';
 import { setEvaluation, getEvaluation } from './utils';
 
-// The AI's own prior rationale attached to the open position: the decision that
-// opened it, and any partial trims since. Prior reasoning fed back verbatim —
-// not a code-computed verdict — so it stays inside the measurements-not-verdicts
-// prompt contract.
-export type PositionDecisionNote = {
-    action: string;
-    ts?: string;
-    price?: number; // market price when the decision was made
-    summary?: string;
-    reason?: string;
-    exit_size_pct?: number;
-};
-
 export type PositionContext = {
     side: 'long' | 'short';
     entry_price?: number;
@@ -44,8 +31,6 @@ export type PositionContext = {
     // against the actual current levels.
     take_profit_price?: number | null;
     stop_loss_price?: number | null;
-    opening_decision?: PositionDecisionNote | null;
-    partial_closes?: PositionDecisionNote[];
 };
 
 export type MomentumSignals = {
@@ -1016,8 +1001,8 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
 - Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
-        position_context?.opening_decision
-            ? `\n- Entry thesis: state.position.opening_decision is your own rationale that opened this position${position_context.partial_closes?.length ? ', and state.position.partial_closes are the trims you took since, with their reasons' : ''}. Manage against that thesis — HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict.`
+        position_context
+            ? `\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
             : ''
     }
 - Exchange-side TP/SL bracket (fills 24/7 between these evaluations):
@@ -1620,67 +1605,120 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
     },
 } as const;
 
+export type AiThreadCallResult = {
+    json: any;
+    // Responses API id of THIS call (`resp_...`) — persist it and pass it back as
+    // `previousResponseId` on the next tick to continue the conversation.
+    responseId: string | null;
+};
+
+async function readAiErrorDetails(res: Response): Promise<string> {
+    try {
+        const errJson = await res.json();
+        const msg =
+            (errJson as any)?.error?.message ||
+            (errJson as any)?.message ||
+            (typeof errJson === 'string' ? errJson : JSON.stringify(errJson));
+        return msg ? ` - ${msg}` : '';
+    } catch {
+        try {
+            const errText = await res.text();
+            return errText ? ` - ${errText.slice(0, 600)}` : '';
+        } catch {
+            return '';
+        }
+    }
+}
+
+// OpenAI Responses API (stateful). When `previousResponseId` is passed the server
+// replays the whole stored conversation — the entry decision and every in-position
+// management tick — as context, so the model manages a position with memory of its
+// own thesis instead of a stateless snapshot each tick. Responses are stored
+// server-side (`store: true`, ~30-day retention); a lost/expired chain head
+// degrades to a stateless call instead of failing the trading tick, and the caller
+// re-anchors the chain on the returned responseId.
+export async function callAIThread(
+    system: string,
+    user: string,
+    schema?: { name: string; schema: Record<string, unknown> },
+    opts?: { previousResponseId?: string | null },
+): Promise<AiThreadCallResult> {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+
+    // Structured Outputs (json_schema, strict) guarantees the response shape at the
+    // API layer when a caller supplies a schema; otherwise fall back to JSON mode.
+    // Responses API uses a flattened text.format (no chat-completions wrapper).
+    const format = schema
+        ? { type: 'json_schema', name: schema.name, schema: schema.schema, strict: true }
+        : { type: 'json_object' };
+
+    const request = (previousResponseId: string | null) =>
+        fetch(`${AI_BASE_URL}/responses`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+                model: AI_MODEL,
+                // `instructions` is per-call (NOT inherited via previous_response_id),
+                // so the system prompt rides along on every turn of a chain.
+                instructions: system,
+                input: user,
+                // gpt-5.x reasoning models only accept the default temperature (1);
+                // determinism comes from reasoning effort + the post-processing gates.
+                reasoning: { effort: 'medium' },
+                text: { format },
+                store: true,
+                // Long position threads grow the stored context each tick; drop
+                // middle turns server-side instead of erroring the tick when the
+                // chain outgrows the model's context window.
+                truncation: 'auto',
+                ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+            }),
+        });
+
+    let usedPreviousResponseId = opts?.previousResponseId ?? null;
+    let res = await request(usedPreviousResponseId);
+    if (!res.ok && usedPreviousResponseId && (res.status === 400 || res.status === 404)) {
+        const details = await readAiErrorDetails(res);
+        if (/previous[_ ]?response/i.test(details)) {
+            console.warn(`AI thread head ${usedPreviousResponseId} rejected (${res.status}${details}); retrying stateless`);
+            usedPreviousResponseId = null;
+            res = await request(null);
+        } else {
+            throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
+        }
+    }
+
+    if (!res.ok) {
+        const details = await readAiErrorDetails(res);
+        throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
+    }
+
+    const data = await res.json();
+    // Raw REST shape: output is an array of items (reasoning, message, ...);
+    // the assistant text lives on the message item's output_text content part.
+    const message = Array.isArray(data?.output) ? data.output.find((item: any) => item?.type === 'message') : null;
+    const text =
+        message?.content?.find?.((c: any) => c?.type === 'output_text')?.text ||
+        (typeof data?.output_text === 'string' ? data.output_text : '') ||
+        '{}';
+    const responseId = typeof data?.id === 'string' && data.id ? data.id : null;
+    try {
+        return { json: JSON.parse(text), responseId };
+    } catch {
+        throw new Error(`AI returned non-JSON content: ${String(text).slice(0, 600)}`);
+    }
+}
+
+// Stateless convenience wrapper (forex advisor, evaluations). Same Responses API
+// call, no chaining, parsed JSON only.
 export async function callAI(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
 ) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
-
-    const base = AI_BASE_URL;
-    const model = AI_MODEL;
-
-    // Structured Outputs (json_schema, strict) guarantees the response shape at the API
-    // layer when a caller supplies a schema; otherwise fall back to free-form JSON mode.
-    const response_format = schema
-        ? { type: 'json_schema', json_schema: { name: schema.name, schema: schema.schema, strict: true } }
-        : { type: 'json_object' };
-
-    const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model,
-            messages: [
-                { role: 'system', content: system },
-                { role: 'user', content: user },
-            ],
-            // gpt-5.x reasoning models only accept the default temperature (1); determinism
-            // comes from reasoning_effort + the post-processing gates, not a low temperature.
-            reasoning_effort: 'medium',
-            response_format,
-        }),
-    });
-
-    if (!res.ok) {
-        let details = '';
-        try {
-            const errJson = await res.json();
-            const msg =
-                errJson?.error?.message ||
-                errJson?.message ||
-                (typeof errJson === 'string' ? errJson : JSON.stringify(errJson));
-            details = msg ? ` - ${msg}` : '';
-        } catch {
-            try {
-                const errText = await res.text();
-                details = errText ? ` - ${errText.slice(0, 600)}` : '';
-            } catch {
-                details = '';
-            }
-        }
-        throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
-    }
-
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content || '{}';
-    try {
-        return JSON.parse(text);
-    } catch {
-        throw new Error(`AI returned non-JSON content: ${String(text).slice(0, 600)}`);
-    }
+    return (await callAIThread(system, user, schema)).json;
 }
