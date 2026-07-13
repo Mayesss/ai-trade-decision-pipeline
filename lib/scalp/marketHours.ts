@@ -210,6 +210,62 @@ function evaluateUtcOpeningHoursGate(params: {
   };
 }
 
+export type OpeningHoursState = {
+  // null = unknown (no schedule, or a non-UTC zone we can't safely interpret).
+  // Callers must treat null as "no data", never as "closed".
+  isOpen: boolean | null;
+  closesAtMs: number | null;
+  nextOpenAtMs: number | null;
+};
+
+// Point-in-time view of a venue schedule for callers that need "when does the
+// current session end / when does the next one begin" (e.g. the swing prompt's
+// venue-session context) rather than the replay gate semantics above.
+// Contiguous windows (an overnight "10:00-00:00" split at midnight plus the
+// next day's "00:00-02:00") are merged into continuous spans so closesAtMs is
+// the real session end, not a midnight day-boundary artifact.
+export function resolveOpeningHoursState(
+  openingHours: ScalpOpeningHoursSchedule | null | undefined,
+  nowMs: number,
+): OpeningHoursState {
+  if (!openingHours || !supportsUtcSchedule(openingHours)) {
+    return { isOpen: null, closesAtMs: null, nextOpenAtMs: null };
+  }
+  if (openingHours.alwaysOpen) {
+    return { isOpen: true, closesAtMs: null, nextOpenAtMs: null };
+  }
+  const windows = buildScheduleWindows(openingHours, nowMs);
+  if (!windows.length) {
+    return { isOpen: null, closesAtMs: null, nextOpenAtMs: null };
+  }
+  const spans: ResolvedScheduleWindow[] = [];
+  for (const window of windows) {
+    const last = spans[spans.length - 1];
+    if (last && window.openAtMs <= last.closeAtMs) {
+      last.closeAtMs = Math.max(last.closeAtMs, window.closeAtMs);
+    } else {
+      spans.push({ ...window });
+    }
+  }
+  const current = spans.find(
+    (span) => span.openAtMs <= nowMs && nowMs < span.closeAtMs,
+  );
+  if (current) {
+    const reopen = spans.find((span) => span.openAtMs >= current.closeAtMs);
+    return {
+      isOpen: true,
+      closesAtMs: current.closeAtMs,
+      nextOpenAtMs: reopen?.openAtMs ?? null,
+    };
+  }
+  const next = spans.find((span) => span.openAtMs > nowMs);
+  return {
+    isOpen: false,
+    closesAtMs: next?.closeAtMs ?? null,
+    nextOpenAtMs: next?.openAtMs ?? null,
+  };
+}
+
 function evaluateFallbackWeekendGate(
   symbol: string,
   nowMs: number,

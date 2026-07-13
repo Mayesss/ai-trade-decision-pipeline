@@ -1360,6 +1360,30 @@ export default function ChartPanel(props: ChartPanelProps) {
         if (!Number.isFinite(startX) || endX - startX < 1) continue;
         segments.push({ left: startX, width: endX - startX });
       }
+      // A live position keeps the decision context active even when later
+      // quarter ticks are flat gate skips and therefore have no response ids.
+      // Extend the bright thread from entry through the latest observed tick.
+      const openPosition = positionOverlays.find((pos) => pos.status === 'open');
+      const openEntryMs = Number(openPosition?.entryTime) * 1000;
+      const latestTickTs = timelineTicks.reduce(
+        (latest, tick) => Math.max(latest, tick.ts),
+        0,
+      );
+      if (
+        Number.isFinite(openEntryMs) &&
+        openEntryMs > 0 &&
+        latestTickTs > openEntryMs
+      ) {
+        const startX = clampedX(openEntryMs);
+        const endX = clampedX(latestTickTs);
+        if (
+          Number.isFinite(startX) &&
+          Number.isFinite(endX) &&
+          endX - startX >= 1
+        ) {
+          segments.push({ left: startX, width: endX - startX });
+        }
+      }
       setThreadSegments(segments);
       const kindPriority = (tick: ChartTimelineTick): number =>
         tick.kind === 'action'
@@ -1432,6 +1456,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     highlightTimeMs,
     timelineTicks,
     selectedTimelineTs,
+    positionOverlays,
   ]);
 
   if (!adminGranted || !symbol) return null;

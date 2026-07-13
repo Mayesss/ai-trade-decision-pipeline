@@ -24,6 +24,7 @@ import {
     cancelCapitalPendingEntryOrders,
     resolveCapitalEpic,
     resolveCapitalEpicRuntime,
+    type CapitalMarketTradeability,
 } from '../../lib/capital';
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 import { resolveSwingCategory } from '../../lib/swing/category';
@@ -178,8 +179,9 @@ function isAutomationCronRequest(req: NextApiRequest): boolean {
 // "quarter ticks". FLAT symbols scan for entry windows 4x/hour (cheap: the full
 // gate stack runs before any AI call, plus a no-new-information dedupe below).
 // IN-POSITION quarter ticks are event-driven: the exchange-side TP/SL bracket
-// already fences the position 24/7, so the AI is only asked mid-hour when price
-// has moved enough since its last look to plausibly change the answer — quiet
+// already fences the position whenever the venue is trading (24/7 on Bitget;
+// session hours on Capital), so the AI is only asked mid-hour when price has
+// moved enough since its last look to plausibly change the answer — quiet
 // quarter ticks keep the current bracket until the hourly tick. Tolerance
 // mirrors isPrimaryCloseTime (cron jitter around the hour).
 function isQuarterHourTick(now = new Date(), toleranceMinutes = 2): boolean {
@@ -294,9 +296,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
         const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
-        // Default OFF: flat ticks now evaluate hourly and are cost-gated by the
-        // signal-strength check (below), not by 4H candle close. A caller can still
-        // opt back into the old 4H-close cadence by passing enforcePrimaryCloseGate=true.
+        // Default OFF: flat ticks now evaluate on the cron cadence (hourly ticks
+        // plus deduped quarter ticks) and are cost-gated by the actionability check
+        // (below), not by 4H candle close. A caller can still opt back into the old
+        // 4H-close cadence by passing enforcePrimaryCloseGate=true.
         const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, false);
         const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
@@ -471,9 +474,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // Skip the (expensive) AI call entirely when the Capital.com market is
         // closed — orders can't execute anyway. Bitget crypto trades 24/7 so
-        // this gate only applies to the Capital platform.
+        // this gate only applies to the Capital platform. The fetched market
+        // info (session timing, overnight funding) is kept for the prompt's
+        // venue-session/costs context further down.
+        let capitalMarketInfo: CapitalMarketTradeability | null = null;
         if (platform === 'capital') {
             const tradeability = await fetchCapitalMarketTradeability(symbol);
+            capitalMarketInfo = tradeability;
             if (!tradeability.tradeable) {
                 emitGateDebug('capital_market_closed', {
                     gate: 'CAPITAL_MARKET_CLOSED',
@@ -1208,6 +1215,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             enteredAt: pstate.enteredAt,
             takeProfitPrice: currentTakeProfit,
             stopLossPrice: currentStopLoss,
+            // Capital CFDs are commission-free — a 0 fee keeps breakeven_price at
+            // the entry price instead of shifting it by the Bitget taker default.
+            takerFeeRate: platform === 'capital' ? 0 : undefined,
         });
         // Re-entry cooldown input: most recent close on this symbol (AI close,
         // auto-close or broker stop — swing.positions records them all). Only needed
@@ -1372,6 +1382,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
+        // Venue market context for the prompt (Capital only). Session timing is
+        // emitted only when the schedule confirms the venue is CURRENTLY inside a
+        // session (this code runs post market-closed gate, so an isOpen=false/null
+        // schedule means the schedule disagrees with marketStatus or is unreadable —
+        // feeding its timestamps would mislabel the NEXT session's close as the
+        // current one). Timestamps are ISO UTC; durations in minutes. The prompt
+        // prose in lib/ai.ts is conditional on each field being present.
+        const capitalNowMs = Date.now();
+        const venueSession =
+            platform === 'capital' &&
+            capitalMarketInfo?.session?.isOpen === true &&
+            Number.isFinite(capitalMarketInfo.session.closesAtMs as number)
+                ? {
+                      closes_at_utc: new Date(capitalMarketInfo.session.closesAtMs as number).toISOString(),
+                      minutes_to_close: Math.max(
+                          0,
+                          Math.round(((capitalMarketInfo.session.closesAtMs as number) - capitalNowMs) / 60_000),
+                      ),
+                      reopens_at_utc: Number.isFinite(capitalMarketInfo.session.nextOpenAtMs as number)
+                          ? new Date(capitalMarketInfo.session.nextOpenAtMs as number).toISOString()
+                          : null,
+                  }
+                : null;
+        const capitalMarketContext =
+            platform === 'capital'
+                ? {
+                      venue_session: venueSession,
+                      overnight_fee_pct_per_day: capitalMarketInfo?.overnightFeePctPerDay ?? null,
+                  }
+                : null;
+
         // Derive signal_strength + context WITHOUT assembling the prompt or fetching
         // news — both are deferred until we know the AI will be called (past the gate),
         // so flat sub-MEDIUM ticks skip the expensive assembly entirely.
@@ -1395,7 +1436,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             category,
             platform,
             lastClosedPosition,
-            Date.now(),
+            capitalNowMs,
+            capitalMarketContext,
         );
         const { context, actionability } = swingState;
 

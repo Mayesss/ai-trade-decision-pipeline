@@ -19,6 +19,10 @@ export function composePositionContext(params: {
     // the model amends against the actual current levels. null = none resting.
     takeProfitPrice?: number | null;
     stopLossPrice?: number | null;
+    // Per-side taker fee. Capital CFDs are commission-free — pass 0 there so
+    // breakeven_price isn't shifted by a fee the venue never charges. Omitted =
+    // the Bitget default.
+    takerFeeRate?: number;
 }): PositionContext | null {
     if (params.position.status !== 'open') return null;
 
@@ -27,7 +31,12 @@ export function composePositionContext(params: {
     const derivedEntryTs = params.enteredAt ?? params.position.entryTimestamp;
     const entryTsIso = derivedEntryTs ? new Date(derivedEntryTs).toISOString() : undefined;
     const holdMinutes = derivedEntryTs ? Math.max((Date.now() - derivedEntryTs) / 60_000, 0) : 0;
-    const takerFeeRate = Number.isFinite(DEFAULT_TAKER_FEE_RATE) ? DEFAULT_TAKER_FEE_RATE : 0.0006;
+    const takerFeeRate =
+        Number.isFinite(params.takerFeeRate as number) && (params.takerFeeRate as number) >= 0
+            ? (params.takerFeeRate as number)
+            : Number.isFinite(DEFAULT_TAKER_FEE_RATE)
+              ? DEFAULT_TAKER_FEE_RATE
+              : 0.0006;
     const positionSize = Math.abs(Number(params.position.total ?? 0));
     const direction = side === 'long' ? 1 : -1;
 

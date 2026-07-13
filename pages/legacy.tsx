@@ -3104,22 +3104,23 @@ export default function Home() {
     }));
   };
 
-  // Timeline tick click: newest tick returns to the live "Latest Decision"
-  // view; older decision ticks fetch that exact row (cached per symbol+ts);
-  // scan-only ticks carry their gate stage/reason inline — nothing to fetch.
+  // Timeline tick click: the newest persisted decision returns to the live
+  // "Latest Decision" view. Scan-only ticks, including the newest quarter
+  // tick, remain selectable because their gate stage/reason lives inline.
   const handleTimelineTickSelect = async (
     symbol: string,
     tick: TimelineTickUi,
     isNewest: boolean,
   ) => {
     const seq = ++tickSelectionSeqRef.current;
-    if (isNewest) {
+    if (isNewest && tick.hasDetails) {
       setSelectedTickTs(null);
       setSelectedTickDecision(null);
       return;
     }
     setSelectedTickTs(tick.ts);
     if (!tick.hasDetails) {
+      setSelectedTickLoading(false);
       setSelectedTickDecision(null);
       return;
     }
@@ -7678,7 +7679,9 @@ export default function Home() {
                       {Array.from({ length: 7 }, (_, i) => (
                         <span
                           key={i}
-                          className="h-[18px] w-10 rounded bg-slate-200"
+                          className={`h-[18px] w-10 rounded bg-slate-200 ${
+                            i < 2 ? "hidden sm:block" : ""
+                          }`}
                         />
                       ))}
                     </span>
@@ -7693,7 +7696,7 @@ export default function Home() {
                       className="scrollbar-none flex min-w-0 max-w-full flex-nowrap items-center gap-2 overflow-x-auto"
                       aria-label="Daily net, last 7 days"
                     >
-                      {swingWeekCalendar.map((cell) => (
+                      {swingWeekCalendar.map((cell, index) => (
                         <div
                           key={cell.key}
                           title={`${cell.key} · ${cell.trades} trade${
@@ -7703,7 +7706,9 @@ export default function Home() {
                               ? ` · includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
                               : ""
                           }`}
-                          className={`flex shrink-0 items-center gap-1 rounded px-1 ${
+                          className={`shrink-0 items-center gap-1 rounded px-1 ${
+                            index < 2 ? "hidden sm:flex" : "flex"
+                          } ${
                             cell.isToday ? "bg-slate-100" : ""
                           }`}
                         >

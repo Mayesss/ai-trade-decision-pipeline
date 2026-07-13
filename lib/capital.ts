@@ -22,6 +22,7 @@ import {
   type ScalpSymbolMarketMetadata,
 } from "./scalp/symbolMarketMetadata";
 import { isPreciousMetalFamilySymbol } from "./scalp/symbolInfo";
+import { resolveOpeningHoursState } from "./scalp/marketHours";
 import type { ScalpAssetCategory } from "./scalp/symbolInfo";
 import type { TradeDecision } from "./trading";
 
@@ -99,6 +100,12 @@ type MarketDetails = {
   marginFactor: number | null;
   marginFactorUnit: string | null;
   brokerLeverage: number | null;
+  // Daily overnight funding adjustment from /markets/{epic}
+  // (instrument.overnightFee.longRate/shortRate), in percent per day as
+  // Capital displays it (e.g. -0.021 = a long pays 0.021% per night held).
+  // Null when the API omits it.
+  overnightFeeLongPctPerDay: number | null;
+  overnightFeeShortPctPerDay: number | null;
 };
 
 type ResolveEpicResult = {
@@ -2245,23 +2252,56 @@ export async function fetchCapitalMarketBundle(
 // SUSPENDED / OFFLINE do not). Fails OPEN: if the status can't be determined
 // (null status or a lookup error) we report tradeable so we never silently
 // halt trading on a transient failure.
-export async function fetchCapitalMarketTradeability(symbol: string): Promise<{
+//
+// Also surfaces, from the same /markets/{epic} fetch (no extra API call):
+// - session: schedule-derived timing of the CURRENT venue session in UTC ms
+//   (when the session ends, when the venue reopens). Null fields when the
+//   schedule is absent or in a zone we can't safely interpret as UTC — the
+//   authoritative open/closed answer stays `status`/`tradeable`.
+// - overnightFeePctPerDay: Capital's daily funding adjustment per side, in
+//   percent per day (negative = that side pays to hold overnight).
+export type CapitalMarketTradeability = {
   tradeable: boolean;
   status: string | null;
   epic: string | null;
-}> {
+  session: {
+    isOpen: boolean | null;
+    closesAtMs: number | null;
+    nextOpenAtMs: number | null;
+  } | null;
+  overnightFeePctPerDay: { long: number | null; short: number | null } | null;
+};
+
+export async function fetchCapitalMarketTradeability(
+  symbol: string,
+): Promise<CapitalMarketTradeability> {
   try {
     const resolved = await resolveCapitalEpicRuntime(symbol);
     const details = await loadMarketDetails(resolved.epic);
     const status = details.marketStatus;
     const tradeable = status === null || status === "TRADEABLE";
-    return { tradeable, status, epic: resolved.epic };
+    const session = resolveOpeningHoursState(details.openingHours, Date.now());
+    const overnightFeePctPerDay =
+      details.overnightFeeLongPctPerDay !== null ||
+      details.overnightFeeShortPctPerDay !== null
+        ? {
+            long: details.overnightFeeLongPctPerDay,
+            short: details.overnightFeeShortPctPerDay,
+          }
+        : null;
+    return { tradeable, status, epic: resolved.epic, session, overnightFeePctPerDay };
   } catch (err) {
     console.warn(
       `[capital] market tradeability check failed for ${symbol}:`,
       err,
     );
-    return { tradeable: true, status: null, epic: null };
+    return {
+      tradeable: true,
+      status: null,
+      epic: null,
+      session: null,
+      overnightFeePctPerDay: null,
+    };
   }
 }
 
@@ -2345,6 +2385,9 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
   const openingHours = parseCapitalOpeningHours(
     market?.instrument?.openingHours ?? market?.openingHours,
   );
+  const overnightFee = market?.instrument?.overnightFee ?? market?.overnightFee;
+  const overnightFeeLongRaw = safeNumber(overnightFee?.longRate, NaN);
+  const overnightFeeShortRaw = safeNumber(overnightFee?.shortRate, NaN);
   const marginFactorRaw = safeNumber(
     market?.instrument?.marginFactor ??
       market?.marginFactor ??
@@ -2388,6 +2431,12 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
     marginFactor,
     marginFactorUnit: marginFactorUnit ? marginFactorUnit.toUpperCase() : null,
     brokerLeverage: brokerLeverage !== null && brokerLeverage > 0 ? brokerLeverage : null,
+    overnightFeeLongPctPerDay: Number.isFinite(overnightFeeLongRaw)
+      ? overnightFeeLongRaw
+      : null,
+    overnightFeeShortPctPerDay: Number.isFinite(overnightFeeShortRaw)
+      ? overnightFeeShortRaw
+      : null,
   };
 }
 

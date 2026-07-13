@@ -72,6 +72,22 @@ export type ForexEventContextForPrompt = {
     }>;
 };
 
+// Capital-only venue context for the prompt (built in /api/analyze from the
+// same /markets/{epic} fetch as the market-closed gate). venue_session is
+// present only when the schedule confirms the venue is currently open —
+// timestamps are ISO UTC, durations in minutes. overnight_fee_pct_per_day is
+// Capital's daily funding adjustment per side (negative = that side pays to
+// hold overnight). All prompt prose referencing these fields must stay
+// conditional on their presence.
+export type CapitalMarketContextForPrompt = {
+    venue_session: {
+        closes_at_utc: string;
+        minutes_to_close: number;
+        reopens_at_utc: string | null;
+    } | null;
+    overnight_fee_pct_per_day: { long: number | null; short: number | null } | null;
+};
+
 export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
     const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'strict')
         .trim()
@@ -408,6 +424,7 @@ export function computeSwingState(
     platform?: string | null,
     lastClosedPosition?: LastClosedPosition | null,
     nowMs?: number,
+    capitalMarketContext?: CapitalMarketContextForPrompt | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -697,13 +714,55 @@ export function computeSwingState(
         macro_supports_position: macroSupportsPosition,
         macro_opposes_position: macroOpposesPosition,
     };
-    // Costs (educate the model)
-    const taker_fee_rate_side = Number.isFinite(position_context?.taker_fee_rate as number)
-        ? Math.max(0, Number(position_context?.taker_fee_rate))
-        : DEFAULT_TAKER_FEE_RATE; // default set via env (e.g., 0.0006 = 6 bps per side)
+    // Costs (educate the model). Two venue models:
+    // - Bitget perps: taker fee per side (+ slippage); spread is negligible.
+    // - Capital CFDs: NO commission — the real round-trip cost is crossing the
+    //   spread once (entry at ask, exit at bid) plus slippage, and holding cost
+    //   is the per-night funding adjustment (overnight_fee_pct_per_day below).
+    const isCapital = String(platform || '').toLowerCase() === 'capital';
+    const taker_fee_rate_side = isCapital
+        ? 0
+        : Number.isFinite(position_context?.taker_fee_rate as number)
+          ? Math.max(0, Number(position_context?.taker_fee_rate))
+          : DEFAULT_TAKER_FEE_RATE; // default set via env (e.g., 0.0006 = 6 bps per side)
     const taker_round_trip_bps = Number((taker_fee_rate_side * 2 * 10000).toFixed(2));
     const slippage_bps = 2;
-    const total_cost_bps = Number((taker_round_trip_bps + slippage_bps).toFixed(1));
+    // Capital: spread cost, only when a real quote was measured this tick — the
+    // 999 canonical fallback means "unknown", never a cost.
+    const spread_round_trip_bps =
+        isCapital && Number.isFinite(spreadBpsCanonical) && spreadBpsCanonical < 999
+            ? Number(spreadBpsCanonical.toFixed(1))
+            : null;
+    const total_cost_bps =
+        isCapital && spread_round_trip_bps === null
+            ? null
+            : Number((taker_round_trip_bps + slippage_bps + (spread_round_trip_bps ?? 0)).toFixed(1));
+    const overnight_fee_pct_per_day = isCapital
+        ? capitalMarketContext?.overnight_fee_pct_per_day ?? null
+        : null;
+    // Perp funding (Bitget only — Capital bundles carry none of these fields).
+    // bundle.funding = current-fund-rate data ({ fundingRate }, decimal per
+    // interval: 0.0001 = 0.01%); bundle.fundingTime = funding-time data
+    // ({ nextFundingTime ms, ratePeriod hours }). Positive rate = longs pay
+    // shorts. Fails to null field-by-field — all prompt prose referencing
+    // funding stays conditional on what was actually measured.
+    const fundingRow = Array.isArray(bundle?.funding) ? bundle.funding[0] : bundle?.funding;
+    const fundingRateDecimal = Number(fundingRow?.fundingRate);
+    const fundingTimeRow = Array.isArray(bundle?.fundingTime) ? bundle.fundingTime[0] : bundle?.fundingTime;
+    const nextFundingAtMsRaw = Number(fundingTimeRow?.nextFundingTime);
+    const fundingIntervalHoursRaw = Number(fundingTimeRow?.ratePeriod);
+    const perpFunding =
+        !isCapital && Number.isFinite(fundingRateDecimal)
+            ? {
+                  rate_pct_per_interval: Number((fundingRateDecimal * 100).toFixed(4)),
+                  interval_hours:
+                      Number.isFinite(fundingIntervalHoursRaw) && fundingIntervalHoursRaw > 0
+                          ? fundingIntervalHoursRaw
+                          : null,
+                  next_funding_at_ms:
+                      Number.isFinite(nextFundingAtMsRaw) && nextFundingAtMsRaw > 0 ? nextFundingAtMsRaw : null,
+              }
+            : null;
 
     const resolvedDecisionPolicy = resolveDecisionPolicy(decisionPolicy);
     const strictPolicy = resolvedDecisionPolicy === 'strict';
@@ -729,7 +788,6 @@ export function computeSwingState(
     const assetClass = String(category || '').toLowerCase() || 'unknown';
     // On Capital, leverage is fixed by the broker per asset class — the model does
     // not pick it. Only crypto (Bitget) takes a model-chosen 5–10 leverage.
-    const isCapital = String(platform || '').toLowerCase() === 'capital';
     const leverageGuidance = isCapital
         ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
         : `Leverage 5–10 by conviction AND risk: cut to 5–6 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
@@ -894,12 +952,45 @@ export function computeSwingState(
             atr_ok: gates.atr_ok,
             slippage_ok: gates.slippage_ok,
         },
-        costs: {
-            round_trip_fee_bps: taker_round_trip_bps,
-            slippage_bps,
-            total_cost_bps,
-            recent_realized_pnl_pct: clampNumber(realizedRoiPct ?? null, 2),
-        },
+        costs: isCapital
+            ? {
+                  // Capital CFDs: commission-free — cost = spread + slippage, plus a
+                  // per-night funding adjustment while held. total_cost_bps is null
+                  // when no live quote was measured this tick (spread unknown).
+                  commission_bps: 0,
+                  spread_round_trip_bps,
+                  slippage_bps,
+                  total_cost_bps,
+                  overnight_fee_pct_per_day,
+                  recent_realized_pnl_pct: clampNumber(realizedRoiPct ?? null, 2),
+              }
+            : {
+                  round_trip_fee_bps: taker_round_trip_bps,
+                  slippage_bps,
+                  total_cost_bps,
+                  // Perp funding while held (positive = longs pay shorts). Key
+                  // omitted entirely when the rate wasn't measured this tick.
+                  ...(perpFunding
+                      ? {
+                            funding: {
+                                rate_pct_per_interval: perpFunding.rate_pct_per_interval,
+                                interval_hours: perpFunding.interval_hours,
+                                next_funding_at_utc: perpFunding.next_funding_at_ms
+                                    ? new Date(perpFunding.next_funding_at_ms).toISOString()
+                                    : null,
+                                minutes_to_next_funding: perpFunding.next_funding_at_ms
+                                    ? Math.max(
+                                          0,
+                                          Math.round(
+                                              (perpFunding.next_funding_at_ms - nowDate.getTime()) / 60_000,
+                                          ),
+                                      )
+                                    : null,
+                            },
+                        }
+                      : {}),
+                  recent_realized_pnl_pct: clampNumber(realizedRoiPct ?? null, 2),
+              },
         position: position_context
             ? { open: true, ...position_context }
             : {
@@ -947,13 +1038,17 @@ export function computeSwingState(
     if (forex_session_context && typeof forex_session_context === 'object') {
         market.forex_session = forex_session_context;
     }
+    if (capitalMarketContext?.venue_session) {
+        market.venue_session = capitalMarketContext.venue_session;
+    }
 
     // Each note describes ONLY the context this category actually receives (see
-    // /api/analyze: forex_session is built for forex/commodity/index; forex_events for
-    // forex only; crypto gets neither). Keep prose aligned with the data or it misleads.
+    // /api/analyze: forex_session AND forex_events are both built for
+    // forex/commodity/index — events resolve to the instrument's macro currency;
+    // crypto gets neither). Keep prose aligned with the data or it misleads.
     const assetNote =
         assetClass === 'crypto'
-            ? 'Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. Funding/borrow is not modeled here; judge on structure, regime and location.'
+            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. ${perpFunding ? 'Perp funding is measured in state.costs.funding; borrow is not modeled' : 'Funding/borrow is not modeled here'}; judge on structure, regime and location.`
             : assetClass === 'forex'
               ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
               : assetClass === 'commodity'
@@ -971,10 +1066,46 @@ export function computeSwingState(
     const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
     const antiFlipStrength = strictPolicy ? 'strong conviction' : 'at least moderate conviction';
 
+    // Venue-session note: only when market.venue_session is actually present
+    // (Capital, schedule known, venue currently inside a session) — prose must
+    // never reference fields the payload doesn't carry.
+    const venueSessionNote = capitalMarketContext?.venue_session
+        ? `\nVenue session (market.venue_session, ISO UTC): the venue is open now; this session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap.`
+        : '';
+
+    // Cost prose per venue. Capital is commission-free: the real round-trip cost
+    // is the spread (+ slippage), and holding accrues a per-night funding
+    // adjustment; only mention the funding field when it is actually present.
+    const overnightFeeNote =
+        overnight_fee_pct_per_day &&
+        (overnight_fee_pct_per_day.long !== null || overnight_fee_pct_per_day.short !== null)
+            ? ' Holding cost: state.costs.overnight_fee_pct_per_day accrues each night held (per side; negative = you pay) — over a multi-day swing it can rival the round-trip cost, so weigh it on HOLD vs CLOSE and when choosing direction.'
+            : '';
+    // Only claim funding mechanics that were actually measured: the settlement
+    // cadence phrase depends on interval_hours being present.
+    const perpFundingNote = perpFunding
+        ? ` Perp funding (state.costs.funding): rate_pct_per_interval accrues ${
+              perpFunding.interval_hours ? `every ${perpFunding.interval_hours}h` : 'at each funding settlement'
+          } while held — positive = longs pay shorts, negative = shorts pay longs${
+              perpFunding.next_funding_at_ms ? '; next charge at next_funding_at_utc' : ''
+          }. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction.`
+        : '';
+    const costChurnLine = isCapital
+        ? `Cost/churn: no commission on this venue; round-trip cost ${
+              total_cost_bps !== null
+                  ? `≈ ${total_cost_bps} bps (spread crossed once over entry+exit, + slippage)`
+                  : `= crossing the spread once (see market.liquidity.spread_bps) + ~${slippage_bps} bps slippage`
+          }.${overnightFeeNote} If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`
+        : `Cost/churn: round-trip cost ≈ ${total_cost_bps} bps.${perpFundingNote} If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`;
+
+    const bracketVenueNote = isCapital
+        ? 'rests on the venue between these evaluations, but fills ONLY while the venue is open — a reopening gap can jump the stop and fill worse than the stop level'
+        : 'fills 24/7 between these evaluations';
+
     const sys = `
 You are an expert swing-trading market-structure analyst. Decide one action and size it.
 
-${assetNote}
+${assetNote}${venueSessionNote}
 
 TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${nano_context ? ', nano=15m (state.geometry.nano — wave/entry timing only, never a setup by itself)' : ''}.
@@ -999,17 +1130,17 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
-- Cost/churn: round-trip cost ≈ ${total_cost_bps} bps. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.
+- ${costChurnLine}
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
             ? `\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
             : ''
     }
-- Exchange-side TP/SL bracket (fills 24/7 between these evaluations):
-  • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
+- Exchange-side TP/SL bracket (${bracketVenueNote}):
+  • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until it fills or a later evaluation amends it. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1020,7 +1151,7 @@ OUTPUT
 
     const user = `
 You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}, asset_class=${assetClass}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Called ~once per ${microTimeframe}. Decision policy: ${decisionPolicyLabel}.
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Evaluated at least once per ${microTimeframe} — and as often as every 15 min when price is moving — so "the next evaluation" may be 15–60 min away. Decision policy: ${decisionPolicyLabel}.
 S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 
 STATE (derived signals — single source of truth):

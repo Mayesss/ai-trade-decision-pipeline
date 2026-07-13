@@ -510,7 +510,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
     const productType = resolveProductType(); // e.g., 'USDT-FUTURES'
 
     // Run independent calls in parallel
-    const [tickerRaw, candlesRaw, orderbook, fundingRes, fundingHistoryRes, oiRes] = await Promise.all([
+    const [tickerRaw, candlesRaw, orderbook, fundingRes, fundingHistoryRes, oiRes, fundingTimeRes] = await Promise.all([
         bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType }),
         bitgetFetch('GET', '/api/v2/mix/market/candles', {
             symbol,
@@ -545,6 +545,15 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
                 return null;
             }
         })(),
+        // Next funding settlement time + rate period, for the prompt's
+        // state.costs.funding block (the rate itself rides fundingRes above).
+        (async () => {
+            try {
+                return await bitgetFetch('GET', '/api/v2/mix/market/funding-time', { symbol, productType });
+            } catch {
+                return null;
+            }
+        })(),
     ]);
 
     const ticker = Array.isArray(tickerRaw) ? tickerRaw[0] : tickerRaw;
@@ -560,7 +569,17 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
         });
     }
 
-    return { ticker, candles, trades, orderbook, funding: fundingRes, fundingHistory: fundingHistoryRes, oi: oiRes, productType };
+    return {
+        ticker,
+        candles,
+        trades,
+        orderbook,
+        funding: fundingRes,
+        fundingTime: fundingTimeRes,
+        fundingHistory: fundingHistoryRes,
+        oi: oiRes,
+        productType,
+    };
 }
 
 // ------------------------------
