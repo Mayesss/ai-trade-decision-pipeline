@@ -2853,6 +2853,59 @@ export default function Home() {
     };
   }, [adminGranted, strategyMode, eurUsdRate]);
 
+  // Live price for the active symbol: REST polling every 3s (no venue
+  // websockets — Capital would need a Lightstreamer session; the REST quote
+  // covers both platforms uniformly). Feeds the chart's pulse marker and the
+  // live open-PnL. Skips ticks while the tab is hidden or a request is still
+  // in flight; state resets on symbol switch so a stale quote from the
+  // previous symbol never paints the new chart.
+  useEffect(() => {
+    setLivePriceNow(null);
+    setLivePriceTs(null);
+    setLivePriceConnected(false);
+    const symbol = strategyMode === "swing" ? symbols[active] || null : null;
+    if (!adminGranted || !symbol) return;
+    // Captured once — a symbol's platform doesn't change within its lifetime.
+    const platform = tabData[symbol]?.lastPlatform ?? null;
+    let cancelled = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (cancelled || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        const params = new URLSearchParams({ symbol });
+        if (platform) params.set("platform", platform);
+        const res = await fetch(
+          `/api/swing/dashboard/live-price?${params.toString()}`,
+          { headers: buildAdminHeaders(), cache: "no-store" },
+        );
+        if (cancelled) return;
+        if (!res.ok) {
+          setLivePriceConnected(false);
+          return;
+        }
+        const json = await res.json();
+        const price = Number(json?.price);
+        if (!cancelled && Number.isFinite(price) && price > 0) {
+          setLivePriceNow(price);
+          const ts = Number(json?.ts);
+          setLivePriceTs(Number.isFinite(ts) && ts > 0 ? ts : Date.now());
+          setLivePriceConnected(true);
+        }
+      } catch {
+        if (!cancelled) setLivePriceConnected(false);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [adminGranted, strategyMode, symbols, active]);
+
   const resolveSystemTheme = (): ResolvedTheme => {
     if (typeof window === "undefined") return "light";
     return window.matchMedia("(prefers-color-scheme: dark)").matches
