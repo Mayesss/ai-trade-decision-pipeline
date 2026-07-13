@@ -25,6 +25,10 @@ import {
   readPositionOverlayCache,
   writePositionOverlayCache,
 } from '../../lib/swing/positionOverlayCache';
+import {
+  mergeCapitalCloseWindows,
+  reconcileCapitalClosedPositions,
+} from '../../lib/swing/capitalClosedPositions';
 
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_CHART_LEVERAGE_OVERRIDE = 3;
@@ -343,6 +347,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         let closed = await loadPersistedClosed();
         if (closed.length) {
           closedPositionSource = 'persisted';
+        }
+        if (platform === 'capital') {
+          try {
+            const reconciled = await reconcileCapitalClosedPositions({
+              symbols: [symbol],
+              fromMs: windowStartMs,
+              toMs: nowMs,
+            });
+            const liveWindows = reconciled.get(symbol.toUpperCase()) ?? [];
+            closed = liveWindows.length ? mergeCapitalCloseWindows([...closed, ...liveWindows]) : closed;
+            if (liveWindows.length) {
+              closedPositionSource = closedPositionSource === 'persisted' ? 'merged' : 'broker';
+            }
+          } catch (err) {
+            console.warn(`Could not reconcile Capital position windows for ${symbol}:`, err);
+          }
         }
         if (platform === 'bitget') {
           // Bitget closes are NOT persisted at close time (only Capital is), so the
