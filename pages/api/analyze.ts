@@ -51,6 +51,7 @@ import { getGates } from '../../lib/gates';
 
 import {
     cancelPendingEntryOrders,
+    classifyPendingEntrySweep,
     executeDecision,
     fetchPositionTpsl,
     getTargetLeverage,
@@ -714,6 +715,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // (supersede) — a gate-skipped quarter tick leaves the order resting.
         // If a cancel fails because the order just FILLED, the tick stops:
         // a position now exists and the next tick manages it.
+        // Any OTHER unclean sweep (helper threw, pending-orders fetch failed,
+        // cancel failed without a fill) also stops the tick — the previous
+        // order may still be live on the venue, and a fresh entry on top of it
+        // stacks exposure (fail closed; the DE40 double fill 2026-07-13).
         // What the sweep found, normalized for the prompt: the AI decides fresh
         // each evaluation, but it should KNOW its previous pullback limit rested
         // without filling (re-issue vs chase vs drop is its call to make).
@@ -789,6 +794,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         reason: 'pending_entry_filled_during_ttl_sweep',
                     },
                     execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                    usedTape: false,
+                    promptSkipped: true,
+                });
+            }
+            const sweepFailure = classifyPendingEntrySweep(sweep);
+            if (sweepFailure) {
+                void recordSwingLastScan(platform, symbol, {
+                    stage: 'pending_entry_sweep_failed',
+                    reason: sweepFailure,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'pending_entry_sweep_failed',
+                        reason: `entry_blocked_${sweepFailure}`,
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_sweep_failed' },
                     usedTape: false,
                     promptSkipped: true,
                 });
@@ -1562,6 +1594,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         reason: 'pending_entry_filled_during_supersede_sweep',
                     },
                     execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+            const sweepFailure = classifyPendingEntrySweep(sweep);
+            if (sweepFailure) {
+                void recordSwingLastScan(platform, symbol, {
+                    stage: 'pending_entry_sweep_failed',
+                    reason: sweepFailure,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'pending_entry_sweep_failed',
+                        reason: `entry_blocked_${sweepFailure}`,
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_sweep_failed' },
                     usedTape,
                     promptSkipped: true,
                 });

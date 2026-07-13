@@ -393,6 +393,25 @@ export async function cancelPendingEntryOrders(
     return { found: orders.length, cancelled, errors, orders };
 }
 
+// A sweep is clean only when every resting entry order is confirmed gone:
+// nothing was found (and the venue actually answered), or everything found was
+// cancelled. Anything else — the sweep helper threw, the pending-orders fetch
+// failed (we can't even enumerate what's resting), or a cancel failed without
+// the order having filled — and the previous entry order may still be live on
+// the venue. Placing a NEW entry order on top of it stacks exposure, so the
+// caller must fail CLOSED and skip this tick's entry (observed live: DE40
+// double fill 2026-07-13). Venue-agnostic: both cancel helpers return this shape.
+export type PendingEntrySweepFailure = 'sweep_exception' | 'sweep_fetch_failed' | 'sweep_cancel_failed';
+
+export function classifyPendingEntrySweep(
+    sweep: { found: number; cancelled: number; errors: string[] } | null,
+): PendingEntrySweepFailure | null {
+    if (!sweep) return 'sweep_exception';
+    if (sweep.found === 0) return sweep.errors.length > 0 ? 'sweep_fetch_failed' : null;
+    if (sweep.cancelled < sweep.found) return 'sweep_cancel_failed';
+    return null;
+}
+
 type PlaceOrderBody = {
     symbol: string;
     productType: ProductType;
