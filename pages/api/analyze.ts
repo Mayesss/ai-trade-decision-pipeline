@@ -43,6 +43,7 @@ import {
     sanitizeEntryLimit,
     sanitizeExchangeTpSl,
     REENTRY_COOLDOWN_MIN,
+    resolveReentryCooldown,
     SWING_DECISION_SCHEMA,
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
@@ -1227,6 +1228,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 }
             } catch (err) {
                 console.warn(`Could not load recent closed positions for ${symbol}:`, err);
+            }
+        }
+
+        // Quarter-tick cooldown skip: while the re-entry cooldown is active the
+        // AI can only HOLD (same side blocked) or open the opposite side — a
+        // call the hourly tick makes just as well. Skipping the 15m cadence
+        // caps the burn at one call/hour for the cooldown window; the hourly
+        // tick stays the backstop, so an opposite-direction reversal is
+        // delayed by at most 45 min. Quarter-only: hourly ticks still evaluate.
+        // Does NOT apply with a position open (skip is flat-only) or while a
+        // pullback limit rests (aiThreadResponseId set on a flat tick ⇔
+        // pending-entry conversation) — a resting opposite-direction entry
+        // must keep being re-validated against the moving market.
+        if (!positionOpen && quarterTick && !aiThreadResponseId) {
+            const cooldownNow = resolveReentryCooldown(lastClosedPosition);
+            if (cooldownNow) {
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'reentry_cooldown_quarter_tick',
+                    reason: `flat_skip_reentry_cooldown_blocked_${cooldownNow.blockedSide}_${cooldownNow.minutesLeft}min_left`,
+                };
+                await recordSwingLastScan(platform, symbol, {
+                    stage: 'reentry_cooldown',
+                    reason: decision.reason,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'reentry_cooldown' },
+                    promptSkipped: true,
+                });
             }
         }
 

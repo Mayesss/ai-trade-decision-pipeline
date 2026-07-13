@@ -57,7 +57,7 @@
     },
     {
       "path": "/api/dashboard/summary-warm",
-      "schedule": "5 * * * *"
+      "schedule": "3,18,33,48 * * * *"
     }
   ]
 }

@@ -393,9 +393,18 @@ function midFromQuote(value: any): number | null {
   return null;
 }
 
+// Capital history timestamps (dateUTC) come WITHOUT an explicit offset.
+// Date.parse reads offset-less ISO strings in the SERVER's local timezone,
+// which made local dev (Berlin) and Vercel (UTC) parse the same transaction
+// 2h apart — and, with the epoch embedded in the Neon position_key, persist
+// every transaction twice. Offset-less strings are UTC by API contract, so
+// force it.
 function toIsoTimestampMs(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
-  const ts = Date.parse(String(raw));
+  const str = String(raw).trim();
+  if (!str) return null;
+  const isoNoOffset = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(str);
+  const ts = Date.parse(isoNoOffset ? `${str.replace(' ', 'T')}Z` : str);
   return Number.isFinite(ts) ? ts : null;
 }
 

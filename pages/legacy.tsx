@@ -2655,6 +2655,9 @@ export default function Home() {
   const scalpCandidatesStateFilterRef = useRef<ScalpCandidateGridStateUi>("evaluated");
   const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
   const swingDashboardRequestIdRef = useRef(0);
+  // True once the user clicks a symbol pill — from then on, dashboard reloads
+  // keep their selection instead of re-defaulting to the top-ranked pill.
+  const userPickedSymbolRef = useRef(false);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
   >(null);
@@ -3241,6 +3244,49 @@ export default function Home() {
           return next;
         });
         setSwingSummaryRange(resolvedSummaryRange);
+
+        // Default selection: the attention-sorted leftmost pill (open position
+        // → resting limit → fresh AI decision → |range pnl|) — computable only
+        // now that the summary is in. Skipped once the user picks a pill
+        // themselves.
+        if (!userPickedSymbolRef.current && orderedSymbols.length) {
+          const rowBySymbol = new Map(
+            summaryRows
+              .filter((row) => row?.symbol)
+              .map((row) => [String(row.symbol).toUpperCase(), row] as const),
+          );
+          // [rank, tiebreak] — lower wins; mirrors orderedSymbolPills.
+          const rankOf = (sym: string): [number, number] => {
+            const row = rowBySymbol.get(sym.toUpperCase());
+            if (!row) return [4, 0];
+            if (row.marketClosed === true) return [5, 0];
+            if (row.openDirection === "long" || row.openDirection === "short")
+              return [0, 0];
+            if (row.pendingEntry === true) return [1, 0];
+            if (row.lastWasAiCall === true) return [2, 0];
+            const pnl =
+              typeof row.pnl7dWithOpen === "number"
+                ? row.pnl7dWithOpen
+                : typeof row.pnl7d === "number"
+                  ? row.pnl7d
+                  : null;
+            if (typeof pnl === "number") return [3, -Math.abs(pnl)];
+            return [4, 0];
+          };
+          let bestIdx = 0;
+          let bestRank: [number, number] = [Infinity, 0];
+          orderedSymbols.forEach((sym, idx) => {
+            const rank = rankOf(sym);
+            if (
+              rank[0] < bestRank[0] ||
+              (rank[0] === bestRank[0] && rank[1] < bestRank[1])
+            ) {
+              bestRank = rank;
+              bestIdx = idx;
+            }
+          });
+          setActive(bestIdx);
+        }
 
         // Week-calendar strip: fold each symbol's per-day closed nets into one
         // day → {USD, EUR, trades} map. The strip always shows the trailing 7
@@ -7709,7 +7755,10 @@ export default function Home() {
                           <button
                             key={sym}
                             data-active-pill={isActive ? "true" : undefined}
-                            onClick={() => setActive(index)}
+                            onClick={() => {
+                              userPickedSymbolRef.current = true;
+                              setActive(index);
+                            }}
                             title={
                               [
                                 marketClosed
