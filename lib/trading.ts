@@ -57,11 +57,13 @@ function normalizeClosePct(pct: unknown) {
     return clamped > 0 ? clamped : null;
 }
 
+// Crypto entry leverage range (the model is prompted for 5–10; anything
+// outside clamps into it).
 function clampLeverage(value: unknown): number | null {
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
     const rounded = Math.round(n);
-    const clamped = Math.max(1, Math.min(5, rounded));
+    const clamped = Math.max(5, Math.min(10, rounded));
     return clamped;
 }
 
@@ -77,9 +79,9 @@ function deriveLeverage(decision: TradeDecision): number | null {
     }
     const strength = String(strengthRaw || '').toUpperCase();
     if (decision.action === 'BUY' || decision.action === 'SELL' || decision.action === 'REVERSE') {
-        if (strength === 'HIGH') return 4;
-        if (strength === 'MEDIUM') return 3;
-        if (strength === 'LOW') return 1;
+        if (strength === 'HIGH') return 8;
+        if (strength === 'MEDIUM') return 6;
+        if (strength === 'LOW') return 5;
     }
     return null;
 }

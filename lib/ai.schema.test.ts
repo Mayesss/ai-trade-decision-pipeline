@@ -66,7 +66,7 @@ test('valid swing decisions conform to the schema', () => {
             summary: 'long',
             reason: 'breakout retest',
             exit_size_pct: null,
-            leverage: 3,
+            leverage: 7,
             ...manageOff,
             take_profit_price: 71250.5,
             stop_loss_price: null,
@@ -85,7 +85,7 @@ test('valid swing decisions conform to the schema', () => {
             stop_loss_price: 68000,
             entry_limit_price: null,
         },
-        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 1, ...manageOff, ...noBracket },
+        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 5, ...manageOff, ...noBracket },
         // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
         {
             action: 'HOLD',
@@ -107,7 +107,7 @@ test('invalid swing decisions are rejected', () => {
         summary: 's',
         reason: 'r',
         exit_size_pct: null,
-        leverage: 2,
+        leverage: 6,
         raise_leverage_to: null,
         move_stop_to_be: null,
         take_profit_price: null,
@@ -118,10 +118,11 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
     // action not in enum
     assert.ok(!validate({ ...base, action: 'WAIT' }, SWING_DECISION_SCHEMA.schema));
-    // leverage out of range
-    assert.ok(!validate({ ...base, leverage: 9 }, SWING_DECISION_SCHEMA.schema));
+    // leverage out of range (below the 5–10 floor / above the cap)
+    assert.ok(!validate({ ...base, leverage: 3 }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, leverage: 12 }, SWING_DECISION_SCHEMA.schema));
     // leverage not an integer
-    assert.ok(!validate({ ...base, leverage: 2.5 }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, leverage: 7.5 }, SWING_DECISION_SCHEMA.schema));
     // exit_size_pct out of range
     assert.ok(!validate({ ...base, exit_size_pct: 150 }, SWING_DECISION_SCHEMA.schema));
     // raise_leverage_to above the 125 ceiling / not an integer

@@ -728,16 +728,16 @@ export function computeSwingState(
     const baseSymbol = symbol.replace(/USDT$/i, '');
     const assetClass = String(category || '').toLowerCase() || 'unknown';
     // On Capital, leverage is fixed by the broker per asset class — the model does
-    // not pick it. Only crypto (Bitget) takes a model-chosen 1–5 leverage.
+    // not pick it. Only crypto (Bitget) takes a model-chosen 5–10 leverage.
     const isCapital = String(platform || '').toLowerCase() === 'capital';
     const leverageGuidance = isCapital
         ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
-        : `Leverage 1–5 by conviction AND risk: cut to 1–2 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
+        : `Leverage 5–10 by conviction AND risk: cut to 5–6 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
     const leverageTask = isCapital
         ? 'do NOT output a leverage field — leverage is broker-defined per asset class on this venue.'
-        : 'leverage 1–5 for BUY/SELL/REVERSE, else null.';
+        : 'leverage 5–10 for BUY/SELL/REVERSE, else null.';
     // Capital: omit the leverage key entirely (no comma). Bitget: include it.
-    const leverageJsonField = isCapital ? '' : ',"leverage":null|1|2|3|4|5';
+    const leverageJsonField = isCapital ? '' : ',"leverage":null|5|6|7|8|9|10';
 
     // Profit-lock margin-recycle maneuver (crypto only). The crypto schema always
     // carries these keys (nullable); the maneuver is only *explained* to the model
@@ -1009,7 +1009,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until the next evaluation. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (~1h TTL) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1599,7 +1599,7 @@ export const SWING_DECISION_SCHEMA = {
             summary: { type: 'string' },
             reason: { type: 'string' },
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
-            leverage: { type: ['integer', 'null'], minimum: 1, maximum: 5 },
+            leverage: { type: ['integer', 'null'], minimum: 5, maximum: 10 },
             // Profit-lock margin-recycle maneuver (crypto only). Execution clamps
             // raise_leverage_to to [current, symbol max]; 125 is a generous ceiling.
             raise_leverage_to: { type: ['integer', 'null'], minimum: 1, maximum: 125 },

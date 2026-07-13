@@ -73,6 +73,8 @@ type EvaluationEntry = {
   pnl7dGross?: number | null;
   pnl7dTrades?: number | null;
   pnlSpark?: number[] | null;
+  pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
+  pendingEntry?: boolean;
   openPnl?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
@@ -125,6 +127,12 @@ type DashboardSummaryRow = {
   pnl7dGross?: number | null;
   pnl7dTrades?: number | null;
   pnlSpark?: number[] | null;
+  // Per-Berlin-day closed nets in venue cash (mirrors the summary API) —
+  // folded across symbols into the header week-calendar strip.
+  pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
+  // A pullback entry limit is resting on the venue — ranks the pill between
+  // open positions and fresh AI decisions.
+  pendingEntry?: boolean;
   openPnl?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
@@ -712,6 +720,10 @@ type TimelineTickUi = {
   summary?: string;
   stage?: string;
   reason?: string;
+  // Responses-API conversation chain (context AI calls): links chained
+  // decisions on the timeline with a full-contrast connector segment.
+  responseId?: string;
+  previousResponseId?: string;
   hasDetails: boolean;
 };
 
@@ -781,6 +793,26 @@ const actionPillToneClass = (action?: string | null, pnlValue?: number | null) =
 };
 
 const BERLIN_TZ = "Europe/Berlin";
+// Week-calendar strip formatters — Berlin calendar days throughout; en-CA
+// renders YYYY-MM-DD, matching the summary API's pnlDaily keys.
+const BERLIN_DAY_KEY_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: BERLIN_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const BERLIN_DAY_NUM_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BERLIN_TZ,
+  day: "numeric",
+});
+const BERLIN_WEEKDAY_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BERLIN_TZ,
+  weekday: "short",
+});
+const BERLIN_MONTH_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BERLIN_TZ,
+  month: "short",
+});
 const SCALP_MIN_REFRESH_GAP_MS = 25_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_GRID_LOAD_BATCH = 60;
@@ -2565,6 +2597,13 @@ export default function Home() {
     string | null
   >(null);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("1D");
+  // Trailing-7-day per-day closed nets for the header week-calendar strip,
+  // folded across symbols. Kept in both venue currencies (Bitget USDT ≈ $,
+  // Capital €) and converted to one € figure at render, like the old rollup.
+  const [swingWeekDaily, setSwingWeekDaily] = useState<Record<
+    string,
+    { netUsd: number | null; netEur: number | null; trades: number }
+  > | null>(null);
   // Chart-only range: superset of DashboardRangeKey ("4H" shows 5m bars but the
   // summary pipeline only warms 1D/7D/30D/6M caches, so 4H maps to 1D for PnL).
   // Desktop defaults to 1D; phones drop to 4H on mount (effect below).
@@ -3202,6 +3241,52 @@ export default function Home() {
           return next;
         });
         setSwingSummaryRange(resolvedSummaryRange);
+
+        // Week-calendar strip: fold each symbol's per-day closed nets into one
+        // day → {USD, EUR, trades} map. The strip always shows the trailing 7
+        // days, so on other ranges fetch the 7D blob too (KV-cached and
+        // cron-warmed — no extra fan-out). Non-fatal: a failure just keeps the
+        // strip's previous data.
+        try {
+          let weekRows: DashboardSummaryRow[] = summaryRows;
+          if (resolvedSummaryRange !== "7D") {
+            const weekRes = await fetch(
+              "/api/swing/dashboard/summary?range=7D",
+              { headers: buildAdminHeaders(), cache: "no-store" },
+            );
+            if (!weekRes.ok) {
+              throw new Error(`Failed to load 7D summary (${weekRes.status})`);
+            }
+            const weekJson: DashboardSummaryResponse = await weekRes.json();
+            weekRows = Array.isArray(weekJson.data) ? weekJson.data : [];
+          }
+          if (requestId !== swingDashboardRequestIdRef.current) return;
+          const byDay: Record<
+            string,
+            { netUsd: number | null; netEur: number | null; trades: number }
+          > = {};
+          for (const row of weekRows) {
+            for (const bucket of row?.pnlDaily ?? []) {
+              if (!bucket?.day) continue;
+              const slot = (byDay[bucket.day] ??= {
+                netUsd: null,
+                netEur: null,
+                trades: 0,
+              });
+              slot.trades += bucket.trades || 0;
+              if (typeof bucket.net === "number") {
+                if (platformCurrencySymbol(row.lastPlatform) === "€") {
+                  slot.netEur = (slot.netEur ?? 0) + bucket.net;
+                } else {
+                  slot.netUsd = (slot.netUsd ?? 0) + bucket.net;
+                }
+              }
+            }
+          }
+          setSwingWeekDaily(byDay);
+        } catch (weekErr) {
+          console.warn("week-calendar summary load failed:", weekErr);
+        }
       } catch (summaryErr: any) {
         if (requestId === swingDashboardRequestIdRef.current) {
           setSwingSummaryRange(null);
@@ -3911,10 +3996,27 @@ export default function Home() {
     setShowPrompt(false);
   }, [active, symbols]);
 
+  // Decision prices span BTC (~118,000) to forex (~1.08) — scale the decimals
+  // to the magnitude instead of one fixed precision.
+  const formatDecisionPrice = (value: number): string => {
+    const abs = Math.abs(value);
+    const maxDecimals = abs >= 1000 ? 0 : abs >= 10 ? 2 : 4;
+    return value.toLocaleString("en-US", { maximumFractionDigits: maxDecimals });
+  };
+
   // Action label for the Latest Decision pill: a partial CLOSE (trim) shows its
-  // size, e.g. "CLOSE 40%"; a full close (pct absent or 100) stays "CLOSE".
+  // size, e.g. "CLOSE 40%"; a full close (pct absent or 100) stays "CLOSE"; a
+  // pullback-limit entry shows its resting price, e.g. "BUY @ 6.34" (a market
+  // entry stays bare "BUY"/"SELL").
   const formatLastDecisionAction = (decision: any): string => {
     const action = String(decision?.action || "");
+    if (action === "BUY" || action === "SELL") {
+      const limit = Number(decision?.entry_limit_price);
+      if (Number.isFinite(limit) && limit > 0) {
+        return `${action} @ ${formatDecisionPrice(limit)}`;
+      }
+      return action;
+    }
     if (action !== "CLOSE") return action;
     const rawPct =
       decision?.exit_size_pct ?? decision?.close_size_pct ?? decision?.partial_close_pct;
@@ -4046,10 +4148,11 @@ export default function Home() {
       : null;
   const openPnlIsLive = typeof liveOpenPnl === "number";
   // Attention-first pill ordering: the header row gets scanned for "what's up"
-  // on every visit — open positions first, then symbols whose last tick was a
-  // real AI decision, then the rest by |range pnl|, idle tail, market-closed
-  // last. Stable within each bucket (original symbol order), and clicks keep
-  // working because each pill carries its original index into `symbols`.
+  // on every visit — open positions first, then resting entry limits, then
+  // symbols whose last tick was a real AI decision, then the rest by
+  // |range pnl|, idle tail, market-closed last. Stable within each bucket
+  // (original symbol order), and clicks keep working because each pill
+  // carries its original index into `symbols`.
   const rangePnlForPill = (tab?: EvaluationEntry): number | null => {
     if (!swingSummaryMatchesRange || !tab) return null;
     if (typeof tab.pnl7dWithOpen === "number") return tab.pnl7dWithOpen;
@@ -4067,67 +4170,69 @@ export default function Home() {
           : null;
       const pnl = rangePnlForPill(tab);
       const rank = marketClosed
-        ? 4
+        ? 5
         : openDirection
           ? 0
-          : tab?.lastWasAiCall === true
+          : tab?.pendingEntry === true
             ? 1
-            : typeof pnl === "number"
+            : tab?.lastWasAiCall === true
               ? 2
-              : 3;
+              : typeof pnl === "number"
+                ? 3
+                : 4;
       return { sym, index, tab, marketClosed, openDirection, pnl, rank };
     })
     .sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.rank === 2) {
+      if (a.rank === 3) {
         const diff = Math.abs(b.pnl ?? 0) - Math.abs(a.pnl ?? 0);
         if (diff !== 0) return diff;
       }
       return a.index - b.index;
     });
-  // All-symbols rollup for the selected range. Net PnL sums pnl7dNet (USD) —
-  // the percent figures are per-position leveraged numbers and don't aggregate
-  // across symbols, so the strip sticks to cash + counts.
-  const swingHeaderTotals = (() => {
-    if (strategyMode !== "swing" || !swingSummaryMatchesRange || !symbols.length)
-      return null;
-    // Cash nets are venue-denominated (Bitget USDT ≈ $, Capital account
-    // currency €) — keep two running sums, never one mixed number.
-    let netUsd = 0;
-    let hasNetUsd = false;
-    let netEur = 0;
-    let hasNetEur = false;
-    let trades = 0;
-    let open = 0;
-    for (const sym of symbols) {
-      const tab = tabData[sym];
-      if (!tab) continue;
-      if (typeof tab.pnl7dNet === "number") {
-        if (platformCurrencySymbol(tab.lastPlatform) === "€") {
-          netEur += tab.pnl7dNet;
-          hasNetEur = true;
-        } else {
-          netUsd += tab.pnl7dNet;
-          hasNetUsd = true;
-        }
-      }
-      if (typeof tab.pnl7dTrades === "number") trades += tab.pnl7dTrades;
-      if (tab.openDirection === "long" || tab.openDirection === "short")
-        open += 1;
-    }
-    if (!hasNetUsd && !hasNetEur && trades === 0 && open === 0) return null;
-    // One € figure for the strip: fold the USDT net in at the live EURUSD
-    // rate (fallback approximation when the quote hasn't loaded). Marked
-    // approximate whenever a conversion actually happened.
+  // Header week-calendar strip: the trailing 7 Berlin days (oldest → today),
+  // each cell carrying that day's all-symbols closed net in €. The USDT net is
+  // folded in at the live EURUSD rate (fallback approximation when the quote
+  // hasn't loaded) — cells with a conversion are marked ≈ in their tooltip.
+  const swingWeekCalendar = (() => {
+    if (strategyMode !== "swing" || !swingWeekDaily) return null;
     const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
-    const net =
-      (hasNetEur ? netEur : 0) + (hasNetUsd ? netUsd / rate : 0);
-    return {
-      net: hasNetUsd || hasNetEur ? net : null,
-      approximate: hasNetUsd,
-      trades,
-      open,
-    };
+    const cells: Array<{
+      key: string;
+      dayNum: string;
+      weekday: string;
+      month: string;
+      showMonth: boolean;
+      isToday: boolean;
+      net: number | null;
+      approximate: boolean;
+      trades: number;
+    }> = [];
+    for (let daysBack = 6; daysBack >= 0; daysBack--) {
+      const date = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      const key = BERLIN_DAY_KEY_FORMAT.format(date);
+      const slot = swingWeekDaily[key];
+      const hasNet =
+        typeof slot?.netUsd === "number" || typeof slot?.netEur === "number";
+      const month = BERLIN_MONTH_FORMAT.format(date);
+      cells.push({
+        key,
+        dayNum: BERLIN_DAY_NUM_FORMAT.format(date),
+        weekday: BERLIN_WEEKDAY_FORMAT.format(date),
+        month,
+        // Month label only where it changes along the row (and on the first
+        // cell) — keeps the strip narrow.
+        showMonth: cells.length === 0 || cells[cells.length - 1].month !== month,
+        isToday: daysBack === 0,
+        net: hasNet
+          ? (slot?.netEur ?? 0) +
+            (typeof slot?.netUsd === "number" ? slot.netUsd / rate : 0)
+          : null,
+        approximate: typeof slot?.netUsd === "number" && slot.netUsd !== 0,
+        trades: slot?.trades ?? 0,
+      });
+    }
+    return cells;
   })();
   // The pill row is one horizontally-scrollable line; keep the active pill in
   // view when selection changes (not on every render — live ticks re-render
@@ -4139,6 +4244,15 @@ export default function Home() {
     const activePill = row.querySelector<HTMLElement>('[data-active-pill="true"]');
     activePill?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active, strategyMode]);
+  // Week-calendar strip: days run oldest → today, so on narrow screens pin the
+  // scroll to the right edge — today stays in view, the past scrolls away.
+  const weekCalendarRef = useRef<HTMLDivElement | null>(null);
+  const weekCalendarHasData = Boolean(swingWeekCalendar);
+  useEffect(() => {
+    const row = weekCalendarRef.current;
+    if (!row) return;
+    row.scrollLeft = row.scrollWidth;
+  }, [weekCalendarHasData, strategyMode]);
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   // Compact PnL stats (range / open) that ride alongside the chart's range
   // switches. Rendered inside ChartPanel so it no longer costs its own header
@@ -4313,6 +4427,10 @@ export default function Home() {
     },
   ) => {
     if (!symbol || !swingSummaryMatchesRange) return;
+    // 4H is a chart-only range (the dashboard stays on 1D): its overlay
+    // window covers just 4 hours, so a chart-derived closed-PnL rollup would
+    // overwrite the pill's 1D figures with 4-hour ones on every chart load.
+    if (chartRange === "4H") return;
     const key = symbol.toUpperCase();
     setTabData((prev) => {
       const existing = prev[key];
@@ -7452,47 +7570,73 @@ export default function Home() {
                     </span>
                   ) : null}
                   {strategyMode === "swing" &&
-                  !swingHeaderTotals &&
+                  !swingWeekCalendar &&
                   loading &&
                   !error ? (
-                    // Rollup strip skeleton — covers the initial load and the
+                    // Week-calendar skeleton — covers the initial load and the
                     // gap while a range switch refetches the summary.
-                    <span className="skeleton-shimmer flex items-center gap-1.5">
-                      <span className="h-2.5 w-6 rounded-full bg-slate-200" />
-                      <span className="h-2.5 w-20 rounded-full bg-slate-200" />
-                      <span className="h-2.5 w-14 rounded-full bg-slate-100" />
+                    <span className="skeleton-shimmer flex items-center gap-1">
+                      {Array.from({ length: 7 }, (_, i) => (
+                        <span
+                          key={i}
+                          className="h-[18px] w-10 rounded bg-slate-200"
+                        />
+                      ))}
                     </span>
                   ) : null}
-                  {swingHeaderTotals ? (
-                    // All-symbols rollup for the selected range, in € — the
-                    // Bitget USDT net is folded in at the EURUSD rate, so the
-                    // figure is prefixed ≈ when a conversion happened.
-                    // (Percent PnL is per-position leveraged and doesn't sum.)
-                    <span className="flex items-center gap-1.5 text-[11px] tabular-nums text-slate-500">
-                      <span className="font-semibold uppercase tracking-wide text-slate-400">
-                        {dashboardRange}
-                      </span>
-                      {typeof swingHeaderTotals.net === "number" ? (
-                        <span
-                          className={`font-semibold ${
-                            swingHeaderTotals.net >= 0
-                              ? "text-emerald-600"
-                              : "text-rose-600"
+                  {swingWeekCalendar ? (
+                    // Trailing-7-day calendar: per-day all-symbols closed net
+                    // in € (USDT folded in at the EURUSD rate — tooltip carries
+                    // the ≈ note). One-line height; scrolls horizontally on
+                    // narrow screens with today pinned at the right edge.
+                    <div
+                      ref={weekCalendarRef}
+                      className="scrollbar-none flex min-w-0 max-w-full flex-nowrap items-center gap-2 overflow-x-auto"
+                      aria-label="Daily net, last 7 days"
+                    >
+                      {swingWeekCalendar.map((cell) => (
+                        <div
+                          key={cell.key}
+                          title={`${cell.key} · ${cell.trades} trade${
+                            cell.trades === 1 ? "" : "s"
+                          }${
+                            cell.approximate
+                              ? ` · includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
+                              : ""
                           }`}
-                          title={
-                            swingHeaderTotals.approximate
-                              ? `includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
-                              : undefined
-                          }
+                          className={`flex shrink-0 items-center gap-1 rounded px-1 ${
+                            cell.isToday ? "bg-slate-100" : ""
+                          }`}
                         >
-                          net {swingHeaderTotals.approximate ? "≈" : ""}
-                          {swingHeaderTotals.net >= 0 ? "+" : ""}
-                          {formatCash(swingHeaderTotals.net, "€")}
-                        </span>
-                      ) : null}
-                      <span>· {swingHeaderTotals.trades} trades</span>
-                      <span>· {swingHeaderTotals.open} open</span>
-                    </span>
+                          <span
+                            className={`text-[15px] font-semibold leading-none tabular-nums ${
+                              cell.isToday ? "text-slate-900" : "text-slate-700"
+                            }`}
+                          >
+                            {cell.dayNum}
+                          </span>
+                          <span className="flex flex-col justify-center gap-[1px]">
+                            <span className="text-[8px] font-normal uppercase leading-none tracking-wide text-slate-400">
+                              {cell.weekday}
+                              {cell.showMonth ? ` ${cell.month}` : ""}
+                            </span>
+                            <span
+                              className={`text-[9px] font-semibold leading-none tabular-nums ${
+                                cell.net === null
+                                  ? "text-slate-300"
+                                  : cell.net >= 0
+                                    ? "text-emerald-600"
+                                    : "text-rose-600"
+                              }`}
+                            >
+                              {cell.net === null
+                                ? "–"
+                                : `${cell.net >= 0 ? "+" : ""}${formatCash(cell.net, "€")}`}
+                            </span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   ) : null}
                 </div>
                 {strategyMode === "swing" &&
@@ -8661,9 +8805,14 @@ export default function Home() {
                       !!activeSymbol && !(activeSymbol in symbolTimelines)
                     }
                     selectedTimelineTs={
+                      // Default ring on the newest DECISION tick — that's what
+                      // the Latest Decision panel below is showing. The very
+                      // newest tick is often just a scan marker.
                       selectedTick
                         ? selectedTick.ts
-                        : activeTimeline[0]?.ts ?? null
+                        : activeTimeline.find((t) => t.hasDetails)?.ts ??
+                          activeTimeline[0]?.ts ??
+                          null
                     }
                     onTimelineTickSelect={(ts) => {
                       if (!activeSymbol) return;

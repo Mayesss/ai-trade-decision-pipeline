@@ -152,9 +152,11 @@ async function ensureSwingSchema(): Promise<void> {
 
         // ai_threads: one active Responses-API conversation per (platform, symbol).
         // A thread starts when an entry order is placed (market fill or resting
-        // pullback limit), survives the limit fill into position management, and
-        // ends when the limit expires unfilled or the position closes. Holds only
-        // the chain head — the conversation itself is stored on OpenAI's side.
+        // pullback limit), survives the limit fill into position management AND
+        // unfilled-limit re-evaluations (sweep + re-issue continues the same
+        // conversation), and ends when the entry is dropped without a re-issue
+        // or the position closes. Holds only the chain head — the conversation
+        // itself is stored on OpenAI's side.
         await db.$executeRaw(sql`
             CREATE TABLE IF NOT EXISTS swing.ai_threads (
               platform         TEXT NOT NULL,
@@ -243,6 +245,20 @@ export async function upsertSwingAiThread(params: {
             turns = swing.ai_threads.turns + 1,
             updated_at = NOW()
     `);
+}
+
+// All symbols whose conversation is parked on a resting pullback limit — one
+// query for the dashboard summary's pending-entry flags (pill ordering).
+export async function listSwingPendingEntryThreads(): Promise<Array<{ platform: string; symbol: string }>> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ platform: string; symbol: string }>>(sql`
+        SELECT platform, symbol
+        FROM swing.ai_threads
+        WHERE status = 'pending_entry'
+    `);
+    return rows.map((row) => ({ platform: row.platform, symbol: row.symbol }));
 }
 
 // Resting pullback limit filled → the same conversation now manages the position.

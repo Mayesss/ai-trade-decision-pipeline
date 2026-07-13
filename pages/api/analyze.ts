@@ -336,8 +336,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const quarterTick = automationCron && isQuarterHourTick();
         // Freshness marker for the dashboard: quarter-tick scans don't persist
         // decision rows, so this is the only evidence the 15m cadence ran.
-        // Fire-and-forget — never blocks the trading path.
-        if (automationCron) void recordSwingLastScan(platform, symbol);
+        // AWAITED (not fire-and-forget): on serverless a void'd promise gets
+        // dropped when the response ends first, which erased timeline dots.
+        // recordSwingLastScan never throws, so this can't fail the tick.
+        if (automationCron) await recordSwingLastScan(platform, symbol);
         const persistPreAiSkip = async (params: {
             stage: string;
             decision: Record<string, any>;
@@ -353,7 +355,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // last-scan marker so the UI can show WHY the quarter tick stopped.
             // Real AI calls (past all gates) always persist.
             if (quarterTick) {
-                void recordSwingLastScan(platform, symbol, {
+                await recordSwingLastScan(platform, symbol, {
                     stage: params.stage,
                     reason: typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage,
                 });
@@ -680,14 +682,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        // Responses-API thread (per-position conversation chain). A thread starts
+        // Responses-API thread (per-order conversation chain). A thread starts
         // when an entry order is placed, survives a pullback-limit fill into
-        // position management, and ends when the limit expires unfilled or the
-        // position closes. Reconciled here against broker reality:
+        // position management AND unfilled-limit re-evaluations (sweep +
+        // re-issue keeps the same conversation), and ends when the entry is
+        // dropped without a re-issue or the position closes. Reconciled here
+        // against broker reality:
         //   in_position + no open position → closed since last tick (TP/SL fill,
         //     manual close, executed CLOSE) → conversation over;
         //   pending_entry + open position → the limit filled → same conversation
-        //     now manages the position.
+        //     now manages the position;
+        //   pending_entry + flat → the limit is (or just was) resting → this
+        //     tick's evaluation chains onto the order's conversation ("market
+        //     moved since you placed this — still valid?"). The sweep below
+        //     still cancels the order and deletes the row; a re-issue upserts a
+        //     new head that CONTINUES the same OpenAI chain via this id.
         // Best-effort: a thread hiccup degrades the tick to stateless, never fails it.
         let aiThreadResponseId: string | null = null;
         if (!dryRun) {
@@ -701,6 +710,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         aiThreadResponseId = aiThread.lastResponseId;
                     } else if (aiThread.status === 'in_position') {
                         await endSwingAiThread(platform, symbol);
+                    } else {
+                        aiThreadResponseId = aiThread.lastResponseId;
                     }
                 }
             } catch (err) {
@@ -744,8 +755,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                                 : null,
                     };
                 }
-                // Resting entry cancelled without filling → its conversation ends
-                // here (the next entry decision starts a fresh thread). A cancel
+                // Resting entry cancelled without filling → delete the thread
+                // ROW (no order is resting anymore, so the pendingEntry flag
+                // must drop) — but the CONVERSATION survives: this tick's AI
+                // call chains via the head captured above, and a re-issue
+                // upserts a new row continuing the same OpenAI chain. A cancel
                 // that raced a fill (cancelled < found) is handled by the caller
                 // via pendingEntryFilledMidTick.
                 if (!dryRun && result.found > 0 && result.cancelled >= result.found) {
@@ -800,7 +814,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
             const sweepFailure = classifyPendingEntrySweep(sweep);
             if (sweepFailure) {
-                void recordSwingLastScan(platform, symbol, {
+                await recordSwingLastScan(platform, symbol, {
                     stage: 'pending_entry_sweep_failed',
                     reason: sweepFailure,
                 });
@@ -932,7 +946,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'quarter_tick_quiet_position',
                     reason: `in_position_skip_quiet_quarter_tick_move_${moveAtr.toFixed(2)}atr`,
                 };
-                void recordSwingLastScan(platform, symbol, {
+                await recordSwingLastScan(platform, symbol, {
                     stage: 'quiet_position',
                     reason: decision.reason,
                 });
@@ -1548,7 +1562,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'no_new_information',
                     reason: `flat_skip_dedupe_same_setup_${actionability.reason}`,
                 };
-                void recordSwingLastScan(platform, symbol, {
+                await recordSwingLastScan(platform, symbol, {
                     stage: 'flat_dedupe',
                     reason: decision.reason,
                 });
@@ -1600,7 +1614,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
             const sweepFailure = classifyPendingEntrySweep(sweep);
             if (sweepFailure) {
-                void recordSwingLastScan(platform, symbol, {
+                await recordSwingLastScan(platform, symbol, {
                     stage: 'pending_entry_sweep_failed',
                     reason: sweepFailure,
                 });
@@ -1656,15 +1670,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
         // Capital decides leverage by asset class, so it uses the leverage-free schema.
-        // In-position ticks chain onto the position's stored conversation
-        // (previous_response_id) so the model manages the trade with memory of its
-        // own entry thesis and every prior management tick; entry scans stay
-        // stateless (flat ticks never carry a thread head — sweeps end it first).
+        // Ticks with a live conversation chain onto it (previous_response_id):
+        // in-position ticks manage the trade with memory of the entry thesis and
+        // every prior management tick, and flat ticks re-evaluating a resting
+        // pullback limit remember why they placed it ("market moved — is this
+        // entry still valid?"). Fresh flat scans carry no head and stay stateless.
+        const chainedPreviousResponseId = aiThreadResponseId;
         const { json: decisionRaw, responseId: aiResponseId } = await callAIThread(
             system,
             user,
             platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-            { previousResponseId: positionOpen ? aiThreadResponseId : null },
+            { previousResponseId: chainedPreviousResponseId },
         );
         const decision = postprocessDecision({
             decision: decisionRaw,
@@ -1688,8 +1704,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // so the dashboard can render a Nano chip next to the other TF biases.
         (decision as any).nano_bias = nanoContext?.bias ?? null;
         // Responses-API id of this call — persisted in ai_decision_json so every
-        // decision row maps to its turn in the stored conversation chain.
+        // decision row maps to its turn in the stored conversation chain. The
+        // previous id (null on stateless calls) lets the dashboard link chained
+        // decisions of one conversation on the timeline.
         (decision as any).response_id = aiResponseId;
+        (decision as any).previous_response_id = chainedPreviousResponseId;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — too far clamps;
@@ -1855,13 +1874,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const executedAtMs = Date.now();
 
         // Thread lifecycle bookkeeping. An entry that actually placed an order
-        // STARTS a conversation (pending_entry while a pullback limit rests;
-        // straight to in_position on a market entry — a fresh entry replaces any
-        // stale thread row outright). An in-position tick ADVANCES the chain head
-        // (HOLD / partial CLOSE / REVERSE — the reversal keeps its conversation).
-        // A full CLOSE that executed ends it; TP/SL fills between ticks are caught
-        // by the reconcile at the top of the next tick. Best-effort, never blocks
-        // the trading path.
+        // STARTS or CONTINUES a conversation (pending_entry while a pullback
+        // limit rests; straight to in_position on a market entry — the upsert
+        // replaces any stale row while previous_response_id keeps a re-issued
+        // limit on its original conversation). An in-position tick ADVANCES the
+        // chain head (HOLD / partial CLOSE / REVERSE — the reversal keeps its
+        // conversation). A full CLOSE that executed ends it, and so does a flat
+        // tick that chained onto a resting limit's conversation but did NOT
+        // re-issue (entry dropped → conversation over; also cleans up a
+        // lingering row when the order vanished before the sweep). TP/SL fills
+        // between ticks are caught by the reconcile at the top of the next
+        // tick. Best-effort, never blocks the trading path.
         if (!dryRun && aiResponseId) {
             try {
                 const entryPlacedNow =
@@ -1887,6 +1910,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         status: 'in_position',
                         lastResponseId: aiResponseId,
                     });
+                } else if (aiThreadResponseId) {
+                    await endSwingAiThread(platform, symbol);
                 }
             } catch (err) {
                 console.warn(`AI thread update failed for ${symbol}:`, err);

@@ -509,6 +509,17 @@ body {
   background-color: rgb(82 82 91 / 1); /* zinc-600 */
 }
 
+/* Full-contrast connector segment linking decisions that share one AI
+   conversation (context calls) — same contrast pair as .timeline-dot-ai:
+   black on light, white on dark. */
+.timeline-connector-thread {
+  background-color: rgb(15 23 42 / 1);
+}
+
+.theme-dark .timeline-connector-thread {
+  background-color: rgb(255 255 255 / 1);
+}
+
 /* Partial-close (trim) action pill in the decision card: amber in both themes,
    exempt from the dark-theme accent desaturation. */
 .action-pill-trim {

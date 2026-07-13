@@ -62,6 +62,12 @@ export type ChartTimelineTick = {
   action?: string;
   stage?: string;
   reason?: string;
+  // Responses-API conversation chain: `previousResponseId` marks a context AI
+  // call (in-position tick / post-fill management of a pullback limit) chained
+  // onto the tick whose `responseId` matches — linked with a full-contrast
+  // connector segment.
+  responseId?: string;
+  previousResponseId?: string;
 };
 
 const timelineDotFillClass = (tick: ChartTimelineTick): string =>
@@ -666,6 +672,11 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [highlightX, setHighlightX] = useState<number | null>(null);
   const [timelineDots, setTimelineDots] = useState<
     Array<{ x: number; tick: ChartTimelineTick }>
+  >([]);
+  // Full-contrast connector segments linking the decisions of one AI
+  // conversation (context calls) — px ranges over the timeline strip.
+  const [threadSegments, setThreadSegments] = useState<
+    Array<{ left: number; width: number }>
   >([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [chartInitToken, setChartInitToken] = useState(0);
@@ -1312,6 +1323,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         typeof timeScaleNow.timeToCoordinate !== 'function'
       ) {
         setTimelineDots([]);
+        setThreadSegments([]);
         return;
       }
       const paneWidth = overlayLayerRef.current?.clientWidth ?? 0;
@@ -1321,16 +1333,52 @@ export default function ChartPanel(props: ChartPanelProps) {
         if (!Number.isFinite(x) || x < 0 || (paneWidth > 0 && x > paneWidth)) continue;
         projected.push({ x, tick });
       }
+
+      // Full-contrast segments linking context AI calls: each tick that chained
+      // onto a previous response gets a segment back to the tick that produced
+      // that response (the resting period of a pullback limit is bridged — the
+      // fill's management tick chains straight onto the entry decision). A
+      // predecessor missing from the window clamps to the strip's left edge:
+      // the conversation extends into the past. Culling never drops segments —
+      // they're computed from ALL ticks, not the kept dots.
+      const tsByResponseId = new Map<string, number>();
+      for (const tick of timelineTicks) {
+        if (tick.responseId) tsByResponseId.set(tick.responseId, tick.ts);
+      }
+      const clampedX = (tsMs: number): number => {
+        const x = Number(timeScaleNow.timeToCoordinate(nearestBarTime(tsMs)));
+        if (!Number.isFinite(x)) return NaN;
+        return Math.min(Math.max(x, 0), paneWidth > 0 ? paneWidth : x);
+      };
+      const segments: Array<{ left: number; width: number }> = [];
+      for (const tick of timelineTicks) {
+        if (!tick.previousResponseId) continue;
+        const endX = clampedX(tick.ts);
+        if (!Number.isFinite(endX)) continue;
+        const prevTs = tsByResponseId.get(tick.previousResponseId);
+        const startX = prevTs != null ? clampedX(prevTs) : 0;
+        if (!Number.isFinite(startX) || endX - startX < 1) continue;
+        segments.push({ left: startX, width: endX - startX });
+      }
+      setThreadSegments(segments);
+      const kindPriority = (tick: ChartTimelineTick): number =>
+        tick.kind === 'action'
+          ? 0
+          : tick.kind === 'ai_call'
+            ? 1
+            : tick.hourly
+              ? 2
+              : 3;
+      // Selection floats a dot ahead of its own kind, but a selected non-action
+      // dot never outranks BUY/SELL/trim dots: the default "live" selection is
+      // often a scan tick newer than the last candle, which snaps onto the
+      // latest decision's bar — and must not cull its action dot.
       const priority = (tick: ChartTimelineTick): number =>
         tick.ts === selectedTimelineTs
-          ? -1
-          : tick.kind === 'action'
-            ? 0
-            : tick.kind === 'ai_call'
-              ? 1
-              : tick.hourly
-                ? 2
-                : 3;
+          ? kindPriority(tick) === 0
+            ? -1
+            : 0.5
+          : kindPriority(tick);
       projected.sort(
         (a, b) => priority(a.tick) - priority(b.tick) || b.tick.ts - a.tick.ts,
       );
@@ -1676,6 +1724,16 @@ export default function ChartPanel(props: ChartPanelProps) {
             className="timeline-connector absolute top-1/2 h-[2px] -translate-y-1/2"
             style={{ left: 0, right: priceScaleWidth }}
           />
+          {/* Full-contrast overlay on the connector: decisions sharing one AI
+              conversation (context calls while in position / managing a filled
+              pullback limit) read as a linked chain. */}
+          {threadSegments.map((segment, idx) => (
+            <div
+              key={`${segment.left}-${segment.width}-${idx}`}
+              className="timeline-connector-thread absolute top-1/2 h-[2px] -translate-y-1/2"
+              style={{ left: segment.left, width: segment.width }}
+            />
+          ))}
           {timelineDots.map(({ x, tick }) => {
             const isSelected = tick.ts === selectedTimelineTs;
             const label = timelineTickLabel(tick);

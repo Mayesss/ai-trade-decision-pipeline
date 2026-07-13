@@ -21,6 +21,12 @@ export type TimelineTick = {
   summary?: string;
   stage?: string;
   reason?: string;
+  // Responses-API conversation chain: `responseId` is this decision's turn,
+  // `previousResponseId` the turn it chained onto (present only on context
+  // calls — in-position ticks and post-fill management of a pullback limit).
+  // The UI links chained ticks with a full-contrast connector segment.
+  responseId?: string;
+  previousResponseId?: string;
   // True when a full decision row exists for this tick and can be fetched via
   // /api/dashboard/decision?ts=.
   hasDetails: boolean;
@@ -103,6 +109,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ...(typeof decision.summary === 'string' && decision.summary ? { summary: decision.summary } : {}),
       ...(typeof decision.skipStage === 'string' && decision.skipStage ? { stage: decision.skipStage } : {}),
       ...(typeof decision.reason === 'string' && decision.reason ? { reason: decision.reason } : {}),
+      ...(typeof decision.response_id === 'string' && decision.response_id
+        ? { responseId: decision.response_id }
+        : {}),
+      ...(typeof decision.previous_response_id === 'string' && decision.previous_response_id
+        ? { previousResponseId: decision.previous_response_id }
+        : {}),
       hasDetails: true,
     });
   }

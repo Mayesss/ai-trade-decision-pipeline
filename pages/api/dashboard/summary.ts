@@ -14,7 +14,7 @@ import {
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
 import { readSwingLastScan } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
-import { loadClosedSwingPositions, upsertSwingPosition } from '../../../lib/swing/pg';
+import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
 import { kvGetJson, kvSetJson } from '../../../lib/kv';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
@@ -35,6 +35,15 @@ type SummaryEntry = {
   pnl7dGross?: number | null;
   pnl7dTrades?: number | null;
   pnlSpark?: number[] | null;
+  // Per-Berlin-calendar-day closed PnL over the range's windows: venue-cash
+  // net (USDT for Bitget, € for Capital — the client folds currencies) +
+  // trade count, keyed YYYY-MM-DD. Days without closes are absent. Feeds the
+  // dashboard's week-calendar strip.
+  pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
+  // A pullback entry limit is resting on the venue (ai_threads status
+  // 'pending_entry') — ranks the symbol pill between open positions and
+  // fresh AI decisions.
+  pendingEntry?: boolean;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
   openLeverage?: number | null;
@@ -335,6 +344,40 @@ function capitalHistoryClosedWindows(history: any[], symbol: string, fromMs: num
     .sort((a, b) => Number(a.entryTimestamp ?? a.exitTimestamp ?? 0) - Number(b.entryTimestamp ?? b.exitTimestamp ?? 0));
 }
 
+// Berlin calendar-day key (YYYY-MM-DD — en-CA renders ISO order) for the
+// daily PnL buckets; the dashboard's clock is Europe/Berlin throughout.
+const BERLIN_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+// Bucket closed windows into per-day venue-cash nets (keyed by exit day).
+// `net` stays null when no window in the bucket carried a cash figure (e.g.
+// Capital history rows that only have a percent).
+function bucketWindowsByDay(
+  windows: PositionWindow[],
+): Array<{ day: string; net: number | null; trades: number }> | null {
+  const byDay = new Map<string, { net: number; hasNet: boolean; trades: number }>();
+  for (const window of windows) {
+    const ts = Number(window.exitTimestamp ?? window.entryTimestamp);
+    if (!Number.isFinite(ts) || ts <= 0) continue;
+    const day = BERLIN_DAY_FORMAT.format(new Date(ts));
+    const bucket = byDay.get(day) ?? { net: 0, hasNet: false, trades: 0 };
+    bucket.trades += 1;
+    if (Number.isFinite(window.pnlNet as number)) {
+      bucket.net += window.pnlNet as number;
+      bucket.hasNet = true;
+    }
+    byDay.set(day, bucket);
+  }
+  if (!byDay.size) return null;
+  return Array.from(byDay.entries())
+    .map(([day, bucket]) => ({ day, net: bucket.hasNet ? bucket.net : null, trades: bucket.trades }))
+    .sort((a, b) => (a.day < b.day ? -1 : 1));
+}
+
 function applyClosedWindowSummary(params: {
   windows: PositionWindow[];
   fallbackNetUsd?: number | null;
@@ -365,6 +408,7 @@ function applyClosedWindowSummary(params: {
 
   return {
     pnlSpark: spark.length ? spark : null,
+    pnlDaily: bucketWindowsByDay(recentWindows),
     pnl7dGross: grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null,
     pnl7d: netPcts.length ? netPcts.reduce((a, b) => a + b, 0) : null,
     pnl7dNet: netUsd.length ? netUsd.reduce((a, b) => a + b, 0) : params.fallbackNetUsd ?? null,
@@ -420,6 +464,14 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
     capitalTradeWindowsBySymbol.set(key, rows);
   }
 
+  // Resting pullback limits, one query for all symbols. Best-effort: a miss
+  // just leaves the pills unflagged until the next rebuild.
+  const pendingEntryKeys = new Set(
+    (await listSwingPendingEntryThreads().catch(() => [])).map(
+      (row) => `${String(row.platform).toLowerCase()}:${String(row.symbol).toUpperCase()}`,
+    ),
+  );
+
   const data: SummaryEntry[] = await Promise.all(
     configs.map(async (config) => {
       const symbol = config.symbol;
@@ -432,6 +484,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let pnl7dGross: number | null | undefined = null;
       let pnl7dTrades: number | null | undefined = null;
       let pnlSpark: number[] | null | undefined = null;
+      let pnlDaily: Array<{ day: string; net: number | null; trades: number }> | null | undefined = null;
       let openPnl: number | null | undefined = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
       let openLeverage: number | null | undefined = null;
@@ -558,6 +611,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
                 typeof summary.pnl7dNet === 'number' &&
                 Math.abs(summary.pnl7dNet) > 0.005;
               pnlSpark = summary.pnlSpark;
+              pnlDaily = summary.pnlDaily;
               pnl7dGross = summary.pnl7dGross;
               pnl7d = capitalPctLooksPlaceholder ? null : summary.pnl7d;
               pnl7dNet = summary.pnl7dNet;
@@ -597,6 +651,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
                 fallbackTradeCount: pnl7dTrades,
               });
               pnlSpark = summary.pnlSpark;
+              pnlDaily = summary.pnlDaily;
               pnl7dGross = summary.pnl7dGross;
               pnl7d = summary.pnl7d;
               pnl7dNet = summary.pnl7dNet;
@@ -638,20 +693,22 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
         }
 
-        if (platform === 'bitget' && symbol.toUpperCase() === BTC_SYMBOL) {
-          const detectedLeverage =
-            Number.isFinite(lastPositionLeverage as number) && (lastPositionLeverage as number) > 0
-              ? (lastPositionLeverage as number)
-              : 1;
-          const scale = BTC_LAST_POSITION_LEVERAGE_OVERRIDE / detectedLeverage;
-          if (Math.abs(scale - 1) > 1e-9) {
-            lastPositionPnl = scalePct(lastPositionPnl, scale);
-            pnl7d = scalePct(pnl7d, scale);
-            pnl7dGross = scalePct(pnl7dGross, scale);
-            avgWinPct = scalePct(avgWinPct, scale);
-            avgLossPct = scalePct(avgLossPct, scale);
-            pnlSpark = Array.isArray(pnlSpark) ? pnlSpark.map((v) => (typeof v === 'number' ? v * scale : v)) : pnlSpark;
-          }
+        // Legacy repair only: old BTC rows predate leverage capture and were
+        // recorded as if 1x while the venue traded 3x — rescale those. Rows
+        // with a real captured leverage (> 1) are authoritative and must NOT
+        // be rescaled (entries now run 5–10x).
+        if (
+          platform === 'bitget' &&
+          symbol.toUpperCase() === BTC_SYMBOL &&
+          !(Number.isFinite(lastPositionLeverage as number) && (lastPositionLeverage as number) > 1)
+        ) {
+          const scale = BTC_LAST_POSITION_LEVERAGE_OVERRIDE;
+          lastPositionPnl = scalePct(lastPositionPnl, scale);
+          pnl7d = scalePct(pnl7d, scale);
+          pnl7dGross = scalePct(pnl7dGross, scale);
+          avgWinPct = scalePct(avgWinPct, scale);
+          avgLossPct = scalePct(avgLossPct, scale);
+          pnlSpark = Array.isArray(pnlSpark) ? pnlSpark.map((v) => (typeof v === 'number' ? v * scale : v)) : pnlSpark;
           lastPositionLeverage = BTC_LAST_POSITION_LEVERAGE_OVERRIDE;
         }
 
@@ -680,6 +737,10 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         pnl7dGross,
         pnl7dTrades,
         pnlSpark,
+        pnlDaily,
+        pendingEntry: pendingEntryKeys.has(
+          `${String(platform).toLowerCase()}:${symbol.toUpperCase()}`,
+        ),
         openPnl,
         openDirection,
         openLeverage,
