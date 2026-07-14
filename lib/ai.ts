@@ -85,6 +85,15 @@ export type CapitalMarketContextForPrompt = {
         minutes_to_close: number;
         reopens_at_utc: string | null;
     } | null;
+    // Venue liquidity clock (lib/swing/sessionEvents): cash opens/closes,
+    // lunch breaks, Globex halts, weekly thin reopen + derived phase. Present
+    // only for session-traded categories; prompt prose must stay conditional.
+    venue_events?: {
+        venue: string;
+        liquidity_phase: string;
+        recent: Array<{ event: string; at_utc: string; minutes_ago: number }>;
+        upcoming: Array<{ event: string; at_utc: string; minutes_to: number }>;
+    } | null;
     overnight_fee_pct_per_day: { long: number | null; short: number | null } | null;
 };
 
@@ -1041,6 +1050,9 @@ export function computeSwingState(
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
+    if (capitalMarketContext?.venue_events) {
+        market.venue_events = capitalMarketContext.venue_events;
+    }
 
     // Each note describes ONLY the context this category actually receives (see
     // /api/analyze: forex_session AND forex_events are both built for
@@ -1071,6 +1083,21 @@ export function computeSwingState(
     // never reference fields the payload doesn't carry.
     const venueSessionNote = capitalMarketContext?.venue_session
         ? `\nVenue session (market.venue_session, ISO UTC): the venue is open now; this session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap.`
+        : '';
+
+    // Venue liquidity clock: schedule facts (when the tape's character changes),
+    // paired with the session-offense guidance bullet below. Conditional on the
+    // block actually being in MARKET.
+    const venueEventsNote = capitalMarketContext?.venue_events
+        ? `\nVenue liquidity clock (market.venue_events, ISO UTC): recent/upcoming venue events (cash open/close, lunch break, exchange maintenance halt, weekly reopen) with minutes_ago/minutes_to, plus liquidity_phase ∈ {pre_open, opening_drive, into_close, venue_break, off_hours, thin_reopen, normal}. These are schedule facts, not signals — the session-offense guidance says how to trade around them.`
+        : '';
+
+    // Session-offense doctrine: sweeps and venue events are edges to capture,
+    // not just hazards to dodge. Conditional on the sweep flags actually being
+    // measured (market.forex_session); the phase tactics need venue_events too.
+    const hasVenueEvents = Boolean(capitalMarketContext?.venue_events);
+    const sessionOffenseGuidance = forex_session_context
+        ? `\n- Session liquidity offense (market.forex_session.signals${hasVenueEvents ? ' + market.venue_events' : ''}): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you.${hasVenueEvents ? ' Phase tactics: opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.' : ''}`
         : '';
 
     // Cost prose per venue. Capital is commission-free: the real round-trip cost
@@ -1105,7 +1132,7 @@ export function computeSwingState(
     const sys = `
 You are an expert swing-trading market-structure analyst. Decide one action and size it.
 
-${assetNote}${venueSessionNote}
+${assetNote}${venueSessionNote}${venueEventsNote}
 
 TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${nano_context ? ', nano=15m (state.geometry.nano — wave/entry timing only, never a setup by itself)' : ''}.
@@ -1129,7 +1156,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
-- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
+- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}
 - ${costChurnLine}
 - In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
@@ -1140,7 +1167,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until it fills or a later evaluation amends it. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, a trendline touch, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — so it is a free option on better timing, not a standing commitment. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
+- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme (see session liquidity offense) — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
 

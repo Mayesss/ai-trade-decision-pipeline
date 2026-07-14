@@ -33,6 +33,7 @@ import { recordSwingLastScan } from '../../lib/swing/lastScan';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
+import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
 
 import {
     computeSwingState,
@@ -1424,10 +1425,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                           : null,
                   }
                 : null;
+        // Venue liquidity clock (cash opens/closes, lunch breaks, Globex halts,
+        // weekly thin reopen) for session-traded instruments — the boundary
+        // moments that sweep resting entries and gap brackets. Pure schedule
+        // math, no fetch. Crypto stays excluded (24/7, no venue clock).
+        const venueEvents =
+            platform === 'capital' && category && SESSION_LEVEL_CATEGORIES.has(category)
+                ? buildVenueSessionEvents({ symbol, category, nowMs: capitalNowMs })
+                : null;
         const capitalMarketContext =
             platform === 'capital'
                 ? {
                       venue_session: venueSession,
+                      venue_events: venueEvents,
                       overnight_fee_pct_per_day: capitalMarketInfo?.overnightFeePctPerDay ?? null,
                   }
                 : null;
@@ -2053,6 +2063,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsHeadlines: newsBundle?.headlines ?? [],
             forexEventContext: forexEventContext,
             forexSessionContext,
+            // Venue liquidity clock at decision time — lets "did this entry rest
+            // into an open/break/thin reopen" stay a SQL query over snapshots
+            // instead of a schedule reconstruction.
+            venueEvents,
             positionContext,
             momentumSignals,
             // Which actionability branch admitted this call (confirmed_primary_structure /
