@@ -125,7 +125,6 @@ type ChartPanelProps = {
   statsSlot?: React.ReactNode;
   livePrice?: number | null;
   liveTimestamp?: number | null;
-  liveConnected?: boolean;
   onOpenPositionChange?: (position: {
     pnlPct: number | null;
     side: 'long' | 'short' | null;
@@ -650,7 +649,6 @@ export default function ChartPanel(props: ChartPanelProps) {
     statsSlot = null,
     livePrice = null,
     liveTimestamp = null,
-    liveConnected = false,
     onOpenPositionChange,
     onPositionSummaryChange,
     highlightTimeMs = null,
@@ -668,7 +666,6 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [chartAttempted, setChartAttempted] = useState(false);
   const [hoveredOverlay, setHoveredOverlay] = useState<PositionOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
-  const [livePulseY, setLivePulseY] = useState<number | null>(null);
   const [highlightX, setHighlightX] = useState<number | null>(null);
   const [timelineDots, setTimelineDots] = useState<
     Array<{ x: number; tick: ChartTimelineTick }>
@@ -1241,32 +1238,6 @@ export default function ChartPanel(props: ChartPanelProps) {
   }, [pendingOrders, chartInitToken]);
 
   useEffect(() => {
-    const recalcLivePulse = () => {
-      if (!liveConnected) {
-        setLivePulseY(null);
-        return;
-      }
-      const series = chartSeriesRef.current;
-      const layer = overlayLayerRef.current;
-      if (!series || !layer || !chartData.length || typeof series.priceToCoordinate !== 'function') {
-        setLivePulseY(null);
-        return;
-      }
-      const fallback = chartData[chartData.length - 1]?.value;
-      const price = typeof livePrice === 'number' ? livePrice : fallback;
-      if (!Number.isFinite(price)) {
-        setLivePulseY(null);
-        return;
-      }
-      const y = Number(series.priceToCoordinate(price));
-      if (!Number.isFinite(y)) {
-        setLivePulseY(null);
-        return;
-      }
-      const clampedY = Math.min(Math.max(y, 6), Math.max(6, layer.clientHeight - 6));
-      setLivePulseY(clampedY);
-    };
-
     // Vertical marker at the decision-timeline selection: snap the selected
     // tick's time to the nearest bar and project it to an X coordinate.
     const recalcHighlightX = () => {
@@ -1416,19 +1387,17 @@ export default function ChartPanel(props: ChartPanelProps) {
     };
 
     // Same rAF-batched + observer approach as the position overlays so the
-    // pulse marker tracks the chart on resize/zoom without event thrash.
+    // markers track the chart on resize/zoom without event thrash.
     let raf = 0;
     const schedule = () => {
       if (raf) return;
       raf = window.requestAnimationFrame(() => {
         raf = 0;
-        recalcLivePulse();
         recalcHighlightX();
         recalcTimelineDots();
       });
     };
 
-    recalcLivePulse();
     recalcHighlightX();
     recalcTimelineDots();
 
@@ -1450,8 +1419,6 @@ export default function ChartPanel(props: ChartPanelProps) {
     };
   }, [
     chartData,
-    livePrice,
-    liveConnected,
     chartInitToken,
     highlightTimeMs,
     timelineTicks,
@@ -1507,7 +1474,6 @@ export default function ChartPanel(props: ChartPanelProps) {
           className={`shrink-0 text-xs text-slate-400 ${statsSlot ? 'hidden sm:block' : ''}`}
         >
           {timeframe} bars · {rangeKey} window
-          {liveConnected ? ' · live' : ''}
           {typeof livePrice === 'number' ? ` · ${livePrice.toFixed(2)}` : ''}
           {chartLoading && hasChartData ? ' · updating…' : ''}
         </div>
@@ -1584,14 +1550,6 @@ export default function ChartPanel(props: ChartPanelProps) {
                     backgroundColor: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(15,23,42,0.35)',
                   }}
                 />
-              ) : null}
-              {liveConnected && livePulseY !== null ? (
-                <div className="pointer-events-none absolute" style={{ top: livePulseY - 14, right: 1 }}>
-                  <span className="relative inline-flex h-2 w-2">
-                    <span className="absolute inset-0 animate-ping rounded-full bg-sky-400/80" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500 ring-1 ring-white/90 shadow-sm" />
-                  </span>
-                </div>
               ) : null}
             </div>
             {hoveredOverlay && hoverX !== null && (

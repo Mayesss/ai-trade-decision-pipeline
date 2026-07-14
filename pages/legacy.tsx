@@ -2698,7 +2698,6 @@ export default function Home() {
     useState(false);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
-  const [livePriceConnected, setLivePriceConnected] = useState(false);
   const [themePreference, setThemePreference] =
     useState<ThemePreference>("dark");
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
@@ -2855,14 +2854,13 @@ export default function Home() {
 
   // Live price for the active symbol: REST polling every 3s (no venue
   // websockets — Capital would need a Lightstreamer session; the REST quote
-  // covers both platforms uniformly). Feeds the chart's pulse marker and the
+  // covers both platforms uniformly). Feeds the chart's live candle and the
   // live open-PnL. Skips ticks while the tab is hidden or a request is still
   // in flight; state resets on symbol switch so a stale quote from the
   // previous symbol never paints the new chart.
   useEffect(() => {
     setLivePriceNow(null);
     setLivePriceTs(null);
-    setLivePriceConnected(false);
     const symbol = strategyMode === "swing" ? symbols[active] || null : null;
     if (!adminGranted || !symbol) return;
     // Captured once — a symbol's platform doesn't change within its lifetime.
@@ -2880,20 +2878,16 @@ export default function Home() {
           { headers: buildAdminHeaders(), cache: "no-store" },
         );
         if (cancelled) return;
-        if (!res.ok) {
-          setLivePriceConnected(false);
-          return;
-        }
+        if (!res.ok) return;
         const json = await res.json();
         const price = Number(json?.price);
         if (!cancelled && Number.isFinite(price) && price > 0) {
           setLivePriceNow(price);
           const ts = Number(json?.ts);
           setLivePriceTs(Number.isFinite(ts) && ts > 0 ? ts : Date.now());
-          setLivePriceConnected(true);
         }
       } catch {
-        if (!cancelled) setLivePriceConnected(false);
+        // transient poll failure — keep the last quote
       } finally {
         inFlight = false;
       }
@@ -4246,7 +4240,6 @@ export default function Home() {
     typeof effectiveRangePnlWithOpen === "number"
       ? `${effectiveRangePnlWithOpen.toFixed(2)}%`
       : null;
-  const openPnlIsLive = typeof liveOpenPnl === "number";
   // Attention-first pill ordering: the header row gets scanned for "what's up"
   // on every visit — open positions first, then resting entry limits, then
   // symbols whose last tick was a real AI decision, then the rest by
@@ -4461,11 +4454,6 @@ export default function Home() {
                   {typeof current.openLeverage === "number"
                     ? `${current.openLeverage.toFixed(0)}x`
                     : ""}
-                </span>
-              ) : null}
-              {openPnlIsLive ? (
-                <span className="text-[9px] font-semibold uppercase text-emerald-600">
-                  live
                 </span>
               ) : null}
             </span>
@@ -8899,7 +8887,6 @@ export default function Home() {
                     statsSlot={swingChartStats}
                     livePrice={livePriceNow}
                     liveTimestamp={livePriceTs}
-                    liveConnected={livePriceConnected}
                     onOpenPositionChange={(position) =>
                       handleChartOpenPositionChange(activeSymbol, position)
                     }
