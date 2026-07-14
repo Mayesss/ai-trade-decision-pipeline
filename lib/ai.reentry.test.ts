@@ -27,10 +27,14 @@ const openContext: PromptDecisionContext = {
 
 const gatesOk = { spread_ok: true, liquidity_ok: true, atr_ok: true, slippage_ok: true };
 
-function decide(action: 'BUY' | 'SELL', lastClosedPosition: Parameters<typeof resolveReentryCooldown>[0]) {
+function decide(
+    action: 'BUY' | 'SELL',
+    lastClosedPosition: Parameters<typeof resolveReentryCooldown>[0],
+    context: PromptDecisionContext = openContext,
+) {
     return postprocessDecision({
         decision: { action },
-        context: openContext,
+        context,
         gates: gatesOk,
         positionOpen: false,
         recentActions: [],
@@ -39,6 +43,24 @@ function decide(action: 'BUY' | 'SELL', lastClosedPosition: Parameters<typeof re
         lastClosedPosition,
     });
 }
+
+// Session-signals variant: only the two reclaim flags matter to the coercion.
+const withSignals = (signals: Partial<{ bullishLiquidityReclaim: boolean; bearishLiquidityRejection: boolean }>) =>
+    ({
+        ...openContext,
+        forex_session_context: {
+            signals: {
+                sweptLastSessionHigh: false,
+                sweptLastSessionLow: false,
+                sweptPriorDayHigh: false,
+                sweptPriorDayLow: false,
+                bullishLiquidityReclaim: false,
+                bearishLiquidityRejection: false,
+                midSessionRange: false,
+                ...signals,
+            },
+        },
+    }) as PromptDecisionContext;
 
 test('resolveReentryCooldown: active inside the window, inactive after it', () => {
     const now = Date.now();
@@ -63,4 +85,24 @@ test('postprocessDecision: entries pass once the cooldown has expired or with no
     const staleClose = { side: 'long' as const, exitTsMs: Date.now() - (REENTRY_COOLDOWN_MIN + 5) * 60_000 };
     assert.equal(decide('BUY', staleClose).action, 'BUY');
     assert.equal(decide('BUY', null).action, 'BUY');
+});
+
+test('sweep-reclaim exception: bullishLiquidityReclaim lifts the block for a long re-entry only', () => {
+    const recentLongClose = { side: 'long' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(decide('BUY', recentLongClose, withSignals({ bullishLiquidityReclaim: true })).action, 'BUY');
+    // The bullish reclaim is not a pass for a blocked SHORT re-entry.
+    const recentShortClose = { side: 'short' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(decide('SELL', recentShortClose, withSignals({ bullishLiquidityReclaim: true })).action, 'HOLD');
+});
+
+test('sweep-reclaim exception: bearishLiquidityRejection lifts the block for a short re-entry only', () => {
+    const recentShortClose = { side: 'short' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(decide('SELL', recentShortClose, withSignals({ bearishLiquidityRejection: true })).action, 'SELL');
+    const recentLongClose = { side: 'long' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(decide('BUY', recentLongClose, withSignals({ bearishLiquidityRejection: true })).action, 'HOLD');
+});
+
+test('sweep-reclaim exception: absent or all-false signals leave the block intact', () => {
+    const recentLongClose = { side: 'long' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(decide('BUY', recentLongClose, withSignals({})).action, 'HOLD');
 });

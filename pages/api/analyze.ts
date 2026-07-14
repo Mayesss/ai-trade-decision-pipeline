@@ -1261,6 +1261,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Session/day/week levels and the macro-event calendar are both valuable for any
+        // session-traded, fiat-macro-sensitive Capital.com instrument (forex, metals,
+        // indices). Events resolve to the instrument's macro currency (e.g. USD for gold);
+        // crypto is excluded (24/7, no session boundaries, no fiat-macro calendar).
+        const SESSION_LEVEL_CATEGORIES = new Set(['forex', 'commodity', 'index']);
+        // Venue liquidity clock (cash opens/closes, lunch breaks, Globex halts,
+        // weekly thin reopen) — pure schedule math, no fetch, so it is computed
+        // BEFORE the quarter-tick cooldown skip: sweep windows must stay live.
+        const venueEvents =
+            platform === 'capital' && category && SESSION_LEVEL_CATEGORIES.has(category)
+                ? buildVenueSessionEvents({ symbol, category, nowMs: Date.now() })
+                : null;
+
         // Quarter-tick cooldown skip: while the re-entry cooldown is active the
         // AI can only HOLD (same side blocked) or open the opposite side — a
         // call the hourly tick makes just as well. Skipping the 15m cadence
@@ -1271,7 +1284,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // pullback limit rests (aiThreadResponseId set on a flat tick ⇔
         // pending-entry conversation) — a resting opposite-direction entry
         // must keep being re-validated against the moving market.
-        if (!positionOpen && quarterTick && !aiThreadResponseId) {
+        // Also does NOT apply during sweep windows (opening_drive / thin_reopen):
+        // the cooldown's sweep-reclaim exception (postprocessDecision) can only
+        // fire on ticks that actually run, and reclaims resolve in minutes.
+        const sweepWindow =
+            venueEvents?.liquidity_phase === 'opening_drive' || venueEvents?.liquidity_phase === 'thin_reopen';
+        if (!positionOpen && quarterTick && !aiThreadResponseId && !sweepWindow) {
             const cooldownNow = resolveReentryCooldown(lastClosedPosition);
             if (cooldownNow) {
                 const decision = {
@@ -1316,11 +1334,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 return { action: d?.action, timestamp: h.timestamp, closePct };
             })
             .filter((a) => a.action);
-        // Session/day/week levels and the macro-event calendar are both valuable for any
-        // session-traded, fiat-macro-sensitive Capital.com instrument (forex, metals,
-        // indices). Events resolve to the instrument's macro currency (e.g. USD for gold);
-        // crypto is excluded (24/7, no session boundaries, no fiat-macro calendar).
-        const SESSION_LEVEL_CATEGORIES = new Set(['forex', 'commodity', 'index']);
         const forexEventContext =
             category && SESSION_LEVEL_CATEGORIES.has(category)
                 ? await loadForexEventContext({
@@ -1425,14 +1438,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                           : null,
                   }
                 : null;
-        // Venue liquidity clock (cash opens/closes, lunch breaks, Globex halts,
-        // weekly thin reopen) for session-traded instruments — the boundary
-        // moments that sweep resting entries and gap brackets. Pure schedule
-        // math, no fetch. Crypto stays excluded (24/7, no venue clock).
-        const venueEvents =
-            platform === 'capital' && category && SESSION_LEVEL_CATEGORIES.has(category)
-                ? buildVenueSessionEvents({ symbol, category, nowMs: capitalNowMs })
-                : null;
         const capitalMarketContext =
             platform === 'capital'
                 ? {
@@ -1494,7 +1499,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
                 usedTape,
-                snapshot: { price: effectivePrice, actionability, momentumSignals },
+                // Session signals + venue phase ride along so "how many reclaim
+                // moments died at this gate" stays a SQL query over skip rows —
+                // the measurement that decides whether the entry gates need a
+                // sweep-reclaim branch.
+                snapshot: {
+                    price: effectivePrice,
+                    actionability,
+                    momentumSignals,
+                    forexSessionSignals: forexSessionContext?.signals ?? null,
+                    venueLiquidityPhase: venueEvents?.liquidity_phase ?? null,
+                },
             });
             emitGateDebug('actionability_gate', {
                 gate: 'ACTIONABILITY',
@@ -1540,7 +1555,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
                 usedTape,
-                snapshot: { price: effectivePrice, actionability, momentumSignals },
+                // Session signals + venue phase ride along so "how many reclaim
+                // moments died at this gate" stays a SQL query over skip rows —
+                // the measurement that decides whether the entry gates need a
+                // sweep-reclaim branch.
+                snapshot: {
+                    price: effectivePrice,
+                    actionability,
+                    momentumSignals,
+                    forexSessionSignals: forexSessionContext?.signals ?? null,
+                    venueLiquidityPhase: venueEvents?.liquidity_phase ?? null,
+                },
             });
             emitGateDebug('signal_strength_gate', {
                 gate: 'SIGNAL_STRENGTH',
@@ -1599,7 +1624,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
                 usedTape,
-                snapshot: { price: effectivePrice, actionability, momentumSignals },
+                // Session signals + venue phase ride along so "how many reclaim
+                // moments died at this gate" stays a SQL query over skip rows —
+                // the measurement that decides whether the entry gates need a
+                // sweep-reclaim branch.
+                snapshot: {
+                    price: effectivePrice,
+                    actionability,
+                    momentumSignals,
+                    forexSessionSignals: forexSessionContext?.signals ?? null,
+                    venueLiquidityPhase: venueEvents?.liquidity_phase ?? null,
+                },
             });
             emitGateDebug('extension_gate', {
                 gate: 'EXTENSION',

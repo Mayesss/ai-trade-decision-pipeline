@@ -1149,7 +1149,7 @@ DECISION OWNERSHIP
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
   3. Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).
   4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.
-  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.${REENTRY_COOLDOWN_MIN > 0 ? `\n  6. Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).` : ''}
+  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.${REENTRY_COOLDOWN_MIN > 0 ? `\n  6. Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed). Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.` : ''}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
@@ -1414,9 +1414,21 @@ export function postprocessDecision(params: {
 
     // Re-entry cooldown: when flat, block re-opening the direction that just closed.
     // Opposite-direction entries stay allowed (a reversal thesis is a new trade).
+    // Sweep-reclaim exception (session offense): when the just-stopped side's
+    // extreme was swept and RECLAIMED (bullishLiquidityReclaim for a long,
+    // bearishLiquidityRejection for a short), the stop-run itself was the event
+    // and the reclaim re-entry is the highest-edge same-direction trade — the
+    // anti-churn block must not eat it.
     if (!positionOpen && (action === 'BUY' || action === 'SELL')) {
         const cooldown = resolveReentryCooldown(lastClosedPosition);
-        if (cooldown && desiredSide === cooldown.blockedSide) action = 'HOLD';
+        if (cooldown && desiredSide === cooldown.blockedSide) {
+            const signals = context.forex_session_context?.signals;
+            const reclaimForSide =
+                desiredSide === 'long'
+                    ? Boolean(signals?.bullishLiquidityReclaim)
+                    : Boolean(signals?.bearishLiquidityRejection);
+            if (!reclaimForSide) action = 'HOLD';
+        }
     }
 
     if (action === 'CLOSE' || action === 'REVERSE') {
