@@ -12,6 +12,9 @@ type DecisionBrief = {
 type PartialCloseBrief = DecisionBrief & {
   closePct?: number | null;
   size?: number | null;
+  // Venue cash this trim realized (matched server-side from the position's
+  // folded trim chunks) — absent when no transaction row matched.
+  pnlNet?: number | null;
 };
 
 type PositionOverlay = {
@@ -1661,6 +1664,9 @@ export default function ChartPanel(props: ChartPanelProps) {
                             ? `${partial.closePct.toFixed(0)}% ${partial.action || 'CLOSE'}`
                             : partial.action || 'CLOSE'}
                         </span>
+                        {typeof partial.pnlNet === 'number'
+                          ? ` · ${partial.pnlNet >= 0 ? '+' : ''}${partial.pnlNet.toFixed(2)} realized`
+                          : ''}
                         {partial.summary ? ` · ${partial.summary}` : ''}
                       </div>
                       <div className="text-[10px] text-slate-500">

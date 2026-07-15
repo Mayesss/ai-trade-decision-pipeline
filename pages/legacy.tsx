@@ -84,6 +84,7 @@ type EvaluationEntry = {
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
   lastAiDecisionTs?: number | null;
+  lastAiDecisionAction?: string | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -145,6 +146,8 @@ type DashboardSummaryRow = {
   // Freshest real AI call in the history window — drives the recency-sorted
   // pill order (pre-AI skips don't count).
   lastAiDecisionTs?: number | null;
+  // Its action (BUY/SELL/CLOSE/HOLD/…) — colors the pill's decision dot.
+  lastAiDecisionAction?: string | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -7815,9 +7818,26 @@ export default function Home() {
                     {orderedSymbolPills.map(
                       ({ sym, index, tab, marketClosed, openDirection, pnl }) => {
                         const isActive = index === active;
-                        // "The AI decided this in the last hour" — pulse dot on
-                        // the symbol segment (skips don't light it).
+                        // Decision dot on the symbol segment: shown when the
+                        // AI decided within the last hour (skips don't light
+                        // it) or a pullback limit is resting. Color = the last
+                        // AI action, using the timeline's palette; a HOLLOW
+                        // ring means the order is a resting limit (not yet
+                        // filled), filled means executed/hold.
                         const aiDecisionRecent = tab?.lastWasAiCall === true;
+                        const pendingLimit = tab?.pendingEntry === true;
+                        const lastAiAction = String(
+                          tab?.lastAiDecisionAction || "",
+                        ).toUpperCase();
+                        const decisionDotClass =
+                          lastAiAction === "BUY"
+                            ? "timeline-dot-buy"
+                            : lastAiAction === "SELL"
+                              ? "timeline-dot-sell"
+                              : lastAiAction === "CLOSE" ||
+                                  lastAiAction === "REVERSE"
+                                ? "timeline-dot-trim"
+                                : "timeline-dot-ai";
                         const openPnlValue =
                           openDirection && typeof tab?.openPnl === "number"
                             ? tab.openPnl
@@ -7882,7 +7902,13 @@ export default function Home() {
                                   ? `${sym} — market closed`
                                   : openDirection
                                     ? `${sym} — open ${openDirection}`
-                                    : null,
+                                    : pendingLimit
+                                      ? `${sym} — resting limit entry${
+                                          lastAiAction === "BUY" || lastAiAction === "SELL"
+                                            ? ` (${lastAiAction.toLowerCase()})`
+                                            : ""
+                                        }`
+                                      : null,
                                 // Cron liveness: quarter-tick scans don't write
                                 // decision rows, so the KV last-scan marker is
                                 // the only evidence the 15m cadence ran — plus
@@ -7903,8 +7929,12 @@ export default function Home() {
                             <span
                               className={`flex items-center gap-1 px-2 py-0.5 ${symbolSegClass}`}
                             >
-                              {aiDecisionRecent ? (
-                                <span className="ai-call-indicator h-2 w-2 shrink-0 rounded-[1px]" />
+                              {aiDecisionRecent || pendingLimit ? (
+                                <span
+                                  className={`pill-decision-dot h-2 w-2 shrink-0 ${decisionDotClass} ${
+                                    pendingLimit ? "pill-dot-hollow" : ""
+                                  }`}
+                                />
                               ) : null}
                               {sym}
                             </span>

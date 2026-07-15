@@ -192,6 +192,169 @@ export function withDerivedPnlPct(window: PositionWindow): PositionWindow {
     };
 }
 
+// One realized cash chunk of a position (a trim or the final close), kept on
+// the folded window so consumers can place per-day cash or per-trim markers.
+export type CapitalWindowChunk = {
+    exitTimestamp: number;
+    pnlNet: number | null;
+    pnlPct: number | null;
+};
+
+export type FoldedCapitalWindow = PositionWindow & { chunks?: CapitalWindowChunk[] };
+
+// Two windows belong to the same position when their (enriched) entries agree
+// within this tolerance…
+const SAME_POSITION_ENTRY_TOLERANCE_MS = 5 * 60 * 1000;
+// …OR when their spans overlap by more than this. Capital holds ONE position
+// per symbol at a time, so same-symbol windows that genuinely coexist can only
+// be realized chunks of the same position — sequential positions overlap by at
+// most seconds of venue skew (a close and a REVERSE re-entry book back to
+// back). The overlap test is what catches pullback-limit entries: a trim tx
+// row is enriched with the BUY/SELL DECISION timestamp while captured rows and
+// the open position carry the venue FILL time, which can trail the decision by
+// hours — same position, entries far apart, spans overlapping.
+const SAME_POSITION_MIN_OVERLAP_MS = 5 * 60 * 1000;
+
+function spanOverlapMs(aEntry: number, aExit: number, bEntry: number, bExit: number): number {
+    return Math.min(aExit, bExit) - Math.max(aEntry, bEntry);
+}
+
+function toChunk(window: PositionWindow): CapitalWindowChunk {
+    return {
+        exitTimestamp: Number(window.exitTimestamp),
+        pnlNet: finiteNumber(window.pnlNet),
+        pnlPct: finiteNumber(window.pnlPct),
+    };
+}
+
+// Sum of the non-null values; null when every value is null (so a group of
+// percent-less rows doesn't fabricate a 0).
+function sumOrNull(values: Array<number | null>): number | null {
+    const present = values.filter((v): v is number => v !== null);
+    return present.length ? present.reduce((a, b) => a + b, 0) : null;
+}
+
+function firstNonNull<T>(values: Array<T | null | undefined>): T | null {
+    for (const value of values) if (value !== null && value !== undefined) return value;
+    return null;
+}
+
+function foldChunkGroup(members: PositionWindow[]): FoldedCapitalWindow {
+    if (members.length === 1) return members[0];
+    const final = members[members.length - 1];
+    // Every chunk was enriched with the FULL position notional (from the entry
+    // decision), so chunk percents already share one basis: the position's
+    // percent is the SUM of chunk percents, and the folded notional is the max
+    // (summing would double-count the same exposure).
+    const notionals = members.map((m) => positiveNumber(m.notional)).filter((n): n is number => n !== null);
+    const folded: FoldedCapitalWindow = {
+        ...final,
+        entryTimestamp: Math.min(...members.map((m) => Number(m.entryTimestamp))),
+        entryPrice: firstNonNull(members.map((m) => finiteNumber(m.entryPrice))),
+        side: firstNonNull(members.map((m) => m.side ?? null)),
+        leverage: firstNonNull(members.map((m) => positiveNumber(m.leverage))),
+        pnlNet: sumOrNull(members.map((m) => finiteNumber(m.pnlNet))),
+        pnlGross: sumOrNull(members.map((m) => finiteNumber(m.pnlGross))),
+        pnlPct: sumOrNull(members.map((m) => finiteNumber(m.pnlPct))),
+        pnlGrossPct: sumOrNull(members.map((m) => finiteNumber(m.pnlGrossPct))),
+        notional: notionals.length ? Math.max(...notionals) : null,
+        chunks: members.map(toChunk),
+    };
+    // Backstop for groups where no chunk carried a percent: derive one from the
+    // summed cash over the shared margin basis.
+    return withDerivedPnlPct(folded);
+}
+
+// A Capital trim (partial close) realizes cash, so it lands as its OWN closed
+// window (entry → trim time) next to the remainder's window (entry → final
+// exit). That is correct for cash accounting — every chunk is real money — but
+// consumed naively it draws one position as overlapping boxes and counts it as
+// several trades. Fold same-position chunks (same symbol, entries within
+// tolerance OR spans overlapping — see the constants above) into ONE window:
+// the last-exiting chunk frames it, cash sums,
+// percents sum over their shared full-notional basis, and the constituent
+// chunks stay on `chunks` (exit-sorted). Windows without entry AND exit
+// timestamps can't be attributed and pass through untouched.
+// `openEntryTimestampMs`: chunks belonging to the STILL-OPEN position are
+// excluded from the folded output and returned as `openChunks` — the chart
+// draws that position from the live broker overlay instead of a phantom
+// closed box underneath it.
+export function foldCapitalTrimChunks(
+    windows: PositionWindow[],
+    opts?: { openEntryTimestampMs?: number | null },
+): { windows: FoldedCapitalWindow[]; openChunks: CapitalWindowChunk[] } {
+    const openEntry = finiteNumber(opts?.openEntryTimestampMs);
+    const byExit = (a: PositionWindow, b: PositionWindow) =>
+        Number(a.exitTimestamp ?? a.entryTimestamp ?? 0) - Number(b.exitTimestamp ?? b.entryTimestamp ?? 0);
+    const passthrough: FoldedCapitalWindow[] = [];
+    const openChunks: CapitalWindowChunk[] = [];
+    const groups: Array<{ minEntry: number; maxExit: number; symbolKey: string; members: PositionWindow[] }> = [];
+    for (const window of windows.slice().sort(byExit)) {
+        const entry = finiteNumber(window.entryTimestamp);
+        const exit = finiteNumber(window.exitTimestamp);
+        if (entry === null || exit === null) {
+            passthrough.push(window);
+            continue;
+        }
+        // Realized while the current position is open (exit meaningfully after
+        // its fill) or sharing its entry ⇒ a trim of the OPEN position. A
+        // previous position always closed before the current one filled, so
+        // its exits can't trail openEntry by more than venue skew.
+        if (
+            openEntry !== null &&
+            (Math.abs(entry - openEntry) <= SAME_POSITION_ENTRY_TOLERANCE_MS ||
+                exit - openEntry >= SAME_POSITION_MIN_OVERLAP_MS)
+        ) {
+            openChunks.push(toChunk(window));
+            continue;
+        }
+        const symbolKey = normalizeCapitalSymbolKey(window.symbol);
+        const group = groups.find(
+            (g) =>
+                g.symbolKey === symbolKey &&
+                (Math.abs(g.minEntry - entry) <= SAME_POSITION_ENTRY_TOLERANCE_MS ||
+                    spanOverlapMs(entry, exit, g.minEntry, g.maxExit) >= SAME_POSITION_MIN_OVERLAP_MS),
+        );
+        if (group) {
+            group.members.push(window);
+            group.minEntry = Math.min(group.minEntry, entry);
+            group.maxExit = Math.max(group.maxExit, exit);
+        } else {
+            groups.push({ minEntry: entry, maxExit: exit, symbolKey, members: [window] });
+        }
+    }
+    return {
+        windows: [...passthrough, ...groups.map((g) => foldChunkGroup(g.members))].sort(byExit),
+        openChunks,
+    };
+}
+
+// Attach the realized cash of each trim chunk to its partial-close AI-decision
+// brief (matched by time: decision fires within minutes of the venue fill) so
+// the chart tooltip can show what the trim actually banked.
+const TRIM_CHUNK_MATCH_MS = 30 * 60 * 1000;
+
+export function attachTrimChunkPnl<T extends { timestamp?: number | null }>(
+    partials: T[],
+    chunks: CapitalWindowChunk[] | null | undefined,
+): Array<T & { pnlNet?: number | null }> {
+    if (!partials.length || !chunks?.length) return partials;
+    return partials.map((partial) => {
+        const ts = finiteNumber(partial.timestamp);
+        if (ts === null) return partial;
+        let best: CapitalWindowChunk | null = null;
+        let bestDiff = TRIM_CHUNK_MATCH_MS;
+        for (const chunk of chunks) {
+            const diff = Math.abs(chunk.exitTimestamp - ts);
+            if (diff <= bestDiff) {
+                bestDiff = diff;
+                best = chunk;
+            }
+        }
+        return best && best.pnlNet !== null ? { ...partial, pnlNet: best.pnlNet } : partial;
+    });
+}
+
 // Read-path assembly for one symbol's persisted windows: merge captured+tx row
 // pairs, enrich transaction-only rows from decision history, derive missing
 // percents. Pure — pass the already-loaded rows and history.

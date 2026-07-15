@@ -13,9 +13,11 @@ import {
 import {
   capitalTransactionToWindow,
   enrichCapitalWindowFromHistory,
+  foldCapitalTrimChunks,
   mergeCapitalPositionWindows,
   normalizeCapitalSymbolKey,
   withDerivedPnlPct,
+  type FoldedCapitalWindow,
 } from '../../../lib/swing/capitalWindows';
 import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
 import { readSwingLastScan } from '../../../lib/swing/lastScan';
@@ -64,6 +66,8 @@ type SummaryEntry = {
   // Timestamp of the freshest real AI call in the history window (pre-AI skips
   // don't count) — drives the recency-sorted symbol pill order.
   lastAiDecisionTs?: number | null;
+  // Its action (BUY/SELL/CLOSE/HOLD/…) — colors the pill's decision dot.
+  lastAiDecisionAction?: string | null;
   // Whether the venue was closed at the most recent decision (Capital reports
   // marketStatus != TRADEABLE → analyze.ts persists a capital_market_closed
   // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
@@ -225,22 +229,33 @@ const BERLIN_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', {
 
 // Bucket closed windows into per-day venue-cash nets (keyed by exit day).
 // `net` stays null when no window in the bucket carried a cash figure (e.g.
-// Capital history rows that only have a percent).
+// Capital history rows that only have a percent). Folded Capital windows
+// (trimmed positions) split back into their chunks here: cash lands on the day
+// each chunk actually realized, but the position counts as ONE trade, on its
+// final close day — a Monday trim must not move Monday's cash to Wednesday,
+// nor count as a Monday trade.
 function bucketWindowsByDay(
   windows: PositionWindow[],
 ): Array<{ day: string; net: number | null; trades: number }> | null {
   const byDay = new Map<string, { net: number; hasNet: boolean; trades: number }>();
-  for (const window of windows) {
-    const ts = Number(window.exitTimestamp ?? window.entryTimestamp);
-    if (!Number.isFinite(ts) || ts <= 0) continue;
+  const credit = (ts: number, pnlNet: number | null, countTrade: boolean) => {
+    if (!Number.isFinite(ts) || ts <= 0) return;
     const day = BERLIN_DAY_FORMAT.format(new Date(ts));
     const bucket = byDay.get(day) ?? { net: 0, hasNet: false, trades: 0 };
-    bucket.trades += 1;
-    if (Number.isFinite(window.pnlNet as number)) {
-      bucket.net += window.pnlNet as number;
+    if (countTrade) bucket.trades += 1;
+    if (Number.isFinite(pnlNet as number)) {
+      bucket.net += pnlNet as number;
       bucket.hasNet = true;
     }
     byDay.set(day, bucket);
+  };
+  for (const window of windows) {
+    const chunks = (window as FoldedCapitalWindow).chunks;
+    if (chunks?.length) {
+      chunks.forEach((chunk, idx) => credit(chunk.exitTimestamp, chunk.pnlNet, idx === chunks.length - 1));
+      continue;
+    }
+    credit(Number(window.exitTimestamp ?? window.entryTimestamp), Number.isFinite(window.pnlNet as number) ? (window.pnlNet as number) : null, true);
   }
   if (!byDay.size) return null;
   return Array.from(byDay.entries())
@@ -369,6 +384,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let forexEventContext: any | null = null;
       let lastWasAiCall = false;
       let lastAiDecisionTs: number | null = null;
+      let lastAiDecisionAction: string | null = null;
       let marketClosed = false;
       let lastScanAt: number | null = null;
       let lastScanStage: string | null = null;
@@ -390,8 +406,10 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         // or a calm-market / below-min-signal-strength pre-AI skip?
         lastWasAiCall = latest ? isRealAiCall(latest) : false;
         // …and when did the AI last actually look at this symbol, regardless of
-        // how many skip rows landed since.
-        lastAiDecisionTs = history.find(isRealAiCall)?.timestamp ?? null;
+        // how many skip rows landed since — plus what it decided.
+        const latestAiCall = history.find(isRealAiCall);
+        lastAiDecisionTs = latestAiCall?.timestamp ?? null;
+        lastAiDecisionAction = String((latestAiCall?.aiDecision as any)?.action || '').toUpperCase() || null;
         // Venue closed at the last cron tick — analyze.ts skips before the AI
         // with skipStage === 'capital_market_closed'. Crypto (bitget) never
         // hits this gate, so it stays open 24/7.
@@ -469,10 +487,16 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
                   }),
                 ),
             );
-            const recentWindows = mergeCapitalPositionWindows([
-              ...mergePositionWindows(persistedWindows, historyWindows),
-              ...transactionWindows,
-            ]).map(withDerivedPnlPct);
+            // Fold same-position trim chunks into one window per position:
+            // trades/winRate/avg count positions (not realized chunks), while
+            // bucketWindowsByDay splits the fold back out so daily cash stays
+            // on the day each chunk realized.
+            const recentWindows = foldCapitalTrimChunks(
+              mergeCapitalPositionWindows([
+                ...mergePositionWindows(persistedWindows, historyWindows),
+                ...transactionWindows,
+              ]).map(withDerivedPnlPct),
+            ).windows;
             if (recentWindows.length) {
               const summary = applyClosedWindowSummary({
                 windows: recentWindows,
@@ -624,6 +648,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastPositionLeverage,
         lastWasAiCall,
         lastAiDecisionTs,
+        lastAiDecisionAction,
         marketClosed,
         lastScanAt,
         lastScanStage,

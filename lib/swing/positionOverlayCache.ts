@@ -4,7 +4,12 @@ import { fetchRecentPositionWindows } from '../analytics';
 import type { AnalysisPlatform } from '../platform';
 import { loadClosedSwingPositions } from './pg';
 import { syncSwingClosedPositions, mergePositionWindows } from './sync';
-import { assembleCapitalPositionWindows } from './capitalWindows';
+import {
+  assembleCapitalPositionWindows,
+  attachTrimChunkPnl,
+  foldCapitalTrimChunks,
+  type CapitalWindowChunk,
+} from './capitalWindows';
 import { chartTimeframeToSeconds } from './chartCache';
 
 // Chart position-overlay cache. The chart endpoint builds its position overlays
@@ -18,7 +23,13 @@ import { chartTimeframeToSeconds } from './chartCache';
 // the version invalidates pre-schema cached rows in one shot.
 // v5: Capital windows are now pair-merged (captured + capital-tx rows) with
 // derived percents — cached v4 overlays held duplicates/percent-less rows.
-const PREFIX = 'swing:chart:overlay:v5';
+// v6: Capital trim chunks are folded into one window per position (with cash
+// on the trim markers) — cached v5 overlays drew trimmed positions as stacked
+// duplicate boxes.
+// v7: fold now groups by span overlap too (pullback-limit fills give one
+// position two entry timestamps: decision ts vs venue fill ts) — v6 overlays
+// could still hold stacked boxes for limit-entered positions.
+const PREFIX = 'swing:chart:overlay:v7';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -203,6 +214,9 @@ function normalizeOverlayPositions(params: {
   // analyze warm path passes them explicitly).
   openTakeProfitPrice?: number | null;
   openStopLossPrice?: number | null;
+  // Realized trim chunks of the still-open Capital position (peeled off by
+  // foldCapitalTrimChunks) — their cash lands on the open overlay's markers.
+  openTrimChunks?: CapitalWindowChunk[];
   history: any[];
   leverageFromHistory: number | null;
   fromMs: number;
@@ -285,13 +299,19 @@ function normalizeOverlayPositions(params: {
       stopLossPrice: positiveNumber(p.stopLossPrice),
       entryDecision,
       exitDecision,
-      partialCloses: buildPartialCloses({
-        history: params.history,
-        entryTsMs: p.entryTimestamp,
-        exitTsMs: p.exitTimestamp,
-        fromMs: params.fromMs,
-        nowMs: params.nowMs,
-      }),
+      // Trim markers carry the cash each chunk realized: folded closed windows
+      // bring their own chunks; the open overlay gets the chunks the fold
+      // peeled off for the still-open position.
+      partialCloses: attachTrimChunkPnl(
+        buildPartialCloses({
+          history: params.history,
+          entryTsMs: p.entryTimestamp,
+          exitTsMs: p.exitTimestamp,
+          fromMs: params.fromMs,
+          nowMs: params.nowMs,
+        }),
+        p.exitTimestamp ? p.chunks : params.openTrimChunks,
+      ),
     };
   });
 }
@@ -368,12 +388,21 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
     } catch (err) {
       console.warn(`chart overlay warm broker merge failed for ${symbol}:`, err);
     }
-  } else {
+  }
+  let openTrimChunks: CapitalWindowChunk[] = [];
+  if (params.platform !== 'bitget') {
     // Capital: merge captured + capital-tx row pairs, enrich tx-only rows
     // (venue-bracket closes) from decision history, derive missing percents —
     // same assembly as the chart endpoint, or the warmed cache would serve
-    // duplicated/percent-less windows for 65 minutes.
-    allClosed = assembleCapitalPositionWindows(allClosed, allHistory);
+    // duplicated/percent-less windows for 65 minutes. Then fold trim chunks
+    // into one window per position (mirrors the chart endpoint): chunks of the
+    // still-open position fold into the live overlay's markers instead.
+    const folded = foldCapitalTrimChunks(assembleCapitalPositionWindows(allClosed, allHistory), {
+      openEntryTimestampMs:
+        params.openPositionInfo?.status === 'open' ? params.openPositionInfo.entryTimestamp ?? null : null,
+    });
+    allClosed = folded.windows;
+    openTrimChunks = folded.openChunks;
   }
 
   await Promise.all(
@@ -393,6 +422,7 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
           openPositionInfo: params.openPositionInfo,
           openTakeProfitPrice: params.openTakeProfitPrice,
           openStopLossPrice: params.openStopLossPrice,
+          openTrimChunks,
           history,
           leverageFromHistory,
           fromMs: preset.fromMs,

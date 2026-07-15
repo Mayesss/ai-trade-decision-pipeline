@@ -336,16 +336,25 @@ body {
   color: rgb(24 24 27 / 1);
 }
 
-.ai-call-indicator {
-  display: inline-block;
-  border: 1px solid rgb(15 23 42 / 0.24);
-  background-color: rgb(51 65 85 / 1);
+/* Symbol-pill decision dot: stays a CIRCLE despite the global sharp-corner
+   rule above (same escape as .timeline-dot — Tailwind's rounded-full loses to
+   the `* { border-radius: 0 !important }` reset). Colored by the shared
+   timeline-dot-* fill classes. */
+.pill-decision-dot {
+  border-radius: 9999px !important;
 }
 
-.theme-dark .ai-call-indicator {
-  border-color: rgb(255 255 255 / 0.95);
-  background-color: rgb(255 255 255 / 1);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.28);
+/* Hollow variant: a resting pullback limit renders as a RING in the action's
+   color (filled dot = executed/hold). Combined with the timeline-dot-* fill
+   classes, which set outline-color alongside background-color — outline
+   instead of border because box-shadow is globally disabled and a border
+   would shrink the visible ring. Negative offset draws the ring fully inside
+   the dot's 8px box. */
+.pill-dot-hollow {
+  background-color: transparent !important;
+  outline-style: solid;
+  outline-width: 1.5px;
+  outline-offset: -1.5px;
 }
 
 /* Chart loading shimmer: an empty panel with a soft highlight sweeping

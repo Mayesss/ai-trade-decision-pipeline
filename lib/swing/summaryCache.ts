@@ -5,7 +5,7 @@ import { kvDel } from '../kv';
 // expensive to build (per-symbol broker calls + decision history), so we cache it
 // for a long window and bust it from the cron whenever a new decision is recorded
 // — fresh right after each hourly tick, served from KV in between.
-export const SWING_SUMMARY_CACHE_KEY_PREFIX = 'swing:dashboard:summary:v4';
+export const SWING_SUMMARY_CACHE_KEY_PREFIX = 'swing:dashboard:summary:v5';
 const SUMMARY_RANGES = ['1D', '7D', '30D', '6M'] as const;
 
 export function swingSummaryCacheKey(range: string): string {

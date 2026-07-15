@@ -724,10 +724,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         //     new head that CONTINUES the same OpenAI chain via this id.
         // Best-effort: a thread hiccup degrades the tick to stateless, never fails it.
         let aiThreadResponseId: string | null = null;
+        // The thread row claims a pullback limit is resting while we're flat —
+        // cross-checked against what the hourly sweep actually finds below.
+        let aiThreadWasPendingEntry = false;
         if (!dryRun) {
             try {
                 const aiThread = await getSwingAiThread(platform, symbol);
                 if (aiThread) {
+                    aiThreadWasPendingEntry = aiThread.status === 'pending_entry' && !positionOpen;
                     if (positionOpen) {
                         if (aiThread.status === 'pending_entry') {
                             await markSwingAiThreadInPosition(platform, symbol);
@@ -878,6 +882,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     usedTape: false,
                     promptSkipped: true,
                 });
+            }
+            // Stale-thread reconcile: the row said a pullback limit was resting,
+            // but the sweep found NOTHING on the venue (expired, weekend purge,
+            // manual cancel). The sweep's own row-deletion only fires when a
+            // cancel succeeded (found > 0) and the post-AI cleanup only on ticks
+            // that reach the AI — without this, a vanished order leaves the
+            // dashboard's pendingEntry flag latched through every gate-skipped
+            // tick (EURUSD sat stale for 25h, 2026-07-15).
+            if (!dryRun && sweep && sweep.found === 0 && aiThreadWasPendingEntry) {
+                await endSwingAiThread(platform, symbol).catch((err) =>
+                    console.warn(`stale pending-entry thread cleanup failed for ${symbol}:`, err),
+                );
             }
         }
 

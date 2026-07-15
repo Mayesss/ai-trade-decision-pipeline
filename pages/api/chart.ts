@@ -15,7 +15,12 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions } from '../../lib/swing/pg';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
-import { assembleCapitalPositionWindows } from '../../lib/swing/capitalWindows';
+import {
+  assembleCapitalPositionWindows,
+  attachTrimChunkPnl,
+  foldCapitalTrimChunks,
+  type CapitalWindowChunk,
+} from '../../lib/swing/capitalWindows';
 import {
   readChartCandlesCache,
   writeChartCandlesCache,
@@ -345,54 +350,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (closed.length) {
           closedPositionSource = 'persisted';
         }
-        if (platform === 'bitget') {
-          // Bitget closes are NOT persisted at close time, so the Neon mirror lags
-          // the newest close — it's only warmed opportunistically by
-          // dashboard-summary loads. Gating the broker read on an empty mirror meant a
-          // just-closed position vanished from the chart (gone from the open feed, not
-          // yet mirrored) whenever the mirror already held older in-window closes.
-          // So always pull recent broker windows, write them through, and merge —
-          // matching the dashboard-summary read path.
-          try {
-            const liveWindows = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
-            if (liveWindows.length) {
-              await syncSwingClosedPositions(platform, liveWindows, capturedLevs);
-              closed = closed.length ? mergePositionWindows(closed, liveWindows) : liveWindows;
-              closedPositionSource = closedPositionSource === 'persisted' ? 'merged' : 'broker';
-            }
-          } catch (err) {
-            console.warn(`Could not merge broker position windows for ${symbol}:`, err);
-          }
-        } else {
-          // Capital rows come in pairs: AI closes write a captured row (prices,
-          // pct) at close time AND a cash-only capital-tx: row lands later from
-          // the transaction reconcile; venue-bracket (TP/SL) closes get ONLY the
-          // tx row (no AI decision fires — the analyze-tick reconcile persists
-          // them). Raw rows would render AI closes twice and bracket closes with
-          // no side/entry/percent, so merge the pairs, enrich tx-only rows from
-          // decision history, and derive the missing percents.
-          closed = assembleCapitalPositionWindows(closed, history);
-        }
-        const closedNormalized =
-          platform === 'bitget' && symbol === BTC_SYMBOL
-            ? closed.map((position) => {
-                const rawLev = Number(position.leverage);
-                const fallbackLev = Number(leverageFromHistory);
-                const detectedLeverage =
-                  Number.isFinite(rawLev) && rawLev > 0
-                    ? rawLev
-                    : Number.isFinite(fallbackLev) && fallbackLev > 0
-                    ? fallbackLev
-                    : 1;
-                const scale = BTC_CHART_LEVERAGE_OVERRIDE / detectedLeverage;
-                const rawPnlPct = Number(position.pnlPct);
-                return {
-                  ...position,
-                  pnlPct: Number.isFinite(rawPnlPct) ? rawPnlPct * scale : position.pnlPct,
-                  leverage: BTC_CHART_LEVERAGE_OVERRIDE,
-                };
-              })
-            : closed;
+        // Open position first: the Capital trim fold below needs its entry to
+        // recognize realized chunks of the STILL-OPEN position (they must fold
+        // into the live overlay's markers, not draw a phantom closed box).
         let openOverlay: any = null;
         try {
           const open = await fetchPositionInfo(symbol);
@@ -431,7 +391,62 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } catch (err) {
           console.warn(`Could not fetch open position for ${symbol}:`, err);
         }
-
+        let openTrimChunks: CapitalWindowChunk[] = [];
+        if (platform === 'bitget') {
+          // Bitget closes are NOT persisted at close time, so the Neon mirror lags
+          // the newest close — it's only warmed opportunistically by
+          // dashboard-summary loads. Gating the broker read on an empty mirror meant a
+          // just-closed position vanished from the chart (gone from the open feed, not
+          // yet mirrored) whenever the mirror already held older in-window closes.
+          // So always pull recent broker windows, write them through, and merge —
+          // matching the dashboard-summary read path.
+          try {
+            const liveWindows = await fetchRecentPositionWindows(symbol, historyHours, capturedLevs);
+            if (liveWindows.length) {
+              await syncSwingClosedPositions(platform, liveWindows, capturedLevs);
+              closed = closed.length ? mergePositionWindows(closed, liveWindows) : liveWindows;
+              closedPositionSource = closedPositionSource === 'persisted' ? 'merged' : 'broker';
+            }
+          } catch (err) {
+            console.warn(`Could not merge broker position windows for ${symbol}:`, err);
+          }
+        } else {
+          // Capital rows come in pairs: AI closes write a captured row (prices,
+          // pct) at close time AND a cash-only capital-tx: row lands later from
+          // the transaction reconcile; venue-bracket (TP/SL) closes get ONLY the
+          // tx row (no AI decision fires — the analyze-tick reconcile persists
+          // them). Raw rows would render AI closes twice and bracket closes with
+          // no side/entry/percent, so merge the pairs, enrich tx-only rows from
+          // decision history, and derive the missing percents.
+          // Then fold trim chunks: a partial close realizes its own window
+          // (entry → trim) which would draw the position as stacked boxes and
+          // a duplicate badge — one box per position, trims stay as markers.
+          const folded = foldCapitalTrimChunks(assembleCapitalPositionWindows(closed, history), {
+            openEntryTimestampMs: openOverlay?.entryTimestamp ?? null,
+          });
+          closed = folded.windows;
+          openTrimChunks = folded.openChunks;
+        }
+        const closedNormalized =
+          platform === 'bitget' && symbol === BTC_SYMBOL
+            ? closed.map((position) => {
+                const rawLev = Number(position.leverage);
+                const fallbackLev = Number(leverageFromHistory);
+                const detectedLeverage =
+                  Number.isFinite(rawLev) && rawLev > 0
+                    ? rawLev
+                    : Number.isFinite(fallbackLev) && fallbackLev > 0
+                    ? fallbackLev
+                    : 1;
+                const scale = BTC_CHART_LEVERAGE_OVERRIDE / detectedLeverage;
+                const rawPnlPct = Number(position.pnlPct);
+                return {
+                  ...position,
+                  pnlPct: Number.isFinite(rawPnlPct) ? rawPnlPct * scale : position.pnlPct,
+                  leverage: BTC_CHART_LEVERAGE_OVERRIDE,
+                };
+              })
+            : closed;
         const combined = [...closedNormalized];
         if (openOverlay) combined.push(openOverlay);
 
@@ -475,7 +490,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             stopLossPrice: positiveNumber((p as any).stopLossPrice),
             entryDecision,
             exitDecision,
-            partialCloses: buildPartialCloses(p.entryTimestamp, p.exitTimestamp),
+            // Trim markers carry the cash each chunk realized: folded closed
+            // windows bring their own chunks; the open overlay gets the chunks
+            // the fold peeled off for the still-open position.
+            partialCloses: attachTrimChunkPnl(
+              buildPartialCloses(p.entryTimestamp, p.exitTimestamp),
+              p.exitTimestamp ? (p as any).chunks : openTrimChunks,
+            ),
           };
         });
         // Cache only on success so an error path retries rather than caching empty.
