@@ -71,6 +71,8 @@ export type ChartTimelineTick = {
   // connector segment.
   responseId?: string;
   previousResponseId?: string;
+  // BUY/SELL that placed a resting pullback limit — rendered as a hollow dot.
+  limit?: boolean;
 };
 
 const timelineDotFillClass = (tick: ChartTimelineTick): string =>
@@ -94,7 +96,7 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
   }).format(new Date(tick.ts));
   return `${time}${
     tick.kind === 'action'
-      ? ` · ${tick.action}`
+      ? ` · ${tick.action}${tick.limit ? ' limit' : ''}`
       : tick.kind === 'ai_call'
         ? ` · AI ${tick.action || 'decision'}`
         : tick.stage
@@ -126,6 +128,10 @@ type ChartPanelProps = {
   // Optional compact PnL stats rendered in the header: beside the range
   // switches on desktop, and in place of the "bars · window" caption on mobile.
   statsSlot?: React.ReactNode;
+  // Optional decision details rendered inside the panel, under the timeline —
+  // the timeline selection drives which decision is shown, so they belong in
+  // one card. Hidden in fullscreen (the chart owns the whole viewport there).
+  decisionSlot?: React.ReactNode;
   livePrice?: number | null;
   liveTimestamp?: number | null;
   onOpenPositionChange?: (position: {
@@ -650,6 +656,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     rangeKey,
     onRangeChange,
     statsSlot = null,
+    decisionSlot = null,
     livePrice = null,
     liveTimestamp = null,
     onOpenPositionChange,
@@ -1746,14 +1753,17 @@ export default function ChartPanel(props: ChartPanelProps) {
                 <span
                   className={`timeline-dot ${tick.hourly ? 'h-3.5 w-3.5' : 'h-2 w-2'} rounded-full ${timelineDotFillClass(
                     tick,
-                  )} ${isContextSkip ? 'timeline-dot-context-skip' : ''} ${
-                    isSelected ? 'timeline-dot-selected' : ''
-                  }`}
+                  )} ${tick.limit && tick.kind === 'action' ? 'dot-hollow' : ''} ${
+                    isContextSkip ? 'timeline-dot-context-skip' : ''
+                  } ${isSelected ? 'timeline-dot-selected' : ''}`}
                 />
               </button>
             );
           })}
         </div>
+      ) : null}
+      {decisionSlot && !isFullscreen ? (
+        <div className="mt-4 border-t border-slate-200 pt-3">{decisionSlot}</div>
       ) : null}
     </div>
   );

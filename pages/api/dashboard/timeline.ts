@@ -27,6 +27,9 @@ export type TimelineTick = {
   // The UI links chained ticks with a full-contrast connector segment.
   responseId?: string;
   previousResponseId?: string;
+  // BUY/SELL that placed a resting pullback limit rather than a market entry —
+  // rendered as a hollow dot (matching the symbol-pill limit signal).
+  limit?: boolean;
   // True when a full decision row exists for this tick and can be fetched via
   // /api/dashboard/decision?ts=.
   hasDetails: boolean;
@@ -115,6 +118,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ...(typeof decision.previous_response_id === 'string' && decision.previous_response_id
         ? { previousResponseId: decision.previous_response_id }
         : {}),
+      ...((action === 'BUY' || action === 'SELL') && decision.entry_limit_price != null ? { limit: true } : {}),
       hasDetails: true,
     });
   }
