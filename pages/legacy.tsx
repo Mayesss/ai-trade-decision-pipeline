@@ -83,6 +83,7 @@ type EvaluationEntry = {
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
+  lastAiDecisionTs?: number | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -141,6 +142,9 @@ type DashboardSummaryRow = {
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
+  // Freshest real AI call in the history window — drives the recency-sorted
+  // pill order (pre-AI skips don't count).
+  lastAiDecisionTs?: number | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -3305,23 +3309,21 @@ export default function Home() {
               .filter((row) => row?.symbol)
               .map((row) => [String(row.symbol).toUpperCase(), row] as const),
           );
-          // [rank, tiebreak] — lower wins; mirrors orderedSymbolPills.
+          // [rank, tiebreak] — lower wins; mirrors orderedSymbolPills:
+          // open position → resting limit → AI-decision recency → closed.
           const rankOf = (sym: string): [number, number] => {
             const row = rowBySymbol.get(sym.toUpperCase());
-            if (!row) return [4, 0];
-            if (row.marketClosed === true) return [5, 0];
+            if (!row) return [2, 0];
+            const aiRecency =
+              typeof row.lastAiDecisionTs === "number" &&
+              row.lastAiDecisionTs > 0
+                ? -row.lastAiDecisionTs
+                : 0;
+            if (row.marketClosed === true) return [3, aiRecency];
             if (row.openDirection === "long" || row.openDirection === "short")
-              return [0, 0];
-            if (row.pendingEntry === true) return [1, 0];
-            if (row.lastWasAiCall === true) return [2, 0];
-            const pnl =
-              typeof row.pnl7dWithOpen === "number"
-                ? row.pnl7dWithOpen
-                : typeof row.pnl7d === "number"
-                  ? row.pnl7d
-                  : null;
-            if (typeof pnl === "number") return [3, -Math.abs(pnl)];
-            return [4, 0];
+              return [0, aiRecency];
+            if (row.pendingEntry === true) return [1, aiRecency];
+            return [2, aiRecency];
           };
           let bestIdx = 0;
           let bestRank: [number, number] = [Infinity, 0];
@@ -4309,16 +4311,21 @@ export default function Home() {
       : null;
   // Attention-first pill ordering: the header row gets scanned for "what's up"
   // on every visit — open positions first, then resting entry limits, then
-  // symbols whose last tick was a real AI decision, then the rest by
-  // |range pnl|, idle tail, market-closed last. Stable within each bucket
-  // (original symbol order), and clicks keep working because each pill
-  // carries its original index into `symbols`.
+  // everything else by AI-decision recency (freshest real AI call first, so an
+  // hourly-tick decision naturally outranks stale ones; symbols the AI never
+  // looked at trail the bucket), market-closed at the very end. Ties keep the
+  // original symbol order, and clicks keep working because each pill carries
+  // its original index into `symbols`.
   const rangePnlForPill = (tab?: EvaluationEntry): number | null => {
     if (!swingSummaryMatchesRange || !tab) return null;
     if (typeof tab.pnl7dWithOpen === "number") return tab.pnl7dWithOpen;
     if (typeof tab.pnl7d === "number") return tab.pnl7d;
     return null;
   };
+  const aiRecencyForPill = (tab?: EvaluationEntry): number | null =>
+    typeof tab?.lastAiDecisionTs === "number" && tab.lastAiDecisionTs > 0
+      ? tab.lastAiDecisionTs
+      : null;
   const orderedSymbolPills = symbols
     .map((sym, index) => {
       const tab = tabData[sym];
@@ -4329,25 +4336,22 @@ export default function Home() {
           ? tab.openDirection
           : null;
       const pnl = rangePnlForPill(tab);
+      const aiTs = aiRecencyForPill(tab);
       const rank = marketClosed
-        ? 5
+        ? 3
         : openDirection
           ? 0
           : tab?.pendingEntry === true
             ? 1
-            : tab?.lastWasAiCall === true
-              ? 2
-              : typeof pnl === "number"
-                ? 3
-                : 4;
-      return { sym, index, tab, marketClosed, openDirection, pnl, rank };
+            : 2;
+      return { sym, index, tab, marketClosed, openDirection, pnl, aiTs, rank };
     })
     .sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.rank === 3) {
-        const diff = Math.abs(b.pnl ?? 0) - Math.abs(a.pnl ?? 0);
-        if (diff !== 0) return diff;
-      }
+      // Within every bucket (including market-closed): fresher AI decision
+      // first; never-AI-called symbols (aiTs null → 0) fall to the tail.
+      const tsDiff = (b.aiTs ?? 0) - (a.aiTs ?? 0);
+      if (tsDiff !== 0) return tsDiff;
       return a.index - b.index;
     });
   // Header week-calendar strip: the trailing 7 Berlin days (oldest → today),

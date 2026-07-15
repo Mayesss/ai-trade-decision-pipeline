@@ -61,6 +61,9 @@ type SummaryEntry = {
   // signal-strength pre-AI skip). Crons run hourly, so this == "the AI decided
   // this symbol in the last hour". Drives the symbol-tab status dot.
   lastWasAiCall?: boolean;
+  // Timestamp of the freshest real AI call in the history window (pre-AI skips
+  // don't count) — drives the recency-sorted symbol pill order.
+  lastAiDecisionTs?: number | null;
   // Whether the venue was closed at the most recent decision (Capital reports
   // marketStatus != TRADEABLE → analyze.ts persists a capital_market_closed
   // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
@@ -365,6 +368,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let lastNewsSource: string | null | undefined = config.newsSource;
       let forexEventContext: any | null = null;
       let lastWasAiCall = false;
+      let lastAiDecisionTs: number | null = null;
       let marketClosed = false;
       let lastScanAt: number | null = null;
       let lastScanStage: string | null = null;
@@ -379,12 +383,15 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastScanStage = lastScan?.stage ?? null;
         lastScanReason = lastScan?.reason ?? null;
         const latest = history[0];
+        const isRealAiCall = (entry: (typeof history)[number]): boolean =>
+          (entry.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
+          !(entry.aiDecision as any)?.promptSkipped;
         // Was the most recent decision (history is newest-first) a real AI call,
         // or a calm-market / below-min-signal-strength pre-AI skip?
-        lastWasAiCall = latest
-          ? (latest.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
-            !(latest.aiDecision as any)?.promptSkipped
-          : false;
+        lastWasAiCall = latest ? isRealAiCall(latest) : false;
+        // …and when did the AI last actually look at this symbol, regardless of
+        // how many skip rows landed since.
+        lastAiDecisionTs = history.find(isRealAiCall)?.timestamp ?? null;
         // Venue closed at the last cron tick — analyze.ts skips before the AI
         // with skipStage === 'capital_market_closed'. Crypto (bitget) never
         // hits this gate, so it stays open 24/7.
@@ -616,6 +623,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastPositionDirection,
         lastPositionLeverage,
         lastWasAiCall,
+        lastAiDecisionTs,
         marketClosed,
         lastScanAt,
         lastScanStage,
