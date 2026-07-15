@@ -56,7 +56,7 @@
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/dashboard/summary-warm",
+      "path": "/api/dashboard/summary-warm-fallback",
       "schedule": "3,18,33,48 * * * *"
     }
   ]

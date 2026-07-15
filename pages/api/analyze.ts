@@ -73,6 +73,8 @@ import {
     upsertSwingPosition,
 } from '../../lib/swing/pg';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
+import { markSwingWarmDone, recordSwingAnalyzeFinished, swingWarmCycleId } from '../../lib/swing/warmLatch';
+import { warmAllSwingSummaries } from './dashboard/summary';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
 import {
     invalidatePositionOverlayCache,
@@ -270,6 +272,9 @@ function shouldSkipMomentumCall(params: {
 // Handler
 // ------------------------------------------------------------------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+    // Non-null once this request is identified as a swing cron invocation; the
+    // finally block below then counts it toward the cycle's warm latch.
+    let swingWarmLatchCycleId: number | null = null;
     try {
         if (req.method !== 'GET') {
             return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -339,6 +344,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             instrumentId,
         });
         const automationCron = isAutomationCronRequest(req);
+        // Arm the warm latch as early as possible so EVERY swing cron invocation
+        // counts — including gate skips, venue-closed exits and hard-deactivation
+        // returns. If any early-return path bypassed the increment, the cycle's
+        // count would never reach the cron total and the latch warm wouldn't fire.
+        if (requestPath === '/api/swing/analyze' && automationCron) {
+            swingWarmLatchCycleId = swingWarmCycleId(Date.now());
+        }
         // Quarter ticks (:15/:30/:45, automation crons only) exist to scan FLAT
         // symbols for new entry windows; manual/API calls are never quarter
         // ticks and always run the full path.
@@ -2223,5 +2235,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch (err: any) {
         console.error('Error in /api/analyze:', err);
         return res.status(500).json({ error: err.message || String(err) });
+    } finally {
+        // Countdown latch: the last swing cron of the 15-minute cycle to finish
+        // rebuilds the dashboard summary blobs, so the warm always runs AFTER
+        // the cycle's final decision landed instead of at a fixed cron offset
+        // that races long analyzes. AWAITED on purpose (see recordSwingLastScan
+        // above: void'd promises get dropped on serverless); the response is
+        // already sent, but the function stays alive until the handler promise
+        // settles. Never throws — on failure the summary-warm-fallback cron
+        // covers the cycle a few minutes later.
+        if (swingWarmLatchCycleId !== null) {
+            try {
+                if (await recordSwingAnalyzeFinished(swingWarmLatchCycleId)) {
+                    console.log(`[swing_warm_latch] last finisher of cycle ${swingWarmLatchCycleId}; warming summaries`);
+                    await warmAllSwingSummaries();
+                    await markSwingWarmDone(swingWarmLatchCycleId);
+                }
+            } catch (err) {
+                console.warn('swing warm latch failed; summary-warm-fallback cron will cover:', err);
+            }
+        }
     }
 }

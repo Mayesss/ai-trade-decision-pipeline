@@ -134,6 +134,13 @@ export async function kvDel(key: string) {
     return kvCommand('DEL', key);
 }
 
+// Atomic increment — exactly one concurrent caller observes any given count,
+// which is what the swing warm latch relies on.
+export async function kvIncr(key: string): Promise<number> {
+    const result = await kvCommand('INCR', key);
+    return Number(result) || 0;
+}
+
 async function kvSetEx(key: string, ttlSeconds: number, value: string) {
     return kvCommand('SETEX', key, ttlSeconds, value);
 }
