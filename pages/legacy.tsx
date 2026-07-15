@@ -731,8 +731,6 @@ type TimelineTickUi = {
   // decisions on the timeline with a full-contrast connector segment.
   responseId?: string;
   previousResponseId?: string;
-  // BUY/SELL that placed a resting pullback limit — rendered as a hollow dot.
-  limit?: boolean;
   hasDetails: boolean;
 };
 
@@ -7603,20 +7601,19 @@ export default function Home() {
     </div>
   );
 
-  // Decision-section skeleton: header (title + strength pill) + body. Rendered
-  // inside the chart panel's decision slot while the data loads.
-  const renderDecisionSectionSkeleton = () => (
-    <>
+  // Full decision card skeleton: header (title + strength pill) + body.
+  const renderDecisionCardSkeleton = () => (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
       <div className="skeleton-shimmer flex items-center justify-between gap-3">
         <div className="h-3 w-40 rounded-full bg-slate-200" />
         <div className="h-6 w-28 rounded-full bg-slate-100" />
       </div>
       {renderDecisionBodySkeleton()}
-    </>
+    </div>
   );
 
-  // Full-page loading state, shaped like the real layout: one merged panel —
-  // range chips + chart skeleton + timeline dots + decision section.
+  // Full-page loading state, shaped like the real layout: chart panel (range
+  // chips + charty skeleton + timeline dots) above the decision card.
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
@@ -7638,174 +7635,10 @@ export default function Home() {
           <ChartSkeleton />
         </div>
         <TimelineSkeleton />
-        <div className="mt-4 border-t border-slate-200 pt-3">
-          {renderDecisionSectionSkeleton()}
-        </div>
       </div>
+      {renderDecisionCardSkeleton()}
     </div>
   );
-
-  // Decision section rendered INSIDE the chart panel (decisionSlot): the
-  // timeline selection drives which decision is shown, so chart, timeline and
-  // decision details live in one card. Skeleton while the data loads.
-  const swingDecisionSection =
-    hasLastDecision || activeTimeline.length > 0 ? (
-      <>
-        {/* The tick timeline lives INSIDE the chart panel
-            (time-aligned under the axis); this is the classic
-            title/time + strength header. */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-            <span>
-              {selectedTick ? "Decision" : "Latest Decision"}
-            </span>
-            {displayDecisionTs ? (
-              <span className="lowercase text-slate-400">
-                {formatDecisionTime(displayDecisionTs)}
-              </span>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-2">
-            {displayDecision?.signal_strength && (
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                Strength: {displayDecision.signal_strength}
-              </span>
-            )}
-          </div>
-        </div>
-        {selectedTick && !selectedTick.hasDetails ? (
-          // Quarter-tick scan: never persisted as a decision row —
-          // the gate verdict travels on the tick itself.
-          <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Quarter-tick scan
-            </div>
-            <div className="mt-1">
-              {selectedTick.stage ? (
-                <>
-                  <span className="inline-flex rounded border border-slate-200 bg-white px-1.5 py-0.5 font-semibold text-slate-700">
-                    {selectedTick.stage}
-                  </span>
-                  {selectedTick.reason &&
-                  selectedTick.reason !== selectedTick.stage
-                    ? ` · ${selectedTick.reason}`
-                    : ""}
-                </>
-              ) : (
-                "Scanned — no gate skip recorded (tick proceeded or ended without a persisted verdict)."
-              )}
-            </div>
-          </div>
-        ) : selectedTickLoading ? (
-          // Full body skeleton so the bias grid & co. hold their
-          // place instead of collapsing and jumping back in.
-          renderDecisionBodySkeleton()
-        ) : selectedTick && !selectedTickDecision ? (
-          <div className="mt-3 text-sm text-slate-500">
-            Decision details unavailable (expired from the 7-day
-            history window).
-          </div>
-        ) : (
-          <>
-            <div className="mt-3 text-sm text-slate-800">
-              Action:{" "}
-              <span
-                className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${
-                  displayIsTrim
-                    ? "action-pill-trim"
-                    : actionPillToneClass(
-                        (displayDecision as any)?.action,
-                        current?.lastPositionPnl ?? null,
-                      )
-                }`}
-              >
-                {formatLastDecisionAction(displayDecision) || "—"}
-              </span>
-              {(displayDecision as any)?.summary
-                ? ` · ${(displayDecision as any).summary}`
-                : ""}
-            </div>
-            {(displayDecision as any)?.reason ? (
-              <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
-                <span className="font-semibold text-slate-800">
-                  Reason:{" "}
-                </span>
-                {(displayDecision as any).reason}
-              </p>
-            ) : null}
-            <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
-              {biasOrder.map(({ key, label }) => {
-                const raw = (displayDecision as any)?.[key];
-                const val =
-                  typeof raw === "string" ? raw.toUpperCase() : raw;
-                const tfLabel =
-                  displayBiasTimeframes?.[
-                    key.replace("_bias", "")
-                  ] || (key === "nano_bias" ? "15m" : null);
-                const displayLabel = tfLabel
-                  ? `${label} (${tfLabel})`
-                  : label;
-                const meta =
-                  val === "UP"
-                    ? { color: "text-emerald-600", Icon: ArrowUpRight }
-                    : val === "DOWN"
-                      ? { color: "text-rose-600", Icon: ArrowDownRight }
-                      : { color: "text-slate-500", Icon: Circle };
-                const Icon = meta.Icon;
-                return (
-                  <div
-                    key={key}
-                    className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
-                  >
-                    <span className="whitespace-nowrap text-[8px] font-semibold uppercase leading-tight tracking-tight text-slate-500 sm:text-[10px] sm:tracking-wide">
-                      {displayLabel}
-                    </span>
-                    <span
-                      className={`flex items-center gap-0.5 text-xs font-semibold sm:gap-1 sm:text-sm ${meta.color}`}
-                    >
-                      <Icon className="h-3 w-3 sm:h-4 sm:w-4" />
-                      <span className="hidden sm:inline">
-                        {val || "—"}
-                      </span>
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-3">
-              <button
-                onClick={() => setShowPrompt((prev) => !prev)}
-                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-              >
-                {showPrompt ? "Hide prompt" : "Show prompt"}
-              </button>
-            </div>
-            {showPrompt && (
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                    System
-                  </div>
-                  <div className="mt-2">
-                    {renderPromptContent(displayPrompt?.system)}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                    User
-                  </div>
-                  <div className="mt-2">
-                    {renderPromptContent(displayPrompt?.user)}
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </>
-    ) : (
-      renderDecisionSectionSkeleton()
-    );
 
   const handleThemeToggle = () => {
     const nextTheme: ThemePreference =
@@ -8099,7 +7932,7 @@ export default function Home() {
                               {aiDecisionRecent || pendingLimit ? (
                                 <span
                                   className={`pill-decision-dot h-2 w-2 shrink-0 ${decisionDotClass} ${
-                                    pendingLimit ? "dot-hollow" : ""
+                                    pendingLimit ? "pill-dot-hollow" : ""
                                   }`}
                                 />
                               ) : null}
@@ -9205,9 +9038,168 @@ export default function Home() {
                         nearest.ts === activeTimeline[0].ts,
                       );
                     }}
-                    decisionSlot={swingDecisionSection}
                   />
                 ) : null}
+
+                {hasLastDecision || activeTimeline.length > 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                    {/* The tick timeline lives INSIDE the chart panel
+                        (time-aligned under the axis); this is the classic
+                        title/time + strength header. */}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                        <span>
+                          {selectedTick ? "Decision" : "Latest Decision"}
+                        </span>
+                        {displayDecisionTs ? (
+                          <span className="lowercase text-slate-400">
+                            {formatDecisionTime(displayDecisionTs)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {displayDecision?.signal_strength && (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                            Strength: {displayDecision.signal_strength}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {selectedTick && !selectedTick.hasDetails ? (
+                      // Quarter-tick scan: never persisted as a decision row —
+                      // the gate verdict travels on the tick itself.
+                      <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Quarter-tick scan
+                        </div>
+                        <div className="mt-1">
+                          {selectedTick.stage ? (
+                            <>
+                              <span className="inline-flex rounded border border-slate-200 bg-white px-1.5 py-0.5 font-semibold text-slate-700">
+                                {selectedTick.stage}
+                              </span>
+                              {selectedTick.reason &&
+                              selectedTick.reason !== selectedTick.stage
+                                ? ` · ${selectedTick.reason}`
+                                : ""}
+                            </>
+                          ) : (
+                            "Scanned — no gate skip recorded (tick proceeded or ended without a persisted verdict)."
+                          )}
+                        </div>
+                      </div>
+                    ) : selectedTickLoading ? (
+                      // Full body skeleton so the bias grid & co. hold their
+                      // place instead of collapsing and jumping back in.
+                      renderDecisionBodySkeleton()
+                    ) : selectedTick && !selectedTickDecision ? (
+                      <div className="mt-3 text-sm text-slate-500">
+                        Decision details unavailable (expired from the 7-day
+                        history window).
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mt-3 text-sm text-slate-800">
+                          Action:{" "}
+                          <span
+                            className={`inline-flex rounded border px-1.5 py-0.5 font-semibold ${
+                              displayIsTrim
+                                ? "action-pill-trim"
+                                : actionPillToneClass(
+                                    (displayDecision as any)?.action,
+                                    current.lastPositionPnl,
+                                  )
+                            }`}
+                          >
+                            {formatLastDecisionAction(displayDecision) || "—"}
+                          </span>
+                          {(displayDecision as any)?.summary
+                            ? ` · ${(displayDecision as any).summary}`
+                            : ""}
+                        </div>
+                        {(displayDecision as any)?.reason ? (
+                          <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                            <span className="font-semibold text-slate-800">
+                              Reason:{" "}
+                            </span>
+                            {(displayDecision as any).reason}
+                          </p>
+                        ) : null}
+                        <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
+                          {biasOrder.map(({ key, label }) => {
+                            const raw = (displayDecision as any)?.[key];
+                            const val =
+                              typeof raw === "string" ? raw.toUpperCase() : raw;
+                            const tfLabel =
+                              displayBiasTimeframes?.[
+                                key.replace("_bias", "")
+                              ] || (key === "nano_bias" ? "15m" : null);
+                            const displayLabel = tfLabel
+                              ? `${label} (${tfLabel})`
+                              : label;
+                            const meta =
+                              val === "UP"
+                                ? { color: "text-emerald-600", Icon: ArrowUpRight }
+                                : val === "DOWN"
+                                  ? { color: "text-rose-600", Icon: ArrowDownRight }
+                                  : { color: "text-slate-500", Icon: Circle };
+                            const Icon = meta.Icon;
+                            return (
+                              <div
+                                key={key}
+                                className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
+                              >
+                                <span className="whitespace-nowrap text-[8px] font-semibold uppercase leading-tight tracking-tight text-slate-500 sm:text-[10px] sm:tracking-wide">
+                                  {displayLabel}
+                                </span>
+                                <span
+                                  className={`flex items-center gap-0.5 text-xs font-semibold sm:gap-1 sm:text-sm ${meta.color}`}
+                                >
+                                  <Icon className="h-3 w-3 sm:h-4 sm:w-4" />
+                                  <span className="hidden sm:inline">
+                                    {val || "—"}
+                                  </span>
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3">
+                          <button
+                            onClick={() => setShowPrompt((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                          >
+                            {showPrompt ? "Hide prompt" : "Show prompt"}
+                          </button>
+                        </div>
+                        {showPrompt && (
+                          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                System
+                              </div>
+                              <div className="mt-2">
+                                {renderPromptContent(displayPrompt?.system)}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                User
+                              </div>
+                              <div className="mt-2">
+                                {renderPromptContent(displayPrompt?.user)}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  // Decision data for this symbol hasn't arrived yet — hold
+                  // the card's shape instead of collapsing the layout.
+                  renderDecisionCardSkeleton()
+                )}
 
               </div>
             ) : (

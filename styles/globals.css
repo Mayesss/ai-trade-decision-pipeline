@@ -344,39 +344,17 @@ body {
   border-radius: 9999px !important;
 }
 
-/* Hollow decision-dot variant (symbol pills AND timeline): a pullback LIMIT
-   order renders as a ring in the action's color; filled = market-executed /
-   hold. Border, not outline — the timeline's hover and selection strokes
-   already own `outline`, and box-shadow is globally disabled. Border colors
-   mirror the timeline-dot-* fills (which only set background/outline-color). */
-.dot-hollow {
+/* Hollow variant: a resting pullback limit renders as a RING in the action's
+   color (filled dot = executed/hold). Combined with the timeline-dot-* fill
+   classes, which set outline-color alongside background-color — outline
+   instead of border because box-shadow is globally disabled and a border
+   would shrink the visible ring. Negative offset draws the ring fully inside
+   the dot's 8px box. */
+.pill-dot-hollow {
   background-color: transparent !important;
-  border-style: solid;
-  border-width: 1.5px;
-}
-
-.dot-hollow.timeline-dot-buy {
-  border-color: rgb(5 150 105 / 1); /* emerald-600 */
-}
-
-.dot-hollow.timeline-dot-sell {
-  border-color: rgb(225 29 72 / 1); /* rose-600 */
-}
-
-.dot-hollow.timeline-dot-trim {
-  border-color: rgb(251 191 36 / 1); /* amber-400 */
-}
-
-.theme-dark .dot-hollow.timeline-dot-trim {
-  border-color: rgb(245 158 11 / 1); /* amber-500 */
-}
-
-.dot-hollow.timeline-dot-ai {
-  border-color: rgb(15 23 42 / 1);
-}
-
-.theme-dark .dot-hollow.timeline-dot-ai {
-  border-color: rgb(255 255 255 / 1);
+  outline-style: solid;
+  outline-width: 1.5px;
+  outline-offset: -1.5px;
 }
 
 /* Chart loading shimmer: an empty panel with a soft highlight sweeping
