@@ -39,11 +39,25 @@ export async function recordSwingAnalyzeFinished(cycleId: number): Promise<boole
   return count === expected;
 }
 
+// Monotonic "a warm completed" stamp for open dashboards (see the warm-status
+// endpoint): unlike the per-cycle done flag it lives under one stable key and
+// never expires, so a client can poll it cheaply and refresh exactly when the
+// warmedAtMs moves forward.
+const LAST_WARM_KEY = 'swing:warm:last';
+
+export type SwingWarmLast = { warmedAtMs: number; cycleId: number };
+
 export async function markSwingWarmDone(cycleId: number): Promise<void> {
-  await kvSetJson(doneKey(cycleId), { warmedAtMs: Date.now() }, LATCH_TTL_SECONDS);
+  const stamp: SwingWarmLast = { warmedAtMs: Date.now(), cycleId };
+  await kvSetJson(doneKey(cycleId), stamp, LATCH_TTL_SECONDS);
+  await kvSetJson(LAST_WARM_KEY, stamp).catch(() => undefined);
 }
 
 export async function isSwingWarmDone(cycleId: number): Promise<boolean> {
-  const flag = await kvGetJson<{ warmedAtMs: number }>(doneKey(cycleId)).catch(() => null);
+  const flag = await kvGetJson<SwingWarmLast>(doneKey(cycleId)).catch(() => null);
   return Boolean(flag?.warmedAtMs);
+}
+
+export async function readSwingWarmLast(): Promise<SwingWarmLast | null> {
+  return kvGetJson<SwingWarmLast>(LAST_WARM_KEY).catch(() => null);
 }

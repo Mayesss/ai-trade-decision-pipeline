@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
-import { isSwingWarmDone, swingWarmCycleId } from '../../../lib/swing/warmLatch';
+import { isSwingWarmDone, markSwingWarmDone, swingWarmCycleId } from '../../../lib/swing/warmLatch';
 import { warmAllSwingSummaries } from './summary';
 
 // Fallback dashboard summary warm. The normal path is the warm latch in
@@ -23,5 +23,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ ok: true, skipped: 'latch-already-warmed', cycleId });
   }
   const warmed = await warmAllSwingSummaries();
+  // Stamp the done flag + swing:warm:last so open dashboards refresh off this
+  // warm too (they poll warm-status), even when the latch never completed.
+  await markSwingWarmDone(cycleId).catch(() => undefined);
   return res.status(200).json({ ok: true, warmed, cycleId });
 }

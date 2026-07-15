@@ -3195,12 +3195,14 @@ export default function Home() {
     setSwingCronControl((json?.cronControl || null) as SwingCronControlState);
   };
 
-  const loadDashboard = async () => {
+  // background: refresh the data in place without the loading skeleton — used
+  // by the warm-status poll when a new analyze cycle's summary lands.
+  const loadDashboard = async (opts?: { background?: boolean }) => {
     const requestId = swingDashboardRequestIdRef.current + 1;
     swingDashboardRequestIdRef.current = requestId;
     const requestedRange = dashboardRange;
     setSwingSummaryRange((prev) => (prev === requestedRange ? prev : null));
-    setLoading(true);
+    if (!opts?.background) setLoading(true);
     try {
       let summaryError: string | null = null;
       const symbolsRes = await fetch("/api/swing/dashboard/symbols", {
@@ -4077,6 +4079,71 @@ export default function Home() {
       cancelled = true;
     };
   }, [adminGranted, symbols, active, strategyMode]);
+
+  // Cycle-aware refresh: /api/analyze's warm latch stamps swing:warm:last the
+  // moment the LAST analyze cron of a 15-minute cycle finished rebuilding the
+  // summary blobs (the fallback warm stamps it too). Polling that tiny status
+  // endpoint (one KV read) tells an open dashboard exactly when new decisions
+  // and timeline ticks are queryable — no full-summary polling on a timer.
+  // The refresher lives in a ref so the poll effect keeps stable deps while
+  // still seeing the current range/symbol/platform.
+  const swingWarmSeenMsRef = useRef<number | null>(null);
+  const swingWarmRefreshRef = useRef<() => void>(() => {});
+  swingWarmRefreshRef.current = () => {
+    void loadDashboard({ background: true });
+    const symbol = symbols[active] || null;
+    if (!symbol) return;
+    const platform = tabData[symbol]?.lastPlatform ?? null;
+    // Decision card + timeline dots for the visible symbol; both merge into
+    // existing state, so a user inspecting an older tick isn't disturbed.
+    void loadSymbolDecision(symbol, platform).catch(() => undefined);
+    void loadSymbolTimeline(symbol, platform).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!adminGranted || strategyMode !== "swing") return;
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (cancelled || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        const res = await fetch("/api/swing/dashboard/warm-status", {
+          headers: buildAdminHeaders(),
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const json = await res.json();
+        const warmedAtMs = Number(json?.warmedAtMs);
+        if (!Number.isFinite(warmedAtMs) || warmedAtMs <= 0) return;
+        const seen = swingWarmSeenMsRef.current;
+        swingWarmSeenMsRef.current = warmedAtMs;
+        // The first sample is only a baseline — the page just loaded fresh
+        // data anyway. Refresh when a NEWER warm lands after that.
+        if (seen !== null && warmedAtMs > seen && !cancelled) {
+          swingWarmRefreshRef.current();
+        }
+      } catch {
+        // transient poll failure — retry on the next tick
+      } finally {
+        inFlight = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 20_000);
+    // Background tabs throttle setInterval (~1/min); catch up immediately when
+    // the tab becomes visible again.
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [adminGranted, strategyMode]);
 
   useEffect(() => {
     return () => {
