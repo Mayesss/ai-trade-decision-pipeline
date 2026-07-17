@@ -1131,11 +1131,16 @@ export function computeSwingState(
     // rates cited are measured (1m study, CPI/NFP/FOMC Jun 2024–Jun 2026): pre-
     // release drift direction ~50/50; net 30m move ≈ 1/3 of the 30m range; the
     // ~45min reaction direction persisted over the following ~4h on gold/EUR and
-    // was gone by 24h.
+    // was gone by 24h. Crypto gets its own variant with crypto-measured base
+    // rates (BTC/ETH/SOL replication, see eventReaction.ts header): persistence
+    // confirmed for CPI/FOMC but NOT for NFP, which tends to give back — the
+    // separate string keeps the other classes' prompt bytes unchanged.
     const eventReactionGuidance =
         assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index'
             ? `\n- Post-event reaction (market.event_reaction, when present): a high-impact release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates: the PRE-release drift direction carries no information, and the release burst is mostly whipsaw (net move ≈ one-third of range) — but a decisive reaction direction, once established ~45 min after release, has historically persisted over the following ~2–4 h and decays after. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction; large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
-            : '';
+            : assetClass === 'crypto'
+              ? `\n- Post-event reaction (market.event_reaction, when present): a high-impact USD release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates on crypto (BTC/ETH/SOL, 2024–2026): the PRE-release drift direction carries no information (pre-FOMC drift, if anything, reversed), and the release burst is mostly whipsaw — but a decisive reaction direction, once established ~45 min after release, held through the following ~2–4 h on CPI and FOMC releases. NFP is the exception: its reaction direction was the least reliable and on average partially gave back, so discount NFP drift. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction (except NFP); large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
+              : '';
 
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
     // this prose only explains how to read them, so the system prompt stays
