@@ -22,9 +22,23 @@ test('composePositionContext: core fields + standing bracket flow into the conte
     assert.ok(ctx);
     assert.equal(ctx?.side, 'long');
     assert.equal(ctx?.entry_price, 100);
-    assert.equal(ctx?.unrealized_pnl_pct, 1.2);
+    assert.equal(ctx?.unrealized_pnl_pct_on_margin, 1.2);
+    // No leverage on the position → price scale falls back to the margin pct as-is.
+    assert.equal(ctx?.price_move_pct, 1.2);
+    assert.equal(ctx?.leverage, null);
     assert.equal(ctx?.take_profit_price, 106.5);
     assert.equal(ctx?.stop_loss_price, 97.25);
+});
+
+test('composePositionContext: leverage divides the margin pct back to price scale', () => {
+    const ctx = composePositionContext({
+        position: { ...openPosition, leverage: 10 } as unknown as PositionInfo,
+        pnlPct: 5.91,
+    });
+    assert.ok(ctx);
+    assert.equal(ctx?.unrealized_pnl_pct_on_margin, 5.91);
+    assert.equal(ctx?.leverage, 10);
+    assert.equal(ctx?.price_move_pct, 0.591);
 });
 
 test('composePositionContext: missing bracket legs surface as null, closed position as null context', () => {

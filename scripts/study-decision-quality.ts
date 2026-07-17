@@ -245,7 +245,7 @@ async function main() {
             // STATE extracts (called ticks only)
             posOpen: st?.position?.open ?? null,
             posSide: st?.position?.side ?? null,
-            posPnlPct: st?.position?.unrealized_pnl_pct ?? null,
+            posPnlPct: st?.position?.unrealized_pnl_pct_on_margin ?? st?.position?.unrealized_pnl_pct ?? null,
             holdMin: st?.position?.hold_minutes ?? null,
             microBias: st?.biases?.micro ?? null,
             primaryBias: st?.biases?.primary ?? null,

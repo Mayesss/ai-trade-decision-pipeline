@@ -21,7 +21,12 @@ export type PositionContext = {
     entry_price?: number;
     entry_ts?: string;
     hold_minutes?: number;
-    unrealized_pnl_pct?: number;
+    // PnL on MARGIN (return on equity, leverage-multiplied) — the same scale the
+    // broker reports. max_drawdown_pct / max_profit_pct track this scale too.
+    unrealized_pnl_pct_on_margin?: number;
+    // Unleveraged price-scale move vs entry (side-signed) = on-margin pct ÷ leverage.
+    price_move_pct?: number;
+    leverage?: number | null;
     max_drawdown_pct?: number;
     max_profit_pct?: number;
     breakeven_price?: number;
@@ -1060,7 +1065,7 @@ export function computeSwingState(
     // crypto gets neither). Keep prose aligned with the data or it misleads.
     const assetNote =
         assetClass === 'crypto'
-            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. ${perpFunding ? 'Perp funding is measured in state.costs.funding; borrow is not modeled' : 'Funding/borrow is not modeled here'}; judge on structure, regime and location.`
+            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
             : assetClass === 'forex'
               ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
               : assetClass === 'commodity'
@@ -1078,52 +1083,37 @@ export function computeSwingState(
     const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
     const antiFlipStrength = strictPolicy ? 'strong conviction' : 'at least moderate conviction';
 
-    // Venue-session note: only when market.venue_session is actually present
-    // (Capital, schedule known, venue currently inside a session) — prose must
-    // never reference fields the payload doesn't carry.
-    const venueSessionNote = capitalMarketContext?.venue_session
-        ? `\nVenue session (market.venue_session, ISO UTC): the venue is open now; this session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap.`
+    // Venue-session note. Keyed on the VENUE (byte-stable across ticks for cache
+    // prefix stability), phrased "when present" so the prose stays honest when a
+    // given tick's payload doesn't carry the block (venue_session is only built
+    // while the venue is inside a session).
+    const venueSessionNote = isCapital
+        ? `\nVenue session (market.venue_session, ISO UTC; present only while the venue is open): when present, the current session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap.`
         : '';
 
     // Venue liquidity clock: schedule facts (when the tape's character changes),
-    // paired with the session-offense guidance bullet below. Conditional on the
-    // block actually being in MARKET.
-    const venueEventsNote = capitalMarketContext?.venue_events
-        ? `\nVenue liquidity clock (market.venue_events, ISO UTC): recent/upcoming venue events (cash open/close, lunch break, exchange maintenance halt, weekly reopen) with minutes_ago/minutes_to, plus liquidity_phase ∈ {pre_open, opening_drive, into_close, venue_break, off_hours, thin_reopen, normal}. These are schedule facts, not signals — the session-offense guidance says how to trade around them.`
+    // paired with the session-offense guidance bullet below.
+    const venueEventsNote = isCapital
+        ? `\nVenue liquidity clock (market.venue_events, ISO UTC; when present): recent/upcoming venue events (cash open/close, lunch break, exchange maintenance halt, weekly reopen) with minutes_ago/minutes_to, plus liquidity_phase ∈ {pre_open, opening_drive, into_close, venue_break, off_hours, thin_reopen, normal}. These are schedule facts, not signals — the session-offense guidance says how to trade around them.`
         : '';
 
     // Session-offense doctrine: sweeps and venue events are edges to capture,
-    // not just hazards to dodge. Conditional on the sweep flags actually being
-    // measured (market.forex_session); the phase tactics need venue_events too.
-    const hasVenueEvents = Boolean(capitalMarketContext?.venue_events);
-    const sessionOffenseGuidance = forex_session_context
-        ? `\n- Session liquidity offense (market.forex_session.signals${hasVenueEvents ? ' + market.venue_events' : ''}): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you.${hasVenueEvents ? ' Phase tactics: opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.' : ''}`
-        : '';
-
-    // Cost prose per venue. Capital is commission-free: the real round-trip cost
-    // is the spread (+ slippage), and holding accrues a per-night funding
-    // adjustment; only mention the funding field when it is actually present.
-    const overnightFeeNote =
-        overnight_fee_pct_per_day &&
-        (overnight_fee_pct_per_day.long !== null || overnight_fee_pct_per_day.short !== null)
-            ? ' Holding cost: state.costs.overnight_fee_pct_per_day accrues each night held (per side; negative = you pay) — over a multi-day swing it can rival the round-trip cost, so weigh it on HOLD vs CLOSE and when choosing direction.'
+    // not just hazards to dodge. Keyed on asset class (forex_session is built for
+    // forex/commodity/index; crypto never gets it) with "when present" phrasing
+    // for the tick-level blocks.
+    const sessionOffenseGuidance =
+        assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index'
+            ? `\n- Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
             : '';
-    // Only claim funding mechanics that were actually measured: the settlement
-    // cadence phrase depends on interval_hours being present.
-    const perpFundingNote = perpFunding
-        ? ` Perp funding (state.costs.funding): rate_pct_per_interval accrues ${
-              perpFunding.interval_hours ? `every ${perpFunding.interval_hours}h` : 'at each funding settlement'
-          } while held — positive = longs pay shorts, negative = shorts pay longs${
-              perpFunding.next_funding_at_ms ? '; next charge at next_funding_at_utc' : ''
-          }. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction.`
-        : '';
+
+    // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
+    // this prose only explains how to read them, so the system prompt stays
+    // byte-identical across ticks (prompt-caching prefix stability). Fields that
+    // may be absent are described with "when present" so the prose never claims
+    // a measurement that wasn't taken this tick.
     const costChurnLine = isCapital
-        ? `Cost/churn: no commission on this venue; round-trip cost ${
-              total_cost_bps !== null
-                  ? `≈ ${total_cost_bps} bps (spread crossed once over entry+exit, + slippage)`
-                  : `= crossing the spread once (see market.liquidity.spread_bps) + ~${slippage_bps} bps slippage`
-          }.${overnightFeeNote} If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`
-        : `Cost/churn: round-trip cost ≈ ${total_cost_bps} bps.${perpFundingNote} If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`;
+        ? `Cost/churn: no commission on this venue; round-trip cost = state.costs.total_cost_bps (spread crossed once over entry+exit, + slippage; null = no live quote was measured this tick — spread unknown, see market.liquidity.spread_bps). Holding cost: state.costs.overnight_fee_pct_per_day, when present, accrues each night held (per side; negative = you pay) — over a multi-day swing it can rival the round-trip cost, so weigh it on HOLD vs CLOSE and when choosing direction. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`
+        : `Cost/churn: round-trip cost = state.costs.total_cost_bps. Perp funding (state.costs.funding, present only when measured this tick): rate_pct_per_interval accrues each funding settlement (every interval_hours hours when given; next charge at next_funding_at_utc when given) while held — positive = longs pay shorts, negative = shorts pay longs. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`;
 
     const bracketVenueNote = isCapital
         ? 'rests on the venue between these evaluations, but fills ONLY while the venue is open — a reopening gap can jump the stop and fill worse than the stop level'
@@ -1135,7 +1125,7 @@ You are an expert swing-trading market-structure analyst. Decide one action and 
 ${assetNote}${venueSessionNote}${venueEventsNote}
 
 TIMEFRAMES (fixed)
-- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${nano_context ? ', nano=15m (state.geometry.nano — wave/entry timing only, never a setup by itself)' : ''}.
+- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, when present — wave/entry timing only, never a setup by itself).
 Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
 INPUTS
@@ -1158,7 +1148,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}
 - ${costChurnLine}
-- In a position: prefer HOLD when regime supports it and there is no strong opposite structure (especially |unrealized_pnl_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
+- In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale. Prefer HOLD when regime supports it and there is no strong opposite structure (especially while near breakeven, |price_vs_breakeven_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
             ? `\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
             : ''
@@ -1169,7 +1159,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
 - Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme (see session liquidity offense) — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
-- Position truthfulness: never describe a position as winning when unrealized_pnl_pct < 0 or price_vs_breakeven_pct is on the losing side.
+- Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.
 
 OUTPUT
 - Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys.

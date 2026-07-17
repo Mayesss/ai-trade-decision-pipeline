@@ -172,6 +172,8 @@ async function loadCapitalTradeWindowsForSummary(params: {
 
 function parseHistoryPnlPct(entry: any): number | null {
   const direct =
+    finiteNumber(entry?.snapshot?.positionContext?.unrealized_pnl_pct_on_margin) ??
+    // legacy key on rows written before the on-margin rename
     finiteNumber(entry?.snapshot?.positionContext?.unrealized_pnl_pct) ??
     finiteNumber(entry?.snapshot?.positionContext?.pnlPct) ??
     finiteNumber(entry?.execResult?.pnlPct);

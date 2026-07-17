@@ -28,6 +28,13 @@ export function composePositionContext(params: {
 
     const entryPriceNum = Number(params.position.entryPrice);
     const side = params.position.holdSide;
+    // Both venues report PnL% on MARGIN (return on equity, leverage-multiplied):
+    // Bitget = uPnl/initialMargin, Capital = price-move × leverage. Divide the
+    // leverage back out to also expose the unleveraged price-scale move, so the
+    // prompt can distinguish "position up 6% on margin" from "price moved 0.6%".
+    const leverageNum = Number(params.position.leverage);
+    const leverage = Number.isFinite(leverageNum) && leverageNum >= 1 ? leverageNum : null;
+    const priceMovePct = leverage !== null ? params.pnlPct / leverage : params.pnlPct;
     const derivedEntryTs = params.enteredAt ?? params.position.entryTimestamp;
     const entryTsIso = derivedEntryTs ? new Date(derivedEntryTs).toISOString() : undefined;
     const holdMinutes = derivedEntryTs ? Math.max((Date.now() - derivedEntryTs) / 60_000, 0) : 0;
@@ -56,7 +63,9 @@ export function composePositionContext(params: {
         entry_price: toFixedNumber(entryPriceNum, 6),
         entry_ts: entryTsIso,
         hold_minutes: toFixedNumber(holdMinutes, 1),
-        unrealized_pnl_pct: toFixedNumber(params.pnlPct, 2),
+        unrealized_pnl_pct_on_margin: toFixedNumber(params.pnlPct, 2),
+        price_move_pct: toFixedNumber(priceMovePct, 3),
+        leverage,
         max_drawdown_pct: toFixedNumber(params.maxDrawdownPct, 2),
         max_profit_pct: toFixedNumber(params.maxProfitPct, 2),
         breakeven_price: toFixedNumber(breakevenPrice ?? entryPriceNum, 6),
