@@ -11,10 +11,9 @@ import { callClaudeSwingDecision } from './claudeAi';
 
 export type SwingAiProvider = 'openai' | 'claude';
 
-// Default is 'openai' until the Claude client (phase 2) and the transcript
-// store (phase 3) are wired end-to-end; the phase-4 cutover flips the default
-// to 'claude'. Every commit in between stays deployable.
-const DEFAULT_PROVIDER: SwingAiProvider = 'openai';
+// Claude is the default since the phase-4 cutover (2026-07-17); set
+// SWING_AI_PROVIDER=openai to roll back to GPT without a code change.
+const DEFAULT_PROVIDER: SwingAiProvider = 'claude';
 
 export function resolveSwingAiProvider(): SwingAiProvider {
     const raw = String(process.env.SWING_AI_PROVIDER || '')
