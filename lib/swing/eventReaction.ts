@@ -5,7 +5,13 @@
 // Measured basis (Jun 2024–Jun 2026, 1m study over CPI/NFP/FOMC): the direction
 // of the first ~45min reaction persisted over the following ~4h on gold/EUR
 // (gold big-reaction: +29bp mean @ 65% by 4h), decayed by 24h — while the
-// pre-release drift direction was a coin flip. Measurements only, no verdicts
+// pre-release drift direction was a coin flip.
+// Replicated on crypto (Jul 2026, 1m Bitget BTC/ETH/SOL, 67 releases Jun 2024–
+// Jul 2026): pre-drift 48% (coin flip), 45min direction held at 4h in 73%
+// pooled (79% on big reactions), 1h range ~2x baseline. Per type: CPI and FOMC
+// strong (FOMC BTC 16/17 held; positive continuation), NFP weakest — direction
+// held only ~60-65% and the mean continuation was NEGATIVE (partial give-back),
+// so treat NFP reactions as less trustworthy for drift. Measurements only, no verdicts
 // (no bias/strength fields) — the model does the reasoning. Pure functions,
 // no I/O; tolerant of both venues' candle shapes ([ts,o,h,l,c,...] arrays or
 // objects, ts in seconds or ms).
