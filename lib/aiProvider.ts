@@ -7,6 +7,7 @@
 // pass system/user/schema plus a thread context and get parsed JSON back.
 
 import { callAIThread } from './ai';
+import { callClaudeSwingDecision } from './claudeAi';
 
 export type SwingAiProvider = 'openai' | 'claude';
 
@@ -55,9 +56,16 @@ export async function callSwingDecision(params: {
 }): Promise<SwingDecisionCallResult> {
     const provider = resolveSwingAiProvider();
     if (provider === 'claude') {
-        // Wired in phase 2 (lib/claudeAi.ts). Throwing keeps a misconfigured
-        // deploy loud instead of silently trading on the wrong model.
-        throw new Error('SWING_AI_PROVIDER=claude is not implemented yet (phase 2 of the migration)');
+        // Stateless Messages API: conversation context is the stored transcript
+        // (phase 3 persists it; until then in-position ticks run stateless —
+        // the prompt's "position adopted mid-life" branch covers that).
+        const { json, responseId, appendTurns } = await callClaudeSwingDecision(
+            params.system,
+            params.user,
+            params.schema,
+            { transcript: params.thread?.transcript ?? null },
+        );
+        return { json, responseId, appendTurns };
     }
     const { json, responseId } = await callAIThread(params.system, params.user, params.schema, {
         previousResponseId: params.thread?.previousResponseId ?? null,

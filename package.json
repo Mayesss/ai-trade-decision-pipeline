@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.1",
     "@neondatabase/serverless": "^1.1.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^24.10.0",
