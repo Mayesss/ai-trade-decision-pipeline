@@ -59,6 +59,7 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 test('valid swing decisions conform to the schema', () => {
     const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
     const noBracket = { take_profit_price: null, stop_loss_price: null, entry_limit_price: null };
+    const noCooldown = { cooldown_minutes: null, cooldown_wake_above: null, cooldown_wake_below: null };
     const valid = [
         // entry with a resting exchange-side TP target
         {
@@ -68,11 +69,25 @@ test('valid swing decisions conform to the schema', () => {
             exit_size_pct: null,
             leverage: 7,
             ...manageOff,
+            ...noCooldown,
             take_profit_price: 71250.5,
             stop_loss_price: null,
             entry_limit_price: 70100,
         },
-        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff, ...noBracket },
+        { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff, ...noBracket, ...noCooldown },
+        // flat HOLD requesting a conditional cooldown
+        {
+            action: 'HOLD',
+            summary: 'quiet chop',
+            reason: 'mid-range, nothing actionable',
+            exit_size_pct: null,
+            leverage: null,
+            ...manageOff,
+            ...noBracket,
+            cooldown_minutes: 180,
+            cooldown_wake_above: 71500,
+            cooldown_wake_below: 69200,
+        },
         // in-position trim that also amends the standing bracket
         {
             action: 'CLOSE',
@@ -81,11 +96,12 @@ test('valid swing decisions conform to the schema', () => {
             exit_size_pct: 50,
             leverage: null,
             ...manageOff,
+            ...noCooldown,
             take_profit_price: 72000,
             stop_loss_price: 68000,
             entry_limit_price: null,
         },
-        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 5, ...manageOff, ...noBracket },
+        { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 5, ...manageOff, ...noBracket, ...noCooldown },
         // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
         {
             action: 'HOLD',
@@ -96,6 +112,7 @@ test('valid swing decisions conform to the schema', () => {
             raise_leverage_to: 50,
             move_stop_to_be: true,
             ...noBracket,
+            ...noCooldown,
         },
     ];
     for (const d of valid) assert.ok(validate(d, SWING_DECISION_SCHEMA.schema), `expected valid: ${JSON.stringify(d)}`);
@@ -113,6 +130,9 @@ test('invalid swing decisions are rejected', () => {
         take_profit_price: null,
         stop_loss_price: null,
         entry_limit_price: null,
+        cooldown_minutes: null,
+        cooldown_wake_above: null,
+        cooldown_wake_below: null,
     };
     // the base itself is valid, so each case below fails for its intended reason
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
@@ -133,6 +153,10 @@ test('invalid swing decisions are rejected', () => {
     // bracket prices must be numbers ≥ 0 or null
     assert.ok(!validate({ ...base, take_profit_price: 'above resistance' }, SWING_DECISION_SCHEMA.schema));
     assert.ok(!validate({ ...base, stop_loss_price: -1 }, SWING_DECISION_SCHEMA.schema));
+    // cooldown_minutes must be an integer; wake bands must be numbers >= 0 or null
+    assert.ok(!validate({ ...base, cooldown_minutes: 90.5 }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, cooldown_wake_above: 'breakout' }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, cooldown_wake_below: -5 }, SWING_DECISION_SCHEMA.schema));
     // missing required key
     const { reason, ...missing } = base;
     assert.ok(!validate(missing, SWING_DECISION_SCHEMA.schema));

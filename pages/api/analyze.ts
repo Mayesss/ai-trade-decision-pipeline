@@ -43,6 +43,7 @@ import {
     resolveExtensionThresholds,
     sanitizeEntryLimit,
     sanitizeExchangeTpSl,
+    sanitizeHoldCooldown,
     REENTRY_COOLDOWN_MIN,
     resolveReentryCooldown,
     SWING_DECISION_SCHEMA,
@@ -66,10 +67,13 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import {
+    clearSwingAiCooldown,
     endSwingAiThread,
+    getSwingAiCooldown,
     getSwingAiThread,
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
+    upsertSwingAiCooldown,
     upsertSwingAiThread,
     upsertSwingPosition,
 } from '../../lib/swing/pg';
@@ -1701,6 +1705,66 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // AI-requested flat cooldown ("nothing to do here for N minutes unless
+        // price crosses a wake band"): the previous flat HOLD asked not to be
+        // re-evaluated. Applies to fresh flat scans only — never to in-position
+        // ticks or resting-limit re-evaluations (those carry a thread) — and to
+        // hourly ticks too: suppressing the backstop is the point of the
+        // feature. A crossed wake band or expiry consumes the row and the tick
+        // proceeds to a normal evaluation. Best-effort: a store hiccup fails
+        // open (evaluate rather than trust a stale quiet period).
+        if (!positionOpen && !dryRun && !aiThreadResponseId) {
+            try {
+                const cooldown = await getSwingAiCooldown(platform, symbol);
+                if (cooldown) {
+                    const wokenAbove = cooldown.wakeAbove !== null && effectivePrice >= cooldown.wakeAbove;
+                    const wokenBelow = cooldown.wakeBelow !== null && effectivePrice <= cooldown.wakeBelow;
+                    const expired = Date.now() >= cooldown.untilMs;
+                    if (!expired && !wokenAbove && !wokenBelow) {
+                        const minutesLeft = Math.max(1, Math.round((cooldown.untilMs - Date.now()) / 60_000));
+                        emitGateDebug('flat_cooldown_active', {
+                            gate: 'AI_COOLDOWN',
+                            minutesLeft,
+                            wakeAbove: cooldown.wakeAbove,
+                            wakeBelow: cooldown.wakeBelow,
+                        });
+                        const decision = {
+                            action: 'HOLD',
+                            bias: 'NEUTRAL',
+                            signal_strength: 'LOW',
+                            summary: 'ai_requested_cooldown',
+                            reason: `flat_skip_cooldown_active_${minutesLeft}m_left`,
+                        };
+                        await recordSwingLastScan(platform, symbol, {
+                            stage: 'flat_cooldown',
+                            reason: decision.reason,
+                        });
+                        return res.status(200).json({
+                            symbol,
+                            platform,
+                            newsSource,
+                            category,
+                            instrumentId,
+                            timeFrame,
+                            dryRun,
+                            decisionPolicy,
+                            decision,
+                            execRes: { placed: false, orderId: null, clientOid: null, reason: 'flat_cooldown' },
+                            gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                            usedTape,
+                            promptSkipped: true,
+                        });
+                    }
+                    // Expired or a wake band crossed — consume the cooldown and
+                    // evaluate. The wake context reaches the model via the
+                    // normal STATE/MARKET measurements (price is at the band).
+                    await clearSwingAiCooldown(platform, symbol);
+                }
+            } catch (err) {
+                console.warn(`AI cooldown check failed for ${symbol}:`, err);
+            }
+        }
+
         // Flat quarter-tick dedupe: actionable-but-HOLD configurations ("sitting
         // on support") persist for hours; without this, the 15m flat cadence
         // would re-ask the AI about the same standing setup 4x an hour. If the
@@ -1957,6 +2021,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         (decision as any).take_profit_price = exchangeTpsl.takeProfitPrice;
         (decision as any).stop_loss_price = exchangeTpsl.stopLossPrice;
 
+        // Flat-HOLD cooldown request: clamp minutes and validate wake-band sides
+        // against live price; write the SANITIZED values back onto the decision
+        // so history/dashboard show what was actually armed. Persisted after
+        // execution (below) — only a flat HOLD ever carries non-null values.
+        const holdCooldown = sanitizeHoldCooldown({
+            action: decision.action,
+            positionOpen,
+            price: marketAnchor,
+            cooldownMinutes: (decision as any).cooldown_minutes,
+            wakeAbove: (decision as any).cooldown_wake_above,
+            wakeBelow: (decision as any).cooldown_wake_below,
+        });
+        (decision as any).cooldown_minutes = holdCooldown.cooldownMinutes;
+        (decision as any).cooldown_wake_above = holdCooldown.wakeAbove;
+        (decision as any).cooldown_wake_below = holdCooldown.wakeBelow;
+        if (holdCooldown.notes.length) {
+            (decision as any).cooldown_notes = holdCooldown.notes;
+        }
+
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
         const execLeverage = capitalLeverage ?? getTargetLeverage(decision);
         const execNotionalUSDT = sideSizeUSDT * (execLeverage ?? 1);
@@ -2136,6 +2219,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 }
             } catch (err) {
                 console.warn(`AI thread update failed for ${symbol}:`, err);
+            }
+        }
+
+        // Arm the AI-requested flat cooldown (sanitized above; non-null only on
+        // a flat HOLD). The gate at the top of the flat path consumes it on
+        // expiry or when a wake band is crossed. Best-effort, never blocks.
+        if (!dryRun && holdCooldown.cooldownMinutes) {
+            try {
+                await upsertSwingAiCooldown({
+                    platform,
+                    symbol,
+                    untilMs: executedAtMs + holdCooldown.cooldownMinutes * 60_000,
+                    wakeAbove: holdCooldown.wakeAbove,
+                    wakeBelow: holdCooldown.wakeBelow,
+                });
+            } catch (err) {
+                console.warn(`AI cooldown arm failed for ${symbol}:`, err);
             }
         }
 

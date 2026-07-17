@@ -1158,6 +1158,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
 - Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme (see session liquidity offense) — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
+- Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). The cooldown never mutes in-position management or resting-limit re-evaluations — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1183,10 +1184,11 @@ TASKS:
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
 4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: on BUY/SELL/REVERSE the structural invalidation stop (null = wide catastrophe default); on in-position HOLD/partial CLOSE amends the standing stop, tighten-only (null = unchanged); else null.
 5) entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.
-6) summary ≤3 lines; reason = brief rationale.
+6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.
+7) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -1499,6 +1501,15 @@ export function postprocessDecision(params: {
     // sanity is enforced by sanitizeEntryLimit in the API route.
     const entry_limit_price =
         !positionOpen && (action === 'BUY' || action === 'SELL') ? coercePrice(decision?.entry_limit_price) : null;
+    // Flat-HOLD cooldown: type/eligibility coercion only — clamping and wake-band
+    // side validation happen in sanitizeHoldCooldown in the API route (live price).
+    const cooldownEligible = !positionOpen && action === 'HOLD';
+    const cooldown_minutes =
+        cooldownEligible && Number.isFinite(Number(decision?.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
+            ? Math.round(Number(decision.cooldown_minutes))
+            : null;
+    const cooldown_wake_above = cooldownEligible ? coercePrice(decision?.cooldown_wake_above) : null;
+    const cooldown_wake_below = cooldownEligible ? coercePrice(decision?.cooldown_wake_below) : null;
 
     return {
         ...decision,
@@ -1510,12 +1521,82 @@ export function postprocessDecision(params: {
         take_profit_price,
         stop_loss_price,
         entry_limit_price,
+        cooldown_minutes,
+        cooldown_wake_above,
+        cooldown_wake_below,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
         macro_bias: macroBias,
         context_bias: contextBias,
     };
+}
+
+// ------------------------------
+// Flat-HOLD cooldown sanitation
+// ------------------------------
+
+// AI-requested quiet period on a flat symbol. Bounds: one tick at the floor;
+// the ceiling exists because the wake bands only cover PRICE — a cooldown is
+// blind to news, session flips and regime changes, so it must stay renewable
+// rather than open-ended. Renewal is cheap (one gated call per cooldown).
+export const HOLD_COOLDOWN_MIN_MINUTES = 15;
+export const HOLD_COOLDOWN_MAX_MINUTES = (() => {
+    const n = Number(process.env.SWING_AI_COOLDOWN_MAX_MIN);
+    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : 360;
+})();
+
+export type HoldCooldown = {
+    cooldownMinutes: number | null;
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    notes: string[];
+};
+
+// Flat HOLD only. Minutes clamp to [15, max]; wake bands must sit on the
+// correct side of current price (above > price, below < price) — an invalid
+// band is dropped (the cooldown stays, just less conditional), and an
+// unverifiable price drops the bands rather than trusting them blind.
+export function sanitizeHoldCooldown(params: {
+    action: string;
+    positionOpen: boolean;
+    price: number | null;
+    cooldownMinutes: unknown;
+    wakeAbove: unknown;
+    wakeBelow: unknown;
+}): HoldCooldown {
+    const notes: string[] = [];
+    if (params.positionOpen || String(params.action).toUpperCase() !== 'HOLD') {
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, notes };
+    }
+    const rawMinutes = Number(params.cooldownMinutes);
+    if (!Number.isFinite(rawMinutes) || rawMinutes <= 0) {
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, notes };
+    }
+    const cooldownMinutes = Math.min(HOLD_COOLDOWN_MAX_MINUTES, Math.max(HOLD_COOLDOWN_MIN_MINUTES, Math.round(rawMinutes)));
+    if (cooldownMinutes !== Math.round(rawMinutes)) notes.push(`clamped_${Math.round(rawMinutes)}m_to_${cooldownMinutes}m`);
+
+    const price = Number(params.price);
+    const priceKnown = Number.isFinite(price) && price > 0;
+    let wakeAbove = Number(params.wakeAbove);
+    let wakeBelow = Number(params.wakeBelow);
+    let above: number | null = Number.isFinite(wakeAbove) && wakeAbove > 0 ? wakeAbove : null;
+    let below: number | null = Number.isFinite(wakeBelow) && wakeBelow > 0 ? wakeBelow : null;
+    if (!priceKnown) {
+        if (above !== null || below !== null) notes.push('wake_bands_dropped_price_unknown');
+        above = null;
+        below = null;
+    } else {
+        if (above !== null && above <= price) {
+            notes.push('wake_above_dropped_not_above_price');
+            above = null;
+        }
+        if (below !== null && below >= price) {
+            notes.push('wake_below_dropped_not_below_price');
+            below = null;
+        }
+    }
+    return { cooldownMinutes, wakeAbove: above, wakeBelow: below, notes };
 }
 
 // ------------------------------
@@ -1753,6 +1834,9 @@ export const SWING_DECISION_SCHEMA = {
             'take_profit_price',
             'stop_loss_price',
             'entry_limit_price',
+            'cooldown_minutes',
+            'cooldown_wake_above',
+            'cooldown_wake_below',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
@@ -1776,6 +1860,12 @@ export const SWING_DECISION_SCHEMA = {
             // price instead of entering at market. One-tick TTL — cancelled at
             // the next AI evaluation / hourly tick if unfilled. null = market.
             entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Flat-HOLD cooldown: quiet period request (minutes, code-clamped)
+            // with optional wake bands that end it early when price crosses
+            // them. Only honored when flat + action=HOLD.
+            cooldown_minutes: { type: ['integer', 'null'] },
+            cooldown_wake_above: { type: ['number', 'null'], minimum: 0 },
+            cooldown_wake_below: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;
@@ -1788,7 +1878,18 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
     schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['action', 'summary', 'reason', 'exit_size_pct', 'take_profit_price', 'stop_loss_price', 'entry_limit_price'],
+        required: [
+            'action',
+            'summary',
+            'reason',
+            'exit_size_pct',
+            'take_profit_price',
+            'stop_loss_price',
+            'entry_limit_price',
+            'cooldown_minutes',
+            'cooldown_wake_above',
+            'cooldown_wake_below',
+        ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
@@ -1798,6 +1899,10 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
             entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Flat-HOLD cooldown (see SWING_DECISION_SCHEMA).
+            cooldown_minutes: { type: ['integer', 'null'] },
+            cooldown_wake_above: { type: ['number', 'null'], minimum: 0 },
+            cooldown_wake_below: { type: ['number', 'null'], minimum: 0 },
         },
     },
 } as const;

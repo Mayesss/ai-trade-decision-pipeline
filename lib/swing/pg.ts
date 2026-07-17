@@ -178,6 +178,25 @@ async function ensureSwingSchema(): Promise<void> {
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai'`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS transcript JSONB`);
 
+        // ai_cooldowns: AI-requested quiet periods on FLAT symbols ("nothing to
+        // do here, don't re-evaluate for N minutes — unless price crosses a wake
+        // band"). One row per (platform, symbol); consulted by the pre-AI
+        // cooldown gate on fresh flat scans only (in-position ticks and
+        // pending-entry re-evaluations are never suppressed) and deleted when it
+        // expires, a wake band triggers, or the next AI call goes through.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.ai_cooldowns (
+              platform    TEXT NOT NULL,
+              symbol      TEXT NOT NULL,
+              until_ms    BIGINT NOT NULL,
+              wake_above  NUMERIC,
+              wake_below  NUMERIC,
+              set_at_ms   BIGINT NOT NULL,
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT ai_cooldowns_key PRIMARY KEY (platform, symbol)
+            )`);
+
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
         await db.$executeRaw(sql`
@@ -299,6 +318,79 @@ export async function markSwingAiThreadInPosition(platform: string, symbol: stri
     await db.$executeRaw(sql`
         UPDATE swing.ai_threads
         SET status = 'in_position', updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
+
+// --------------------------------------------------------------------------
+// AI cooldowns (flat-symbol quiet periods, optionally price-banded)
+// --------------------------------------------------------------------------
+export type SwingAiCooldown = {
+    untilMs: number;
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    setAtMs: number;
+};
+
+export async function getSwingAiCooldown(platform: string, symbol: string): Promise<SwingAiCooldown | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<
+        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; set_at_ms: unknown }>
+    >(sql`
+        SELECT until_ms, wake_above, wake_below, set_at_ms
+        FROM swing.ai_cooldowns
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+    const row = rows?.[0];
+    if (!row) return null;
+    const untilMs = Number(row.until_ms);
+    if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
+    return {
+        untilMs,
+        wakeAbove: finitePos(row.wake_above),
+        wakeBelow: finitePos(row.wake_below),
+        setAtMs: Number(row.set_at_ms) || 0,
+    };
+}
+
+export async function upsertSwingAiCooldown(params: {
+    platform: string;
+    symbol: string;
+    untilMs: number;
+    wakeAbove?: number | null;
+    wakeBelow?: number | null;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    if (!Number.isFinite(params.untilMs) || params.untilMs <= Date.now()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, set_at_ms)
+        VALUES (
+            ${normalizePlatform(params.platform)},
+            ${String(params.symbol || '').toUpperCase()},
+            ${Math.floor(params.untilMs)},
+            ${finitePos(params.wakeAbove)},
+            ${finitePos(params.wakeBelow)},
+            ${Date.now()}
+        )
+        ON CONFLICT (platform, symbol) DO UPDATE SET
+            until_ms = EXCLUDED.until_ms,
+            wake_above = EXCLUDED.wake_above,
+            wake_below = EXCLUDED.wake_below,
+            set_at_ms = EXCLUDED.set_at_ms,
+            updated_at = NOW()
+    `);
+}
+
+export async function clearSwingAiCooldown(platform: string, symbol: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        DELETE FROM swing.ai_cooldowns
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
 }
