@@ -12,6 +12,22 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/swing/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=SOLUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=XRPUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=LINKUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
       "schedule": "*/15 * * * *"
     },

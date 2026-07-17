@@ -81,3 +81,19 @@ test("releases older than the lookback are dropped; upcoming events stay in next
   assert.equal(ctx.nextEvents.length, 1);
   assert.equal(ctx.nextEvents[0].minutesToEvent, 120);
 });
+
+test("crypto resolves to the USD macro calendar: blackout + recentEvents like commodities", () => {
+  const active = buildForexEventContext({ symbol: "BTCUSDT", category: "crypto", state: state([event(-10)]), nowMs: NOW_MS });
+  assert.equal(active.pair, "USD");
+  assert.equal(active.status, "active");
+  const released = buildForexEventContext({ symbol: "ETHUSDT", category: "crypto", state: state([event(-90)]), nowMs: NOW_MS });
+  assert.equal(released.status, "clear");
+  assert.equal(released.recentEvents.length, 1);
+});
+
+test("crypto without a category keeps the original no-calendar behavior", () => {
+  const ctx = buildForexEventContext({ symbol: "BTCUSDT", state: state([event(-10)]), nowMs: NOW_MS });
+  assert.equal(ctx.pair, null);
+  assert.equal(ctx.status, "clear");
+  assert.equal(ctx.activeEvents.length, 0);
+});

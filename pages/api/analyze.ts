@@ -1309,9 +1309,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // Session/day/week levels and the macro-event calendar are both valuable for any
         // session-traded, fiat-macro-sensitive Capital.com instrument (forex, metals,
-        // indices). Events resolve to the instrument's macro currency (e.g. USD for gold);
-        // crypto is excluded (24/7, no session boundaries, no fiat-macro calendar).
+        // indices). Events resolve to the instrument's macro currency (e.g. USD for gold).
+        // Crypto is excluded from session levels (24/7, no session boundaries) but DOES
+        // get the USD macro calendar: BTC/ETH react to CPI/FOMC/NFP like any USD asset,
+        // so the blackout gate and post-event reaction measurements apply there too.
         const SESSION_LEVEL_CATEGORIES = new Set(['forex', 'commodity', 'index']);
+        const EVENT_CALENDAR_CATEGORIES = new Set([...SESSION_LEVEL_CATEGORIES, 'crypto']);
         // Venue liquidity clock (cash opens/closes, lunch breaks, Globex halts,
         // weekly thin reopen) — pure schedule math, no fetch, so it is computed
         // BEFORE the quarter-tick cooldown skip: sweep windows must stay live.
@@ -1381,7 +1384,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             })
             .filter((a) => a.action);
         const forexEventContext =
-            category && SESSION_LEVEL_CATEGORIES.has(category)
+            category && EVENT_CALENDAR_CATEGORIES.has(category)
                 ? await loadForexEventContext({
                       symbol,
                       instrumentId,

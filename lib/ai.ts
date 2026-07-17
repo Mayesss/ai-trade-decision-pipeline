@@ -1079,10 +1079,11 @@ export function computeSwingState(
     // Each note describes ONLY the context this category actually receives (see
     // /api/analyze: forex_session AND forex_events are both built for
     // forex/commodity/index — events resolve to the instrument's macro currency;
-    // crypto gets neither). Keep prose aligned with the data or it misleads.
+    // crypto gets forex_events on the USD calendar but no session levels).
+    // Keep prose aligned with the data or it misleads.
     const assetNote =
         assetClass === 'crypto'
-            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels or economic-calendar block is provided. News/sentiment can move price fast. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
+            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
             : assetClass === 'forex'
               ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
               : assetClass === 'commodity'

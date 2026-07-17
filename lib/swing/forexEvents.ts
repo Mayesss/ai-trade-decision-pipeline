@@ -472,7 +472,8 @@ const INDEX_CURRENCY_HINTS: Array<[string, string]> = [
 ];
 
 // Currencies whose calendar events are relevant to an instrument. FX pairs use both
-// legs; commodities/indices use their macro currency (by symbol hint, then category).
+// legs; commodities/indices use their macro currency (by symbol hint, then category);
+// crypto always uses the USD calendar.
 export function resolveEventCurrencies(params: {
   symbol: string;
   instrumentId?: string | null;
@@ -484,6 +485,9 @@ export function resolveEventCurrencies(params: {
   // Non-FX resolution is OPT-IN via category, so callers that don't pass one
   // (scalp evidence, dashboard) keep their original FX-pair-only behavior.
   const category = String(params.category || '').trim().toLowerCase();
+  // Crypto trades 24/7 but reacts to the USD macro calendar (CPI/FOMC/NFP)
+  // like any USD-denominated risk asset — no per-symbol hints needed.
+  if (category === 'crypto') return ['USD'];
   if (category !== 'commodity' && category !== 'index') return [];
 
   const haystack = [params.instrumentId, params.symbol].map((v) => String(v || '').toUpperCase()).join(' ');
