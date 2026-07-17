@@ -11,6 +11,7 @@ import {
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
+import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import { computeWaveGeometry } from './swing/waveGeometry';
 import type { NanoContext } from './swing/waveGeometry';
@@ -69,6 +70,15 @@ export type ForexEventContextForPrompt = {
         minutesToEvent?: number;
     }>;
     nextEvents?: Array<{
+        timestamp_utc?: string;
+        currency?: string;
+        impact?: string;
+        event_name?: string;
+        minutesToEvent?: number;
+    }>;
+    // Just-released events past their blackout window (minutesToEvent < 0);
+    // quantified reactions ride separately in market.event_reaction.
+    recentEvents?: Array<{
         timestamp_utc?: string;
         currency?: string;
         impact?: string;
@@ -855,6 +865,10 @@ export function computeSwingState(
         // The pullback limit from the PREVIOUS evaluation that rested without
         // filling and was just cancelled for this re-evaluation (flat only).
         cancelled_pending_entry: { side: 'BUY' | 'SELL' | null; price: number | null; age_min: number | null } | null = null,
+        // Quantified price reaction to just-released high-impact events
+        // (market.forex_events.recentEvents). Computed by the caller from the
+        // nano 15m candles, so it enters here like nano_context does.
+        event_reaction: EventReactionMeasurement[] | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1052,6 +1066,9 @@ export function computeSwingState(
     if (forex_session_context && typeof forex_session_context === 'object') {
         market.forex_session = forex_session_context;
     }
+    if (Array.isArray(event_reaction) && event_reaction.length > 0) {
+        market.event_reaction = event_reaction;
+    }
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
@@ -1106,6 +1123,19 @@ export function computeSwingState(
             ? `\n- Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
             : '';
 
+    // Post-event reaction doctrine: how to read market.event_reaction (built only
+    // for the calendar-carrying asset classes, and only when a high-impact event
+    // released within the recent lookback). Keyed on asset class with "when
+    // present" phrasing — same byte-stability rule as the other notes. The base
+    // rates cited are measured (1m study, CPI/NFP/FOMC Jun 2024–Jun 2026): pre-
+    // release drift direction ~50/50; net 30m move ≈ 1/3 of the 30m range; the
+    // ~45min reaction direction persisted over the following ~4h on gold/EUR and
+    // was gone by 24h.
+    const eventReactionGuidance =
+        assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index'
+            ? `\n- Post-event reaction (market.event_reaction, when present): a high-impact release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates: the PRE-release drift direction carries no information, and the release burst is mostly whipsaw (net move ≈ one-third of range) — but a decisive reaction direction, once established ~45 min after release, has historically persisted over the following ~2–4 h and decays after. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction; large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
+            : '';
+
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
     // this prose only explains how to read them, so the system prompt stays
     // byte-identical across ticks (prompt-caching prefix stability). Fields that
@@ -1146,7 +1176,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
-- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}
+- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}${eventReactionGuidance}
 - ${costChurnLine}
 - In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale. Prefer HOLD when regime supports it and there is no strong opposite structure (especially while near breakeven, |price_vs_breakeven_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context

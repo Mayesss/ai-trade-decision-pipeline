@@ -30,6 +30,7 @@ import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type A
 import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { recordSwingLastScan } from '../../lib/swing/lastScan';
+import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
@@ -1897,7 +1898,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // together: news (its only consumer is the prompt) and the nano (15m)
         // candles for wave/entry-timing geometry. Both are deferred to here so
         // gated ticks never pay for them; nano fails open (prompt just omits it).
-        const [newsBundleRes, nanoContext] = await Promise.all([
+        const [newsBundleRes, nanoRes] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
@@ -1905,19 +1906,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         includeTrades: false,
                         candleLimit: 110,
                     });
-                    return computeNanoContext((nanoBundle as any)?.candles ?? []);
+                    const nanoCandles = Array.isArray((nanoBundle as any)?.candles)
+                        ? ((nanoBundle as any).candles as unknown[])
+                        : [];
+                    return { nanoContext: computeNanoContext(nanoCandles), nanoCandles };
                 } catch (err) {
                     console.warn(`Could not build nano (15m) context for ${symbol}:`, err);
-                    return null;
+                    return { nanoContext: null, nanoCandles: [] as unknown[] };
                 }
             })(),
         ]);
         newsBundle = newsBundleRes;
+        const { nanoContext, nanoCandles } = nanoRes;
+        // Post-event reaction measurements: only when a high-impact release is in
+        // the recent lookback (forexEventContext.recentEvents), quantified from the
+        // nano 15m candles already fetched above — zero extra I/O. Fails open like
+        // nano: null just omits the prompt block.
+        const eventReaction = swingEventReactionEnabled()
+            ? buildEventReactionContext({
+                  recentEvents: forexEventContext?.recentEvents,
+                  candles: nanoCandles,
+              })
+            : null;
         const { system, user } = swingState.assemble(
             newsBundle?.sentiment ?? null,
             newsBundle?.headlines ?? [],
             nanoContext,
             sweptPendingEntry,
+            eventReaction,
         );
 
         // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse
@@ -2271,6 +2287,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsSentiment: newsBundle?.sentiment ?? null,
             newsHeadlines: newsBundle?.headlines ?? [],
             forexEventContext: forexEventContext,
+            // Post-event reaction measurements as fed to the prompt (null when no
+            // recent high-impact release) — makes "did the AI trade the drift and
+            // did it pay" a SQL query over decisions × positions.
+            eventReaction,
             forexSessionContext,
             // Venue liquidity clock at decision time — lets "did this entry rest
             // into an open/break/thin reopen" stay a SQL query over snapshots

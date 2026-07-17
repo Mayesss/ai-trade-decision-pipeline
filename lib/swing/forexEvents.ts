@@ -100,6 +100,12 @@ export type ForexEventContext = {
   generatedAtMs: number;
   activeEvents: ForexCompactEvent[];
   nextEvents: ForexCompactEvent[];
+  // Events that already RELEASED within the recent lookback and whose blackout
+  // window has passed (minutesToEvent is negative). Carries the post-event
+  // drift context: the calendar snapshot spans now-24h, so just-released
+  // events are available — they were previously dropped from the context.
+  // Never feeds the blackout gate (status stays derived from activeEvents only).
+  recentEvents: ForexCompactEvent[];
 };
 
 function toPositiveInt(value: string | undefined, fallback: number): number {
@@ -161,6 +167,12 @@ function getForexEventConfig() {
     preEventBlockMinutes: toNonNegativeInt(process.env.SWING_FOREX_EVENT_PRE_BLOCK_MINUTES, 30),
     postEventBlockMinutes: toNonNegativeInt(process.env.SWING_FOREX_EVENT_POST_BLOCK_MINUTES, 15),
     blockImpacts: parseImpacts(process.env.SWING_FOREX_EVENT_BLOCK_IMPACTS, ['HIGH', 'MEDIUM']),
+    // recentEvents window: how long after release an event stays in the context
+    // (default 180min — measured post-announcement drift on gold/EUR persists ~4h
+    // from release, decayed by 24h) and which impacts qualify (HIGH only: the
+    // drift edge was measured on tier-1 releases; MEDIUM would mostly add noise).
+    recentLookbackMinutes: toNonNegativeInt(process.env.SWING_FOREX_EVENT_RECENT_LOOKBACK_MINUTES, 180),
+    recentImpacts: parseImpacts(process.env.SWING_FOREX_EVENT_RECENT_IMPACTS, ['HIGH']),
   };
 }
 
@@ -553,6 +565,7 @@ export function buildForexEventContext(params: {
       generatedAtMs: nowMs,
       activeEvents: [],
       nextEvents: [],
+      recentEvents: [],
     };
   }
 
@@ -567,6 +580,27 @@ export function buildForexEventContext(params: {
 
   const activeMatches = matches.filter((match) => match.activeWindow).slice(0, 2);
   const nextMatches = matches.filter((match) => match.msToEvent >= 0).slice(0, 2);
+  // Already-released events within the recent lookback, past their blackout
+  // window. Separate match pass: recentImpacts (HIGH only by default) is
+  // narrower than blockImpacts, and the blackout selection above must not
+  // change. Sorted by |msToEvent| already → most recent release first.
+  const recentMatches = listCurrencyEventMatches({
+    currencies,
+    events: params.state.snapshot?.events ?? [],
+    nowMs,
+    blockedImpacts: cfg.recentImpacts,
+    preEventBlockMinutes: cfg.preEventBlockMinutes,
+    postEventBlockMinutes: cfg.postEventBlockMinutes,
+  })
+    .filter(
+      (match) =>
+        !match.activeWindow &&
+        match.msToEvent < 0 &&
+        -match.msToEvent <= cfg.recentLookbackMinutes * 60_000,
+    )
+    .slice(0, 2);
+  // status derives from activeMatches ONLY — recentEvents must never extend
+  // the event-blackout gate in /api/analyze.
   const status: ForexEventContext['status'] = params.state.stale ? 'stale' : activeMatches.length ? 'active' : 'clear';
   const reasonCodes = params.state.stale
     ? ['FOREX_EVENT_DATA_STALE']
@@ -583,6 +617,7 @@ export function buildForexEventContext(params: {
     generatedAtMs: nowMs,
     activeEvents: activeMatches.map(toCompactEvent),
     nextEvents: nextMatches.map(toCompactEvent),
+    recentEvents: recentMatches.map(toCompactEvent),
   };
 }
 
