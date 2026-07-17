@@ -63,6 +63,74 @@ export function toClaudeSchema(schema: Record<string, unknown>): Record<string, 
     return walk(schema) as Record<string, unknown>;
 }
 
+// Transcript growth cap (replaces OpenAI's server-side `truncation: "auto"`).
+// In-position ticks call every 15 min, so a 1–10 day hold could reach hundreds
+// of turn pairs — keep the ENTRY pair (the thesis the prompt tells the model to
+// manage against) plus the most recent management pairs, drop the middle.
+const TRANSCRIPT_MAX_MESSAGES = 62; // entry pair + 30 management pairs
+
+export function truncateClaudeTranscript(
+    transcript: Anthropic.MessageParam[],
+    maxMessages: number = TRANSCRIPT_MAX_MESSAGES,
+): Anthropic.MessageParam[] {
+    if (transcript.length <= maxMessages) return transcript;
+    const head = transcript.slice(0, 2);
+    let tail = transcript.slice(transcript.length - (maxMessages - 2));
+    // The head pair ends with an assistant turn, so the tail must open with a
+    // user turn to keep alternation valid. Turns are appended in pairs, so this
+    // trims at most one dangling assistant message.
+    while (tail.length && tail[0].role !== 'user') tail = tail.slice(1);
+    return [...head, ...tail];
+}
+
+// Stored transcripts round-trip through JSONB — keep only well-formed turns and
+// drop any cache_control that leaked into persistence (breakpoints are attached
+// fresh at send time; stale ones would blow the 4-breakpoint request limit).
+function sanitizeTranscript(input: unknown[] | null | undefined): Anthropic.MessageParam[] {
+    if (!Array.isArray(input)) return [];
+    const turns: Anthropic.MessageParam[] = [];
+    for (const item of input) {
+        const role = (item as any)?.role;
+        const content = (item as any)?.content;
+        if (role !== 'user' && role !== 'assistant') continue;
+        if (typeof content === 'string') {
+            turns.push({ role, content });
+            continue;
+        }
+        if (!Array.isArray(content) || content.length === 0) continue;
+        turns.push({
+            role,
+            content: content.map((block: any) => {
+                if (block && typeof block === 'object' && 'cache_control' in block) {
+                    const { cache_control: _dropped, ...rest } = block;
+                    return rest;
+                }
+                return block;
+            }),
+        });
+    }
+    return turns;
+}
+
+// Advancing conversation breakpoint: cache the whole prior thread (everything
+// up to and including the last assistant turn) so an in-position tick only
+// pays fresh input for its new STATE+MARKET turn. Attached at send time to a
+// copy — never persisted. 2 breakpoints total with the system block (limit: 4).
+function withConversationBreakpoint(turns: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+    if (!turns.length) return turns;
+    const last = turns[turns.length - 1];
+    const blocks = typeof last.content === 'string' ? [{ type: 'text' as const, text: last.content }] : [...last.content];
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        const block = blocks[i] as any;
+        // thinking blocks can't carry cache_control — anchor on the last text block
+        if (block?.type === 'text') {
+            blocks[i] = { ...block, cache_control: { type: 'ephemeral', ttl: '1h' } };
+            return [...turns.slice(0, -1), { role: last.role, content: blocks }];
+        }
+    }
+    return turns;
+}
+
 export type ClaudeSwingCallResult = {
     json: any;
     // Message id of THIS call (`msg_...`) — persisted on the decision row, same
@@ -90,7 +158,7 @@ export async function callClaudeSwingDecision(
     opts?: { transcript?: unknown[] | null },
 ): Promise<ClaudeSwingCallResult> {
     const client = claudeClient();
-    const priorTurns = Array.isArray(opts?.transcript) ? (opts!.transcript as Anthropic.MessageParam[]) : [];
+    const priorTurns = withConversationBreakpoint(sanitizeTranscript(opts?.transcript));
 
     const userTurn: Anthropic.MessageParam = {
         role: 'user',

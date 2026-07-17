@@ -49,7 +49,8 @@ import {
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
-import { callSwingDecision } from '../../lib/aiProvider';
+import { callSwingDecision, resolveSwingAiProvider } from '../../lib/aiProvider';
+import { truncateClaudeTranscript } from '../../lib/claudeAi';
 import { getGates } from '../../lib/gates';
 
 import {
@@ -724,6 +725,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         //     new head that CONTINUES the same OpenAI chain via this id.
         // Best-effort: a thread hiccup degrades the tick to stateless, never fails it.
         let aiThreadResponseId: string | null = null;
+        // Which provider wrote the thread row + the Claude transcript (captured
+        // in memory here so it survives the sweep deleting the row mid-tick —
+        // same semantics as the OpenAI chain head above). A provider mismatch
+        // (row written by the other model family) degrades the CONVERSATION to
+        // stateless at the call site, but thread lifecycle (pending-entry flag,
+        // sweeps) is provider-independent and keeps using the row as-is.
+        let aiThreadProvider: string | null = null;
+        let aiThreadTranscript: unknown[] | null = null;
         // The thread row claims a pullback limit is resting while we're flat —
         // cross-checked against what the hourly sweep actually finds below.
         let aiThreadWasPendingEntry = false;
@@ -737,6 +746,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             await markSwingAiThreadInPosition(platform, symbol);
                         }
                         aiThreadResponseId = aiThread.lastResponseId;
+                        aiThreadProvider = aiThread.provider;
+                        aiThreadTranscript = aiThread.transcript;
                     } else if (aiThread.status === 'in_position') {
                         await endSwingAiThread(platform, symbol);
                         // The previous tick had a position, now flat with no AI CLOSE
@@ -756,6 +767,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         }
                     } else {
                         aiThreadResponseId = aiThread.lastResponseId;
+                        aiThreadProvider = aiThread.provider;
+                        aiThreadTranscript = aiThread.transcript;
                     }
                 }
             } catch (err) {
@@ -1851,12 +1864,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // ticks re-evaluating a resting pullback limit remember why they placed
         // it ("market moved — is this entry still valid?"). Fresh flat scans
         // carry no thread and stay stateless.
-        const chainedPreviousResponseId = aiThreadResponseId;
-        const { json: decisionRaw, responseId: aiResponseId } = await callSwingDecision({
+        // Conversation context is provider-scoped: an OpenAI resp_... head means
+        // nothing to Claude and vice-versa. A thread row written by the OTHER
+        // provider (mid-position cutover/rollback) degrades this tick to
+        // stateless — the prompt's "position adopted mid-life" branch covers it —
+        // and this tick's persist below re-anchors the thread on the active
+        // provider.
+        const chainedPreviousResponseId = aiThreadProvider === 'claude' ? null : aiThreadResponseId;
+        const chainedTranscript = aiThreadProvider === 'claude' ? aiThreadTranscript : null;
+        const {
+            json: decisionRaw,
+            responseId: aiResponseId,
+            appendTurns: aiAppendTurns,
+        } = await callSwingDecision({
             system,
             user,
             schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-            thread: { previousResponseId: chainedPreviousResponseId },
+            thread: { previousResponseId: chainedPreviousResponseId, transcript: chainedTranscript },
         });
         const decision = postprocessDecision({
             decision: decisionRaw,
@@ -1879,12 +1903,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Nano (15m) bias measured at decision time — persisted on the decision
         // so the dashboard can render a Nano chip next to the other TF biases.
         (decision as any).nano_bias = nanoContext?.bias ?? null;
-        // Responses-API id of this call — persisted in ai_decision_json so every
-        // decision row maps to its turn in the stored conversation chain. The
-        // previous id (null on stateless calls) lets the dashboard link chained
-        // decisions of one conversation on the timeline.
+        // Provider message id of this call (OpenAI resp_..., Claude msg_...) —
+        // persisted in ai_decision_json so every decision row maps to its turn
+        // in the conversation. The previous id (null on stateless calls) lets
+        // the dashboard link chained decisions on the timeline; on the Claude
+        // path chaining runs through the stored transcript, so the prior msg id
+        // fills the same linkage slot.
         (decision as any).response_id = aiResponseId;
-        (decision as any).previous_response_id = chainedPreviousResponseId;
+        (decision as any).previous_response_id =
+            aiThreadProvider === 'claude' ? aiThreadResponseId : chainedPreviousResponseId;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — too far clamps;
@@ -2070,6 +2097,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     decision.action === 'CLOSE' &&
                     execRes?.placed === true &&
                     Number((decision as any).exit_size_pct ?? 100) >= 100;
+                // Claude path: the conversation is OURS to store — append this
+                // tick's turns (sent user turn + assistant response verbatim) to
+                // the transcript the tick chained onto, capped so a long-lived
+                // position can't grow the row unboundedly. OpenAI path:
+                // appendTurns is null and the transcript stays empty (the chain
+                // lives server-side behind lastResponseId).
+                const activeProvider = resolveSwingAiProvider();
+                const nextTranscript =
+                    Array.isArray(aiAppendTurns) && aiAppendTurns.length
+                        ? truncateClaudeTranscript([
+                              ...(Array.isArray(chainedTranscript) ? (chainedTranscript as any[]) : []),
+                              ...(aiAppendTurns as any[]),
+                          ] as any)
+                        : null;
                 if (fullCloseExecuted) {
                     await endSwingAiThread(platform, symbol);
                 } else if (entryPlacedNow) {
@@ -2078,6 +2119,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         symbol,
                         status: (decision as any).entry_limit_price != null ? 'pending_entry' : 'in_position',
                         lastResponseId: aiResponseId,
+                        provider: activeProvider,
+                        transcript: nextTranscript,
                     });
                 } else if (positionOpen) {
                     await upsertSwingAiThread({
@@ -2085,6 +2128,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         symbol,
                         status: 'in_position',
                         lastResponseId: aiResponseId,
+                        provider: activeProvider,
+                        transcript: nextTranscript,
                     });
                 } else if (aiThreadResponseId) {
                     await endSwingAiThread(platform, symbol);

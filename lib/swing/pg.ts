@@ -150,25 +150,33 @@ async function ensureSwingSchema(): Promise<void> {
               END IF;
             END $$`);
 
-        // ai_threads: one active Responses-API conversation per (platform, symbol).
-        // A thread starts when an entry order is placed (market fill or resting
-        // pullback limit), survives the limit fill into position management AND
+        // ai_threads: one active AI conversation per (platform, symbol). A thread
+        // starts when an entry order is placed (market fill or resting pullback
+        // limit), survives the limit fill into position management AND
         // unfilled-limit re-evaluations (sweep + re-issue continues the same
         // conversation), and ends when the entry is dropped without a re-issue
-        // or the position closes. Holds only the chain head — the conversation
-        // itself is stored on OpenAI's side.
+        // or the position closes. Where the conversation LIVES depends on the
+        // provider: OpenAI Responses API is stateful server-side (last_response_id
+        // is the chain head), Claude Messages API is stateless (transcript holds
+        // the full message history we resend each tick; last_response_id then
+        // stores the msg_... id for dashboard linkage only).
         await db.$executeRaw(sql`
             CREATE TABLE IF NOT EXISTS swing.ai_threads (
               platform         TEXT NOT NULL,
               symbol           TEXT NOT NULL,
               status           TEXT NOT NULL,
               last_response_id TEXT NOT NULL,
+              provider         TEXT NOT NULL DEFAULT 'openai',
+              transcript       JSONB,
               turns            INT NOT NULL DEFAULT 1,
               created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               CONSTRAINT ai_threads_status_check CHECK (status IN ('pending_entry', 'in_position')),
               CONSTRAINT ai_threads_key PRIMARY KEY (platform, symbol)
             )`);
+        // Existing deployments predate the provider/transcript columns.
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai'`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS transcript JSONB`);
 
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
@@ -207,41 +215,63 @@ export type SwingAiThread = {
     status: SwingAiThreadStatus;
     lastResponseId: string;
     turns: number;
+    // 'openai' (conversation lives server-side, lastResponseId is the chain
+    // head) or 'claude' (conversation is the transcript below). Rows written
+    // before the provider column default to 'openai'.
+    provider: string;
+    // Claude only: full message history ({role, content}[]) resent each tick.
+    transcript: unknown[] | null;
 };
 
 export async function getSwingAiThread(platform: string, symbol: string): Promise<SwingAiThread | null> {
     if (!isSwingPgConfigured()) return null;
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<{ status: string; last_response_id: string; turns: number }>>(sql`
-        SELECT status, last_response_id, turns
+    const rows = await db.$queryRaw<
+        Array<{ status: string; last_response_id: string; turns: number; provider: string | null; transcript: unknown }>
+    >(sql`
+        SELECT status, last_response_id, turns, provider, transcript
         FROM swing.ai_threads
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
     const row = rows?.[0];
     if (!row || !row.last_response_id) return null;
     const status = row.status === 'pending_entry' ? 'pending_entry' : 'in_position';
-    return { status, lastResponseId: row.last_response_id, turns: Number(row.turns) || 1 };
+    return {
+        status,
+        lastResponseId: row.last_response_id,
+        turns: Number(row.turns) || 1,
+        provider: row.provider === 'claude' ? 'claude' : 'openai',
+        transcript: Array.isArray(row.transcript) ? row.transcript : null,
+    };
 }
 
-// Insert or advance the chain head. A fresh entry decision REPLACES any prior
+// Insert or advance the conversation. A fresh entry decision REPLACES any prior
 // thread outright (new conversation); an in-position tick advances turns.
+// OpenAI advances the chain head only; Claude also replaces the stored
+// transcript with the caller-provided continuation (already truncated).
 export async function upsertSwingAiThread(params: {
     platform: string;
     symbol: string;
     status: SwingAiThreadStatus;
     lastResponseId: string;
+    provider?: string;
+    transcript?: unknown[] | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     if (!params.lastResponseId) return;
     await ensureSwingSchema();
     const db = swingPg();
+    const provider = params.provider === 'claude' ? 'claude' : 'openai';
+    const transcriptJson = Array.isArray(params.transcript) && params.transcript.length ? JSON.stringify(params.transcript) : null;
     await db.$executeRaw(sql`
-        INSERT INTO swing.ai_threads (platform, symbol, status, last_response_id)
-        VALUES (${normalizePlatform(params.platform)}, ${String(params.symbol || '').toUpperCase()}, ${params.status}, ${params.lastResponseId})
+        INSERT INTO swing.ai_threads (platform, symbol, status, last_response_id, provider, transcript)
+        VALUES (${normalizePlatform(params.platform)}, ${String(params.symbol || '').toUpperCase()}, ${params.status}, ${params.lastResponseId}, ${provider}, ${transcriptJson}::jsonb)
         ON CONFLICT (platform, symbol) DO UPDATE SET
             status = EXCLUDED.status,
             last_response_id = EXCLUDED.last_response_id,
+            provider = EXCLUDED.provider,
+            transcript = EXCLUDED.transcript,
             turns = swing.ai_threads.turns + 1,
             updated_at = NOW()
     `);
