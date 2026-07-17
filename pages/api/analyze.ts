@@ -37,7 +37,6 @@ import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
 
 import {
     computeSwingState,
-    callAIThread,
     computeMomentumSignals,
     postprocessDecision,
     resolveDecisionPolicy,
@@ -50,6 +49,7 @@ import {
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
+import { callSwingDecision } from '../../lib/aiProvider';
 import { getGates } from '../../lib/gates';
 
 import {
@@ -1843,20 +1843,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             sweptPendingEntry,
         );
 
-        // 7) Query AI (post-parse enforces allowed_actions + close_conditions).
-        // Capital decides leverage by asset class, so it uses the leverage-free schema.
-        // Ticks with a live conversation chain onto it (previous_response_id):
-        // in-position ticks manage the trade with memory of the entry thesis and
-        // every prior management tick, and flat ticks re-evaluating a resting
-        // pullback limit remember why they placed it ("market moved — is this
-        // entry still valid?"). Fresh flat scans carry no head and stay stateless.
+        // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse
+        // enforces allowed_actions + close_conditions). Capital decides leverage
+        // by asset class, so it uses the leverage-free schema. Ticks with a live
+        // conversation chain onto it: in-position ticks manage the trade with
+        // memory of the entry thesis and every prior management tick, and flat
+        // ticks re-evaluating a resting pullback limit remember why they placed
+        // it ("market moved — is this entry still valid?"). Fresh flat scans
+        // carry no thread and stay stateless.
         const chainedPreviousResponseId = aiThreadResponseId;
-        const { json: decisionRaw, responseId: aiResponseId } = await callAIThread(
+        const { json: decisionRaw, responseId: aiResponseId } = await callSwingDecision({
             system,
             user,
-            platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-            { previousResponseId: chainedPreviousResponseId },
-        );
+            schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
+            thread: { previousResponseId: chainedPreviousResponseId },
+        });
         const decision = postprocessDecision({
             decision: decisionRaw,
             context,

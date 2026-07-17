@@ -1,4 +1,4 @@
-import { callAI } from '../ai';
+import { callStatelessAI } from '../aiProvider';
 import type {
     ForexModuleName,
     ForexPairEligibility,
@@ -178,7 +178,7 @@ export async function buildForexRegimePacket(params: {
 
     try {
         const { system, user } = buildAiPrompt(entry);
-        const raw = await callAI(system, user);
+        const raw = await callStatelessAI(system, user);
 
         packet = {
             pair: entry.pair,

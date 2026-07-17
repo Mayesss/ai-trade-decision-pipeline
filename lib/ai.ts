@@ -1910,12 +1910,5 @@ export async function callAIThread(
     }
 }
 
-// Stateless convenience wrapper (forex advisor, evaluations). Same Responses API
-// call, no chaining, parsed JSON only.
-export async function callAI(
-    system: string,
-    user: string,
-    schema?: { name: string; schema: Record<string, unknown> },
-) {
-    return (await callAIThread(system, user, schema)).json;
-}
+// Stateless calls (forex advisor, evaluations) go through
+// lib/aiProvider.callStatelessAI — same provider switch as the swing decision.

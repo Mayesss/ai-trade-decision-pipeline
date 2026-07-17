@@ -3,7 +3,7 @@ import crypto from 'crypto';
 
 import { requireAdminAccess } from '../../lib/admin';
 import { loadDecisionHistory } from '../../lib/history';
-import { callAI } from '../../lib/ai';
+import { callStatelessAI } from '../../lib/aiProvider';
 import { AI_MODEL } from '../../lib/constants';
 import { setEvaluation } from '../../lib/utils';
 import { kvGetJson, kvSetJson } from '../../lib/kv';
@@ -196,7 +196,7 @@ async function runEvaluation(params: {
             chunk.map((c) => c.prompt),
         )}.`;
         try {
-            const chunkEvaluation = await callAI(EVALUATION_SYSTEM_PROMPT, chunkUser);
+            const chunkEvaluation = await callStatelessAI(EVALUATION_SYSTEM_PROMPT, chunkUser);
             batchEvaluations.push({
                 batchIndex: i + 1,
                 sampleCount: chunk.length,
@@ -214,7 +214,7 @@ async function runEvaluation(params: {
         const aggregateUser = `Symbol: ${symbol}. Merge these partial evaluations into one final output with the exact schema. Global stats: ${JSON.stringify(
             stats,
         )}. Partial evaluations: ${JSON.stringify(batchEvaluations)}.`;
-        evaluation = await callAI(AGGREGATION_SYSTEM_PROMPT, aggregateUser);
+        evaluation = await callStatelessAI(AGGREGATION_SYSTEM_PROMPT, aggregateUser);
     }
 
     // Persist the latest evaluation for this symbol (single entry per symbol).
