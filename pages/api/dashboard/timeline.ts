@@ -19,6 +19,11 @@ export type TimelineTick = {
   kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan';
   action?: string;
   summary?: string;
+  // AI-requested flat cooldown armed by this decision (flat HOLD only) — lets
+  // the UI label the tick "HOLD + CD 2h (↑x ↓y)" instead of a bare HOLD.
+  cooldownMinutes?: number;
+  cooldownWakeAbove?: number;
+  cooldownWakeBelow?: number;
   stage?: string;
   reason?: string;
   // Responses-API conversation chain: `responseId` is this decision's turn,
@@ -107,6 +112,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       kind: skipped ? 'gate_skip' : ACTION_KINDS.has(action) ? 'action' : 'ai_call',
       ...(action ? { action } : {}),
       ...(typeof decision.summary === 'string' && decision.summary ? { summary: decision.summary } : {}),
+      ...(Number.isFinite(Number(decision.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
+        ? {
+            cooldownMinutes: Number(decision.cooldown_minutes),
+            ...(Number.isFinite(Number(decision.cooldown_wake_above)) && Number(decision.cooldown_wake_above) > 0
+              ? { cooldownWakeAbove: Number(decision.cooldown_wake_above) }
+              : {}),
+            ...(Number.isFinite(Number(decision.cooldown_wake_below)) && Number(decision.cooldown_wake_below) > 0
+              ? { cooldownWakeBelow: Number(decision.cooldown_wake_below) }
+              : {}),
+          }
+        : {}),
       ...(typeof decision.skipStage === 'string' && decision.skipStage ? { stage: decision.skipStage } : {}),
       ...(typeof decision.reason === 'string' && decision.reason ? { reason: decision.reason } : {}),
       ...(typeof decision.response_id === 'string' && decision.response_id

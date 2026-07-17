@@ -65,6 +65,12 @@ export type ChartTimelineTick = {
   action?: string;
   stage?: string;
   reason?: string;
+  // AI-requested flat cooldown armed by this decision (flat HOLD only) —
+  // appended to the tooltip label ("AI HOLD + CD 2h (↑x ↓y)"); the dot keeps
+  // the plain ai_call fill.
+  cooldownMinutes?: number;
+  cooldownWakeAbove?: number;
+  cooldownWakeBelow?: number;
   // Responses-API conversation chain: `previousResponseId` marks a context AI
   // call (in-position tick / post-fill management of a pullback limit) chained
   // onto the tick whose `responseId` matches — linked with a full-contrast
@@ -84,6 +90,25 @@ const timelineDotFillClass = (tick: ChartTimelineTick): string =>
       ? 'timeline-dot-ai'
       : 'timeline-dot-skip';
 
+// "HOLD + CD 2h (↑51,200 ↓49,700)" suffix for ticks that armed a flat cooldown.
+const timelineTickCooldownSuffix = (tick: ChartTimelineTick): string => {
+  const minutes = Number(tick.cooldownMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return '';
+  const m = Math.max(1, Math.round(minutes));
+  const duration = m < 60 ? `${m}m` : m % 60 ? `${Math.floor(m / 60)}h${m % 60}m` : `${m / 60}h`;
+  const fmt = (v: number) =>
+    v.toLocaleString('en-US', { maximumFractionDigits: Math.abs(v) >= 1000 ? 0 : Math.abs(v) >= 10 ? 2 : 4 });
+  const bands = [
+    Number.isFinite(Number(tick.cooldownWakeAbove)) && Number(tick.cooldownWakeAbove) > 0
+      ? `↑${fmt(Number(tick.cooldownWakeAbove))}`
+      : null,
+    Number.isFinite(Number(tick.cooldownWakeBelow)) && Number(tick.cooldownWakeBelow) > 0
+      ? `↓${fmt(Number(tick.cooldownWakeBelow))}`
+      : null,
+  ].filter(Boolean);
+  return ` + CD ${duration}${bands.length ? ` (${bands.join(' ')})` : ''}`;
+};
+
 const timelineTickLabel = (tick: ChartTimelineTick): string => {
   const time = new Intl.DateTimeFormat('de-DE', {
     timeZone: BERLIN_TZ,
@@ -96,7 +121,7 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
     tick.kind === 'action'
       ? ` · ${tick.action}`
       : tick.kind === 'ai_call'
-        ? ` · AI ${tick.action || 'decision'}`
+        ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
         : tick.stage
           ? ` · skipped: ${tick.reason || tick.stage}`
           : ' · scanned'

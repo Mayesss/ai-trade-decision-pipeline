@@ -727,6 +727,10 @@ type TimelineTickUi = {
   summary?: string;
   stage?: string;
   reason?: string;
+  // AI-requested flat cooldown armed by this decision (flat HOLD only).
+  cooldownMinutes?: number;
+  cooldownWakeAbove?: number;
+  cooldownWakeBelow?: number;
   // Responses-API conversation chain (context AI calls): links chained
   // decisions on the timeline with a full-contrast connector segment.
   responseId?: string;
@@ -4170,10 +4174,34 @@ export default function Home() {
     return value.toLocaleString("en-US", { maximumFractionDigits: maxDecimals });
   };
 
+  // "90" → "1h30m", "45" → "45m", "360" → "6h" — for the cooldown suffix.
+  const formatCooldownDuration = (minutes: number): string => {
+    const m = Math.max(1, Math.round(minutes));
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const rest = m % 60;
+    return rest ? `${h}h${rest}m` : `${h}h`;
+  };
+
+  // "HOLD + CD 2h (↑51,200 ↓49,700)" — the armed quiet period and the wake
+  // bands that end it early. Empty when the decision carries no cooldown.
+  const formatCooldownSuffix = (decision: any): string => {
+    const minutes = Number(decision?.cooldown_minutes ?? decision?.cooldownMinutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) return "";
+    const above = Number(decision?.cooldown_wake_above ?? decision?.cooldownWakeAbove);
+    const below = Number(decision?.cooldown_wake_below ?? decision?.cooldownWakeBelow);
+    const bands = [
+      Number.isFinite(above) && above > 0 ? `↑${formatDecisionPrice(above)}` : null,
+      Number.isFinite(below) && below > 0 ? `↓${formatDecisionPrice(below)}` : null,
+    ].filter(Boolean);
+    return ` + CD ${formatCooldownDuration(minutes)}${bands.length ? ` (${bands.join(" ")})` : ""}`;
+  };
+
   // Action label for the Latest Decision pill: a partial CLOSE (trim) shows its
   // size, e.g. "CLOSE 40%"; a full close (pct absent or 100) stays "CLOSE"; a
   // pullback-limit entry shows its resting price, e.g. "BUY @ 6.34" (a market
-  // entry stays bare "BUY"/"SELL").
+  // entry stays bare "BUY"/"SELL"); a flat HOLD that armed a cooldown shows the
+  // quiet period + wake bands, e.g. "HOLD + CD 2h (↑51,200 ↓49,700)".
   const formatLastDecisionAction = (decision: any): string => {
     const action = String(decision?.action || "");
     if (action === "BUY" || action === "SELL") {
@@ -4183,6 +4211,7 @@ export default function Home() {
       }
       return action;
     }
+    if (action === "HOLD") return `${action}${formatCooldownSuffix(decision)}`;
     if (action !== "CLOSE") return action;
     const rawPct =
       decision?.exit_size_pct ?? decision?.close_size_pct ?? decision?.partial_close_pct;
