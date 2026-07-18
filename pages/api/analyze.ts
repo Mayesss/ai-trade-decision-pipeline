@@ -31,6 +31,7 @@ import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { recordSwingLastScan } from '../../lib/swing/lastScan';
 import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
+import { loadBtcContext } from '../../lib/swing/btcContext';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
@@ -1897,11 +1898,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        // Past the gates → the AI will be called. Fetch its two remaining inputs
-        // together: news (its only consumer is the prompt) and the nano (15m)
-        // candles for wave/entry-timing geometry. Both are deferred to here so
-        // gated ticks never pay for them; nano fails open (prompt just omits it).
-        const [newsBundleRes, nanoRes] = await Promise.all([
+        // Past the gates → the AI will be called. Fetch its remaining inputs
+        // together: news (its only consumer is the prompt), the nano (15m)
+        // candles for wave/entry-timing geometry, and — for non-BTC crypto —
+        // the BTC regime context (measured correlation/beta + BTC state). All
+        // deferred to here so gated ticks never pay for them; each fails open
+        // (prompt just omits the block).
+        const [newsBundleRes, nanoRes, btcContext] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
@@ -1918,6 +1921,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     return { nanoContext: null, nanoCandles: [] as unknown[] };
                 }
             })(),
+            // BTC regime context for non-BTC crypto (loadBtcContext itself also
+            // no-ops on BTCUSDT and honors SWING_BTC_CONTEXT_ENABLED). Bitget
+            // only: the measurements come from Bitget perp candles.
+            platform === 'bitget' && category === 'crypto'
+                ? loadBtcContext(symbol)
+                : Promise.resolve(null),
         ]);
         newsBundle = newsBundleRes;
         const { nanoContext, nanoCandles } = nanoRes;
@@ -1937,6 +1946,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             nanoContext,
             sweptPendingEntry,
             eventReaction,
+            btcContext,
         );
 
         // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse
@@ -2294,6 +2304,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // recent high-impact release) — makes "did the AI trade the drift and
             // did it pay" a SQL query over decisions × positions.
             eventReaction,
+            // BTC regime context as fed to the prompt (null for BTC itself /
+            // non-crypto) — keeps "did the AI fight the BTC regime and did it
+            // pay" a SQL query over decisions × positions.
+            btcContext,
             forexSessionContext,
             // Venue liquidity clock at decision time — lets "did this entry rest
             // into an open/break/thin reopen" stay a SQL query over snapshots

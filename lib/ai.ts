@@ -12,6 +12,7 @@ import {
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
 import type { EventReactionMeasurement } from './swing/eventReaction';
+import type { BtcContext } from './swing/btcContext';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import { computeWaveGeometry } from './swing/waveGeometry';
 import type { NanoContext } from './swing/waveGeometry';
@@ -869,6 +870,9 @@ export function computeSwingState(
         // (market.forex_events.recentEvents). Computed by the caller from the
         // nano 15m candles, so it enters here like nano_context does.
         event_reaction: EventReactionMeasurement[] | null = null,
+        // BTC regime coupling for non-BTC crypto ticks (measured correlation/
+        // beta + BTC recent state). Fetched by the caller, enters like nano.
+        btc_context: BtcContext | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1069,6 +1073,9 @@ export function computeSwingState(
     if (Array.isArray(event_reaction) && event_reaction.length > 0) {
         market.event_reaction = event_reaction;
     }
+    if (btc_context && typeof btc_context === 'object') {
+        market.btc_context = btc_context;
+    }
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
@@ -1142,6 +1149,17 @@ export function computeSwingState(
               ? `\n- Post-event reaction (market.event_reaction, when present): a high-impact USD release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates on crypto (BTC/ETH/SOL, 2024–2026): the PRE-release drift direction carries no information (pre-FOMC drift, if anything, reversed), and the release burst is mostly whipsaw — but a decisive reaction direction, once established ~45 min after release, held through the following ~2–4 h on CPI and FOMC releases. NFP is the exception: its reaction direction was the least reliable and on average partially gave back, so discount NFP drift. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction (except NFP); large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
               : '';
 
+    // BTC regime doctrine: how to read market.btc_context (built only for
+    // non-BTC crypto ticks). "When present" phrasing keeps the prose honest on
+    // BTC's own ticks, which never carry the block. Coupling numbers are FED,
+    // not asserted — correlation is regime-dependent (SOL 30d slipped 0.84→0.77
+    // while LINK sat at 0.94, Jul 2026), so the model weighs the measured value
+    // instead of a hardcoded "crypto = BTC beta" claim.
+    const btcContextGuidance =
+        assetClass === 'crypto'
+            ? `\n- BTC regime (market.btc_context, when present — non-BTC crypto only): this asset's measured coupling to BTC — corr_30d/corr_90d (daily-return correlation), beta_90d, btc.ret_*_bp (BTC's own recent moves), and alt_vs_btc_residual_7d_bp (this asset's 7d return minus beta x BTC's; positive = idiosyncratic strength). At high correlation (corr ≳ 0.8) alts rarely sustain moves against the BTC regime: a fresh position against BTC's current direction needs idiosyncratic justification (see the residual and news), and a deteriorating BTC weakens an otherwise clean alt setup. At lower correlation weigh BTC context proportionally less. Measurements, not a verdict — combine with structure/location as usual, never a standalone trigger.`
+            : '';
+
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
     // this prose only explains how to read them, so the system prompt stays
     // byte-identical across ticks (prompt-caching prefix stability). Fields that
@@ -1182,7 +1200,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
 - Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
-- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}${eventReactionGuidance}
+- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}${eventReactionGuidance}${btcContextGuidance}
 - ${costChurnLine}
 - In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale. Prefer HOLD when regime supports it and there is no strong opposite structure (especially while near breakeven, |price_vs_breakeven_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
