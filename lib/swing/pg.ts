@@ -266,6 +266,43 @@ async function ensureSwingSchema(): Promise<void> {
                   FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at();
               END IF;
             END $$`);
+        // Analyst-suggested audience for the lesson (symbol | asset_class |
+        // global) — the curator finalizes it on the lessons row. Predates
+        // phase 3 rows are NULL.
+        await db.$executeRaw(sql`ALTER TABLE swing.postmortems ADD COLUMN IF NOT EXISTS lesson_scope TEXT`);
+
+        // lessons: the CURATED lesson library fed into future prompts (phase 3).
+        // Not a raw append of every post-mortem lesson: a curator AI call
+        // decides per new lesson whether to add it, merge-reformulate it into
+        // an existing row (support_count grows, confidence updates), or
+        // discard it as redundant. Prompt injection reads active rows for
+        // (symbol | its asset class | global), confidence-sorted, capped.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.lessons (
+              id                    BIGSERIAL PRIMARY KEY,
+              scope                 TEXT NOT NULL,
+              symbol                TEXT,
+              asset_class           TEXT,
+              lesson                TEXT NOT NULL,
+              confidence            NUMERIC NOT NULL DEFAULT 0.5,
+              support_count         INT NOT NULL DEFAULT 1,
+              source_postmortem_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+              status                TEXT NOT NULL DEFAULT 'active',
+              created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT lessons_scope_check CHECK (scope IN ('symbol', 'asset_class', 'global')),
+              CONSTRAINT lessons_status_check CHECK (status IN ('active', 'retired'))
+            )`);
+        await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS lessons_symbol_idx ON swing.lessons (status, scope, symbol)`);
+        await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS lessons_class_idx ON swing.lessons (status, scope, asset_class)`);
+        await db.$executeRaw(sql`
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'lessons_set_updated_at') THEN
+                CREATE TRIGGER lessons_set_updated_at BEFORE UPDATE ON swing.lessons
+                  FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at();
+              END IF;
+            END $$`);
 
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
@@ -662,6 +699,7 @@ export type SwingPostmortemRow = {
     pnlNet: number | null;
     verdict: string | null;
     lesson: string | null;
+    lessonScope: string | null;
     report: Record<string, any> | null;
     dossier: Record<string, any> | null;
     model: string | null;
@@ -689,6 +727,7 @@ function mapPostmortemRow(r: any): SwingPostmortemRow {
         pnlNet: finite(r.pnl_net),
         verdict: r.verdict ?? null,
         lesson: r.lesson ?? null,
+        lessonScope: r.lesson_scope ?? null,
         report: r.report_json ?? null,
         dossier: r.dossier_json ?? null,
         model: r.model ?? null,
@@ -774,6 +813,7 @@ export async function completeSwingPostmortem(
     result: {
         verdict: string | null;
         lesson: string | null;
+        lessonScope?: string | null;
         report: Record<string, any>;
         dossier: Record<string, any>;
         model: string | null;
@@ -788,6 +828,7 @@ export async function completeSwingPostmortem(
         SET status = 'succeeded',
             verdict = ${result.verdict},
             lesson = ${result.lesson},
+            lesson_scope = ${result.lessonScope ?? null},
             report_json = ${JSON.stringify(result.report)}::jsonb,
             dossier_json = ${JSON.stringify(result.dossier)}::jsonb,
             model = ${result.model},
@@ -825,7 +866,7 @@ export async function loadSwingPostmortems(
     const rows = await db.$queryRaw<Array<any>>(sql`
         SELECT id, platform, symbol, position_key, status, trigger_source, side,
                entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_pct, pnl_net,
-               verdict, lesson, model, usage_json, error, attempts, created_at, updated_at
+               verdict, lesson, lesson_scope, model, usage_json, error, attempts, created_at, updated_at
         FROM swing.postmortems
         WHERE (${symbol}::text IS NULL OR symbol = ${symbol})
           AND (${platform}::text IS NULL OR platform = ${platform})
@@ -847,6 +888,127 @@ export async function loadSwingPostmortemById(id: number): Promise<SwingPostmort
         SELECT * FROM swing.postmortems WHERE id = ${Math.floor(id)} LIMIT 1;
     `);
     return rows?.length ? mapPostmortemRow(rows[0]) : null;
+}
+
+// --------------------------------------------------------------------------
+// Lessons (curated library distilled from post-mortems — phase 3)
+// --------------------------------------------------------------------------
+export type SwingLessonScope = 'symbol' | 'asset_class' | 'global';
+
+export type SwingLessonRow = {
+    id: number;
+    scope: SwingLessonScope;
+    symbol: string | null;
+    assetClass: string | null;
+    lesson: string;
+    confidence: number;
+    supportCount: number;
+    sourcePostmortemIds: number[];
+    status: 'active' | 'retired';
+    updatedAtMs: number;
+};
+
+function mapLessonRow(r: any): SwingLessonRow {
+    return {
+        id: Number(r.id),
+        scope: String(r.scope) as SwingLessonScope,
+        symbol: r.symbol ?? null,
+        assetClass: r.asset_class ?? null,
+        lesson: String(r.lesson),
+        confidence: Number(r.confidence) || 0,
+        supportCount: Number(r.support_count) || 1,
+        sourcePostmortemIds: Array.isArray(r.source_postmortem_ids)
+            ? r.source_postmortem_ids.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v))
+            : [],
+        status: r.status === 'retired' ? 'retired' : 'active',
+        updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+    };
+}
+
+export async function insertSwingLesson(input: {
+    scope: SwingLessonScope;
+    symbol?: string | null;
+    assetClass?: string | null;
+    lesson: string;
+    confidence: number;
+    sourcePostmortemId: number;
+}): Promise<number | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ id: number | string }>>(sql`
+        INSERT INTO swing.lessons (scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids)
+        VALUES (
+            ${input.scope},
+            ${input.scope === 'symbol' ? String(input.symbol || '').toUpperCase() || null : null},
+            ${input.scope === 'asset_class' ? input.assetClass ?? null : null},
+            ${input.lesson},
+            ${Math.max(0, Math.min(1, input.confidence))},
+            1,
+            ${JSON.stringify([input.sourcePostmortemId])}::jsonb
+        )
+        RETURNING id;
+    `);
+    const id = rows?.[0]?.id;
+    return id == null ? null : Number(id);
+}
+
+// Curator "merge": the existing row absorbs the new evidence — reformulated
+// text, updated confidence, support_count+1, source id appended.
+export async function mergeSwingLesson(input: {
+    id: number;
+    lesson: string;
+    confidence: number;
+    sourcePostmortemId: number;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.lessons
+        SET lesson = ${input.lesson},
+            confidence = ${Math.max(0, Math.min(1, input.confidence))},
+            support_count = support_count + 1,
+            source_postmortem_ids = source_postmortem_ids || ${JSON.stringify([input.sourcePostmortemId])}::jsonb
+        WHERE id = ${Math.floor(input.id)} AND status = 'active';
+    `);
+}
+
+export async function retireSwingLesson(id: number): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`UPDATE swing.lessons SET status = 'retired' WHERE id = ${Math.floor(id)};`);
+}
+
+// Active lessons applicable to one instrument: its own symbol lessons, its
+// asset class's, and the globals. Confidence-sorted; the caller caps for the
+// prompt (selectPromptLessons).
+export async function loadActiveSwingLessons(opts: {
+    symbol?: string | null;
+    assetClass?: string | null;
+    limit?: number;
+}): Promise<SwingLessonRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const symbol = opts.symbol ? String(opts.symbol).toUpperCase() : null;
+    const assetClass = opts.assetClass ?? null;
+    const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT id, scope, symbol, asset_class, lesson, confidence, support_count,
+               source_postmortem_ids, status, updated_at
+        FROM swing.lessons
+        WHERE status = 'active'
+          AND (
+            scope = 'global'
+            OR (scope = 'symbol' AND ${symbol}::text IS NOT NULL AND symbol = ${symbol})
+            OR (scope = 'asset_class' AND ${assetClass}::text IS NOT NULL AND asset_class = ${assetClass})
+          )
+        ORDER BY confidence DESC, support_count DESC, updated_at DESC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map(mapLessonRow);
 }
 
 // Full decision rows (prompt_json INCLUDED) for a trade window — the dossier

@@ -69,6 +69,7 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
+import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
     clearSwingAiCooldown,
     endSwingAiThread,
@@ -2060,7 +2061,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the BTC regime context (measured correlation/beta + BTC state). All
         // deferred to here so gated ticks never pay for them; each fails open
         // (prompt just omits the block).
-        const [newsBundleRes, nanoRes, btcContext] = await Promise.all([
+        const [newsBundleRes, nanoRes, btcContext, promptLessons] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
@@ -2083,6 +2084,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform === 'bitget' && category === 'crypto'
                 ? loadBtcContext(symbol)
                 : Promise.resolve(null),
+            // Curated post-mortem lessons for this symbol / its asset class /
+            // global (max 5, confidence-sorted). SWING_LESSONS_MODE=off or an
+            // empty library returns [] — the prompt block just doesn't render.
+            loadPromptLessons(symbol, category),
         ]);
         newsBundle = newsBundleRes;
         const { nanoContext, nanoCandles } = nanoRes;
@@ -2103,6 +2108,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             sweptPendingEntry,
             eventReaction,
             btcContext,
+            promptLessons,
         );
 
         // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse

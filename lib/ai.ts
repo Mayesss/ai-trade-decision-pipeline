@@ -878,6 +878,11 @@ export function computeSwingState(
         // BTC regime coupling for non-BTC crypto ticks (measured correlation/
         // beta + BTC recent state). Fetched by the caller, enters like nano.
         btc_context: BtcContext | null = null,
+        // Curated lessons distilled from post-mortems of past LOSING trades on
+        // this symbol / its asset class / globally (max 5, confidence-sorted —
+        // see lib/swing/lessons.ts). Rendered in the USER turn so the cached
+        // system prefix stays byte-stable; [] / null omits the block.
+        lessons: Array<{ scope: string; lesson: string }> | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1215,6 +1220,7 @@ INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 - market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — entry_limit = the pullback limit that entry rested at; reissued_count = consecutive re-issues of the same limit collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the limit was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested.
+- LESSONS (user turn, when present): 1-2 line lessons distilled from forensic post-mortems of your own past LOSING trades on this symbol, its asset class, or any instrument ([scope] tag). These are failure modes you have actually exhibited, not generic advice — before entering, check the setup against them and note in your reason when one applies. They are cautionary evidence like recent_actions outcomes, never hard rules: current structure and measurements win on conflict.
 
 DECISION OWNERSHIP
 - You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Size leverage to that conviction.'}
@@ -1262,7 +1268,13 @@ ${JSON.stringify(state)}
 
 MARKET (raw inputs):
 ${JSON.stringify(market)}
-
+${
+    Array.isArray(lessons) && lessons.length
+        ? `\nLESSONS (from post-mortems of your past losing trades — see INPUTS):\n${lessons
+              .map((l) => `- [${l.scope}] ${l.lesson}`)
+              .join('\n')}\n`
+        : ''
+}
 TASKS:
 1) Output exactly one allowed action (see DECISION OWNERSHIP): flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE.
 2) ${leverageTask}

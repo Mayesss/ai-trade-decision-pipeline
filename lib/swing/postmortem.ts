@@ -9,6 +9,7 @@
 // code feeds them back to the trading AI yet.
 import { callSwingDecision } from '../aiProvider';
 import type { PositionWindow } from '../analytics';
+import { curateLessonFromPostmortem } from './lessons';
 import {
     completeSwingPostmortem,
     enqueueSwingPostmortem,
@@ -380,6 +381,7 @@ export const POSTMORTEM_SCHEMA = {
             'gate_impact',
             'suggestions',
             'lesson',
+            'lesson_scope',
         ],
         properties: {
             verdict: {
@@ -405,6 +407,7 @@ export const POSTMORTEM_SCHEMA = {
             gate_impact: { type: ['string', 'null'] },
             suggestions: { type: 'array', items: { type: 'string' } },
             lesson: { type: 'string' },
+            lesson_scope: { type: 'string', enum: ['symbol', 'asset_class', 'global'] },
         },
     },
 } as const;
@@ -422,6 +425,7 @@ Rules:
 - what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
 - lesson: 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It may later be shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary.
+- lesson_scope: the audience the lesson applies to — 'symbol' (a behavioral quirk of this one instrument), 'asset_class' (applies to this whole class, e.g. all crypto or all commodities), 'global' (sound for any instrument). Entry-mechanics and structure lessons usually generalize; pick 'symbol' only when the failure genuinely hinged on this instrument's specific behavior.
 
 Respond with strict JSON per the provided schema.`;
 
@@ -468,8 +472,26 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
         });
         const verdict = typeof report?.verdict === 'string' ? report.verdict : null;
         const lesson = typeof report?.lesson === 'string' ? report.lesson.trim().slice(0, 300) : null;
+        const lessonScope = ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope)
+            ? String(report.lesson_scope)
+            : null;
         if (!verdict || !lesson) throw new Error('postmortem report missing verdict/lesson');
-        await completeSwingPostmortem(row.id, { verdict, lesson, report, dossier, model, usage });
+        await completeSwingPostmortem(row.id, { verdict, lesson, lessonScope, report, dossier, model, usage });
+        // Curation (phase 3): fold the lesson into the library — the curator
+        // decides add / merge-reformulate / discard and finalizes the scope.
+        // Best-effort: a curation failure never fails the post-mortem.
+        const curation = await curateLessonFromPostmortem({
+            ...row,
+            status: 'succeeded',
+            verdict,
+            lesson,
+            lessonScope,
+            report,
+            dossier,
+            model,
+            usage,
+        });
+        console.log(`[postmortem] #${row.id} lesson curation: ${JSON.stringify(curation)}`);
         return { id: row.id, status: 'succeeded', verdict, lesson };
     } catch (err: any) {
         const message = err?.message || String(err);
