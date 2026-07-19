@@ -14,6 +14,7 @@ import type { MultiTFIndicators } from './indicators';
 import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
+import type { RecentActionEntry } from './swing/recentActions';
 import { computeWaveGeometry } from './swing/waveGeometry';
 import type { NanoContext } from './swing/waveGeometry';
 import { setEvaluation, getEvaluation } from './utils';
@@ -440,7 +441,7 @@ export function computeSwingState(
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
-    recentActions: { action: string; timestamp: number; closePct?: number | null }[] = [],
+    recentActions: RecentActionEntry[] = [],
     realizedRoiPct?: number | null,
     dryRun?: boolean,
     spreadBpsOverride?: number,
@@ -1061,10 +1062,23 @@ export function computeSwingState(
                   // trim from a full exit; a 100%/absent pct stays a bare "CLOSE".
                   const partial =
                       a.action === 'CLOSE' && a.closePct != null && a.closePct > 0 && a.closePct < 100;
-                  return {
+                  const row: any = {
                       action: partial ? `CLOSE ${Math.round(a.closePct as number)}%` : a.action,
                       ts: new Date(a.timestamp).toISOString(),
                   };
+                  // Measured follow-through (see the recent_actions prose in the
+                  // system prompt): what the model asked for vs what happened.
+                  if (a.entryLimitPrice != null) row.entry_limit = a.entryLimitPrice;
+                  if ((a.reissueCount ?? 1) > 1) row.reissued_count = a.reissueCount;
+                  if (a.outcome === 'never_filled' || a.outcome === 'still_open') {
+                      row.outcome = a.outcome;
+                  } else if (a.outcome && typeof a.outcome === 'object') {
+                      row.outcome = {
+                          closed_pnl_pct_on_margin: a.outcome.closedPnlPctOnMargin,
+                          held_min: a.outcome.heldMin,
+                      };
+                  }
+                  return row;
               })
             : [],
     };
@@ -1200,6 +1214,7 @@ Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
+- market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — entry_limit = the pullback limit that entry rested at; reissued_count = consecutive re-issues of the same limit collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the limit was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested.
 
 DECISION OWNERSHIP
 - You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Size leverage to that conviction.'}
@@ -1330,7 +1345,7 @@ export async function buildPrompt(
     gates: any,
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
-    recentActions: { action: string; timestamp: number; closePct?: number | null }[] = [],
+    recentActions: RecentActionEntry[] = [],
     realizedRoiPct?: number | null,
     dryRun?: boolean,
     spreadBpsOverride?: number,
@@ -1424,7 +1439,7 @@ export function postprocessDecision(params: {
     context: PromptDecisionContext;
     gates: { spread_ok: boolean; liquidity_ok: boolean; atr_ok: boolean; slippage_ok: boolean };
     positionOpen: boolean;
-    recentActions: { action: string; timestamp: number; closePct?: number | null }[];
+    recentActions: RecentActionEntry[];
     positionContext: PositionContext | null;
     policy?: DecisionPolicy;
     lastClosedPosition?: LastClosedPosition | null;

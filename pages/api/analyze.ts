@@ -79,6 +79,11 @@ import {
     upsertSwingAiThread,
     upsertSwingPosition,
 } from '../../lib/swing/pg';
+import {
+    attachRecentActionOutcomes,
+    collapseLimitReissues,
+    type PositionForOutcome,
+} from '../../lib/swing/recentActions';
 import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
 import { markSwingWarmDone, recordSwingAnalyzeFinished, swingWarmCycleId } from '../../lib/swing/warmLatch';
 import { warmAllSwingSummaries } from './dashboard/summary';
@@ -989,7 +994,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             let refPrice: number | null = null;
             try {
                 const recent = await loadDecisionHistory(symbol, 5, platform);
-                const lastAiCall = [...recent].reverse().find((h) => {
+                // loadDecisionHistory is newest-first, so find() already returns
+                // the LATEST AI call (a .reverse() here compared against the
+                // oldest call in the window — a stale reference price).
+                const lastAiCall = recent.find((h) => {
                     const d = h.aiDecision as any;
                     return d && d.decision_source !== 'pre_ai_skip' && !d.promptSkipped;
                 });
@@ -1450,8 +1458,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        const recentHistory = await loadDecisionHistory(symbol, 5, platform);
-        const recentActions = recentHistory
+        // Depth 12 (not 5): skip rows dominate the history, and limit re-issue
+        // chains need enough rows to collapse into one entry below.
+        const recentHistory = await loadDecisionHistory(symbol, 12, platform);
+        const recentActionsRaw = recentHistory
             .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
             .map((h) => {
                 const d = h.aiDecision as any;
@@ -1462,9 +1472,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const rawPct = d?.exit_size_pct ?? d?.close_size_pct ?? d?.partial_close_pct;
                 const pctNum = Number(rawPct);
                 const closePct = Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : null;
-                return { action: d?.action, timestamp: h.timestamp, closePct };
+                const limitNum = Number(d?.entry_limit_price);
+                const entryLimitPrice = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : null;
+                return { action: d?.action, timestamp: h.timestamp, closePct, entryLimitPrice };
             })
-            .filter((a) => a.action);
+            .filter((a) => a.action)
+            // loadDecisionHistory returns newest-first; everything downstream
+            // (prompt slice(-N), anti-flip slice(-lookback), outcome windows)
+            // assumes oldest-first — make the order explicit.
+            .sort((a, b) => a.timestamp - b.timestamp);
+        // Outcome enrichment: join the actions to what actually happened
+        // (never_filled / still_open / closed pnl) so a resting limit that
+        // never filled stops masquerading as a completed trade in the prompt.
+        // One bounded Neon read, and only when there is a trade action to
+        // explain — all-HOLD histories (the common quiet case) pay nothing.
+        const collapsedActions = collapseLimitReissues(recentActionsRaw);
+        let outcomePositions: PositionForOutcome[] = [];
+        if (collapsedActions.some((a) => a.action !== 'HOLD')) {
+            try {
+                outcomePositions = await loadClosedSwingPositions({
+                    platform,
+                    symbol,
+                    fromMs: Math.min(...collapsedActions.map((a) => a.firstTimestamp ?? a.timestamp)) - 5 * 60_000,
+                    toMs: Date.now(),
+                    limit: 20,
+                });
+            } catch (err) {
+                console.warn(`Could not load positions for recent-action outcomes for ${symbol}:`, err);
+            }
+        }
+        const recentActions = attachRecentActionOutcomes(collapsedActions, {
+            positions: outcomePositions,
+            openPosition: positionOpen
+                ? {
+                      side: positionInfo.holdSide ?? null,
+                      entryTimestamp:
+                          typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : null,
+                  }
+                : null,
+            nowMs: Date.now(),
+        });
         const forexEventContext =
             category && EVENT_CALENDAR_CATEGORIES.has(category)
                 ? await loadForexEventContext({
@@ -1806,13 +1853,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 55min ceiling means hourly ticks are never deduped; missing inputs
         // fail open.
         if (!positionOpen && quarterTick && !cooldownWake) {
-            const lastFlatAiCall = [...recentHistory]
-                .reverse()
-                .find((h) => {
-                    const d = h.aiDecision as any;
-                    if (!d || d.decision_source === 'pre_ai_skip' || d.promptSkipped) return false;
-                    return !(h.snapshot as any)?.positionContext;
-                });
+            // recentHistory is newest-first, so find() already returns the most
+            // recent flat AI call (the old .reverse() picked the OLDEST in the
+            // window, deduping against a stale price reference).
+            const lastFlatAiCall = recentHistory.find((h) => {
+                const d = h.aiDecision as any;
+                if (!d || d.decision_source === 'pre_ai_skip' || d.promptSkipped) return false;
+                return !(h.snapshot as any)?.positionContext;
+            });
             const lastSnap = (lastFlatAiCall?.snapshot ?? null) as any;
             const lastAction = String((lastFlatAiCall?.aiDecision as any)?.action || '').toUpperCase();
             const ageMin = lastFlatAiCall ? (Date.now() - Number(lastFlatAiCall.timestamp)) / 60_000 : Infinity;
