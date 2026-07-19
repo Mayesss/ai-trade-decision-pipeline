@@ -525,7 +525,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // chart. Always read live (never cached): they carry a one-tick TTL and are
     // cancelled/superseded on every evaluation. Best-effort — a broker error
     // just omits the lines.
-    let pendingOrders: Array<{ side: 'buy' | 'sell' | null; price: number; size: string | null }> = [];
+    let pendingOrders: Array<{
+      side: 'buy' | 'sell' | null;
+      price: number;
+      size: string | null;
+      createdAtMs?: number | null;
+    }> = [];
     try {
       if (platform === 'capital') {
         pendingOrders = (await listCapitalPendingEntryOrders(symbol))
@@ -534,6 +539,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             side: o.direction ? (o.direction.toUpperCase() === 'SELL' ? 'sell' : 'buy') : null,
             price: o.level as number,
             size: o.size != null ? String(o.size) : null,
+            createdAtMs: o.createdAtMs ?? null,
           }));
       } else {
         pendingOrders = (await fetchPendingEntryOrders(symbol, getTradeProductType()))
@@ -542,12 +548,95 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             side: o.side ? (o.side.toLowerCase().includes('sell') ? 'sell' : 'buy') : null,
             price: o.price as number,
             size: o.size,
+            createdAtMs: o.createdAtMs ?? null,
           }));
       }
     } catch (err) {
       console.warn(`Could not fetch pending entry orders for ${symbol}:`, err);
       pendingOrders = [];
     }
+
+    // Resting-limit windows: each pullback limit entry drawn as a side-colored
+    // dashed segment at its limit price, spanning the time it actually rested.
+    // Historical windows come from the indexed BUY/SELL rows carrying an
+    // entry_limit_price; consecutive re-issues of the same limit merge into one
+    // segment. An issue rests until the next indexed decision superseded it,
+    // capped at 65min (the hourly tick always sweeps resting entries), and a
+    // fill clips the segment at the position's entry. Live resting orders
+    // extend their chain (or open a fresh segment) up to now.
+    type LimitOrderSegment = {
+      side: 'buy' | 'sell';
+      price: number;
+      fromTime: number;
+      toTime: number;
+      filled: boolean;
+    };
+    const LIMIT_REST_MAX_MS = 65 * 60_000;
+    const limitRows = (indexedHistory || [])
+      .filter((h) => {
+        if ((h as any)?.dryRun === true) return false;
+        const a = String(h?.aiDecision?.action || '').toUpperCase();
+        const limit = Number((h?.aiDecision as any)?.entry_limit_price);
+        return (a === 'BUY' || a === 'SELL') && Number.isFinite(limit) && limit > 0;
+      })
+      .map((h) => ({
+        side: (String(h.aiDecision?.action).toUpperCase() === 'SELL' ? 'sell' : 'buy') as 'buy' | 'sell',
+        price: Number((h.aiDecision as any).entry_limit_price),
+        tsMs: Number(h.timestamp),
+      }))
+      .sort((a, b) => a.tsMs - b.tsMs);
+    const indexedTimesMs = (indexedHistory || [])
+      .map((h) => Number(h.timestamp))
+      .filter((t) => Number.isFinite(t))
+      .sort((a, b) => a - b);
+    const positionEntryTimesMs = positions
+      .map((p: any) => (Number.isFinite(Number(p.entryTime)) ? Number(p.entryTime) * 1000 : null))
+      .filter((t: number | null): t is number => t !== null);
+    const limitChains: Array<{ side: 'buy' | 'sell'; price: number; firstMs: number; lastMs: number }> = [];
+    for (const row of limitRows) {
+      const prev = limitChains[limitChains.length - 1];
+      if (prev && prev.side === row.side && prev.price === row.price && row.tsMs - prev.lastMs <= 75 * 60_000) {
+        prev.lastMs = row.tsMs;
+      } else {
+        limitChains.push({ side: row.side, price: row.price, firstMs: row.tsMs, lastMs: row.tsMs });
+      }
+    }
+    const limitOrders: LimitOrderSegment[] = limitChains.map((chain) => {
+      const nextDecisionMs = indexedTimesMs.find((t) => t > chain.lastMs);
+      let endMs = Math.min(nextDecisionMs ?? Infinity, chain.lastMs + LIMIT_REST_MAX_MS, nowMs);
+      const fillMs = positionEntryTimesMs.find((t) => t >= chain.firstMs - 2 * 60_000 && t <= endMs + 2 * 60_000);
+      if (fillMs !== undefined) endMs = Math.min(Math.max(fillMs, chain.firstMs + 60_000), nowMs);
+      return {
+        side: chain.side,
+        price: chain.price,
+        fromTime: Math.floor(chain.firstMs / 1000),
+        toTime: Math.floor(endMs / 1000),
+        filled: fillMs !== undefined,
+      };
+    });
+    for (const order of pendingOrders) {
+      if (!order.side) continue;
+      const chain = limitOrders.find(
+        (s) =>
+          !s.filled &&
+          s.side === order.side &&
+          s.price === order.price &&
+          (order.createdAtMs == null || order.createdAtMs / 1000 <= s.toTime + 120),
+      );
+      if (chain) {
+        chain.toTime = Math.floor(nowMs / 1000);
+      } else {
+        const createdMs = order.createdAtMs ?? nowMs - 15 * 60_000;
+        limitOrders.push({
+          side: order.side,
+          price: order.price,
+          fromTime: Math.floor(createdMs / 1000),
+          toTime: Math.floor(nowMs / 1000),
+          filled: false,
+        });
+      }
+    }
+    limitOrders.sort((a, b) => a.fromTime - b.fromTime);
 
     // Cooldown wake bands: each flat-HOLD cooldown draws its wake_above/below
     // levels as gray dashed horizontal segments spanning exactly the cooldown
@@ -602,7 +691,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'x-swing-chart-timing-ms',
       `candles=${candleLoadMs}; markers=${markerLoadMs}; overlay=${overlayLoadMs}; total=${Date.now() - requestStartedAt}`,
     );
-    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders, cooldowns });
+    res
+      .status(200)
+      .json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders, cooldowns, limitOrders });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });

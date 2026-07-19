@@ -47,6 +47,7 @@ type ChartApiResponse = {
   positions?: PositionOverlay[];
   pendingOrders?: PendingOrderLine[];
   cooldowns?: CooldownBandSegment[];
+  limitOrders?: LimitOrderSegment[];
 };
 
 // An AI flat-HOLD cooldown window with its wake band levels — drawn as gray
@@ -56,6 +57,16 @@ type CooldownBandSegment = {
   toTime: number;
   wakeAbove?: number | null;
   wakeBelow?: number | null;
+};
+
+// A pullback limit entry's resting window — drawn as a side-colored dashed
+// segment at the limit price (green BUY / red SELL), with a dot when it filled.
+type LimitOrderSegment = {
+  side: 'buy' | 'sell';
+  price: number;
+  fromTime: number;
+  toTime: number;
+  filled?: boolean;
 };
 
 // A resting pullback limit entry (Bitget normal order / Capital working order),
@@ -391,6 +402,8 @@ type OverlayTheme = {
   partialText: string;
   cooldownBand: string;
   cooldownFill: string;
+  limitBuy: string;
+  limitSell: string;
 };
 
 const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
@@ -410,6 +423,8 @@ const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
   partialText: isDark ? 'rgb(253,230,138)' : 'rgb(146,64,14)',
   cooldownBand: isDark ? 'rgba(161,161,170,0.65)' : 'rgba(113,113,122,0.6)',
   cooldownFill: isDark ? 'rgba(161,161,170,0.12)' : 'rgba(113,113,122,0.1)',
+  limitBuy: isDark ? 'rgba(52,211,153,0.85)' : 'rgba(5,150,105,0.8)',
+  limitSell: isDark ? 'rgba(251,113,133,0.85)' : 'rgba(225,29,72,0.8)',
 });
 
 type OverlayPrimitiveDatum = {
@@ -516,6 +531,7 @@ class PositionOverlayRenderer {
   constructor(
     private readonly items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[],
     private readonly bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[],
+    private readonly limitItems: { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[],
     private readonly theme: OverlayTheme,
   ) {}
   draw(target: any) {
@@ -549,6 +565,30 @@ class PositionOverlayRenderer {
             ctx.stroke();
           }
           ctx.setLineDash([]);
+        }
+      }
+      // Resting limit windows: side-colored dashed segments at the limit price
+      // (green BUY / red SELL) spanning the time the order actually rested; a
+      // filled dot marks the fill moment at the segment end.
+      if (this.limitItems.length) {
+        ctx.lineWidth = 1;
+        for (const order of this.limitItems) {
+          const color = order.side === 'buy' ? this.theme.limitBuy : this.theme.limitSell;
+          const y = Math.round(order.y) + 0.5;
+          const right = Math.max(order.right, order.left + 2);
+          ctx.strokeStyle = color;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(order.left, y);
+          ctx.lineTo(right, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (order.filled) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(right, y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
       }
       const top = OVERLAY_INSET_Y;
@@ -591,6 +631,7 @@ class PositionOverlayRenderer {
 class PositionOverlayPaneView {
   private items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[] = [];
   private bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[] = [];
+  private limitItems: { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[] = [];
   constructor(private readonly source: PositionOverlayPrimitive) {}
   update() {
     const chart = this.source.chart;
@@ -598,10 +639,32 @@ class PositionOverlayPaneView {
     if (!chart) {
       this.items = [];
       this.bandItems = [];
+      this.limitItems = [];
       return;
     }
     const timeScale = chart.timeScale();
     const series = this.source.series;
+    this.limitItems =
+      series && typeof series.priceToCoordinate === 'function'
+        ? (this.source.limitOrders
+            .map((order) => {
+              const x1 = timeScale.timeToCoordinate(order.fromTime);
+              const x2 = timeScale.timeToCoordinate(order.toTime);
+              const y = series.priceToCoordinate(order.price);
+              if (
+                x1 === null ||
+                x2 === null ||
+                y === null ||
+                !Number.isFinite(x1) ||
+                !Number.isFinite(x2) ||
+                !Number.isFinite(y)
+              ) {
+                return null;
+              }
+              return { left: Math.min(x1, x2), right: Math.max(x1, x2), y, side: order.side, filled: order.filled };
+            })
+            .filter(Boolean) as { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[])
+        : [];
     this.bandItems =
       series && typeof series.priceToCoordinate === 'function'
         ? (this.source.bands
@@ -644,7 +707,7 @@ class PositionOverlayPaneView {
       .filter(Boolean) as { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[];
   }
   renderer() {
-    return new PositionOverlayRenderer(this.items, this.bandItems, this.source.theme);
+    return new PositionOverlayRenderer(this.items, this.bandItems, this.limitItems, this.source.theme);
   }
 }
 
@@ -653,11 +716,16 @@ class PositionOverlayPaneView {
 // a time window, not as another TP/SL-style price level line.
 type CooldownBandItem = { fromTime: number; toTime: number; above: number | null; below: number | null };
 
+// A resting limit's window, candle-snapped: dashed side-colored segment at the
+// limit price; `filled` draws a dot at the segment end (the fill moment).
+type LimitOrderItem = { fromTime: number; toTime: number; price: number; side: 'buy' | 'sell'; filled: boolean };
+
 class PositionOverlayPrimitive {
   chart: any = null;
   series: any = null;
   data: OverlayPrimitiveDatum[] = [];
   bands: CooldownBandItem[] = [];
+  limitOrders: LimitOrderItem[] = [];
   theme: OverlayTheme;
   private requestUpdate: (() => void) | null = null;
   private readonly paneView: PositionOverlayPaneView;
@@ -687,6 +755,10 @@ class PositionOverlayPrimitive {
   }
   setBands(bands: CooldownBandItem[]) {
     this.bands = bands;
+    this.requestUpdate?.();
+  }
+  setLimitOrders(limitOrders: LimitOrderItem[]) {
+    this.limitOrders = limitOrders;
     this.requestUpdate?.();
   }
   setTheme(theme: OverlayTheme) {
@@ -791,6 +863,40 @@ const buildCooldownBandItems = (
   return items;
 };
 
+// Same snap/clamp treatment for resting-limit windows (see buildCooldownBandItems).
+const buildLimitOrderItems = (
+  chartData: { time: number; value: number }[],
+  orders: LimitOrderSegment[],
+): LimitOrderItem[] => {
+  if (!chartData.length || !orders.length) return [];
+  const minTime = chartData[0].time;
+  const maxTime = chartData[chartData.length - 1].time;
+  const candleTimes = chartData.map((c) => c.time);
+  const nearestTime = (target: number) =>
+    candleTimes.reduce(
+      (prev, curr) => (Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev),
+      candleTimes[0],
+    );
+  const items: LimitOrderItem[] = [];
+  for (const order of orders) {
+    const fromRaw = Number(order.fromTime);
+    const toRaw = Number(order.toTime);
+    const price = Number(order.price);
+    if (!Number.isFinite(fromRaw) || !Number.isFinite(toRaw) || toRaw <= fromRaw) continue;
+    if (!Number.isFinite(price) || price <= 0) continue;
+    if (toRaw < minTime || fromRaw > maxTime) continue;
+    if (order.side !== 'buy' && order.side !== 'sell') continue;
+    items.push({
+      fromTime: nearestTime(Math.min(Math.max(fromRaw, minTime), maxTime)),
+      toTime: nearestTime(Math.min(Math.max(toRaw, minTime), maxTime)),
+      price,
+      side: order.side,
+      filled: order.filled === true,
+    });
+  }
+  return items;
+};
+
 export default function ChartPanel(props: ChartPanelProps) {
   const {
     symbol,
@@ -817,6 +923,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
   const [pendingOrders, setPendingOrders] = useState<PendingOrderLine[]>([]);
   const [cooldownBands, setCooldownBands] = useState<CooldownBandSegment[]>([]);
+  const [limitOrderSegments, setLimitOrderSegments] = useState<LimitOrderSegment[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartAttempted, setChartAttempted] = useState(false);
   const [hoveredOverlay, setHoveredOverlay] = useState<PositionOverlay | null>(null);
@@ -882,6 +989,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     setPositionOverlays(nextPositions);
     setPendingOrders(Array.isArray(payload.pendingOrders) ? payload.pendingOrders : []);
     setCooldownBands(Array.isArray(payload.cooldowns) ? payload.cooldowns : []);
+    setLimitOrderSegments(Array.isArray(payload.limitOrders) ? payload.limitOrders : []);
     const openPosition = nextPositions.find((pos) => pos?.status === 'open') ?? null;
     const closedPositions = nextPositions.filter((pos) => pos?.status === 'closed');
     const closedPcts = closedPositions
@@ -926,8 +1034,10 @@ export default function ChartPanel(props: ChartPanelProps) {
       setChartData([]);
       setPositionOverlays([]);
       setCooldownBands([]);
+      setLimitOrderSegments([]);
       overlayPrimitiveRef.current?.setData([]);
       overlayPrimitiveRef.current?.setBands([]);
+      overlayPrimitiveRef.current?.setLimitOrders([]);
       snappedOverlaysRef.current = [];
       pinnedOverlayIdRef.current = null;
       setHoveredOverlay(null);
@@ -1330,6 +1440,11 @@ export default function ChartPanel(props: ChartPanelProps) {
   useEffect(() => {
     overlayPrimitiveRef.current?.setBands(buildCooldownBandItems(chartData, cooldownBands));
   }, [cooldownBands, chartData, chartInitToken]);
+
+  // Resting-limit windows: same feed pattern as the cooldown bands above.
+  useEffect(() => {
+    overlayPrimitiveRef.current?.setLimitOrders(buildLimitOrderItems(chartData, limitOrderSegments));
+  }, [limitOrderSegments, chartData, chartInitToken]);
 
   // Standing exchange-side bracket of the open position: thin horizontal price
   // lines — TP green, SL red. Recreated whenever the overlay payload or the
