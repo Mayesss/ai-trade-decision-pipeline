@@ -450,6 +450,10 @@ export function computeSwingState(
     lastClosedPosition?: LastClosedPosition | null,
     nowMs?: number,
     capitalMarketContext?: CapitalMarketContextForPrompt | null,
+    // Set when this evaluation exists because price crossed the wake band the
+    // model attached to its previous flat HOLD cooldown (the caller bypasses
+    // the flat quality gates for these ticks). Surfaces as market.cooldown_wake.
+    cooldownWake?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null } | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -1076,6 +1080,17 @@ export function computeSwingState(
     if (btc_context && typeof btc_context === 'object') {
         market.btc_context = btc_context;
     }
+    if (cooldownWake && Number.isFinite(cooldownWake.level)) {
+        const wakeNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        market.cooldown_wake = {
+            crossed: cooldownWake.crossed,
+            level: cooldownWake.level,
+            set_minutes_ago:
+                cooldownWake.setAtMs && cooldownWake.setAtMs > 0
+                    ? Math.max(0, Math.round((wakeNowMs - cooldownWake.setAtMs) / 60_000))
+                    : null,
+        };
+    }
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
@@ -1213,6 +1228,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
 - Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme (see session liquidity offense) — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
 - Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). The cooldown never mutes in-position management or resting-limit re-evaluations — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
+- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago). Treat it as the breakout/breakdown check you scheduled, not a routine scan: judge whether the move through that level is real (acceptance, structure break) or a sweep/fake-out, and act on that read. If the move is real but the wave position is already poor, a pullback limit at the broken level's retest is the natural tool — you asked to be woken precisely so you would not have to chase later. Do not re-set a cooldown with the same band unless you explicitly judge the cross a fake-out.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.
 

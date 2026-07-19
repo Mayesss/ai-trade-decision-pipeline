@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { sanitizeHoldCooldown, HOLD_COOLDOWN_MAX_MINUTES, HOLD_COOLDOWN_MIN_MINUTES } from './ai';
+import { computeSwingState, sanitizeHoldCooldown, HOLD_COOLDOWN_MAX_MINUTES, HOLD_COOLDOWN_MIN_MINUTES } from './ai';
 
 const base = { action: 'HOLD', positionOpen: false, price: 100 };
 
@@ -50,4 +50,65 @@ test('sanitizeHoldCooldown: unknown price drops bands but keeps the cooldown', (
     assert.equal(out.wakeAbove, null);
     assert.equal(out.wakeBelow, null);
     assert.ok(out.notes.includes('wake_bands_dropped_price_unknown'));
+});
+
+// ---- wake-band trigger context (market.cooldown_wake) ----
+
+const NOW_MS = 1_750_000_000_000;
+const wakeBundle = { ticker: [{ lastPr: '100', change24h: '0' }], candles: [] };
+const wakeIndicators: any = {
+    micro: '',
+    macro: '',
+    primary: { summary: '', timeframe: '4h' },
+    context: { summary: '', timeframe: '1d' },
+    microTimeFrame: '1h',
+    macroTimeFrame: '1d',
+    sr: {},
+    rawCandles: {},
+};
+const wakeMomentum: any = { microExtensionInAtr: 0, info: { microEntryOk: false } };
+
+const buildWakeUserPrompt = (cooldownWake: any) => {
+    const state = computeSwingState(
+        'BTCUSDT',
+        '4h',
+        wakeBundle,
+        {},
+        'none',
+        null,
+        null,
+        wakeIndicators,
+        {},
+        null,
+        wakeMomentum,
+        [],
+        null,
+        true,
+        5,
+        undefined,
+        'crypto',
+        'bitget',
+        null,
+        NOW_MS,
+        null,
+        cooldownWake,
+    );
+    return state.assemble(null, []).user;
+};
+
+test('computeSwingState: a crossed wake band surfaces as market.cooldown_wake with its age', () => {
+    const user = buildWakeUserPrompt({ crossed: 'above', level: 105, setAtMs: NOW_MS - 76 * 60_000 });
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    assert.deepEqual(market.cooldown_wake, { crossed: 'above', level: 105, set_minutes_ago: 76 });
+});
+
+test('computeSwingState: unknown set time yields set_minutes_ago null', () => {
+    const user = buildWakeUserPrompt({ crossed: 'below', level: 95, setAtMs: null });
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    assert.deepEqual(market.cooldown_wake, { crossed: 'below', level: 95, set_minutes_ago: null });
+});
+
+test('computeSwingState: no wake trigger → market.cooldown_wake absent', () => {
+    const user = buildWakeUserPrompt(null);
+    assert.ok(!user.includes('cooldown_wake"'));
 });
