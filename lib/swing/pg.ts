@@ -953,8 +953,10 @@ export async function insertSwingLesson(input: {
     return id == null ? null : Number(id);
 }
 
-// Curator "merge": the existing row absorbs the new evidence — reformulated
-// text, updated confidence, support_count+1, source id appended.
+// Reinforce-merge: the existing row absorbs the new evidence — reformulated
+// text, updated confidence, source id appended. Idempotent per source
+// post-mortem: a re-run (force regenerate) that reinforces the same lesson
+// again updates text/confidence but does NOT double-count support.
 export async function mergeSwingLesson(input: {
     id: number;
     lesson: string;
@@ -963,13 +965,18 @@ export async function mergeSwingLesson(input: {
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     await ensureSwingSchema();
+    const sourceJson = JSON.stringify([Math.floor(input.sourcePostmortemId)]);
     const db = swingPg();
     await db.$executeRaw(sql`
         UPDATE swing.lessons
         SET lesson = ${input.lesson},
             confidence = ${Math.max(0, Math.min(1, input.confidence))},
-            support_count = support_count + 1,
-            source_postmortem_ids = source_postmortem_ids || ${JSON.stringify([input.sourcePostmortemId])}::jsonb
+            support_count = support_count
+                + CASE WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN 0 ELSE 1 END,
+            source_postmortem_ids = CASE
+                WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN source_postmortem_ids
+                ELSE source_postmortem_ids || ${sourceJson}::jsonb
+            END
         WHERE id = ${Math.floor(input.id)} AND status = 'active';
     `);
 }

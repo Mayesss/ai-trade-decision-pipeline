@@ -9,14 +9,18 @@
 // code feeds them back to the trading AI yet.
 import { callSwingDecision } from '../aiProvider';
 import type { PositionWindow } from '../analytics';
-import { curateLessonFromPostmortem } from './lessons';
+import type { AnalysisPlatform } from '../platform';
+import { resolveSwingCategory } from './category';
+import { applyLessonDecision, resolveLessonDecision } from './lessons';
 import {
     completeSwingPostmortem,
     enqueueSwingPostmortem,
     failSwingPostmortem,
+    loadActiveSwingLessons,
     loadSwingDecisionWindow,
     loadSwingTickLog,
     type SwingDecisionFullRow,
+    type SwingLessonRow,
     type SwingPostmortemRow,
     type SwingPostmortemTrigger,
     type SwingTickLogRow,
@@ -167,6 +171,9 @@ export type PostmortemDossier = {
     // Which decisions got their full prompt shown to the analyst (by id) —
     // the UI can fetch the texts from swing.decisions on demand.
     pivotal_decision_ids: number[];
+    // The active lesson-library slice shown to the analyst (dedup/adherence
+    // context) — provenance for reinforce decisions.
+    lessons_shown?: Array<{ id: number; scope: string; lesson: string }>;
 };
 
 const numOrNull = (v: unknown): number | null => {
@@ -285,6 +292,9 @@ export function buildPostmortemDossier(input: {
     toMs: number;
     decisions: SwingDecisionFullRow[];
     ticks: SwingTickLogRow[];
+    // Active lesson library covering this instrument — shown to the analyst
+    // so it can judge adherence and never emit duplicates.
+    library?: SwingLessonRow[];
 }): { dossier: PostmortemDossier; aiUserMessage: string } {
     const calls = input.decisions.filter((d) => !isSkipDecision(d) && !d.dryRun);
     const decisionSkips = input.decisions.filter((d) => isSkipDecision(d) && !d.dryRun).map(digestDecisionSkip);
@@ -300,6 +310,8 @@ export function buildPostmortemDossier(input: {
         pivotalRanked.find((d) => typeof d.prompt?.system === 'string' && d.prompt.system)?.prompt?.system ??
         calls.find((d) => typeof d.prompt?.system === 'string' && d.prompt.system)?.prompt?.system ??
         null;
+
+    const lessonsShown = (input.library ?? []).map((l) => ({ id: l.id, scope: l.scope, lesson: l.lesson }));
 
     // Shrink the full-prompt set until the assembled message fits the budget.
     for (const maxFull of [12, 6, 3, 1, 0]) {
@@ -317,6 +329,7 @@ export function buildPostmortemDossier(input: {
             ai_calls: callDigests,
             skipped_ticks: skips,
             pivotal_decision_ids: pivotal.map((d) => d.id),
+            ...(lessonsShown.length ? { lessons_shown: lessonsShown } : {}),
         };
         const aiUserMessage = renderPostmortemUserMessage(dossier, pivotal, systemPrompt);
         if (aiUserMessage.length <= MAX_AI_USER_CHARS || maxFull === 0) {
@@ -342,6 +355,12 @@ function renderPostmortemUserMessage(
                 : ''
         }`,
     );
+    if (dossier.lessons_shown?.length) {
+        parts.push(
+            '## ACTIVE LESSON LIBRARY (already injected into the trading AI\'s prompts for this instrument — check adherence, never duplicate)',
+        );
+        parts.push(JSON.stringify(dossier.lessons_shown, null, 1));
+    }
     parts.push('## AI CALL TIMELINE (chronological digests; tokens/model per call)');
     parts.push(JSON.stringify(dossier.ai_calls, null, 1));
     parts.push('## SKIPPED TICKS (gates blocked the AI; stage/reason + gate measurements)');
@@ -380,6 +399,9 @@ export const POSTMORTEM_SCHEMA = {
             'missed_signals',
             'gate_impact',
             'suggestions',
+            'lesson_adherence',
+            'lesson_action',
+            'reinforce_lesson_id',
             'lesson',
             'lesson_scope',
         ],
@@ -406,8 +428,17 @@ export const POSTMORTEM_SCHEMA = {
             },
             gate_impact: { type: ['string', 'null'] },
             suggestions: { type: 'array', items: { type: 'string' } },
-            lesson: { type: 'string' },
-            lesson_scope: { type: 'string', enum: ['symbol', 'asset_class', 'global'] },
+            // Was an ACTIVE LESSON LIBRARY entry applicable to this trade, and
+            // was it followed or violated? null = no applicable lesson existed.
+            lesson_adherence: { type: ['string', 'null'] },
+            // 'new' = the library lacks this failure mode; 'reinforce' = an
+            // existing lesson applied (reinforce_lesson_id, optional reformulated
+            // text in `lesson`); 'none' = nothing to teach (bad luck / already
+            // covered with nothing to add).
+            lesson_action: { type: 'string', enum: ['new', 'reinforce', 'none'] },
+            reinforce_lesson_id: { type: ['integer', 'null'] },
+            lesson: { type: ['string', 'null'] },
+            lesson_scope: { type: ['string', 'null'] },
         },
     },
 } as const;
@@ -424,8 +455,12 @@ Rules:
 - Judge entry mechanics: market vs pullback limit, and whether a resting limit filled into momentum against the position (adverse selection).
 - what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
-- lesson: 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It may later be shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary.
-- lesson_scope: the audience the lesson applies to — 'symbol' (a behavioral quirk of this one instrument), 'asset_class' (applies to this whole class, e.g. all crypto or all commodities), 'global' (sound for any instrument). Entry-mechanics and structure lessons usually generalize; pick 'symbol' only when the failure genuinely hinged on this instrument's specific behavior.
+- ACTIVE LESSON LIBRARY (section in the dossier, when present): lessons distilled from PREVIOUS post-mortems that are already injected into the trading AI's prompts for this instrument. Handle it in three steps:
+  1. Adherence: if a library lesson applied to this trade, state in lesson_adherence whether the trading AI FOLLOWED it or VIOLATED it (cite the tick). A violated lesson is an adherence failure, not a missing lesson. No applicable lesson → lesson_adherence null.
+  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'.
+  3. Losing while following the process and the library is often just variance — do not invent a lesson to have something to say. A library bloated with near-duplicates and noise dilutes the trading AI's attention.
+- lesson (when lesson_action='new' or a reformulation on 'reinforce'): 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It is shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary.
+- lesson_scope (with a lesson; null otherwise): the audience — 'symbol' (a behavioral quirk of this one instrument), 'asset_class' (applies to this whole class, e.g. all crypto or all commodities), 'global' (sound for any instrument). Entry-mechanics and structure lessons usually generalize; pick 'symbol' only when the failure genuinely hinged on this instrument's specific behavior.
 
 Respond with strict JSON per the provided schema.`;
 
@@ -445,9 +480,16 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
         const entryMs = row.entryTsMs ?? exitMs - POSTMORTEM_MAX_LIFETIME_MS;
         const fromMs = entryMs - POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS;
         const toMs = exitMs + POSTMORTEM_TAIL_AFTER_EXIT_MS;
-        const [decisions, ticks] = await Promise.all([
+        const assetClass = resolveSwingCategory({
+            symbol: row.symbol,
+            platform: row.platform as AnalysisPlatform,
+        });
+        const [decisions, ticks, library] = await Promise.all([
             loadSwingDecisionWindow({ symbol: row.symbol, platform: row.platform, fromMs, toMs }),
             loadSwingTickLog({ symbol: row.symbol, platform: row.platform, fromMs, toMs, limit: 3000 }),
+            // Library slice shown to the analyst: adherence check + dedup —
+            // fails open to [] (the analyst then simply can't reinforce).
+            loadActiveSwingLessons({ symbol: row.symbol, assetClass }).catch(() => [] as SwingLessonRow[]),
         ]);
         if (!decisions.length && !ticks.length) {
             throw new Error(`no recorded ticks/decisions in window ${new Date(fromMs).toISOString()}..${new Date(toMs).toISOString()}`);
@@ -464,34 +506,36 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
             pnl_pct: row.pnlPct,
             pnl_net: row.pnlNet,
         };
-        const { dossier, aiUserMessage } = buildPostmortemDossier({ position, fromMs, toMs, decisions, ticks });
+        const { dossier, aiUserMessage } = buildPostmortemDossier({ position, fromMs, toMs, decisions, ticks, library });
         const { json: report, model, usage } = await callSwingDecision({
             system: POSTMORTEM_SYSTEM_PROMPT,
             user: aiUserMessage,
             schema: POSTMORTEM_SCHEMA as unknown as { name: string; schema: Record<string, unknown> },
         });
         const verdict = typeof report?.verdict === 'string' ? report.verdict : null;
-        const lesson = typeof report?.lesson === 'string' ? report.lesson.trim().slice(0, 300) : null;
-        const lessonScope = ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope)
-            ? String(report.lesson_scope)
-            : null;
-        if (!verdict || !lesson) throw new Error('postmortem report missing verdict/lesson');
+        if (!verdict) throw new Error('postmortem report missing verdict');
+        // The analyst is library-aware: resolve its lesson_action (new /
+        // reinforce / none) against the slice it was actually shown. 'none'
+        // is a legitimate outcome — bad luck or an already-covered failure
+        // teaches nothing new.
+        const decision = resolveLessonDecision(report, library);
+        // Row keeps the per-trade record: the (re)formulated text on new or
+        // reinforce; null when there was nothing to teach.
+        const lesson = decision.kind === 'none' ? null : decision.text;
+        const lessonScope =
+            lesson && ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope)
+                ? String(report.lesson_scope)
+                : null;
         await completeSwingPostmortem(row.id, { verdict, lesson, lessonScope, report, dossier, model, usage });
-        // Curation (phase 3): fold the lesson into the library — the curator
-        // decides add / merge-reformulate / discard and finalizes the scope.
-        // Best-effort: a curation failure never fails the post-mortem.
-        const curation = await curateLessonFromPostmortem({
-            ...row,
-            status: 'succeeded',
-            verdict,
-            lesson,
-            lessonScope,
-            report,
-            dossier,
-            model,
-            usage,
+        // Library write AFTER the row is safe — apply is best-effort anyway.
+        const applied = await applyLessonDecision(decision, {
+            postmortemId: row.id,
+            symbol: row.symbol,
+            assetClass,
         });
-        console.log(`[postmortem] #${row.id} lesson curation: ${JSON.stringify(curation)}`);
+        console.log(
+            `[postmortem] #${row.id} lesson decision: ${JSON.stringify({ kind: decision.kind, ...applied })}`,
+        );
         return { id: row.id, status: 'succeeded', verdict, lesson };
     } catch (err: any) {
         const message = err?.message || String(err);

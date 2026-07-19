@@ -1,28 +1,25 @@
 // Lesson library (phase 3). Two halves:
 //
-// CURATION (write side): after a post-mortem succeeds, its 1-2 line lesson is
-// NOT appended raw — a curator AI call sees the library slice relevant to the
-// instrument and decides: add a genuinely new lesson, merge-reformulate it
-// into an existing one (that row's support grows), or discard a duplicate /
-// non-generalizable one. The curator also finalizes the audience scope
-// (symbol | asset_class | global; the post-mortem analyst's suggestion is a
-// hint, not a verdict).
+// WRITE side: the post-mortem analyst itself is library-aware — the dossier
+// shows it the active lessons already covering the instrument, and its report
+// carries a lesson_action: 'new' (a failure mode the library doesn't cover),
+// 'reinforce' (an existing lesson applied — support grows, optionally
+// reformulated to absorb the new case), or 'none' (bad luck / already covered
+// with nothing to add — losing WITH the process is not a lesson). This module
+// resolves that decision against the library (pure) and applies it (DB); no
+// separate curator AI call.
 //
 // INJECTION (read side): flat/managed ticks load the active lessons for
 // (symbol ∪ its asset class ∪ global), confidence-sorted, capped at
 // MAX_PROMPT_LESSONS, and render them as a cautionary block in the USER
 // prompt (the cached system prefix stays byte-stable). SWING_LESSONS_MODE=off
-// disables injection; curation keeps building the library regardless.
-import { callSwingDecision } from '../aiProvider';
-import type { AnalysisPlatform } from '../platform';
-import { resolveSwingCategory } from './category';
+// disables injection; the library keeps building regardless.
 import {
     insertSwingLesson,
     loadActiveSwingLessons,
     mergeSwingLesson,
     type SwingLessonRow,
     type SwingLessonScope,
-    type SwingPostmortemRow,
 } from './pg';
 
 export const MAX_PROMPT_LESSONS = 5;
@@ -66,129 +63,90 @@ export async function loadPromptLessons(symbol: string, assetClass: string | nul
     }
 }
 
-export const LESSON_CURATION_SCHEMA = {
-    name: 'swing_lesson_curation',
-    schema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['action', 'scope', 'target_lesson_id', 'lesson', 'confidence', 'rationale'],
-        properties: {
-            action: { type: 'string', enum: ['add', 'merge', 'discard'] },
-            scope: { type: 'string', enum: ['symbol', 'asset_class', 'global'] },
-            // Required (null) so strict structured-output accepts the schema;
-            // an id only makes sense on merge.
-            target_lesson_id: { type: ['integer', 'null'] },
-            lesson: { type: ['string', 'null'] },
-            confidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
-            rationale: { type: 'string' },
-        },
+// ---------------------------------------------------------------------------
+// Applying the analyst's lesson decision (report.lesson_action)
+// ---------------------------------------------------------------------------
+export type LessonDecision =
+    | { kind: 'add'; scope: SwingLessonScope; text: string; confidence: number }
+    | { kind: 'merge'; targetId: number; text: string; confidence: number }
+    | { kind: 'none'; reason: string };
+
+// Pure resolution of the post-mortem report's lesson fields against the
+// library slice that was SHOWN to the analyst (tested). Defensive on model
+// output: a reinforce pointing at an id that was never shown degrades to add
+// (losing the lesson entirely is worse than a rare near-duplicate); a
+// reinforce without any usable text keeps the existing row's wording.
+export function resolveLessonDecision(
+    report: {
+        lesson?: string | null;
+        lesson_action?: string | null;
+        lesson_scope?: string | null;
+        reinforce_lesson_id?: number | null;
+        confidence?: number | null;
     },
-} as const;
+    shownLessons: SwingLessonRow[],
+): LessonDecision {
+    const action = String(report?.lesson_action || '').toLowerCase();
+    const text = typeof report?.lesson === 'string' && report.lesson.trim() ? report.lesson.trim().slice(0, 300) : null;
+    const scope: SwingLessonScope = ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope as string)
+        ? (report!.lesson_scope as SwingLessonScope)
+        : 'symbol';
+    const confidence = Number.isFinite(Number(report?.confidence))
+        ? Math.max(0, Math.min(1, Number(report?.confidence)))
+        : 0.5;
 
-const LESSON_CURATION_SYSTEM_PROMPT = `You curate a small library of trading lessons for an automated swing-trading AI. Each lesson is a 1-2 sentence imperative instruction (max ~220 chars) distilled from a post-mortem of a losing trade. The library is injected into future trading prompts, so it must stay SMALL, NON-REDUNDANT and GENERALIZABLE — a bloated or repetitive library dilutes attention and is worse than none.
+    if (action === 'none' || (!text && action !== 'reinforce')) {
+        return { kind: 'none', reason: action === 'none' ? 'analyst_none' : 'no_lesson_text' };
+    }
+    if (action === 'reinforce') {
+        const target = shownLessons.find((l) => l.id === Number(report?.reinforce_lesson_id));
+        if (target) {
+            return {
+                kind: 'merge',
+                targetId: target.id,
+                text: text ?? target.lesson,
+                // Reinforcement never weakens a lesson that just proved itself.
+                confidence: Math.max(confidence, target.confidence),
+            };
+        }
+        if (text) return { kind: 'add', scope, text, confidence };
+        return { kind: 'none', reason: 'reinforce_unresolvable' };
+    }
+    if (action === 'new' && text) {
+        return { kind: 'add', scope, text, confidence };
+    }
+    return { kind: 'none', reason: `unusable_action_${action || 'empty'}` };
+}
 
-You receive ONE candidate lesson (with its post-mortem verdict, confidence and suggested audience scope) plus the existing active lessons already covering this instrument. Decide:
-- "merge": the candidate substantially overlaps an existing lesson → set target_lesson_id to that lesson and write the REFORMULATED text that covers both (keep it ≤220 chars, imperative, no symbol-specific price levels). Set confidence to your updated belief given the additional supporting case (usually equal or higher than the existing row's).
-- "add": the candidate teaches something the library does not already say → write the final text (you may tighten the wording) and its confidence (start from the post-mortem's confidence).
-- "discard": the candidate is redundant AND adds no strength, is too situational to ever generalize, or is not actionable. lesson/confidence may be null.
-- scope: who should see this lesson — "symbol" (a quirk of this one instrument), "asset_class" (applies to this class, e.g. all crypto), "global" (any instrument). Most structural/entry-mechanics lessons generalize: prefer asset_class or global unless the lesson genuinely hinges on this instrument's behavior. On merge, scope applies to the merged row's audience and normally keeps the existing row's scope unless the new case proves it generalizes wider.
-
-Respond with strict JSON per the schema.`;
-
-export type LessonCurationResult =
-    | { action: 'add'; lessonId: number | null }
-    | { action: 'merge'; lessonId: number }
-    | { action: 'discard' }
-    | { action: 'skipped'; reason: string };
-
-// Best-effort — a curation failure never fails the post-mortem it followed.
-export async function curateLessonFromPostmortem(pm: SwingPostmortemRow): Promise<LessonCurationResult> {
+// DB half — best-effort; a library write failure never fails the post-mortem.
+export async function applyLessonDecision(
+    decision: LessonDecision,
+    ctx: { postmortemId: number; symbol: string; assetClass: string | null },
+): Promise<{ applied: LessonDecision['kind']; lessonId?: number | null }> {
     try {
-        if (!pm.lesson || !pm.verdict) return { action: 'skipped', reason: 'no_lesson' };
-        const assetClass = resolveSwingCategory({
-            symbol: pm.symbol,
-            platform: pm.platform as AnalysisPlatform,
-        });
-        const existing = await loadActiveSwingLessons({ symbol: pm.symbol, assetClass });
-        const user = [
-            `INSTRUMENT: ${pm.symbol} (platform=${pm.platform}, asset_class=${assetClass ?? 'unknown'})`,
-            '',
-            'CANDIDATE LESSON (from a new post-mortem):',
-            JSON.stringify(
-                {
-                    lesson: pm.lesson,
-                    verdict: pm.verdict,
-                    confidence: pm.report?.confidence ?? null,
-                    suggested_scope: pm.lessonScope ?? null,
-                    pnl_pct: pm.pnlPct,
-                },
-                null,
-                1,
-            ),
-            '',
-            `EXISTING ACTIVE LESSONS covering this instrument (${existing.length}):`,
-            JSON.stringify(
-                existing.map((l) => ({
-                    id: l.id,
-                    scope: l.scope,
-                    lesson: l.lesson,
-                    confidence: l.confidence,
-                    support_count: l.supportCount,
-                })),
-                null,
-                1,
-            ),
-        ].join('\n');
-
-        const { json } = await callSwingDecision({
-            system: LESSON_CURATION_SYSTEM_PROMPT,
-            user,
-            schema: LESSON_CURATION_SCHEMA as unknown as { name: string; schema: Record<string, unknown> },
-        });
-        const action = String(json?.action || '');
-        const scope: SwingLessonScope = ['symbol', 'asset_class', 'global'].includes(json?.scope)
-            ? json.scope
-            : (pm.lessonScope as SwingLessonScope) || 'symbol';
-        const text = typeof json?.lesson === 'string' ? json.lesson.trim().slice(0, 300) : null;
-        const confidence = Number.isFinite(Number(json?.confidence))
-            ? Math.max(0, Math.min(1, Number(json.confidence)))
-            : Number(pm.report?.confidence) || 0.5;
-
-        if (action === 'discard') return { action: 'discard' };
-        if (action === 'merge') {
-            const targetId = Number(json?.target_lesson_id);
-            const target = existing.find((l) => l.id === targetId);
-            if (!target || !text) {
-                // Hallucinated id / missing text degrades to add — losing the
-                // lesson entirely is worse than a rare near-duplicate.
-                if (!text) return { action: 'skipped', reason: 'merge_without_text' };
-                const id = await insertSwingLesson({
-                    scope,
-                    symbol: pm.symbol,
-                    assetClass,
-                    lesson: text,
-                    confidence,
-                    sourcePostmortemId: pm.id,
-                });
-                return { action: 'add', lessonId: id };
-            }
-            await mergeSwingLesson({ id: target.id, lesson: text, confidence, sourcePostmortemId: pm.id });
-            return { action: 'merge', lessonId: target.id };
-        }
-        if (action === 'add' && text) {
+        if (decision.kind === 'add') {
             const id = await insertSwingLesson({
-                scope,
-                symbol: pm.symbol,
-                assetClass,
-                lesson: text,
-                confidence,
-                sourcePostmortemId: pm.id,
+                scope: decision.scope,
+                symbol: ctx.symbol,
+                assetClass: ctx.assetClass,
+                lesson: decision.text,
+                confidence: decision.confidence,
+                sourcePostmortemId: ctx.postmortemId,
             });
-            return { action: 'add', lessonId: id };
+            return { applied: 'add', lessonId: id };
         }
-        return { action: 'skipped', reason: `unusable_curation_${action || 'empty'}` };
-    } catch (err: any) {
-        console.warn(`lesson curation failed for postmortem #${pm.id}:`, err);
-        return { action: 'skipped', reason: err?.message || String(err) };
+        if (decision.kind === 'merge') {
+            await mergeSwingLesson({
+                id: decision.targetId,
+                lesson: decision.text,
+                confidence: decision.confidence,
+                sourcePostmortemId: ctx.postmortemId,
+            });
+            return { applied: 'merge', lessonId: decision.targetId };
+        }
+        return { applied: 'none' };
+    } catch (err) {
+        console.warn(`lesson apply failed for postmortem #${ctx.postmortemId}:`, err);
+        return { applied: 'none' };
     }
 }

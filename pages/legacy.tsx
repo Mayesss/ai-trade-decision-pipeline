@@ -780,6 +780,8 @@ type PostmortemUi = {
     }>;
     gate_impact?: string | null;
     suggestions?: string[];
+    lesson_adherence?: string | null;
+    lesson_action?: string;
   } | null;
   dossier: Record<string, any> | null;
   model: string | null;
@@ -9228,6 +9230,16 @@ export default function Home() {
                             <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm italic text-slate-800">
                               {selectedPostmortem.lesson}
                             </p>
+                          ) : selectedPostmortem.status === "succeeded" ? (
+                            // Deliberate no-lesson outcome: bad luck, or the
+                            // library already covers this failure mode.
+                            <p className="mt-2 text-sm text-slate-500">
+                              No new lesson —{" "}
+                              {selectedPostmortem.report?.lesson_action ===
+                              "reinforce"
+                                ? "an existing library lesson covers this case (reinforced)."
+                                : "nothing generalizable to teach (see analysis)."}
+                            </p>
                           ) : selectedPostmortem.status === "failed" ? (
                             <p className="mt-2 text-sm text-rose-600">
                               Analysis failed:{" "}
@@ -9265,6 +9277,20 @@ export default function Home() {
                                         {
                                           selectedPostmortem.report
                                             .timeline_analysis
+                                        }
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report
+                                    .lesson_adherence ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Lesson adherence
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {
+                                          selectedPostmortem.report
+                                            .lesson_adherence
                                         }
                                       </p>
                                     </div>

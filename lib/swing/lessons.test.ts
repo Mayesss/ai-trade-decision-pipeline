@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { SwingLessonRow } from './pg';
-import { MAX_PROMPT_LESSONS, selectPromptLessons } from './lessons';
+import { MAX_PROMPT_LESSONS, resolveLessonDecision, selectPromptLessons } from './lessons';
 
 const row = (extra: Partial<SwingLessonRow>): SwingLessonRow => ({
     id: 1,
@@ -51,4 +51,46 @@ test('selectPromptLessons: carries scope for the [scope] prompt tag', () => {
         row({ id: 1, scope: 'symbol', symbol: 'ETHUSDT', lesson: 'Symbol quirk.' }),
     ]);
     assert.deepEqual(picked, [{ scope: 'symbol', lesson: 'Symbol quirk.' }]);
+});
+
+test('resolveLessonDecision: new lesson with text → add with scope/confidence', () => {
+    const d = resolveLessonDecision(
+        { lesson_action: 'new', lesson: 'Do X.', lesson_scope: 'asset_class', confidence: 0.7 },
+        [],
+    );
+    assert.deepEqual(d, { kind: 'add', scope: 'asset_class', text: 'Do X.', confidence: 0.7 });
+});
+
+test('resolveLessonDecision: reinforce with valid id merges; confidence never drops', () => {
+    const shown = [row({ id: 7, lesson: 'Existing wording.', confidence: 0.8 })];
+    const withText = resolveLessonDecision(
+        { lesson_action: 'reinforce', reinforce_lesson_id: 7, lesson: 'Reworded.', confidence: 0.6 },
+        shown,
+    );
+    assert.deepEqual(withText, { kind: 'merge', targetId: 7, text: 'Reworded.', confidence: 0.8 });
+    const withoutText = resolveLessonDecision(
+        { lesson_action: 'reinforce', reinforce_lesson_id: 7, lesson: null, confidence: 0.9 },
+        shown,
+    );
+    assert.deepEqual(withoutText, { kind: 'merge', targetId: 7, text: 'Existing wording.', confidence: 0.9 });
+});
+
+test('resolveLessonDecision: reinforce with hallucinated id degrades to add (text) or none (no text)', () => {
+    const withText = resolveLessonDecision(
+        { lesson_action: 'reinforce', reinforce_lesson_id: 999, lesson: 'Do Y.', lesson_scope: 'global', confidence: 0.5 },
+        [row({ id: 7 })],
+    );
+    assert.equal(withText.kind, 'add');
+    const withoutText = resolveLessonDecision(
+        { lesson_action: 'reinforce', reinforce_lesson_id: 999, lesson: null },
+        [row({ id: 7 })],
+    );
+    assert.equal(withoutText.kind, 'none');
+});
+
+test('resolveLessonDecision: none / missing text / bad scope defaults', () => {
+    assert.equal(resolveLessonDecision({ lesson_action: 'none', lesson: 'ignored' }, []).kind, 'none');
+    assert.equal(resolveLessonDecision({ lesson_action: 'new', lesson: '   ' }, []).kind, 'none');
+    const badScope = resolveLessonDecision({ lesson_action: 'new', lesson: 'Do Z.', lesson_scope: 'universe' }, []);
+    assert.deepEqual(badScope, { kind: 'add', scope: 'symbol', text: 'Do Z.', confidence: 0.5 });
 });
