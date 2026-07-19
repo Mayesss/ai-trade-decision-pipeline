@@ -73,6 +73,7 @@ import {
     endSwingAiThread,
     getSwingAiCooldown,
     getSwingAiThread,
+    insertSwingTickLog,
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
     upsertSwingAiCooldown,
@@ -373,6 +374,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // dropped when the response ends first, which erased timeline dots.
         // recordSwingLastScan never throws, so this can't fail the tick.
         if (automationCron) await recordSwingLastScan(platform, symbol);
+        const tickCadence = automationCron ? (quarterTick ? 'quarter' : 'hourly') : 'manual';
+        // Durable per-tick outcome (swing.tick_log): EVERY tick that ends —
+        // gate skip or real AI call — leaves one Postgres row with the stage,
+        // reason and gate measurements. Quarter-tick and cooldown skips never
+        // reach swing.decisions and the KV scan-tick ring buffer only holds
+        // ~2 days, so this is what lets a post-loss post-mortem reconstruct
+        // the full tick series around a trade. kvMarker additionally stages
+        // the skip on the KV last-scan marker (what the dashboard timeline
+        // reads today); call sites keep their existing KV behavior. Both
+        // writes are best-effort and never fail the tick.
+        const recordTickOutcome = async (info: {
+            kind: 'skip' | 'ai_call';
+            stage: string;
+            reason?: string;
+            gates?: Record<string, any> | null;
+            metrics?: Record<string, any> | null;
+            kvMarker?: boolean;
+        }) => {
+            if (info.kvMarker !== false) {
+                await recordSwingLastScan(platform, symbol, { stage: info.stage, reason: info.reason });
+            }
+            await insertSwingTickLog({
+                tsMs: Date.now(),
+                symbol,
+                platform,
+                kind: info.kind,
+                stage: info.stage,
+                reason: info.reason ?? null,
+                cadence: tickCadence,
+                dryRun,
+                gates: info.gates ?? null,
+                metrics: info.metrics ?? null,
+            });
+        };
         const persistPreAiSkip = async (params: {
             stage: string;
             decision: Record<string, any>;
@@ -382,19 +417,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             usedTape?: boolean;
             snapshot?: Record<string, any>;
         }) => {
-            // Quarter ticks don't persist skips: gate short-circuits already get
-            // recorded on the hourly tick, and 3 more identical rows/hour/symbol
-            // would only be noise. The skip stage/reason still lands on the KV
-            // last-scan marker so the UI can show WHY the quarter tick stopped.
-            // Real AI calls (past all gates) always persist.
-            if (quarterTick) {
-                await recordSwingLastScan(platform, symbol, {
-                    stage: params.stage,
-                    reason: typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage,
-                });
-                return;
-            }
             const reason = typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage;
+            await recordTickOutcome({
+                kind: 'skip',
+                stage: params.stage,
+                reason,
+                gates: params.gates ?? null,
+                metrics: params.metrics ?? null,
+                // Quarter ticks stage the skip on the KV marker (the timeline's
+                // only view of them); hourly/manual skips surface via their
+                // decision row below, same as before the tick log existed.
+                kvMarker: quarterTick,
+            });
+            // Quarter ticks don't persist skip DECISION ROWS: gate short-circuits
+            // already get recorded on the hourly tick, and 3 more identical
+            // rows/hour/symbol would only be noise. The durable tick_log row
+            // above still captures them. Real AI calls (past all gates) always
+            // persist.
+            if (quarterTick) return;
             await appendDecisionHistory({
                 timestamp: Date.now(),
                 symbol,
@@ -859,6 +899,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!positionOpen && !quarterTick) {
             const sweep = await sweepPendingEntries();
             if (await pendingEntryFilledMidTick(sweep)) {
+                // No KV marker (never had one — the fill surfaces as a position
+                // next tick); the durable row keeps the post-mortem trail whole.
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'pending_entry_filled',
+                    reason: 'pending_entry_filled_during_ttl_sweep',
+                    kvMarker: false,
+                });
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -882,7 +930,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
             const sweepFailure = classifyPendingEntrySweep(sweep);
             if (sweepFailure) {
-                await recordSwingLastScan(platform, symbol, {
+                await recordTickOutcome({
+                    kind: 'skip',
                     stage: 'pending_entry_sweep_failed',
                     reason: sweepFailure,
                 });
@@ -1029,9 +1078,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'quarter_tick_quiet_position',
                     reason: `in_position_skip_quiet_quarter_tick_move_${moveAtr.toFixed(2)}atr`,
                 };
-                await recordSwingLastScan(platform, symbol, {
+                await recordTickOutcome({
+                    kind: 'skip',
                     stage: 'quiet_position',
                     reason: decision.reason,
+                    metrics: {
+                        moveAtr: Number(moveAtr.toFixed(3)),
+                        thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+                        refPrice,
+                        priceNow,
+                    },
                 });
                 return res.status(200).json({
                     symbol,
@@ -1212,9 +1268,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             summary: 'ai_requested_cooldown',
                             reason: `flat_skip_cooldown_active_${minutesLeft}m_left`,
                         };
-                        await recordSwingLastScan(platform, symbol, {
+                        await recordTickOutcome({
+                            kind: 'skip',
                             stage: 'flat_cooldown',
                             reason: decision.reason,
+                            gates: gatesOut.gates,
+                            metrics: {
+                                ...gatesOut.metrics,
+                                cooldown: { minutesLeft, wakeAbove: cooldown.wakeAbove, wakeBelow: cooldown.wakeBelow },
+                            },
                         });
                         return res.status(200).json({
                             symbol,
@@ -1438,9 +1500,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'reentry_cooldown_quarter_tick',
                     reason: `flat_skip_reentry_cooldown_blocked_${cooldownNow.blockedSide}_${cooldownNow.minutesLeft}min_left`,
                 };
-                await recordSwingLastScan(platform, symbol, {
+                await recordTickOutcome({
+                    kind: 'skip',
                     stage: 'reentry_cooldown',
                     reason: decision.reason,
+                    metrics: { blockedSide: cooldownNow.blockedSide, minutesLeft: cooldownNow.minutesLeft },
                 });
                 return res.status(200).json({
                     symbol,
@@ -1889,9 +1953,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     summary: 'no_new_information',
                     reason: `flat_skip_dedupe_same_setup_${actionability.reason}`,
                 };
-                await recordSwingLastScan(platform, symbol, {
+                await recordTickOutcome({
+                    kind: 'skip',
                     stage: 'flat_dedupe',
                     reason: decision.reason,
+                    gates: gatesOut.gates,
+                    metrics: {
+                        ...gatesOut.metrics,
+                        dedupe: {
+                            ageMin: Number(ageMin.toFixed(1)),
+                            priceMoveAtr: Number(priceMoveAtr.toFixed(3)),
+                            actionabilityReason: actionability.reason,
+                        },
+                    },
                 });
                 return res.status(200).json({
                     symbol,
@@ -1918,6 +1992,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!positionOpen && quarterTick) {
             const sweep = await sweepPendingEntries();
             if (await pendingEntryFilledMidTick(sweep)) {
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'pending_entry_filled',
+                    reason: 'pending_entry_filled_during_supersede_sweep',
+                    kvMarker: false,
+                });
                 return res.status(200).json({
                     symbol,
                     platform,
@@ -1941,9 +2021,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
             const sweepFailure = classifyPendingEntrySweep(sweep);
             if (sweepFailure) {
-                await recordSwingLastScan(platform, symbol, {
+                await recordTickOutcome({
+                    kind: 'skip',
                     stage: 'pending_entry_sweep_failed',
                     reason: sweepFailure,
+                    gates: gatesOut.gates,
+                    metrics: gatesOut.metrics,
                 });
                 return res.status(200).json({
                     symbol,
@@ -2038,6 +2121,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const {
             json: decisionRaw,
             responseId: aiResponseId,
+            provider: aiCallProvider,
+            model: aiCallModel,
+            usage: aiCallUsage,
             appendTurns: aiAppendTurns,
         } = await callSwingDecision({
             system,
@@ -2075,6 +2161,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         (decision as any).response_id = aiResponseId;
         (decision as any).previous_response_id =
             aiThreadProvider === 'claude' ? aiThreadResponseId : chainedPreviousResponseId;
+        // Which provider/model served this call and what it cost (cache activity
+        // included) — rides in ai_decision_json next to response_id, so every
+        // decision row is self-describing for post-mortems and token audits.
+        (decision as any).ai_provider = aiCallProvider;
+        (decision as any).ai_model = aiCallModel;
+        (decision as any).ai_usage = aiCallUsage;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — too far clamps;
@@ -2430,6 +2522,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 micro: microTimeFrame,
                 ...(nanoContext ? { nano: '15m' } : {}),
             },
+        });
+        // Tick-log row for the AI call keeps swing.tick_log a COMPLETE per-tick
+        // series (skips + calls) — the decision row above holds the full detail.
+        // No KV marker: the decision row already surfaces this tick on the UI.
+        await recordTickOutcome({
+            kind: 'ai_call',
+            stage: 'decision',
+            reason: String(decision.action || 'HOLD'),
+            gates: gatesOut.gates,
+            metrics: gatesOut.metrics,
+            kvMarker: false,
         });
         // New decision recorded → bust the dashboard summary cache so the next load
         // reflects it. Best-effort; never blocks the trading path.

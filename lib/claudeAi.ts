@@ -136,6 +136,9 @@ export type ClaudeSwingCallResult = {
     // Message id of THIS call (`msg_...`) — persisted on the decision row, same
     // slot the OpenAI path uses for `resp_...`.
     responseId: string | null;
+    // Model that actually served the call (from the API response, not the
+    // request) — persisted on the decision row for post-mortems.
+    model: string | null;
     // The two turns this call adds to the conversation: the user turn we sent
     // and the assistant response VERBATIM (thinking blocks included — they must
     // be echoed back unchanged when the thread continues on the same model).
@@ -202,6 +205,7 @@ export async function callClaudeSwingDecision(
     return {
         json,
         responseId: typeof response.id === 'string' && response.id ? response.id : null,
+        model: typeof response.model === 'string' && response.model ? response.model : null,
         appendTurns: [userTurn, { role: 'assistant', content: response.content }],
         usage: {
             input_tokens: response.usage.input_tokens,

@@ -40,6 +40,17 @@ export type SwingDecisionCallResult = {
     // Provider id of THIS call (OpenAI `resp_...`, Claude `msg_...`) — persisted
     // on the decision row; chained decisions link through it on the dashboard.
     responseId: string | null;
+    // Which provider/model actually served the call plus its token accounting
+    // (provider-uniform field names) — persisted on the decision row so
+    // post-mortems can reconstruct exactly what ran and what it cost.
+    provider: SwingAiProvider;
+    model: string | null;
+    usage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens: number | null;
+        cache_read_input_tokens: number | null;
+    } | null;
     // Claude only (phase 3): the turns this call appends to the stored
     // transcript — the sent user turn plus the full assistant response content
     // (thinking blocks included, echoed back verbatim on the next tick).
@@ -58,18 +69,18 @@ export async function callSwingDecision(params: {
         // Stateless Messages API: conversation context is the stored transcript
         // (phase 3 persists it; until then in-position ticks run stateless —
         // the prompt's "position adopted mid-life" branch covers that).
-        const { json, responseId, appendTurns } = await callClaudeSwingDecision(
+        const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
             params.system,
             params.user,
             params.schema,
             { transcript: params.thread?.transcript ?? null },
         );
-        return { json, responseId, appendTurns };
+        return { json, responseId, provider, model, usage, appendTurns };
     }
-    const { json, responseId } = await callAIThread(params.system, params.user, params.schema, {
+    const { json, responseId, model, usage } = await callAIThread(params.system, params.user, params.schema, {
         previousResponseId: params.thread?.previousResponseId ?? null,
     });
-    return { json, responseId };
+    return { json, responseId, provider, model, usage };
 }
 
 // Stateless convenience path (forex advisor, evaluations): same provider

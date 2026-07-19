@@ -1997,6 +1997,18 @@ export type AiThreadCallResult = {
     // Responses API id of THIS call (`resp_...`) — persist it and pass it back as
     // `previousResponseId` on the next tick to continue the conversation.
     responseId: string | null;
+    // Model that actually served the call (from the API response, not the
+    // request) — persisted on the decision row for post-mortems.
+    model: string | null;
+    // Token accounting, normalized to the same field names the Claude client
+    // returns so decision rows are provider-uniform. cached input tokens map to
+    // cache_read; the Responses API has no cache-creation notion (null).
+    usage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens: number | null;
+        cache_read_input_tokens: number | null;
+    } | null;
 };
 
 async function readAiErrorDetails(res: Response): Promise<string> {
@@ -2093,8 +2105,21 @@ export async function callAIThread(
         (typeof data?.output_text === 'string' ? data.output_text : '') ||
         '{}';
     const responseId = typeof data?.id === 'string' && data.id ? data.id : null;
+    const model = typeof data?.model === 'string' && data.model ? data.model : AI_MODEL;
+    const rawUsage = data?.usage;
+    const usage =
+        rawUsage && Number.isFinite(Number(rawUsage.input_tokens))
+            ? {
+                  input_tokens: Number(rawUsage.input_tokens),
+                  output_tokens: Number(rawUsage.output_tokens) || 0,
+                  cache_creation_input_tokens: null,
+                  cache_read_input_tokens: Number.isFinite(Number(rawUsage.input_tokens_details?.cached_tokens))
+                      ? Number(rawUsage.input_tokens_details.cached_tokens)
+                      : null,
+              }
+            : null;
     try {
-        return { json: JSON.parse(text), responseId };
+        return { json: JSON.parse(text), responseId, model, usage };
     } catch {
         throw new Error(`AI returned non-JSON content: ${String(text).slice(0, 600)}`);
     }

@@ -197,6 +197,31 @@ async function ensureSwingSchema(): Promise<void> {
               CONSTRAINT ai_cooldowns_key PRIMARY KEY (platform, symbol)
             )`);
 
+        // tick_log: one row per analyze-tick OUTCOME — gate skips (with the
+        // stage/reason and gate measurements) and AI calls alike. Quarter-tick
+        // and cooldown skips never reach swing.decisions and the KV scan-tick
+        // ring buffer only holds ~2 days, so this is the only durable record
+        // from which a post-loss post-mortem can reconstruct the full tick
+        // series around a trade. No prompts here — rows stay small.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.tick_log (
+              id           BIGSERIAL PRIMARY KEY,
+              ts_ms        BIGINT NOT NULL,
+              ts           TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ms / 1000.0)) STORED,
+              symbol       TEXT NOT NULL,
+              platform     TEXT NOT NULL DEFAULT 'bitget',
+              kind         TEXT NOT NULL,
+              stage        TEXT NOT NULL,
+              reason       TEXT,
+              cadence      TEXT,
+              dry_run      BOOLEAN NOT NULL DEFAULT FALSE,
+              gates_json   JSONB,
+              metrics_json JSONB,
+              created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT tick_log_kind_check CHECK (kind IN ('skip', 'ai_call'))
+            )`);
+        await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS tick_log_symbol_platform_time_idx ON swing.tick_log (symbol, platform, ts_ms DESC)`);
+
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
         await db.$executeRaw(sql`
@@ -224,6 +249,102 @@ async function ensureSwingSchema(): Promise<void> {
 
 // Exposed for healthchecks / scripts that want to provision the schema eagerly.
 export { ensureSwingSchema };
+
+// --------------------------------------------------------------------------
+// Tick log (per-tick outcomes: gate skips + AI calls)
+// --------------------------------------------------------------------------
+export type SwingTickLogEntry = {
+    tsMs: number;
+    symbol: string;
+    platform: string;
+    kind: 'skip' | 'ai_call';
+    stage: string;
+    reason?: string | null;
+    cadence?: 'hourly' | 'quarter' | 'manual' | null;
+    dryRun?: boolean;
+    gates?: Record<string, unknown> | null;
+    metrics?: Record<string, unknown> | null;
+};
+
+// Best-effort: never throws into the trading path — a lost row only costs
+// post-mortem completeness, never the tick.
+export async function insertSwingTickLog(entry: SwingTickLogEntry): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    try {
+        await ensureSwingSchema();
+        const db = swingPg();
+        await db.$executeRaw(sql`
+            INSERT INTO swing.tick_log (ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json)
+            VALUES (
+                ${Math.floor(entry.tsMs)}, ${String(entry.symbol || '').toUpperCase()}, ${normalizePlatform(entry.platform)},
+                ${entry.kind}, ${entry.stage}, ${entry.reason ?? null}, ${entry.cadence ?? null}, ${Boolean(entry.dryRun)},
+                ${entry.gates ? JSON.stringify(entry.gates) : null}::jsonb,
+                ${entry.metrics ? JSON.stringify(entry.metrics) : null}::jsonb
+            )`);
+        // Opportunistic retention sweep (~1 in 500 inserts): rows are tiny but
+        // the table is append-only — 90 days comfortably covers any post-mortem
+        // lookback while keeping it bounded.
+        if (Math.random() < 0.002) {
+            await db.$executeRaw(sql`DELETE FROM swing.tick_log WHERE ts_ms < ${Date.now() - 90 * 24 * 60 * 60 * 1000}`);
+        }
+    } catch (err) {
+        console.warn(`tick_log write failed for ${entry.symbol}:`, err);
+    }
+}
+
+export type SwingTickLogRow = {
+    id: number;
+    tsMs: number;
+    symbol: string;
+    platform: string;
+    kind: 'skip' | 'ai_call';
+    stage: string;
+    reason: string | null;
+    cadence: string | null;
+    dryRun: boolean;
+    gates: Record<string, unknown> | null;
+    metrics: Record<string, unknown> | null;
+};
+
+// Chronological (oldest first) — the shape a post-mortem dossier walks.
+export async function loadSwingTickLog(opts: {
+    symbol: string;
+    platform?: string | null;
+    fromMs: number;
+    toMs?: number | null;
+    limit?: number;
+}): Promise<SwingTickLogRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const limit = Math.max(1, Math.min(5000, opts.limit ?? 2000));
+    const toMs = opts.toMs ?? Date.now();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT id, ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json
+        FROM swing.tick_log
+        WHERE symbol = ${String(opts.symbol || '').toUpperCase()}
+          AND (${opts.platform ? normalizePlatform(opts.platform) : null}::text IS NULL OR platform = ${
+              opts.platform ? normalizePlatform(opts.platform) : null
+          })
+          AND ts_ms >= ${Math.floor(opts.fromMs)}
+          AND ts_ms <= ${Math.floor(toMs)}
+        ORDER BY ts_ms ASC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((r) => ({
+        id: Number(r.id),
+        tsMs: Number(r.ts_ms),
+        symbol: String(r.symbol),
+        platform: String(r.platform),
+        kind: r.kind === 'ai_call' ? 'ai_call' : 'skip',
+        stage: String(r.stage),
+        reason: r.reason ?? null,
+        cadence: r.cadence ?? null,
+        dryRun: Boolean(r.dry_run),
+        gates: r.gates_json ?? null,
+        metrics: r.metrics_json ?? null,
+    }));
+}
 
 // --------------------------------------------------------------------------
 // AI threads (Responses API conversation chains)
