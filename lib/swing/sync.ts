@@ -4,6 +4,7 @@
 // captured at execution time (ground truth) over anything the broker reports.
 import { pickCapturedLeverage, type CapturedLeverage, type PositionWindow } from '../analytics';
 import { isSwingPgConfigured, upsertSwingPosition, insertSwingAccountSnapshot } from './pg';
+import { maybeEnqueueSwingPostmortem } from './postmortem';
 import { kvGetJson, kvSetJson } from '../kv';
 
 // Per-symbol high-water-mark of the latest closed-position exit timestamp we've
@@ -108,6 +109,9 @@ export async function syncSwingClosedPositions(
                     leverageSource,
                 });
                 if (exitTs > maxExit) maxExit = exitTs;
+                // Freshly-mirrored close (past the HWM ⇒ first sighting) →
+                // post-mortem candidate. Idempotent + best-effort inside.
+                await maybeEnqueueSwingPostmortem(platform, { ...w, leverage: entryLeverage ?? w.leverage });
             } catch (err) {
                 console.error(`Failed to persist swing position ${w.id}:`, err);
             }

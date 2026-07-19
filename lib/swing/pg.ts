@@ -222,6 +222,51 @@ async function ensureSwingSchema(): Promise<void> {
             )`);
         await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS tick_log_symbol_platform_time_idx ON swing.tick_log (symbol, platform, ts_ms DESC)`);
 
+        // postmortems: one AI-generated forensic report per closed position
+        // (loss-triggered by default). The UNIQUE (platform, position_key) is
+        // the enqueue idempotency lock — closes get re-synced/re-reconciled
+        // many times, but only the first insert wins and fires the worker.
+        // verdict + lesson are real columns (cheap to query/feed forward);
+        // the full report and the per-tick dossier live in JSONB.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.postmortems (
+              id             BIGSERIAL PRIMARY KEY,
+              platform       TEXT NOT NULL DEFAULT 'bitget',
+              symbol         TEXT NOT NULL,
+              position_key   TEXT NOT NULL,
+              status         TEXT NOT NULL DEFAULT 'queued',
+              trigger_source TEXT NOT NULL DEFAULT 'close',
+              side           TEXT,
+              entry_ts_ms    BIGINT,
+              exit_ts_ms     BIGINT,
+              entry_price    NUMERIC,
+              exit_price     NUMERIC,
+              pnl_pct        NUMERIC,
+              pnl_net        NUMERIC,
+              verdict        TEXT,
+              lesson         TEXT,
+              report_json    JSONB,
+              dossier_json   JSONB,
+              model          TEXT,
+              usage_json     JSONB,
+              error          TEXT,
+              attempts       INT NOT NULL DEFAULT 0,
+              created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT postmortems_status_check CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+              CONSTRAINT postmortems_position UNIQUE (platform, position_key)
+            )`);
+        await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS postmortems_symbol_time_idx ON swing.postmortems (symbol, platform, created_at DESC)`);
+        await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS postmortems_status_idx ON swing.postmortems (status)`);
+        await db.$executeRaw(sql`
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'postmortems_set_updated_at') THEN
+                CREATE TRIGGER postmortems_set_updated_at BEFORE UPDATE ON swing.postmortems
+                  FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at();
+              END IF;
+            END $$`);
+
         // account_snapshots: append-only history of the *current* leverage/margin
         // Bitget reports (previously lost/overwritten in KV).
         await db.$executeRaw(sql`
@@ -579,6 +624,317 @@ export async function upsertSwingDecision(entry: DecisionHistoryEntry): Promise<
     `);
     const id = rows?.[0]?.id;
     return id == null ? null : Number(id);
+}
+
+// --------------------------------------------------------------------------
+// Post-mortems (per-closed-position forensic reports)
+// --------------------------------------------------------------------------
+export type SwingPostmortemStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export type SwingPostmortemTrigger = 'close' | 'manual' | 'backfill';
+
+export type SwingPostmortemEnqueueInput = {
+    platform: string;
+    symbol: string;
+    positionKey: string;
+    trigger: SwingPostmortemTrigger;
+    side?: string | null;
+    entryTsMs?: number | null;
+    exitTsMs?: number | null;
+    entryPrice?: number | null;
+    exitPrice?: number | null;
+    pnlPct?: number | null;
+    pnlNet?: number | null;
+};
+
+export type SwingPostmortemRow = {
+    id: number;
+    platform: string;
+    symbol: string;
+    positionKey: string;
+    status: SwingPostmortemStatus;
+    trigger: string;
+    side: string | null;
+    entryTsMs: number | null;
+    exitTsMs: number | null;
+    entryPrice: number | null;
+    exitPrice: number | null;
+    pnlPct: number | null;
+    pnlNet: number | null;
+    verdict: string | null;
+    lesson: string | null;
+    report: Record<string, any> | null;
+    dossier: Record<string, any> | null;
+    model: string | null;
+    usage: Record<string, any> | null;
+    error: string | null;
+    attempts: number;
+    createdAtMs: number;
+    updatedAtMs: number;
+};
+
+function mapPostmortemRow(r: any): SwingPostmortemRow {
+    return {
+        id: Number(r.id),
+        platform: String(r.platform),
+        symbol: String(r.symbol),
+        positionKey: String(r.position_key),
+        status: String(r.status) as SwingPostmortemStatus,
+        trigger: String(r.trigger_source),
+        side: r.side ?? null,
+        entryTsMs: finite(r.entry_ts_ms),
+        exitTsMs: finite(r.exit_ts_ms),
+        entryPrice: finite(r.entry_price),
+        exitPrice: finite(r.exit_price),
+        pnlPct: finite(r.pnl_pct),
+        pnlNet: finite(r.pnl_net),
+        verdict: r.verdict ?? null,
+        lesson: r.lesson ?? null,
+        report: r.report_json ?? null,
+        dossier: r.dossier_json ?? null,
+        model: r.model ?? null,
+        usage: r.usage_json ?? null,
+        error: r.error ?? null,
+        attempts: Number(r.attempts) || 0,
+        createdAtMs: r.created_at ? new Date(r.created_at).getTime() : 0,
+        updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+    };
+}
+
+// Idempotent enqueue: the UNIQUE (platform, position_key) makes the first
+// insert win — re-syncs of the same close return null (already enqueued or
+// already analyzed) so the caller knows not to fire another worker.
+export async function enqueueSwingPostmortem(input: SwingPostmortemEnqueueInput): Promise<number | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ id: number | string }>>(sql`
+        INSERT INTO swing.postmortems (
+            platform, symbol, position_key, trigger_source, side,
+            entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_pct, pnl_net
+        ) VALUES (
+            ${normalizePlatform(input.platform)}, ${String(input.symbol || '').toUpperCase()}, ${input.positionKey},
+            ${input.trigger}, ${input.side ?? null},
+            ${finite(input.entryTsMs)}, ${finite(input.exitTsMs)}, ${finite(input.entryPrice)},
+            ${finite(input.exitPrice)}, ${finite(input.pnlPct)}, ${finite(input.pnlNet)}
+        )
+        ON CONFLICT (platform, position_key) DO NOTHING
+        RETURNING id;
+    `);
+    const id = rows?.[0]?.id;
+    return id == null ? null : Number(id);
+}
+
+// Claim by id for a worker run. Without force only queued/failed rows (or a
+// stale 'running' — a crashed worker's leftover, >15 min old) are claimable;
+// force re-claims anything (manual regenerate).
+export async function claimSwingPostmortemById(
+    id: number,
+    opts: { force?: boolean } = {},
+): Promise<SwingPostmortemRow | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        UPDATE swing.postmortems
+        SET status = 'running', attempts = attempts + 1, error = NULL
+        WHERE id = ${Math.floor(id)}
+          AND (
+            ${Boolean(opts.force)} = TRUE
+            OR status IN ('queued', 'failed')
+            OR (status = 'running' AND updated_at < ${staleBefore})
+          )
+        RETURNING *;
+    `);
+    return rows?.length ? mapPostmortemRow(rows[0]) : null;
+}
+
+// Claim the oldest queued rows (drain mode). Sequential worker — small limit.
+export async function claimQueuedSwingPostmortems(limit: number): Promise<SwingPostmortemRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const capped = Math.max(1, Math.min(10, Math.floor(limit)));
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        UPDATE swing.postmortems
+        SET status = 'running', attempts = attempts + 1, error = NULL
+        WHERE id IN (
+            SELECT id FROM swing.postmortems
+            WHERE status = 'queued'
+            ORDER BY created_at ASC
+            LIMIT ${capped}
+        )
+        RETURNING *;
+    `);
+    return (rows || []).map(mapPostmortemRow);
+}
+
+export async function completeSwingPostmortem(
+    id: number,
+    result: {
+        verdict: string | null;
+        lesson: string | null;
+        report: Record<string, any>;
+        dossier: Record<string, any>;
+        model: string | null;
+        usage: Record<string, any> | null;
+    },
+): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.postmortems
+        SET status = 'succeeded',
+            verdict = ${result.verdict},
+            lesson = ${result.lesson},
+            report_json = ${JSON.stringify(result.report)}::jsonb,
+            dossier_json = ${JSON.stringify(result.dossier)}::jsonb,
+            model = ${result.model},
+            usage_json = ${result.usage ? JSON.stringify(result.usage) : null}::jsonb,
+            error = NULL
+        WHERE id = ${Math.floor(id)};
+    `);
+}
+
+export async function failSwingPostmortem(id: number, error: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.postmortems
+        SET status = 'failed', error = ${String(error).slice(0, 2000)}
+        WHERE id = ${Math.floor(id)};
+    `);
+}
+
+// List projection: report/dossier JSON stay out (egress); lesson/verdict ride
+// along — they're the compact face of a post-mortem.
+export type SwingPostmortemSummary = Omit<SwingPostmortemRow, 'report' | 'dossier'>;
+
+export async function loadSwingPostmortems(
+    opts: { symbol?: string | null; platform?: string | null; status?: SwingPostmortemStatus | null; limit?: number } = {},
+): Promise<SwingPostmortemSummary[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+    const symbol = opts.symbol ? String(opts.symbol).toUpperCase() : null;
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const status = opts.status ?? null;
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT id, platform, symbol, position_key, status, trigger_source, side,
+               entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_pct, pnl_net,
+               verdict, lesson, model, usage_json, error, attempts, created_at, updated_at
+        FROM swing.postmortems
+        WHERE (${symbol}::text IS NULL OR symbol = ${symbol})
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND (${status}::text IS NULL OR status = ${status})
+        ORDER BY created_at DESC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((r) => {
+        const { report: _r, dossier: _d, ...summary } = mapPostmortemRow({ ...r, report_json: null, dossier_json: null });
+        return summary;
+    });
+}
+
+export async function loadSwingPostmortemById(id: number): Promise<SwingPostmortemRow | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT * FROM swing.postmortems WHERE id = ${Math.floor(id)} LIMIT 1;
+    `);
+    return rows?.length ? mapPostmortemRow(rows[0]) : null;
+}
+
+// Full decision rows (prompt_json INCLUDED) for a trade window — the dossier
+// loader. Every other decision reader deliberately projects prompts away;
+// post-mortems are the one consumer that needs them back. Chronological.
+export type SwingDecisionFullRow = {
+    id: number;
+    decidedAtMs: number;
+    symbol: string;
+    platform: string;
+    action: string | null;
+    dryRun: boolean;
+    prompt: { system?: string; user?: string } | null;
+    aiDecision: Record<string, any>;
+    execResult: Record<string, any>;
+    snapshot: Record<string, any>;
+};
+
+export async function loadSwingDecisionWindow(opts: {
+    symbol: string;
+    platform?: string | null;
+    fromMs: number;
+    toMs: number;
+    limit?: number;
+}): Promise<SwingDecisionFullRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const limit = Math.max(1, Math.min(1000, opts.limit ?? 500));
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT id, decided_at_ms, symbol, platform, action, dry_run,
+               prompt_json, ai_decision_json, exec_result_json, snapshot_json
+        FROM swing.decisions
+        WHERE symbol = ${String(opts.symbol || '').toUpperCase()}
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND decided_at_ms >= ${Math.floor(opts.fromMs)}
+          AND decided_at_ms <= ${Math.floor(opts.toMs)}
+        ORDER BY decided_at_ms ASC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((r) => ({
+        id: Number(r.id),
+        decidedAtMs: Number(r.decided_at_ms),
+        symbol: String(r.symbol),
+        platform: String(r.platform),
+        action: r.action ?? null,
+        dryRun: Boolean(r.dry_run),
+        prompt: r.prompt_json ?? null,
+        aiDecision: r.ai_decision_json ?? {},
+        execResult: r.exec_result_json ?? {},
+        snapshot: r.snapshot_json ?? {},
+    }));
+}
+
+// One position row by its natural key — manual post-mortem enqueue.
+export async function loadSwingPositionByKey(
+    platform: string,
+    positionKey: string,
+): Promise<(PositionWindow & { status: string }) | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<any>>(sql`
+        SELECT position_key, symbol, side, status, entry_ts_ms, exit_ts_ms,
+               entry_price, exit_price, notional, entry_leverage, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct
+        FROM swing.positions
+        WHERE platform = ${normalizePlatform(platform)} AND position_key = ${positionKey}
+        LIMIT 1;
+    `);
+    if (!rows?.length) return null;
+    const r = rows[0];
+    return {
+        id: String(r.position_key),
+        symbol: String(r.symbol),
+        side: (r.side ?? null) as 'long' | 'short' | null,
+        status: String(r.status),
+        entryTimestamp: finite(r.entry_ts_ms),
+        exitTimestamp: finite(r.exit_ts_ms),
+        entryPrice: finite(r.entry_price),
+        exitPrice: finite(r.exit_price),
+        notional: finite(r.notional),
+        leverage: finite(r.entry_leverage),
+        pnlNet: finite(r.pnl_net),
+        pnlGross: finite(r.pnl_gross),
+        pnlPct: finite(r.pnl_pct),
+        pnlGrossPct: finite(r.pnl_gross_pct),
+    };
 }
 
 export type SwingDecisionSummary = {

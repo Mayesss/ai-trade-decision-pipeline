@@ -15,6 +15,7 @@ import type { PositionWindow } from '../analytics';
 import { fetchCapitalTradeTransactions, type CapitalTradeTransactionRow } from '../capital';
 import { loadDecisionHistory } from '../history';
 import { upsertSwingPosition } from './pg';
+import { maybeEnqueueSwingPostmortem } from './postmortem';
 
 // Number(null) === 0, so a bare Number() coercion would fabricate zeros out of
 // explicit nulls (e.g. a tx window's entryPrice: null becoming a 0 price that
@@ -397,8 +398,12 @@ export async function reconcileCapitalClosedPositions(symbol: string): Promise<n
                         status: 'closed',
                         leverageSource: window.leverage ? 'captured' : null,
                     })
-                        .then(() => {
+                        .then(async () => {
                             persistedCount += 1;
+                            // 48h-lookback reconcile revisits the same closes on
+                            // every venue-close detection — the enqueue's unique
+                            // key makes the repeats free no-ops.
+                            await maybeEnqueueSwingPostmortem('capital', window);
                         })
                         .catch((err) => {
                             console.warn(`Could not persist reconciled Capital close ${window.id}:`, err);

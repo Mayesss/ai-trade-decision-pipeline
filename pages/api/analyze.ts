@@ -68,6 +68,7 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
+import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
 import {
     clearSwingAiCooldown,
     endSwingAiThread,
@@ -139,27 +140,29 @@ async function persistCapitalClosedPositionSnapshot(params: {
         String(params.execRes.orderId || params.execRes.clientOid || 'close'),
     ].join(':');
 
+    const window = {
+        id: positionKey,
+        symbol: params.symbol.toUpperCase(),
+        side: (params.positionInfo.holdSide ?? null) as 'long' | 'short' | null,
+        entryTimestamp: Number.isFinite(entryTimestamp) && entryTimestamp > 0 ? entryTimestamp : null,
+        exitTimestamp: params.closedAtMs,
+        entryPrice: Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : null,
+        exitPrice: Number.isFinite(exitPrice) && exitPrice > 0 ? exitPrice : null,
+        pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+        pnlGrossPct: Number.isFinite(pnlPct) ? pnlPct : null,
+        pnlNet: null,
+        pnlGross: null,
+        leverage:
+            Number.isFinite(params.positionInfo.leverage as number) && (params.positionInfo.leverage as number) > 0
+                ? (params.positionInfo.leverage as number)
+                : null,
+        notional: null,
+    };
     try {
-        await upsertSwingPosition('capital', {
-            id: positionKey,
-            symbol: params.symbol.toUpperCase(),
-            side: params.positionInfo.holdSide ?? null,
-            status: 'closed',
-            entryTimestamp: Number.isFinite(entryTimestamp) && entryTimestamp > 0 ? entryTimestamp : null,
-            exitTimestamp: params.closedAtMs,
-            entryPrice: Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : null,
-            exitPrice: Number.isFinite(exitPrice) && exitPrice > 0 ? exitPrice : null,
-            pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
-            pnlGrossPct: Number.isFinite(pnlPct) ? pnlPct : null,
-            pnlNet: null,
-            pnlGross: null,
-            leverage:
-                Number.isFinite(params.positionInfo.leverage as number) && (params.positionInfo.leverage as number) > 0
-                    ? (params.positionInfo.leverage as number)
-                    : null,
-            notional: null,
-            leverageSource: 'captured',
-        });
+        await upsertSwingPosition('capital', { ...window, status: 'closed', leverageSource: 'captured' });
+        // AI-initiated Capital closes never flow through the broker-merge sync,
+        // so this is their only post-mortem enqueue point.
+        await maybeEnqueueSwingPostmortem('capital', window);
     } catch (err) {
         console.warn(`Could not persist Capital closed position for ${params.symbol}:`, err);
     }
