@@ -18,7 +18,7 @@ import {
 } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
-import { loadClosedSwingPositions, getSwingAiCooldown } from '../../lib/swing/pg';
+import { loadClosedSwingPositions, getSwingAiCooldown, loadSwingPostmortems } from '../../lib/swing/pg';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
   assembleCapitalPositionWindows,
@@ -517,6 +517,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       } catch (err) {
         console.warn(`Failed to build position overlays for ${symbol}:`, err);
         positions = [];
+      }
+    }
+    // Post-mortem badges attach AFTER the overlay cache (read or write): a
+    // post-mortem completes minutes after its close, well inside the overlay
+    // TTL, and must not be frozen out by a stale cached overlay. Match by
+    // position key, falling back to exit-time proximity (Capital keys differ
+    // between the snapshot and reconcile paths). Best-effort.
+    if (positions.length) {
+      try {
+        const postmortems = await loadSwingPostmortems({ symbol, platform, limit: 50 });
+        if (postmortems.length) {
+          for (const p of positions) {
+            if (p?.status !== 'closed') continue;
+            const exitMs = Number(p.exitTime) * 1000;
+            const match = postmortems.find(
+              (pm) =>
+                pm.positionKey === String(p.id) ||
+                (Number.isFinite(exitMs) && pm.exitTsMs != null && Math.abs(pm.exitTsMs - exitMs) < 5 * 60_000),
+            );
+            if (match) {
+              p.postmortem = {
+                id: match.id,
+                status: match.status,
+                verdict: match.verdict,
+                lesson: match.lesson,
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`Failed to attach postmortems for ${symbol}:`, err);
       }
     }
     overlayLoadMs = Date.now() - overlayLoadStartedAt;

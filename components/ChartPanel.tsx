@@ -38,6 +38,14 @@ type PositionOverlay = {
   // Inferred close cause for CLOSED positions: exchange-side bracket hit
   // ('tp'/'sl') vs. AI-driven close (null). Server-side inference.
   closeReason?: 'tp' | 'sl' | null;
+  // AI post-mortem of this CLOSED position (losses by default) — verdict +
+  // distilled lesson for the tooltip, violet exit accent on the overlay.
+  postmortem?: {
+    id: number;
+    status: string;
+    verdict?: string | null;
+    lesson?: string | null;
+  } | null;
 };
 
 
@@ -82,10 +90,16 @@ type PendingOrderLine = {
 export type ChartTimelineTick = {
   ts: number;
   hourly: boolean;
-  kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan';
+  kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan' | 'postmortem';
   action?: string;
   stage?: string;
   reason?: string;
+  // Post-mortem ticks (violet, at the position's exit time): status + the
+  // verdict/lesson once the analysis succeeded.
+  postmortemId?: number;
+  postmortemStatus?: string;
+  verdict?: string;
+  lesson?: string;
   // AI-requested flat cooldown armed by this decision (flat HOLD only) —
   // appended to the tooltip label ("AI HOLD + CD 2h (↑x ↓y)"); the dot keeps
   // the plain ai_call fill.
@@ -107,9 +121,11 @@ const timelineDotFillClass = (tick: ChartTimelineTick): string =>
       : tick.action === 'SELL'
         ? 'timeline-dot-sell'
         : 'timeline-dot-trim'
-    : tick.kind === 'ai_call'
-      ? 'timeline-dot-ai'
-      : 'timeline-dot-skip';
+    : tick.kind === 'postmortem'
+      ? 'timeline-dot-postmortem'
+      : tick.kind === 'ai_call'
+        ? 'timeline-dot-ai'
+        : 'timeline-dot-skip';
 
 // "HOLD + CD 2h (↑51,200 ↓49,700)" suffix for ticks that armed a flat cooldown.
 const timelineTickCooldownSuffix = (tick: ChartTimelineTick): string => {
@@ -141,11 +157,15 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
   return `${time}${
     tick.kind === 'action'
       ? ` · ${tick.action}`
-      : tick.kind === 'ai_call'
-        ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
-        : tick.stage
-          ? ` · skipped: ${tick.reason || tick.stage}`
-          : ' · scanned'
+      : tick.kind === 'postmortem'
+        ? ` · post-mortem${
+            tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''
+          }`
+        : tick.kind === 'ai_call'
+          ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
+          : tick.stage
+            ? ` · skipped: ${tick.reason || tick.stage}`
+            : ' · scanned'
   }`;
 };
 
@@ -404,6 +424,7 @@ type OverlayTheme = {
   cooldownFill: string;
   limitBuy: string;
   limitSell: string;
+  postmortem: string;
 };
 
 const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
@@ -425,6 +446,7 @@ const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
   cooldownFill: isDark ? 'rgba(161,161,170,0.12)' : 'rgba(113,113,122,0.1)',
   limitBuy: isDark ? 'rgba(52,211,153,0.85)' : 'rgba(5,150,105,0.8)',
   limitSell: isDark ? 'rgba(251,113,133,0.85)' : 'rgba(225,29,72,0.8)',
+  postmortem: isDark ? 'rgba(167,139,250,0.95)' : 'rgba(124,58,237,0.9)',
 });
 
 type OverlayPrimitiveDatum = {
@@ -434,6 +456,7 @@ type OverlayPrimitiveDatum = {
   showEntryWall: boolean;
   closed: boolean;
   closeReason: 'tp' | 'sl' | null;
+  hasPostmortem: boolean;
   side: 'long' | 'short' | null;
   tone: OverlayTone;
   leverageLabel: string | null;
@@ -621,6 +644,14 @@ class PositionOverlayRenderer {
         } else {
           ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
           ctx.fillRect(right - 1, top, 1, height);
+        }
+        if (datum.hasPostmortem) {
+          // Analyzed close: a violet dot at the foot of the exit wall — "this
+          // loss has been autopsied", without recoloring the TP/SL-hit wall.
+          ctx.fillStyle = this.theme.postmortem;
+          ctx.beginPath();
+          ctx.arc(right - 1, top + height - 5, 3, 0, Math.PI * 2);
+          ctx.fill();
         }
         drawOverlayBadge(ctx, right, top, datum, this.theme);
       }
@@ -810,6 +841,7 @@ const buildOverlayPrimitiveData = (
       showEntryWall: pos.entryTime !== null && pos.entryTime >= minTime,
       closed: pos.status === 'closed',
       closeReason: pos.status === 'closed' ? pos.closeReason ?? null : null,
+      hasPostmortem: pos.status === 'closed' && pos.postmortem?.status === 'succeeded',
       side: pos.side ?? null,
       tone,
       leverageLabel: typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null,
@@ -1638,7 +1670,9 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       setThreadSegments(segments);
       const kindPriority = (tick: ChartTimelineTick): number =>
-        tick.kind === 'action'
+        // Post-mortems rank with actions: one dot per analyzed trade, and it
+        // must survive culling next to the exit-adjacent decision dots.
+        tick.kind === 'action' || tick.kind === 'postmortem'
           ? 0
           : tick.kind === 'ai_call'
             ? 1
@@ -1899,6 +1933,24 @@ export default function ChartPanel(props: ChartPanelProps) {
                         {hoveredOverlay.closeReason === 'tp' ? 'Take-profit hit' : 'Stop-loss hit'}
                       </span>
                       <span className="text-slate-500"> · closed by exchange-side bracket</span>
+                    </div>
+                  ) : null}
+
+                  {hoveredOverlay.status === 'closed' && hoveredOverlay.postmortem?.status === 'succeeded' ? (
+                    <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Post-mortem
+                        {hoveredOverlay.postmortem.verdict ? (
+                          <span className="postmortem-chip ml-1.5 inline-flex rounded border px-1.5 py-0.5 normal-case">
+                            {hoveredOverlay.postmortem.verdict.replace(/_/g, ' ')}
+                          </span>
+                        ) : null}
+                      </div>
+                      {hoveredOverlay.postmortem.lesson ? (
+                        <div className="text-[11px] italic text-slate-700">
+                          {hoveredOverlay.postmortem.lesson}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 

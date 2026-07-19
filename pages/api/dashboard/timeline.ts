@@ -3,22 +3,30 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdminAccess } from '../../../lib/admin';
 import { loadDecisionHistory } from '../../../lib/history';
 import { readSwingScanTicks } from '../../../lib/swing/lastScan';
+import { loadSwingPostmortems } from '../../../lib/swing/pg';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/platform';
 
-// One tick on the swing decision timeline. Two sources merged per tick bucket:
-// persisted decision rows (hourly skips + real AI calls) and the rolling scan
-// tick log (quarter-tick gate skips, which are deliberately never persisted as
-// decision rows — see lib/swing/lastScan.ts).
+// One tick on the swing decision timeline. Three sources: persisted decision
+// rows (hourly skips + real AI calls) and the rolling scan tick log
+// (quarter-tick gate skips) merged per tick bucket, plus post-mortem ticks
+// (one per analyzed closed position, at its exit time) appended outside the
+// bucketing so they can never suppress a decision dot.
 export type TimelineTick = {
   ts: number;
-  source: 'decision' | 'scan';
+  source: 'decision' | 'scan' | 'postmortem';
   // Hourly cadence tick (bigger circle) vs quarter tick. Crons fire on UTC
   // minutes, so minute-of-hour is a reliable discriminator.
   hourly: boolean;
-  kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan';
+  kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan' | 'postmortem';
   action?: string;
   summary?: string;
+  // Post-mortem ticks only: row id (details via /api/swing/postmortem?id=),
+  // worker status, and — once succeeded — the verdict + distilled lesson.
+  postmortemId?: number;
+  postmortemStatus?: string;
+  verdict?: string;
+  lesson?: string;
   // AI-requested flat cooldown armed by this decision (flat HOLD only) — lets
   // the UI label the tick "HOLD + CD 2h (↑x ↓y)" instead of a bare HOLD.
   cooldownMinutes?: number;
@@ -82,9 +90,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const hours = Number.isFinite(hoursRaw) && hoursRaw > 0 ? Math.min(hoursRaw, MAX_HOURS) : DEFAULT_HOURS;
   const sinceMs = Date.now() - hours * 60 * 60 * 1000;
 
-  const [decisions, scanTicks] = await Promise.all([
+  const [decisions, scanTicks, postmortems] = await Promise.all([
     loadDecisionHistory(symbol, 60, platform ?? undefined).catch(() => []),
     readSwingScanTicks(platform ?? 'bitget', symbol, { sinceMs }),
+    loadSwingPostmortems({ symbol, platform: platform ?? null, limit: 30 }).catch(() => []),
   ]);
 
   const byBucket = new Map<number, TimelineTick>();
@@ -149,6 +158,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
   }
 
-  const ticks = Array.from(byBucket.values()).sort((a, b) => b.ts - a.ts);
+  const ticks = Array.from(byBucket.values());
+  // Post-mortem ticks ride at the position's exit time, OUTSIDE the bucket
+  // merge — a venue close often lands in the same 5-min bucket as a scan or
+  // decision tick, and neither dot should hide the other.
+  for (const pm of postmortems) {
+    const ts = Number(pm.exitTsMs ?? pm.createdAtMs);
+    if (!Number.isFinite(ts) || ts < sinceMs) continue;
+    ticks.push({
+      ts,
+      source: 'postmortem',
+      hourly: true,
+      kind: 'postmortem',
+      postmortemId: pm.id,
+      postmortemStatus: pm.status,
+      ...(pm.verdict ? { verdict: pm.verdict } : {}),
+      ...(pm.lesson ? { lesson: pm.lesson } : {}),
+      hasDetails: false,
+    });
+  }
+  ticks.sort((a, b) => b.ts - a.ts);
   return res.status(200).json({ symbol, platform, hours, ticks });
 }

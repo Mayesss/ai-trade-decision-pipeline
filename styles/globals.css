@@ -510,6 +510,32 @@ body {
   outline-color: rgb(245 158 11 / 1);
 }
 
+/* Post-mortem tick (one per analyzed closed position, at its exit time):
+   violet in both themes — kept out of the dark-theme accent desaturation the
+   same way the trim amber is. */
+.timeline-dot-postmortem {
+  background-color: rgb(124 58 237 / 1); /* violet-600 */
+  outline-color: rgb(124 58 237 / 1);
+}
+
+.theme-dark .timeline-dot-postmortem {
+  background-color: rgb(167 139 250 / 1); /* violet-400 */
+  outline-color: rgb(167 139 250 / 1);
+}
+
+/* Post-mortem verdict chip (tooltip + decision card): violet pair per theme. */
+.postmortem-chip {
+  border-color: rgb(221 214 254 / 1); /* violet-200 */
+  background-color: rgb(245 243 255 / 1); /* violet-50 */
+  color: rgb(109 40 217 / 1); /* violet-700 */
+}
+
+.theme-dark .postmortem-chip {
+  border-color: rgb(139 92 246 / 0.5);
+  background-color: rgb(76 29 149 / 0.35);
+  color: rgb(196 181 253 / 1);
+}
+
 .timeline-dot-buy {
   background-color: rgb(5 150 105 / 1); /* emerald-600 */
   outline-color: rgb(5 150 105 / 1);

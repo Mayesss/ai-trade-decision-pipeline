@@ -720,13 +720,19 @@ type DashboardEvaluationResponse = {
 // never persisted as decision rows).
 type TimelineTickUi = {
   ts: number;
-  source: "decision" | "scan";
+  source: "decision" | "scan" | "postmortem";
   hourly: boolean;
-  kind: "action" | "ai_call" | "gate_skip" | "scan_skip" | "scan";
+  kind: "action" | "ai_call" | "gate_skip" | "scan_skip" | "scan" | "postmortem";
   action?: string;
   summary?: string;
   stage?: string;
   reason?: string;
+  // Post-mortem ticks: row id (full report via /api/swing/dashboard/postmortem),
+  // worker status, and — once succeeded — verdict + distilled lesson.
+  postmortemId?: number;
+  postmortemStatus?: string;
+  verdict?: string;
+  lesson?: string;
   // AI-requested flat cooldown armed by this decision (flat HOLD only).
   cooldownMinutes?: number;
   cooldownWakeAbove?: number;
@@ -743,6 +749,43 @@ type DashboardTimelineResponse = {
   platform?: string | null;
   hours?: number;
   ticks?: TimelineTickUi[];
+};
+
+// Full post-mortem row (mirrors lib/swing/pg SwingPostmortemRow — the fields
+// the panel renders; report/dossier stay loosely typed).
+type PostmortemUi = {
+  id: number;
+  platform: string;
+  symbol: string;
+  positionKey: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  trigger: string;
+  side: string | null;
+  entryTsMs: number | null;
+  exitTsMs: number | null;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  pnlPct: number | null;
+  pnlNet: number | null;
+  verdict: string | null;
+  lesson: string | null;
+  report: {
+    confidence?: number;
+    timeline_analysis?: string;
+    what_went_wrong?: string[];
+    missed_signals?: Array<{
+      ts_utc?: string;
+      description?: string;
+      visible_in?: string;
+    }>;
+    gate_impact?: string | null;
+    suggestions?: string[];
+  } | null;
+  dossier: Record<string, any> | null;
+  model: string | null;
+  usage: Record<string, any> | null;
+  error: string | null;
+  attempts: number;
 };
 
 type EvaluateJobStatus = "queued" | "running" | "succeeded" | "failed";
@@ -2631,11 +2674,18 @@ export default function Home() {
   const [selectedTickDecision, setSelectedTickDecision] =
     useState<DashboardDecisionResponse | null>(null);
   const [selectedTickLoading, setSelectedTickLoading] = useState(false);
+  // Selected post-mortem tick's full row (report + dossier) — the decision
+  // card renders the post-mortem panel instead of a decision body then.
+  const [selectedPostmortem, setSelectedPostmortem] =
+    useState<PostmortemUi | null>(null);
+  const [showPostmortemAnalysis, setShowPostmortemAnalysis] = useState(false);
+  const [showPostmortemDossier, setShowPostmortemDossier] = useState(false);
   // Fetched historical decisions, keyed `${symbol}:${ts}` — clicking back and
   // forth on the timeline shouldn't refetch.
   const tickDecisionCacheRef = useRef<Map<string, DashboardDecisionResponse>>(
     new Map(),
   );
+  const postmortemCacheRef = useRef<Map<number, PostmortemUi>>(new Map());
   // Latest tick the user asked for; a slower earlier fetch must not overwrite
   // a newer selection.
   const tickSelectionSeqRef = useRef(0);
@@ -3118,12 +3168,49 @@ export default function Home() {
     isNewest: boolean,
   ) => {
     const seq = ++tickSelectionSeqRef.current;
+    if (tick.kind !== "postmortem") setSelectedPostmortem(null);
     if (isNewest && tick.hasDetails) {
       setSelectedTickTs(null);
       setSelectedTickDecision(null);
       return;
     }
     setSelectedTickTs(tick.ts);
+    if (tick.kind === "postmortem" && tick.postmortemId) {
+      // Post-mortem tick: the card renders the forensic report, not a
+      // decision. Collapsibles reset so each report opens compact.
+      setSelectedTickDecision(null);
+      setShowPostmortemAnalysis(false);
+      setShowPostmortemDossier(false);
+      const cached = postmortemCacheRef.current.get(tick.postmortemId);
+      if (cached) {
+        setSelectedTickLoading(false);
+        setSelectedPostmortem(cached);
+        return;
+      }
+      setSelectedTickLoading(true);
+      try {
+        const res = await fetch(
+          `/api/swing/dashboard/postmortem?id=${tick.postmortemId}`,
+          { headers: buildAdminHeaders(), cache: "no-store" },
+        );
+        if (res.status === 401) {
+          handleAuthExpired(
+            "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
+          );
+          return;
+        }
+        if (!res.ok) return;
+        const json = await res.json();
+        const row = (json?.postmortem ?? null) as PostmortemUi | null;
+        if (row) postmortemCacheRef.current.set(tick.postmortemId, row);
+        if (tickSelectionSeqRef.current === seq) setSelectedPostmortem(row);
+      } catch {
+        // tick stays selected; panel shows the unavailable note
+      } finally {
+        if (tickSelectionSeqRef.current === seq) setSelectedTickLoading(false);
+      }
+      return;
+    }
     if (!tick.hasDetails) {
       setSelectedTickLoading(false);
       setSelectedTickDecision(null);
@@ -4068,6 +4155,7 @@ export default function Home() {
     // Switching symbols returns the decision card to its live "latest" view.
     setSelectedTickTs(null);
     setSelectedTickDecision(null);
+    setSelectedPostmortem(null);
     let cancelled = false;
     (async () => {
       try {
@@ -9078,7 +9166,11 @@ export default function Home() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
                         <span>
-                          {selectedTick ? "Decision" : "Latest Decision"}
+                          {selectedTick?.kind === "postmortem"
+                            ? "Post-mortem"
+                            : selectedTick
+                              ? "Decision"
+                              : "Latest Decision"}
                         </span>
                         {displayDecisionTs ? (
                           <span className="lowercase text-slate-400">
@@ -9094,7 +9186,218 @@ export default function Home() {
                         )}
                       </div>
                     </div>
-                    {selectedTick && !selectedTick.hasDetails ? (
+                    {selectedTick?.kind === "postmortem" ? (
+                      selectedTickLoading ? (
+                        renderDecisionBodySkeleton()
+                      ) : selectedPostmortem ? (
+                        <div className="mt-3">
+                          <div className="flex flex-wrap items-center gap-2 text-sm">
+                            <span className="postmortem-chip inline-flex rounded border px-1.5 py-0.5 font-semibold">
+                              {(
+                                selectedPostmortem.verdict ||
+                                selectedPostmortem.status
+                              ).replace(/_/g, " ")}
+                            </span>
+                            {typeof selectedPostmortem.pnlPct === "number" ? (
+                              <span
+                                className={`font-semibold ${
+                                  selectedPostmortem.pnlPct >= 0
+                                    ? "text-emerald-600"
+                                    : "text-rose-600"
+                                }`}
+                              >
+                                {selectedPostmortem.pnlPct >= 0 ? "+" : ""}
+                                {selectedPostmortem.pnlPct.toFixed(2)}%
+                              </span>
+                            ) : null}
+                            {typeof selectedPostmortem.report?.confidence ===
+                            "number" ? (
+                              <span className="text-xs text-slate-500">
+                                confidence{" "}
+                                {Math.round(
+                                  selectedPostmortem.report.confidence * 100,
+                                )}
+                                %
+                              </span>
+                            ) : null}
+                          </div>
+                          {selectedPostmortem.status === "succeeded" &&
+                          selectedPostmortem.lesson ? (
+                            // The lesson IS the compact face of the report —
+                            // everything else sits behind the disclosure.
+                            <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm italic text-slate-800">
+                              {selectedPostmortem.lesson}
+                            </p>
+                          ) : selectedPostmortem.status === "failed" ? (
+                            <p className="mt-2 text-sm text-rose-600">
+                              Analysis failed:{" "}
+                              {selectedPostmortem.error || "unknown error"}
+                            </p>
+                          ) : (
+                            <p className="mt-2 text-sm text-slate-500">
+                              Analysis {selectedPostmortem.status}…
+                            </p>
+                          )}
+                          {selectedPostmortem.status === "succeeded" &&
+                          selectedPostmortem.report ? (
+                            <>
+                              <div className="mt-3">
+                                <button
+                                  onClick={() =>
+                                    setShowPostmortemAnalysis((prev) => !prev)
+                                  }
+                                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                >
+                                  {showPostmortemAnalysis
+                                    ? "Hide analysis"
+                                    : "Show analysis"}
+                                </button>
+                              </div>
+                              {showPostmortemAnalysis && (
+                                <div className="mt-3 space-y-3 text-sm text-slate-700">
+                                  {selectedPostmortem.report
+                                    .timeline_analysis ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Timeline
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {
+                                          selectedPostmortem.report
+                                            .timeline_analysis
+                                        }
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.what_went_wrong
+                                    ?.length ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        What went wrong
+                                      </div>
+                                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                                        {selectedPostmortem.report.what_went_wrong.map(
+                                          (item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.missed_signals
+                                    ?.length ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Missed signals
+                                      </div>
+                                      <ul className="mt-1 space-y-1.5">
+                                        {selectedPostmortem.report.missed_signals.map(
+                                          (signal, idx) => (
+                                            <li
+                                              key={idx}
+                                              className="rounded-lg border border-slate-100 bg-slate-50 p-2"
+                                            >
+                                              <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+                                                {signal.ts_utc ? (
+                                                  <span>
+                                                    {Number.isFinite(
+                                                      Date.parse(signal.ts_utc),
+                                                    )
+                                                      ? formatDecisionTime(
+                                                          Date.parse(
+                                                            signal.ts_utc,
+                                                          ),
+                                                        )
+                                                      : signal.ts_utc}
+                                                  </span>
+                                                ) : null}
+                                                {signal.visible_in ? (
+                                                  <span className="inline-flex rounded border border-slate-200 bg-white px-1 py-0.5 font-semibold uppercase tracking-wide">
+                                                    {signal.visible_in.replace(
+                                                      /_/g,
+                                                      " ",
+                                                    )}
+                                                  </span>
+                                                ) : null}
+                                              </div>
+                                              <div className="mt-1">
+                                                {signal.description}
+                                              </div>
+                                            </li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.gate_impact ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Gate impact (skipped ticks)
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {selectedPostmortem.report.gate_impact}
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.suggestions
+                                    ?.length ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Suggestions
+                                      </div>
+                                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                                        {selectedPostmortem.report.suggestions.map(
+                                          (item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  ) : null}
+                                  <div>
+                                    <button
+                                      onClick={() =>
+                                        setShowPostmortemDossier(
+                                          (prev) => !prev,
+                                        )
+                                      }
+                                      className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                                    >
+                                      {showPostmortemDossier
+                                        ? "Hide debug dossier"
+                                        : "Show debug dossier"}
+                                    </button>
+                                  </div>
+                                  {showPostmortemDossier && (
+                                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        {selectedPostmortem.model || "model n/a"}
+                                        {selectedPostmortem.usage
+                                          ? ` · ${Number(selectedPostmortem.usage.input_tokens ?? 0).toLocaleString()} in / ${Number(selectedPostmortem.usage.output_tokens ?? 0).toLocaleString()} out tokens`
+                                          : ""}
+                                        {" · "}
+                                        {selectedPostmortem.positionKey}
+                                      </div>
+                                      <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed text-slate-600">
+                                        {JSON.stringify(
+                                          selectedPostmortem.dossier,
+                                          null,
+                                          1,
+                                        )}
+                                      </pre>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-sm text-slate-500">
+                          Post-mortem details unavailable.
+                        </div>
+                      )
+                    ) : selectedTick && !selectedTick.hasDetails ? (
                       // Quarter-tick scan: never persisted as a decision row —
                       // the gate verdict travels on the tick itself.
                       <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
