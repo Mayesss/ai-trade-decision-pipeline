@@ -10,10 +10,15 @@ import {
   listCapitalPendingEntryOrders,
 } from '../../lib/capital';
 import { fetchPendingEntryOrders, fetchPositionTpsl, getTradeProductType } from '../../lib/trading';
-import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages } from '../../lib/history';
+import {
+  loadDecisionHistory,
+  loadSymbolMarkerHistory,
+  extractCapturedLeverages,
+  isCooldownBandDecision,
+} from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
-import { loadClosedSwingPositions } from '../../lib/swing/pg';
+import { loadClosedSwingPositions, getSwingAiCooldown } from '../../lib/swing/pg';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
   assembleCapitalPositionWindows,
@@ -181,10 +186,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // straight from the per-symbol marker index (window-bounded) rather than
     // scanning the full decision index. KV-only; same data, far fewer round-trips.
     const markerLoadStartedAt = Date.now();
-    const history = await loadSymbolMarkerHistory(symbol, platform, {
+    const indexedHistory = await loadSymbolMarkerHistory(symbol, platform, {
       fromMs: windowStartMs,
       toMs: nowMs,
       limit: historyLimit,
+    });
+    // The per-symbol index carries entry/exit decisions AND flat-HOLD cooldown
+    // rows (wake bands). Everything below that means "entry/exit decision"
+    // (markers, nearest-decision tooltips, leverage capture) reads the filtered
+    // list so a cooldown HOLD can never masquerade as an entry or exit.
+    const history = (indexedHistory || []).filter((h) => {
+      const a = String(h?.aiDecision?.action || '').toUpperCase();
+      return a === 'BUY' || a === 'SELL' || a === 'CLOSE';
     });
     const markers =
       history
@@ -536,6 +549,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       pendingOrders = [];
     }
 
+    // Cooldown wake bands: each flat-HOLD cooldown draws its wake_above/below
+    // levels as gray dashed horizontal segments spanning exactly the cooldown
+    // window (set → until). Historical windows come from the indexed cooldown
+    // HOLD rows; the ACTIVE cooldown is merged from its Neon row so it renders
+    // even when its decision row predates the cooldown indexing (or expired
+    // from KV). Times in epoch seconds, like candles/markers.
+    type CooldownBandSegment = {
+      fromTime: number;
+      toTime: number;
+      wakeAbove: number | null;
+      wakeBelow: number | null;
+    };
+    const cooldowns: CooldownBandSegment[] = (indexedHistory || [])
+      .filter((h) => (h as any)?.dryRun !== true && isCooldownBandDecision(h?.aiDecision))
+      .map((h) => {
+        const d = h.aiDecision as any;
+        const fromMs = Number(h.timestamp);
+        const minutes = Number(d?.cooldown_minutes);
+        return {
+          fromTime: Math.floor(fromMs / 1000),
+          toTime: Math.floor((fromMs + minutes * 60_000) / 1000),
+          wakeAbove: positiveNumber(d?.cooldown_wake_above),
+          wakeBelow: positiveNumber(d?.cooldown_wake_below),
+        };
+      })
+      .filter((s) => Number.isFinite(s.fromTime) && s.fromTime > 0 && s.toTime > s.fromTime);
+    try {
+      const active = await getSwingAiCooldown(platform, symbol);
+      if (active && (active.wakeAbove !== null || active.wakeBelow !== null)) {
+        const fromTime = Math.floor((active.setAtMs > 0 ? active.setAtMs : nowMs) / 1000);
+        const alreadyIndexed = cooldowns.some((s) => Math.abs(s.fromTime - fromTime) <= 120);
+        if (!alreadyIndexed) {
+          cooldowns.push({
+            fromTime,
+            toTime: Math.floor(active.untilMs / 1000),
+            wakeAbove: active.wakeAbove,
+            wakeBelow: active.wakeBelow,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not read active AI cooldown for ${symbol}:`, err);
+    }
+    cooldowns.sort((a, b) => a.fromTime - b.fromTime);
+
     res.setHeader(
       'x-swing-chart-cache',
       `candles=${candleCacheStatus}; overlay=${overlayCacheStatus}; closedPositions=${closedPositionSource}`,
@@ -544,7 +602,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'x-swing-chart-timing-ms',
       `candles=${candleLoadMs}; markers=${markerLoadMs}; overlay=${overlayLoadMs}; total=${Date.now() - requestStartedAt}`,
     );
-    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders });
+    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders, cooldowns });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });

@@ -24,6 +24,19 @@ function isMarkerAction(action: unknown): boolean {
     return MARKER_ACTIONS.has(String(action || '').trim().toUpperCase());
 }
 
+// Flat HOLDs that started a cooldown with at least one wake band also enter the
+// per-symbol index: the chart draws the bands as gray horizontal segments over
+// the cooldown window. They are NOT marker actions (no chart arrow) — chart-side
+// consumers that mean "entry/exit decisions" must filter by action themselves.
+export function isCooldownBandDecision(aiDecision: any): boolean {
+    if (String(aiDecision?.action || '').trim().toUpperCase() !== 'HOLD') return false;
+    const minutes = Number(aiDecision?.cooldown_minutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) return false;
+    const above = Number(aiDecision?.cooldown_wake_above);
+    const below = Number(aiDecision?.cooldown_wake_below);
+    return (Number.isFinite(above) && above > 0) || (Number.isFinite(below) && below > 0);
+}
+
 function markerIndexKey(symbol: string, platform?: string): string {
     return `${MARKER_INDEX_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
 }
@@ -207,7 +220,8 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
 
         // Mirror entry/exit decisions into the per-symbol marker index so the chart
         // can fetch just this symbol's markers without scanning the global index.
-        if (isMarkerAction(entry.aiDecision?.action)) {
+        // Cooldown-band HOLDs ride along for the chart's wake-band segments.
+        if (isMarkerAction(entry.aiDecision?.action) || isCooldownBandDecision(entry.aiDecision)) {
             const mKey = markerIndexKey(entry.symbol, entry.platform);
             await kvZAdd(mKey, entry.timestamp, key);
             await kvZRemRangeByScore(mKey, 0, cutoff);
@@ -332,8 +346,8 @@ export async function loadSymbolMarkerHistory(
         const seeded = await kvGet(seededKey);
         if (seeded) return [];
 
-        const legacy = (await loadDecisionHistory(symbol, 1200, platform)).filter((h) =>
-            isMarkerAction(h?.aiDecision?.action),
+        const legacy = (await loadDecisionHistory(symbol, 1200, platform)).filter(
+            (h) => isMarkerAction(h?.aiDecision?.action) || isCooldownBandDecision(h?.aiDecision),
         );
         // Populate the index so future reads are fast.
         await Promise.all(

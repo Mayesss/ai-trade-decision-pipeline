@@ -46,6 +46,16 @@ type ChartApiResponse = {
   markers?: any[];
   positions?: PositionOverlay[];
   pendingOrders?: PendingOrderLine[];
+  cooldowns?: CooldownBandSegment[];
+};
+
+// An AI flat-HOLD cooldown window with its wake band levels — drawn as gray
+// dashed horizontal segments spanning exactly the cooldown (times in epoch s).
+type CooldownBandSegment = {
+  fromTime: number;
+  toTime: number;
+  wakeAbove?: number | null;
+  wakeBelow?: number | null;
 };
 
 // A resting pullback limit entry (Bitget normal order / Capital working order),
@@ -379,6 +389,8 @@ type OverlayTheme = {
   neutralText: string;
   partialStroke: string;
   partialText: string;
+  cooldownBand: string;
+  cooldownFill: string;
 };
 
 const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
@@ -396,6 +408,8 @@ const buildOverlayTheme = (isDark: boolean): OverlayTheme => ({
   neutralText: isDark ? 'rgb(212,212,216)' : 'rgb(51,65,85)',
   partialStroke: isDark ? 'rgba(251,191,36,0.95)' : 'rgba(245,158,11,0.9)',
   partialText: isDark ? 'rgb(253,230,138)' : 'rgb(146,64,14)',
+  cooldownBand: isDark ? 'rgba(161,161,170,0.65)' : 'rgba(113,113,122,0.6)',
+  cooldownFill: isDark ? 'rgba(161,161,170,0.12)' : 'rgba(113,113,122,0.1)',
 });
 
 type OverlayPrimitiveDatum = {
@@ -501,12 +515,42 @@ const drawOverlayBadge = (
 class PositionOverlayRenderer {
   constructor(
     private readonly items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[],
+    private readonly bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[],
     private readonly theme: OverlayTheme,
   ) {}
   draw(target: any) {
     target.useMediaCoordinateSpace((scope: any) => {
       const ctx = scope.context as CanvasRenderingContext2D;
       const paneHeight = scope.mediaSize.height as number;
+      // Cooldown wake zones: a translucent gray box between the two wake bands
+      // over exactly the cooldown window, with dashed edges — reads as "the AI
+      // sleeps while price stays inside this range", visually distinct from the
+      // full-width TP/SL price lines. A one-sided band degrades to its dashed
+      // edge only. Drawn before the position boxes so those stay on top.
+      if (this.bandItems.length) {
+        for (const band of this.bandItems) {
+          const left = band.left;
+          const right = Math.max(band.right, band.left + 2);
+          if (band.yAbove !== null && band.yBelow !== null) {
+            const zoneTop = Math.min(band.yAbove, band.yBelow);
+            const zoneHeight = Math.abs(band.yBelow - band.yAbove);
+            ctx.fillStyle = this.theme.cooldownFill;
+            ctx.fillRect(left, zoneTop, right - left, Math.max(1, zoneHeight));
+          }
+          ctx.strokeStyle = this.theme.cooldownBand;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 3]);
+          for (const yEdge of [band.yAbove, band.yBelow]) {
+            if (yEdge === null) continue;
+            const y = Math.round(yEdge) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(left, y);
+            ctx.lineTo(right, y);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+        }
+      }
       const top = OVERLAY_INSET_Y;
       const height = Math.max(0, paneHeight - OVERLAY_INSET_Y * 2);
       if (height <= 0) return;
@@ -546,15 +590,43 @@ class PositionOverlayRenderer {
 
 class PositionOverlayPaneView {
   private items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[] = [];
+  private bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[] = [];
   constructor(private readonly source: PositionOverlayPrimitive) {}
   update() {
     const chart = this.source.chart;
     const data = this.source.data;
-    if (!chart || !data.length) {
+    if (!chart) {
       this.items = [];
+      this.bandItems = [];
       return;
     }
     const timeScale = chart.timeScale();
+    const series = this.source.series;
+    this.bandItems =
+      series && typeof series.priceToCoordinate === 'function'
+        ? (this.source.bands
+            .map((band) => {
+              const x1 = timeScale.timeToCoordinate(band.fromTime);
+              const x2 = timeScale.timeToCoordinate(band.toTime);
+              if (x1 === null || x2 === null || !Number.isFinite(x1) || !Number.isFinite(x2)) {
+                return null;
+              }
+              const toY = (level: number | null): number | null => {
+                if (level === null) return null;
+                const y = series.priceToCoordinate(level);
+                return y !== null && Number.isFinite(y) ? y : null;
+              };
+              const yAbove = toY(band.above);
+              const yBelow = toY(band.below);
+              if (yAbove === null && yBelow === null) return null;
+              return { left: Math.min(x1, x2), right: Math.max(x1, x2), yAbove, yBelow };
+            })
+            .filter(Boolean) as { left: number; right: number; yAbove: number | null; yBelow: number | null }[])
+        : [];
+    if (!data.length) {
+      this.items = [];
+      return;
+    }
     this.items = data
       .map((datum) => {
         const x1 = timeScale.timeToCoordinate(datum.entryTime);
@@ -572,13 +644,20 @@ class PositionOverlayPaneView {
       .filter(Boolean) as { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[];
   }
   renderer() {
-    return new PositionOverlayRenderer(this.items, this.source.theme);
+    return new PositionOverlayRenderer(this.items, this.bandItems, this.source.theme);
   }
 }
 
+// A cooldown window with its wake levels, candle-snapped. Rendered as a shaded
+// gray zone between the bands (dashed edges) so it reads as a quiet range over
+// a time window, not as another TP/SL-style price level line.
+type CooldownBandItem = { fromTime: number; toTime: number; above: number | null; below: number | null };
+
 class PositionOverlayPrimitive {
   chart: any = null;
+  series: any = null;
   data: OverlayPrimitiveDatum[] = [];
+  bands: CooldownBandItem[] = [];
   theme: OverlayTheme;
   private requestUpdate: (() => void) | null = null;
   private readonly paneView: PositionOverlayPaneView;
@@ -588,10 +667,12 @@ class PositionOverlayPrimitive {
   }
   attached(param: any) {
     this.chart = param.chart;
+    this.series = param.series ?? null;
     this.requestUpdate = param.requestUpdate;
   }
   detached() {
     this.chart = null;
+    this.series = null;
     this.requestUpdate = null;
   }
   updateAllViews() {
@@ -602,6 +683,10 @@ class PositionOverlayPrimitive {
   }
   setData(data: OverlayPrimitiveDatum[]) {
     this.data = data;
+    this.requestUpdate?.();
+  }
+  setBands(bands: CooldownBandItem[]) {
+    this.bands = bands;
     this.requestUpdate?.();
   }
   setTheme(theme: OverlayTheme) {
@@ -665,6 +750,47 @@ const buildOverlayPrimitiveData = (
   return { data, snapped };
 };
 
+// Snap each cooldown window to candle times (timeToCoordinate needs exact bar
+// times), keeping the wake_above/wake_below pair together so the renderer can
+// shade the zone between them. Windows fully outside the loaded candles are
+// dropped; ones sticking out are clamped, so a still-running cooldown ends at
+// the last bar.
+const buildCooldownBandItems = (
+  chartData: { time: number; value: number }[],
+  bands: CooldownBandSegment[],
+): CooldownBandItem[] => {
+  if (!chartData.length || !bands.length) return [];
+  const minTime = chartData[0].time;
+  const maxTime = chartData[chartData.length - 1].time;
+  const candleTimes = chartData.map((c) => c.time);
+  const nearestTime = (target: number) =>
+    candleTimes.reduce(
+      (prev, curr) => (Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev),
+      candleTimes[0],
+    );
+  const positiveLevel = (level: unknown): number | null => {
+    const value = Number(level);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+  const items: CooldownBandItem[] = [];
+  for (const band of bands) {
+    const fromRaw = Number(band.fromTime);
+    const toRaw = Number(band.toTime);
+    if (!Number.isFinite(fromRaw) || !Number.isFinite(toRaw) || toRaw <= fromRaw) continue;
+    if (toRaw < minTime || fromRaw > maxTime) continue;
+    const above = positiveLevel(band.wakeAbove);
+    const below = positiveLevel(band.wakeBelow);
+    if (above === null && below === null) continue;
+    items.push({
+      fromTime: nearestTime(Math.min(Math.max(fromRaw, minTime), maxTime)),
+      toTime: nearestTime(Math.min(Math.max(toRaw, minTime), maxTime)),
+      above,
+      below,
+    });
+  }
+  return items;
+};
+
 export default function ChartPanel(props: ChartPanelProps) {
   const {
     symbol,
@@ -690,6 +816,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
   const [pendingOrders, setPendingOrders] = useState<PendingOrderLine[]>([]);
+  const [cooldownBands, setCooldownBands] = useState<CooldownBandSegment[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartAttempted, setChartAttempted] = useState(false);
   const [hoveredOverlay, setHoveredOverlay] = useState<PositionOverlay | null>(null);
@@ -754,6 +881,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     const nextPositions = Array.isArray(payload.positions) ? payload.positions : [];
     setPositionOverlays(nextPositions);
     setPendingOrders(Array.isArray(payload.pendingOrders) ? payload.pendingOrders : []);
+    setCooldownBands(Array.isArray(payload.cooldowns) ? payload.cooldowns : []);
     const openPosition = nextPositions.find((pos) => pos?.status === 'open') ?? null;
     const closedPositions = nextPositions.filter((pos) => pos?.status === 'closed');
     const closedPcts = closedPositions
@@ -797,7 +925,9 @@ export default function ChartPanel(props: ChartPanelProps) {
       setChartAttempted(false);
       setChartData([]);
       setPositionOverlays([]);
+      setCooldownBands([]);
       overlayPrimitiveRef.current?.setData([]);
+      overlayPrimitiveRef.current?.setBands([]);
       snappedOverlaysRef.current = [];
       pinnedOverlayIdRef.current = null;
       setHoveredOverlay(null);
@@ -1192,6 +1322,14 @@ export default function ChartPanel(props: ChartPanelProps) {
   useEffect(() => {
     overlayPrimitiveRef.current?.setTheme(buildOverlayTheme(isDark));
   }, [isDark]);
+
+  // Feed cooldown wake bands to the same canvas primitive — gray dashed
+  // horizontal segments spanning each cooldown window. Same pattern as the
+  // position overlays above: snapping depends only on the data; the chart
+  // repaints the primitive on zoom/resize itself.
+  useEffect(() => {
+    overlayPrimitiveRef.current?.setBands(buildCooldownBandItems(chartData, cooldownBands));
+  }, [cooldownBands, chartData, chartInitToken]);
 
   // Standing exchange-side bracket of the open position: thin horizontal price
   // lines — TP green, SL red. Recreated whenever the overlay payload or the
