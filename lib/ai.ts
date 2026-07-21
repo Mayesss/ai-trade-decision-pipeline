@@ -1240,7 +1240,7 @@ Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, 
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed (flat)${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Plan levels; do not plan to watch.
+- Earlier looks happen only when: a wake band you set is crossed (flat)${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
