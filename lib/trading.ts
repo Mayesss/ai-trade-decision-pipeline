@@ -39,8 +39,11 @@ export interface TradeDecision {
     entry_limit_price?: number | null;
 }
 
-// Profit-lock margin-recycle feature flags (crypto only). Ships OFF; the Bitget
-// TP/SL endpoint used to move the stop must be validated on testnet before enabling.
+// Profit-lock margin-recycle feature flags (crypto only). The full sequence —
+// BE stop (modify path) → set-leverage raise on the open isolated position →
+// reduceOnly trim → post-trim stop amend — was validated end-to-end on Bitget
+// DEMO 2026-07-21 (scripts/validate-bitget-tpsl.ts, phases A–F all green).
+// Enable via env; production needs ENABLE_CRYPTO_MARGIN_RECYCLE=true on Vercel.
 const MARGIN_RECYCLE_ENABLED = process.env.ENABLE_CRYPTO_MARGIN_RECYCLE === 'true';
 // Breakeven stop sits this many bps past entry so the locked exit is net
 // non-negative after round-trip venue fees (~0.30R).
@@ -93,8 +96,10 @@ function deriveOrderNotional(sideSizeUSDT: number, leverage: number | null): num
 
 // Raw set-leverage POST — no clamping. Callers own the clamp (1–5 at entry via
 // applyLeverage; up to symbol max for the profit-lock raise via
-// clampManagementLeverage), so this helper stays policy-free.
-async function postSetLeverage(symbol: string, productType: ProductType, leverage: number, holdSide?: 'long' | 'short') {
+// clampManagementLeverage), so this helper stays policy-free. Exported for
+// scripts/validate-bitget-tpsl.ts (demo phase E certifies set-leverage on an
+// OPEN isolated position via this exact function).
+export async function postSetLeverage(symbol: string, productType: ProductType, leverage: number, holdSide?: 'long' | 'short') {
     const pt = (productType as string).toUpperCase();
     const body: any = {
         symbol,
@@ -142,6 +147,26 @@ function clampManagementLeverage(target: unknown, current: number, symbolMax: nu
     const hi = Math.max(lo, Math.floor(symbolMax));
     const clamped = Math.max(lo, Math.min(hi, n));
     return clamped > current ? clamped : null;
+}
+
+// After the margin-recycle maneuver rests a breakeven stop, the AI's own stop
+// amend is applied only when it TIGHTENS protection past that BE trigger
+// (long: higher, short: lower). Otherwise the BE stop stands and the amend leg
+// is dropped — the maneuver's floor must never be loosened by a same-tick
+// amend. No BE trigger (maneuver didn't move the stop) → the AI stop passes
+// through untouched (the route's sanitize already enforced tighten-only vs the
+// pre-tick standing stop).
+export function pickTighterStop(
+    side: 'long' | 'short',
+    beTriggerPrice: number | null | undefined,
+    aiStopPrice: number | null | undefined,
+): number | null {
+    const aiStop = Number(aiStopPrice);
+    if (!(Number.isFinite(aiStop) && aiStop > 0)) return null;
+    const beTrigger = Number(beTriggerPrice);
+    if (!(Number.isFinite(beTrigger) && beTrigger > 0)) return aiStop;
+    if (side === 'long') return aiStop > beTrigger ? aiStop : null;
+    return aiStop < beTrigger ? aiStop : null;
 }
 
 // Move a position's stop-loss to (just past) breakeven via the position-level
@@ -472,7 +497,9 @@ export function getTargetLeverage(decision: TradeDecision): number | null {
 // CLOSE before the normal action handling: move the stop to breakeven, then raise
 // leverage toward the symbol max (freeing isolated margin without cutting size).
 // Returns null when the feature is off or the decision requests no management.
-async function maybeManagePosition(args: {
+// Exported for scripts/validate-bitget-tpsl.ts (demo phase F runs the real
+// maneuver → trim → post-trim amend sequence end-to-end).
+export async function maybeManagePosition(args: {
     symbol: string;
     productType: ProductType;
     decision: TradeDecision;
@@ -520,13 +547,17 @@ async function maybeManagePosition(args: {
     const clampMax = Number.isFinite(symbolMax) && symbolMax > 0 ? symbolMax : currentLev;
 
     if (dryRun) {
+        const plannedTrigger = Number(beTrigger.toFixed(Math.max(0, pricePlace)));
         return {
             managed: true,
             dryRun: true,
             side,
             entry,
             mark,
-            beStop: { plannedTrigger: Number(beTrigger.toFixed(Math.max(0, pricePlace))) },
+            beStop: { plannedTrigger },
+            // Normalized BE trigger for the post-maneuver stop-amend guard
+            // (pickTighterStop) — present whenever the maneuver owns the stop.
+            beTriggerPrice: wantBE ? plannedTrigger : null,
             plannedLeverage: wantLevRaise
                 ? clampManagementLeverage(decision.raise_leverage_to, currentLev, clampMax)
                 : null,
@@ -570,6 +601,9 @@ async function maybeManagePosition(args: {
         managed: true,
         side,
         beStop: beResult,
+        // Normalized BE trigger for the post-maneuver stop-amend guard
+        // (pickTighterStop) — set only when the BE stop actually rests.
+        beTriggerPrice: beResult?.ok ? beResult.triggerPrice : null,
         leverageRaised,
         // Surfaced so extractCapturedLeverages records the post-raise leverage on
         // this decision's history entry, keeping the captured-leverage timeline true.
@@ -798,35 +832,43 @@ export async function executeDecision(
         // escalate to a full close — that would defeat "trim X% and let the rest
         // run". On any failure we surface it and leave the position intact rather
         // than flash-closing everything.
+        //
+        // Order of operations (profit-recycle sequence): 1) management — BE stop
+        // then leverage raise (maybeManagePosition owns that internal order and
+        // aborts the raise if the BE stop fails) → 2) reduceOnly trim → 3) bracket
+        // amend against the POST-TRIM position (modify-tpsl needs the current
+        // size; amending before the trim leaves a stale-size plan → 43023). The
+        // AI's stop amend is applied only when it tightens past the maneuver's
+        // BE trigger (pickTighterStop) — never loosening the just-rested floor.
         if (partialClosePct !== null && partialClosePct < 100) {
-            // Profit-lock management runs BEFORE the trim: raise the stop to
-            // breakeven and (optionally) leverage first, so the remainder that
-            // keeps running is protected. Reuses the already-fetched position.
             const trimMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun, pos });
             const trimMgmtLev = trimMgmt && (trimMgmt as any).managed ? (trimMgmt as any).leverage : undefined;
+            const beTriggerPrice =
+                trimMgmt && (trimMgmt as any).managed ? ((trimMgmt as any).beTriggerPrice ?? null) : null;
             // Bracket amend targets the remainder that keeps running, so it runs
-            // even if the trim order itself fails below (protective either way).
-            // When the margin-recycle BE stop just moved the stop this tick, the
-            // AI's stop amend is skipped rather than fighting it.
-            const trimBeMoved = Boolean(trimMgmt && (trimMgmt as any).managed && decision.move_stop_to_be === true);
-            const trimTpsl =
-                decision.take_profit_price != null || decision.stop_loss_price != null
-                    ? await updatePositionTpsl({
-                          symbol,
-                          productType,
-                          takeProfitPrice: decision.take_profit_price ?? null,
-                          stopLossPrice: trimBeMoved ? null : decision.stop_loss_price ?? null,
-                          dryRun,
-                          pos,
-                      })
-                    : null;
-            const mgmtFields = {
+            // even when the trim itself fails or is skipped (protective either
+            // way) — with the freshest position snapshot available.
+            const amendBracket = async (posForAmend: PositionInfo) => {
+                const guardedStop = pos.holdSide
+                    ? pickTighterStop(pos.holdSide, beTriggerPrice, decision.stop_loss_price ?? null)
+                    : (decision.stop_loss_price ?? null);
+                if (decision.take_profit_price == null && guardedStop == null) return null;
+                return updatePositionTpsl({
+                    symbol,
+                    productType,
+                    takeProfitPrice: decision.take_profit_price ?? null,
+                    stopLossPrice: guardedStop,
+                    dryRun,
+                    pos: posForAmend,
+                });
+            };
+            const mgmtFields = (tpsl: Awaited<ReturnType<typeof amendBracket>>) => ({
                 ...(trimMgmt ? { management: trimMgmt } : {}),
-                ...(trimTpsl ? { tpsl: trimTpsl } : {}),
+                ...(tpsl ? { tpsl } : {}),
                 ...(Number.isFinite(Number(trimMgmtLev)) && Number(trimMgmtLev) > 0
                     ? { leverage: Number(trimMgmtLev) }
                     : {}),
-            };
+            });
             const posSize = Number(pos.total ?? pos.available);
             if (!(Number.isFinite(posSize) && posSize > 0 && pos.holdSide)) {
                 return {
@@ -835,7 +877,7 @@ export async function executeDecision(
                     clientOid,
                     closed: false,
                     note: 'partial_close_unknown_position_size',
-                    ...mgmtFields,
+                    ...mgmtFields(await amendBracket(pos)),
                 };
             }
             const targetSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
@@ -849,7 +891,7 @@ export async function executeDecision(
                     partialClosePct,
                     targetSize,
                     posSize,
-                    ...mgmtFields,
+                    ...mgmtFields(await amendBracket(pos)),
                 };
             }
             const partialIsHedge = pos.posMode === 'hedge_mode';
@@ -877,6 +919,13 @@ export async function executeDecision(
             }
             try {
                 const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+                // Trim placed: amend against the post-trim position so the
+                // modify-tpsl size is fresh. If the refetch shows the position
+                // gone (stop/TP filled mid-trim), skip the amend — there is
+                // nothing left to bracket.
+                const postTrimPos = await fetchPositionInfo(symbol).catch(() => null);
+                const trimTpsl =
+                    postTrimPos && postTrimPos.status === 'open' ? await amendBracket(postTrimPos) : null;
                 return {
                     placed: true,
                     orderId: res?.orderId || res?.order_id || null,
@@ -886,7 +935,7 @@ export async function executeDecision(
                     partialClosePct,
                     size: targetSize,
                     raw: res,
-                    ...mgmtFields,
+                    ...mgmtFields(trimTpsl),
                 };
             } catch (err) {
                 // Leave the position intact: the request was to keep the
@@ -902,7 +951,7 @@ export async function executeDecision(
                     size: targetSize,
                     note: 'partial_close_failed',
                     error: err instanceof Error ? err.message : String(err),
-                    ...mgmtFields,
+                    ...mgmtFields(await amendBracket(pos)),
                 };
             }
         }
@@ -915,17 +964,26 @@ export async function executeDecision(
     }
 
     // HOLD (+ optional in-place profit-lock / margin-recycle management for crypto,
-    // + exchange-side TP/SL bracket amend when the decision carries new levels)
+    // + exchange-side TP/SL bracket amend when the decision carries new levels).
+    // When the maneuver just rested a BE stop, the AI's stop amend applies only
+    // if it tightens past that trigger (pickTighterStop) — a tighter structural
+    // stop is welcome, a looser one must not undo the floor.
     const holdMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun });
     const holdMgmtLev = holdMgmt && (holdMgmt as any).managed ? (holdMgmt as any).leverage : undefined;
-    const holdBeMoved = Boolean(holdMgmt && (holdMgmt as any).managed && decision.move_stop_to_be === true);
+    const holdBeTrigger =
+        holdMgmt && (holdMgmt as any).managed ? ((holdMgmt as any).beTriggerPrice ?? null) : null;
+    const holdMgmtSide = holdMgmt && (holdMgmt as any).managed ? ((holdMgmt as any).side ?? null) : null;
+    const holdGuardedStop =
+        holdBeTrigger != null && (holdMgmtSide === 'long' || holdMgmtSide === 'short')
+            ? pickTighterStop(holdMgmtSide, holdBeTrigger, decision.stop_loss_price ?? null)
+            : (decision.stop_loss_price ?? null);
     const holdTpsl =
-        decision.take_profit_price != null || decision.stop_loss_price != null
+        decision.take_profit_price != null || holdGuardedStop != null
             ? await updatePositionTpsl({
                   symbol,
                   productType,
                   takeProfitPrice: decision.take_profit_price ?? null,
-                  stopLossPrice: holdBeMoved ? null : decision.stop_loss_price ?? null,
+                  stopLossPrice: holdGuardedStop,
                   dryRun,
               })
             : null;

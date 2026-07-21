@@ -10,8 +10,22 @@
 //   C. closing the position auto-cancels the TPSL plans (no orphans).
 //   D. place-tpsl-order creates position TPSL on a bare position
 //      → updatePositionTpsl's place path, then a second amend takes modify.
+//   E. set-leverage on an OPEN isolated position (postSetLeverage): leverage
+//      changes, size unchanged, resting TPSL plans survive → the margin-recycle
+//      raise's endpoint semantics.
+//   F. full profit-recycle sequence via the REAL maybeManagePosition:
+//      BE stop (modify path) → leverage raise → reduceOnly partial trim →
+//      post-trim stop amend with the fresh position size (the 43023 case).
 //
-// Run:  npx tsx scripts/validate-bitget-tpsl.ts
+// Run:  ENABLE_CRYPTO_MARGIN_RECYCLE=true \
+//       CRYPTO_MARGIN_RECYCLE_MIN_PROFIT_BPS=-100000 \
+//       CRYPTO_BE_STOP_FEE_BUFFER_BPS=-100 \
+//       npx tsx scripts/validate-bitget-tpsl.ts
+//       (the flag enables the maneuver for phase F; the two overrides let it run
+//       on a just-opened demo position that has no profit cushion — the guard
+//       always passes and the "breakeven" trigger sits ~1% below entry so the
+//       pos_loss plan lands on the valid side of the mark price. Production
+//       keeps the real defaults; endpoint semantics are identical.)
 // Env:  BITGET_DEMO_API_KEY / BITGET_DEMO_API_SECRET / BITGET_DEMO_API_PASSPHRASE
 //       (demo-trading keys; falls back to the live keys, which Bitget rejects
 //       for paptrading with 40099). Optional: BITGET_DEMO_SYMBOL (default BTCUSDT).
@@ -31,7 +45,7 @@ import { bitgetFetch } from '../lib/bitget';
 import type { ProductType } from '../lib/bitget';
 import { fetchSymbolMeta } from '../lib/analytics';
 import type { PositionInfo } from '../lib/analytics';
-import { fetchPositionTpsl, updatePositionTpsl } from '../lib/trading';
+import { fetchPositionTpsl, updatePositionTpsl, postSetLeverage, maybeManagePosition, pickTighterStop } from '../lib/trading';
 
 const DEMO_PT = 'USDT-FUTURES' as unknown as ProductType;
 const MARGIN_COIN = 'USDT';
@@ -64,6 +78,8 @@ async function getOpenPosition(symbol: string): Promise<PositionInfo> {
     const rows = Array.isArray(data) ? data : [];
     const row = rows.find((r: any) => Number(r?.total) > 0);
     if (!row) return { status: 'none' };
+    const levRaw = Number(row.leverage ?? row.marginLeverage ?? row.lever);
+    const markRaw = Number(row.markPrice);
     return {
         status: 'open',
         symbol,
@@ -72,6 +88,10 @@ async function getOpenPosition(symbol: string): Promise<PositionInfo> {
         marginCoin: MARGIN_COIN,
         total: String(row.total),
         posMode: row.posMode === 'hedge_mode' ? 'hedge_mode' : 'one_way_mode',
+        // Needed by the phase E/F management checks (maybeManagePosition wants
+        // entry, mark and leverage).
+        leverage: Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null,
+        markPrice: Number.isFinite(markRaw) && markRaw > 0 ? markRaw : null,
     };
 }
 
@@ -237,6 +257,125 @@ async function main() {
             pos: posD,
         });
         check('D4 second amend takes the modify path', upD2.takeProfit?.applied === true && upD2.takeProfit?.mode === 'modify', upD2.takeProfit);
+
+        // ---- Phase E: set-leverage on the OPEN isolated position ----
+        // Continues from phase D: position open with placed TPSL plans resting.
+        await sleep(2_000);
+        const posE0 = await getOpenPosition(symbol);
+        if (posE0.status !== 'open' || !posE0.holdSide) throw new Error('phase E expected an open position');
+        const levBefore = Number(posE0.leverage);
+        const sizeBefore = Number(posE0.total);
+        const plansE0 = await fetchPositionTpsl(symbol, DEMO_PT);
+        check('E0 preconditions: leverage+size readable, plans resting', levBefore > 0 && sizeBefore > 0 && plansE0.stopLoss != null, {
+            levBefore,
+            sizeBefore,
+        });
+        const levTargetE = Math.round(levBefore + 5);
+        await postSetLeverage(symbol, DEMO_PT, levTargetE, posE0.holdSide);
+        await sleep(2_000);
+        const posE1 = await getOpenPosition(symbol);
+        check('E1 leverage raised on the open position', Number((posE1 as any).leverage) === levTargetE, {
+            before: levBefore,
+            after: (posE1 as any).leverage,
+        });
+        check('E2 position size unchanged by the raise', Number((posE1 as any).total) === sizeBefore, {
+            before: sizeBefore,
+            after: (posE1 as any).total,
+        });
+        const plansE1 = await fetchPositionTpsl(symbol, DEMO_PT);
+        check('E3 resting TPSL plans survive the leverage change', plansE1.takeProfit != null && plansE1.stopLoss != null, plansE1);
+
+        // ---- Phase F: full profit-recycle sequence (real maybeManagePosition) ----
+        // Double the position first so a 50% trim stays >= minTradeNum.
+        const metaF = await fetchSymbolMeta(symbol, DEMO_PT);
+        const minTradeNum = String(metaF.minTradeNum ?? '0.001');
+        const addBody: any = {
+            symbol,
+            productType: DEMO_PT,
+            marginCoin: MARGIN_COIN,
+            marginMode: 'isolated',
+            side: 'buy',
+            orderType: 'market',
+            size: minTradeNum,
+            clientOid: `tpsl-val-add-${Date.now()}`,
+            force: 'gtc',
+        };
+        if (posMode === 'hedge_mode') addBody.tradeSide = 'open';
+        await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, addBody);
+        await sleep(2_500);
+        const posF0 = await getOpenPosition(symbol);
+        if (posF0.status !== 'open' || !posF0.holdSide) throw new Error('phase F expected an open position');
+        const sizeF0 = Number(posF0.total);
+        info('phase F position', { size: sizeF0, leverage: posF0.leverage, entry: posF0.entryPrice });
+
+        // 1) Management: BE stop (modify path — plans exist) then leverage raise.
+        //    Requires ENABLE_CRYPTO_MARGIN_RECYCLE=true and the demo-friendly
+        //    profit/buffer overrides from the header (guard passes, trigger lands
+        //    on the valid side of the mark price).
+        const levTargetF = Math.round(Number(posF0.leverage ?? levTargetE) + 5);
+        const mgmtF = await maybeManagePosition({
+            symbol,
+            productType: DEMO_PT,
+            decision: { action: 'CLOSE', exit_size_pct: 50, raise_leverage_to: levTargetF, move_stop_to_be: true } as any,
+            dryRun: false,
+            pos: posF0,
+        });
+        check('F1 maneuver ran and BE stop rested (modify path)', Boolean((mgmtF as any)?.managed && (mgmtF as any)?.beStop?.ok), mgmtF);
+        check('F2 leverage raise applied after the BE stop', (mgmtF as any)?.leverageRaised === true, {
+            leverage: (mgmtF as any)?.leverage,
+            error: (mgmtF as any)?.leverageError,
+        });
+        const beTriggerF = Number((mgmtF as any)?.beTriggerPrice);
+        check('F3 maneuver surfaced its BE trigger for the stop-amend guard', Number.isFinite(beTriggerF) && beTriggerF > 0, {
+            beTriggerF,
+        });
+
+        // 2) reduceOnly 50% trim (production body shape).
+        const stepF = parseFloat(String(metaF.sizeMultiplier ?? minTradeNum));
+        const rawHalf = sizeF0 / 2;
+        const trimSize = Math.max(Math.floor(rawHalf / stepF) * stepF, parseFloat(minTradeNum));
+        const trimBody: any = {
+            symbol,
+            productType: DEMO_PT,
+            marginCoin: MARGIN_COIN,
+            marginMode: 'isolated',
+            orderType: 'market',
+            size: trimSize.toString(),
+            clientOid: `tpsl-val-trim-${Date.now()}`,
+            force: 'gtc',
+        };
+        if (posMode === 'hedge_mode') {
+            trimBody.side = posF0.holdSide === 'long' ? 'buy' : 'sell';
+            trimBody.tradeSide = 'close';
+            trimBody.holdSide = posF0.holdSide;
+        } else {
+            trimBody.side = posF0.holdSide === 'long' ? 'sell' : 'buy';
+            trimBody.reduceOnly = 'YES';
+        }
+        await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, trimBody);
+        await sleep(2_500);
+        const posF1 = await getOpenPosition(symbol);
+        check('F4 reduceOnly trim reduced the position', posF1.status === 'open' && Number((posF1 as any).total) < sizeF0, {
+            before: sizeF0,
+            after: (posF1 as any).total,
+        });
+
+        // 3) Post-trim stop amend with the FRESH position (modify must send the
+        //    current size — stale size is the 43023 failure this certifies against).
+        const aiStopTighter = posF0.holdSide === 'long' ? beTriggerF * 1.002 : beTriggerF * 0.998;
+        const guardedStop = pickTighterStop(posF0.holdSide, beTriggerF, aiStopTighter);
+        check('F5 pickTighterStop keeps a tighter stop / drops a looser one', guardedStop === aiStopTighter &&
+            pickTighterStop(posF0.holdSide, beTriggerF, posF0.holdSide === 'long' ? beTriggerF * 0.99 : beTriggerF * 1.01) === null, {
+            beTriggerF,
+            aiStopTighter,
+        });
+        const upF = await updatePositionTpsl({
+            symbol,
+            productType: DEMO_PT,
+            stopLossPrice: guardedStop,
+            pos: posF1.status === 'open' ? posF1 : undefined,
+        });
+        check('F6 post-trim stop amend applied with fresh size (no 43023)', upF.stopLoss?.applied === true && upF.stopLoss?.mode === 'modify', upF.stopLoss);
     } finally {
         // ---- Cleanup: never leave a demo position or stray plans behind ----
         await flashClose(symbol);

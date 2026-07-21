@@ -852,7 +852,7 @@ export function computeSwingState(
     const manageGuidance = isCapital
         ? ''
         : marginRecycleEnabled
-          ? 'Margin recycle (only with a real profit cushion): on HOLD or a partial CLOSE you MAY move the stop to breakeven (move_stop_to_be=true) and raise leverage (raise_leverage_to, up to the symbol exchange max — the system clamps your value to [current, max]). On isolated margin this frees margin for future trades WITHOUT cutting size, and the breakeven stop caps the remainder’s risk. A leverage raise always forces a breakeven stop first. Not in profit → null both.'
+          ? 'Margin recycle (only with a real profit cushion): on HOLD or a partial CLOSE you MAY move the stop to breakeven (move_stop_to_be=true) and raise leverage (raise_leverage_to, up to the symbol exchange max — the system clamps your value to [current, max]). On isolated margin this frees margin for future trades WITHOUT cutting size, and the breakeven stop caps the remainder’s risk. The natural pairing on a winner reaching a major opposite level is ONE decision that combines all three: raise_leverage_to + exit_size_pct 30–70 + a tightened stop_loss_price — the system executes breakeven-stop → leverage raise → trim → your stop, and applies your stop only when it is TIGHTER than the breakeven trigger (a looser one is dropped, the breakeven floor stands). A leverage raise always forces a breakeven stop first; if that stop cannot rest, the raise is aborted. Not in profit → null both.'
           : 'Always output raise_leverage_to=null and move_stop_to_be=null (feature disabled).';
 
     // signal_strength is OWNED BY CODE (computeSignalStrength). It is NOT shown to the
