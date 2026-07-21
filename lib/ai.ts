@@ -837,7 +837,7 @@ export function computeSwingState(
     // not pick it. Only crypto (Bitget) takes a model-chosen 5–10 leverage.
     const leverageGuidance = isCapital
         ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
-        : `Leverage 5–10 by conviction AND risk: cut to 5–6 even on HIGH conviction when extended or near major ${contextTimeframe} levels. null on HOLD/CLOSE.`;
+        : `Leverage 5–10 (crypto): position size is computed in code from fixed dollar risk ÷ your stop distance, so leverage does NOT change what a stop-out costs — it only sets how much margin the position locks (higher = less margin tied up, liquidation nearer). Prefer 5–6 when volatility is elevated or near major ${contextTimeframe} levels; null on HOLD/CLOSE.`;
     const leverageTask = isCapital
         ? 'do NOT output a leverage field — leverage is broker-defined per asset class on this venue.'
         : 'leverage 5–10 for BUY/SELL/REVERSE, else null.';
@@ -1238,6 +1238,10 @@ TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).
 Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
+CADENCE (how often you are actually consulted)
+- You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
+- Earlier looks happen only when: a wake band you set is crossed (flat)${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Plan levels; do not plan to watch.
+
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
@@ -1245,7 +1249,7 @@ INPUTS
 - LESSONS (user turn, when present): 1-2 line lessons distilled from forensic post-mortems of your own past LOSING trades on this symbol, its asset class, or any instrument ([scope] tag). These are failure modes you have actually exhibited, not generic advice — before entering, check the setup against them and note in your reason when one applies. They are cautionary evidence like recent_actions outcomes, never hard rules: current structure and measurements win on conflict.
 
 DECISION OWNERSHIP
-- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Size leverage to that conviction.'}
+- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Position size is computed in code from a fixed dollar risk and your stop distance — your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.'}
 - The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:
   1. Allowed actions: flat → BUY/SELL/HOLD; in a position → HOLD/CLOSE/REVERSE only.
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
@@ -1275,8 +1279,12 @@ ${
             ? `- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.`
             : `- entry_limit_price: ALWAYS null — resting pullback limits are disabled (a resting limit's fill is adversely selected: it fills exactly when the level breaks against the thesis). Entries execute at market, so only enter when the timing is right NOW. If the setup is valid but the wave position is bad, HOLD and set cooldown_wake_above/below at the level you would rather pay — you will be re-evaluated the moment price gets there; entering there at market after a confirmed reaction beats resting blind in the move's path.`
     }
-- Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). The cooldown never mutes in-position management or resting-limit re-evaluations — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
-- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago). Treat it as the breakout/breakdown check you scheduled, not a routine scan: judge whether the move through that level is real (acceptance, structure break) or a sweep/fake-out, and act on that read. If the move is real but the wave position is already poor, a pullback limit at the broken level's retest is the natural tool — you asked to be woken precisely so you would not have to chase later. Do not re-set a cooldown with the same band unless you explicitly judge the cross a fake-out.
+- Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
+- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago). Treat it as the breakout/breakdown check you scheduled, not a routine scan: judge whether the move through that level is real (acceptance, structure break) or a sweep/fake-out, and act on that read. ${
+        PULLBACK_LIMIT_ENABLED
+            ? 'If the move is real but the wave position is already poor, a pullback limit at the broken level’s retest is the natural tool — you asked to be woken precisely so you would not have to chase later.'
+            : 'If the move is real but the wave position is already poor, do NOT chase the extension — set a fresh wake band at the broken level so the retest itself wakes you for a market entry on confirmation.'
+    } Do not re-set a cooldown with the same band unless you explicitly judge the cross a fake-out.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.
 
@@ -1287,7 +1295,7 @@ OUTPUT
 
     const user = `
 You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}, asset_class=${assetClass}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Evaluated on ${primaryTimeframe} bar closes; a crossed wake band, an outsized adverse move, or a swept resting entry triggers an earlier look — otherwise assume "the next evaluation" is one ${primaryTimeframe} bar away, and let the exchange-side bracket do its job in between. Decision policy: ${decisionPolicyLabel}.
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Evaluated on ${primaryTimeframe} bar closes; a crossed wake band${PULLBACK_LIMIT_ENABLED ? ', a swept resting entry,' : ''} or an outsized move triggers an earlier look — otherwise assume "the next evaluation" is one ${primaryTimeframe} bar away, and let the exchange-side bracket do its job in between. Decision policy: ${decisionPolicyLabel}.
 S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 
 STATE (derived signals — single source of truth):
@@ -1679,16 +1687,23 @@ export function postprocessDecision(params: {
 // Flat-HOLD cooldown sanitation
 // ------------------------------
 
-// AI-requested quiet period on a flat symbol. Bounds: one tick at the floor;
-// the ceiling exists because the wake bands only cover PRICE — a cooldown is
-// blind to news, session flips and regime changes, so it must stay renewable
-// rather than open-ended. Renewal is cheap (one gated call per cooldown).
-// Default ceiling = one day: sized for the 4H-close cadence (six evaluations
-// suppressed per max cooldown), with wake bands still ending it early.
-export const HOLD_COOLDOWN_MIN_MINUTES = 15;
+// AI-requested quiet period on a flat symbol. Bounds are sized for the
+// 4H-close cadence: the floor (default 360 = 6h) guarantees any cooldown
+// suppresses at least the NEXT bar-close evaluation — anything shorter than
+// one bar expires before the next look and does nothing, and exactly 4h would
+// race the close-time cron jitter. The ceiling (default 1440 = one day, up to
+// six evaluations) exists because the wake bands only cover PRICE — a cooldown
+// is blind to news, session flips and regime changes, so it must stay
+// renewable rather than open-ended. Renewal is cheap (one gated call per
+// cooldown). Legacy 15-min cadence (SWING_EVAL_PRIMARY_CLOSE_ONLY=0): set
+// SWING_AI_COOLDOWN_MIN_MIN=15 to restore short cooldowns.
+export const HOLD_COOLDOWN_MIN_MINUTES = (() => {
+    const n = Number(process.env.SWING_AI_COOLDOWN_MIN_MIN);
+    return Number.isFinite(n) && n >= 1 ? Math.round(n) : 360;
+})();
 export const HOLD_COOLDOWN_MAX_MINUTES = (() => {
     const n = Number(process.env.SWING_AI_COOLDOWN_MAX_MIN);
-    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : 1440;
+    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : Math.max(1440, HOLD_COOLDOWN_MIN_MINUTES);
 })();
 
 export type HoldCooldown = {

@@ -450,9 +450,9 @@ Your job: determine what actually went wrong and how to avoid it — measurement
 Rules:
 - NO hindsight bias. Only fault a decision if information AVAILABLE AT THAT TIMESTAMP (in its prompt, the gate metrics, or earlier ticks) contradicted it. Price going the wrong way afterwards is not by itself an error — that verdict is 'bad_luck'.
 - Anchor every claim to a timestamp from the dossier. Do not invent data that is not present.
-- Explicitly examine the SKIPPED ticks: did a cooldown/dedupe/quarter-tick gate hide actionable information while the position was moving against its thesis? If yes, describe it in gate_impact; if no, set gate_impact to null.
+- Explicitly examine the SKIPPED ticks: did a gate (cooldown, dedupe, off-boundary bar-close cadence, quiet-position threshold) hide actionable information while the position was moving against its thesis? Remember the pipeline BY DESIGN only consults the model on primary bar closes and fences positions with the exchange bracket in between — a skip is only a defect if an ON-CADENCE look or a wider/different bracket could have acted on what the skip hid. If yes, describe it in gate_impact; if no, set gate_impact to null.
 - Judge the bracket geometry: was the stop at a level the recorded volatility (ATR fields in the prompts/metrics) made likely to be swept? Was the TP realistic for the holding window?
-- Judge entry mechanics: market vs pullback limit, and whether a resting limit filled into momentum against the position (adverse selection).
+- Judge entry mechanics: market vs pullback limit (resting limits only exist on trades from when that tool was enabled), and whether a resting limit filled into momentum against the position (adverse selection).
 - what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
 - ACTIVE LESSON LIBRARY (section in the dossier, when present): lessons distilled from PREVIOUS post-mortems that are already injected into the trading AI's prompts for this instrument. Handle it in three steps:

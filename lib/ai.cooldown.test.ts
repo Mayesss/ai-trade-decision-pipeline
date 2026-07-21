@@ -6,11 +6,19 @@ import { computeSwingState, sanitizeHoldCooldown, HOLD_COOLDOWN_MAX_MINUTES, HOL
 const base = { action: 'HOLD', positionOpen: false, price: 100 };
 
 test('sanitizeHoldCooldown: valid flat HOLD request passes with bands intact', () => {
-    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 120, wakeAbove: 105, wakeBelow: 95 });
-    assert.equal(out.cooldownMinutes, 120);
+    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: 95 });
+    assert.equal(out.cooldownMinutes, 480);
     assert.equal(out.wakeAbove, 105);
     assert.equal(out.wakeBelow, 95);
     assert.deepEqual(out.notes, []);
+});
+
+test('sanitizeHoldCooldown: sub-bar requests clamp UP to the 6h floor (4H cadence)', () => {
+    // Anything shorter than one primary bar would expire before the next
+    // evaluation and suppress nothing — the floor makes every cooldown real.
+    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 120, wakeAbove: null, wakeBelow: null });
+    assert.equal(out.cooldownMinutes, HOLD_COOLDOWN_MIN_MINUTES);
+    assert.equal(HOLD_COOLDOWN_MIN_MINUTES, 360);
 });
 
 test('sanitizeHoldCooldown: only flat HOLD is eligible', () => {
@@ -36,8 +44,8 @@ test('sanitizeHoldCooldown: minutes clamp to [min, max]', () => {
 });
 
 test('sanitizeHoldCooldown: wrong-side wake bands are dropped, cooldown survives', () => {
-    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 60, wakeAbove: 99, wakeBelow: 101 });
-    assert.equal(out.cooldownMinutes, 60);
+    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 600, wakeAbove: 99, wakeBelow: 101 });
+    assert.equal(out.cooldownMinutes, 600);
     assert.equal(out.wakeAbove, null);
     assert.equal(out.wakeBelow, null);
     assert.ok(out.notes.includes('wake_above_dropped_not_above_price'));
@@ -45,8 +53,8 @@ test('sanitizeHoldCooldown: wrong-side wake bands are dropped, cooldown survives
 });
 
 test('sanitizeHoldCooldown: unknown price drops bands but keeps the cooldown', () => {
-    const out = sanitizeHoldCooldown({ ...base, price: null, cooldownMinutes: 60, wakeAbove: 105, wakeBelow: 95 });
-    assert.equal(out.cooldownMinutes, 60);
+    const out = sanitizeHoldCooldown({ ...base, price: null, cooldownMinutes: 600, wakeAbove: 105, wakeBelow: 95 });
+    assert.equal(out.cooldownMinutes, 600);
     assert.equal(out.wakeAbove, null);
     assert.equal(out.wakeBelow, null);
     assert.ok(out.notes.includes('wake_bands_dropped_price_unknown'));
