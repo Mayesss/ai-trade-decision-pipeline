@@ -304,6 +304,23 @@ export const REENTRY_COOLDOWN_MIN = (() => {
     return Number.isFinite(n) && n >= 0 ? n : 240;
 })();
 
+// ------------------------------
+// Intraday tactics — flag-gated OFF for the swing model
+// ------------------------------
+// Preserved (not deleted) for a possible future day-trade model. Both default
+// OFF: the swing record showed they were the loss engine — every post-mortem
+// to date blamed a resting pullback limit filled at a bare retest, and the
+// offensive session playbook is what placed those limits in a sweep's path.
+// Session/venue FACTS (schedules, levels, sweep measurements) render regardless
+// of these flags; only the tactics prose and mechanisms are gated.
+const flagOn = (raw: unknown) => ['1', 'true', 'yes', 'on'].includes(String(raw ?? '').trim().toLowerCase());
+// Resting pullback-limit entries (entry_limit_price tool + cancelled_pending_entry
+// context). Off = market entries only; a model-sent limit drops the entry.
+export const PULLBACK_LIMIT_ENABLED = flagOn(process.env.SWING_PULLBACK_LIMIT_ENABLED);
+// Offensive session-liquidity playbook (sweep-capture resting entries,
+// opening-drive tactics) + the sweep-reclaim re-entry-cooldown exception.
+export const SESSION_OFFENSE_ENABLED = flagOn(process.env.SWING_SESSION_OFFENSE_ENABLED);
+
 export type LastClosedPosition = {
     side: 'long' | 'short';
     exitTsMs: number;
@@ -1039,7 +1056,7 @@ export function computeSwingState(
                   open: false,
                   status: position_status,
                   reentry_cooldown: reentryCooldown,
-                  ...(cancelled_pending_entry ? { cancelled_pending_entry } : {}),
+                  ...(cancelled_pending_entry && PULLBACK_LIMIT_ENABLED ? { cancelled_pending_entry } : {}),
               },
         closing_guardrails: position_context ? closingGuidance : null,
     };
@@ -1156,13 +1173,18 @@ export function computeSwingState(
         ? `\nVenue liquidity clock (market.venue_events, ISO UTC; when present): recent/upcoming venue events (cash open/close, lunch break, exchange maintenance halt, weekly reopen) with minutes_ago/minutes_to, plus liquidity_phase ∈ {pre_open, opening_drive, into_close, venue_break, off_hours, thin_reopen, normal}. These are schedule facts, not signals — the session-offense guidance says how to trade around them.`
         : '';
 
-    // Session-offense doctrine: sweeps and venue events are edges to capture,
-    // not just hazards to dodge. Keyed on asset class (forex_session is built for
-    // forex/commodity/index; crypto never gets it) with "when present" phrasing
-    // for the tick-level blocks.
+    // Session doctrine, two modes (SESSION_OFFENSE_ENABLED, default OFF):
+    // OFF = swing-defensive — session sweeps and venue phases are HAZARD
+    // context (don't chase a sweep, don't add risk into thin tape), never an
+    // entry playbook. ON = the intraday offense doctrine (sweep-capture resting
+    // entries, opening-drive tactics), preserved for a future day-trade model.
+    // Keyed on asset class (forex_session is built for forex/commodity/index;
+    // crypto never gets it) with "when present" phrasing for tick-level blocks.
     const sessionOffenseGuidance =
         assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index'
-            ? `\n- Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
+            ? SESSION_OFFENSE_ENABLED
+                ? `\n- Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
+                : `\n- Session liquidity (market.forex_session.signals + market.venue_events, when present — DEFENSIVE context for a swing book, not an entry playbook): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof — do NOT open fresh risk in the sweep's direction unless price has ACCEPTED beyond the level (primary close through it), and never chase the sweep itself. During thin phases (pre_open, into_close, venue_break, off_hours, thin_reopen) spreads and gap risk are at their worst: no fresh entries there on session-timing grounds alone — a swing entry must be valid on primary structure regardless of the session clock, and if it is, the phase only argues for waiting, not hurrying.`
             : '';
 
     // Post-event reaction doctrine: how to read market.event_reaction (built only
@@ -1213,7 +1235,7 @@ You are an expert swing-trading market-structure analyst. Decide one action and 
 ${assetNote}${venueSessionNote}${venueEventsNote}
 
 TIMEFRAMES (fixed)
-- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, when present — wave/entry timing only, never a setup by itself).
+- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).
 Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
 INPUTS
@@ -1229,7 +1251,7 @@ DECISION OWNERSHIP
   2. Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).
   3. Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).
   4. Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.
-  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.${REENTRY_COOLDOWN_MIN > 0 ? `\n  6. Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed). Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.` : ''}
+  5. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.${REENTRY_COOLDOWN_MIN > 0 ? `\n  6. Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).${SESSION_OFFENSE_ENABLED ? ' Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.' : ''}` : ''}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
@@ -1238,7 +1260,8 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none. RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}${eventReactionGuidance}${btcContextGuidance}
 - ${costChurnLine}
-- In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale. Prefer HOLD when regime supports it and there is no strong opposite structure (especially while near breakeven, |price_vs_breakeven_pct| < 0.25%). Trim 30–70% (exit_size_pct) on gains into a major opposite level, weakening regime, or exhausted volatility expansion. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
+- In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.
+- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), or (b) the thesis completing at/near the target. Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
             ? `\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
             : ''
@@ -1247,7 +1270,11 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until it fills or a later evaluation amends it. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
   • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
-- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled (typically 15–60 min later) — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme (see session liquidity offense) — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.
+${
+        PULLBACK_LIMIT_ENABLED
+            ? `- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.`
+            : `- entry_limit_price: ALWAYS null — resting pullback limits are disabled (a resting limit's fill is adversely selected: it fills exactly when the level breaks against the thesis). Entries execute at market, so only enter when the timing is right NOW. If the setup is valid but the wave position is bad, HOLD and set cooldown_wake_above/below at the level you would rather pay — you will be re-evaluated the moment price gets there; entering there at market after a confirmed reaction beats resting blind in the move's path.`
+    }
 - Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). The cooldown never mutes in-position management or resting-limit re-evaluations — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
 - Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago). Treat it as the breakout/breakdown check you scheduled, not a routine scan: judge whether the move through that level is real (acceptance, structure break) or a sweep/fake-out, and act on that read. If the move is real but the wave position is already poor, a pullback limit at the broken level's retest is the natural tool — you asked to be woken precisely so you would not have to chase later. Do not re-set a cooldown with the same band unless you explicitly judge the cross a fake-out.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
@@ -1260,7 +1287,7 @@ OUTPUT
 
     const user = `
 You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}, asset_class=${assetClass}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Evaluated at least once per ${microTimeframe} — and as often as every 15 min when price is moving — so "the next evaluation" may be 15–60 min away. Decision policy: ${decisionPolicyLabel}.
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}${nano_context ? ', nano=15m' : ''}. Evaluated on ${primaryTimeframe} bar closes; a crossed wake band, an outsized adverse move, or a swept resting entry triggers an earlier look — otherwise assume "the next evaluation" is one ${primaryTimeframe} bar away, and let the exchange-side bracket do its job in between. Decision policy: ${decisionPolicyLabel}.
 S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 
 STATE (derived signals — single source of truth):
@@ -1280,7 +1307,11 @@ TASKS:
 2) ${leverageTask}
 3) exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim), else null.
 4) take_profit_price: REQUIRED price target on BUY/SELL/REVERSE (resting exchange TP; on REVERSE target the NEW opposite-side position); on in-position HOLD/partial CLOSE a new level amends the standing TP (null = unchanged); else null. stop_loss_price: on BUY/SELL/REVERSE the structural invalidation stop (null = wide catastrophe default); on in-position HOLD/partial CLOSE amends the standing stop, tighten-only (null = unchanged); else null.
-5) entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.
+5) ${
+    PULLBACK_LIMIT_ENABLED
+        ? 'entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.'
+        : 'entry_limit_price: ALWAYS null (market entries only — see guidance).'
+}
 6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.
 7) summary ≤3 lines; reason = brief rationale.
 
@@ -1455,9 +1486,21 @@ export function postprocessDecision(params: {
     positionContext: PositionContext | null;
     policy?: DecisionPolicy;
     lastClosedPosition?: LastClosedPosition | null;
+    // Test seam for the sweep-reclaim re-entry exception; production callers
+    // rely on the env-derived default.
+    sessionOffenseEnabled?: boolean;
 }) {
-    const { decision, context, gates, positionOpen, recentActions, positionContext, policy, lastClosedPosition } =
-        params;
+    const {
+        decision,
+        context,
+        gates,
+        positionOpen,
+        recentActions,
+        positionContext,
+        policy,
+        lastClosedPosition,
+        sessionOffenseEnabled,
+    } = params;
     const resolvedDecisionPolicy = resolveDecisionPolicy(policy);
     const strictPolicy = resolvedDecisionPolicy === 'strict';
     const signalStrength = computeSignalStrength(context);
@@ -1503,19 +1546,22 @@ export function postprocessDecision(params: {
 
     // Re-entry cooldown: when flat, block re-opening the direction that just closed.
     // Opposite-direction entries stay allowed (a reversal thesis is a new trade).
-    // Sweep-reclaim exception (session offense): when the just-stopped side's
-    // extreme was swept and RECLAIMED (bullishLiquidityReclaim for a long,
-    // bearishLiquidityRejection for a short), the stop-run itself was the event
-    // and the reclaim re-entry is the highest-edge same-direction trade — the
-    // anti-churn block must not eat it.
+    // Sweep-reclaim exception (session offense, flag-gated): when the
+    // just-stopped side's extreme was swept and RECLAIMED
+    // (bullishLiquidityReclaim for a long, bearishLiquidityRejection for a
+    // short), the stop-run itself was the event and the reclaim re-entry is the
+    // highest-edge same-direction trade — the anti-churn block must not eat it.
+    // With SESSION_OFFENSE_ENABLED off (swing default) the exception is off
+    // too: the cooldown always applies.
     if (!positionOpen && (action === 'BUY' || action === 'SELL')) {
         const cooldown = resolveReentryCooldown(lastClosedPosition);
         if (cooldown && desiredSide === cooldown.blockedSide) {
             const signals = context.forex_session_context?.signals;
             const reclaimForSide =
-                desiredSide === 'long'
+                (sessionOffenseEnabled ?? SESSION_OFFENSE_ENABLED) &&
+                (desiredSide === 'long'
                     ? Boolean(signals?.bullishLiquidityReclaim)
-                    : Boolean(signals?.bearishLiquidityRejection);
+                    : Boolean(signals?.bearishLiquidityRejection));
             if (!reclaimForSide) action = 'HOLD';
         }
     }
@@ -1637,10 +1683,12 @@ export function postprocessDecision(params: {
 // the ceiling exists because the wake bands only cover PRICE — a cooldown is
 // blind to news, session flips and regime changes, so it must stay renewable
 // rather than open-ended. Renewal is cheap (one gated call per cooldown).
+// Default ceiling = one day: sized for the 4H-close cadence (six evaluations
+// suppressed per max cooldown), with wake bands still ending it early.
 export const HOLD_COOLDOWN_MIN_MINUTES = 15;
 export const HOLD_COOLDOWN_MAX_MINUTES = (() => {
     const n = Number(process.env.SWING_AI_COOLDOWN_MAX_MIN);
-    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : 360;
+    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : 1440;
 })();
 
 export type HoldCooldown = {
@@ -1709,10 +1757,14 @@ export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
 // amendments tighten protection, never loosen it (blocks walking the stop away
 // on a losing position).
 export const EXCHANGE_SL_MAX_ATR_MULT = 3;
-const ENTRY_TP_MIN_ATR = 0.5;
-// An entry stop closer than this is inside one bar's noise and would likely be
-// wicked out immediately — dropped in favour of the catastrophe default.
-const ENTRY_SL_MIN_ATR = 0.25;
+// Swing floors: a 1–10 day hold has to survive many 4H bars, so a target
+// closer than 2 primary-ATR isn't a swing target and a stop inside 1 ATR sits
+// in routine oscillation (live record: 0.46%-avg stops were swept in minutes —
+// trades <1h old carried the entire system loss).
+const ENTRY_TP_MIN_ATR = 2;
+// An entry stop closer than this is inside ordinary bar noise and would likely
+// be wicked out immediately — dropped in favour of the catastrophe default.
+const ENTRY_SL_MIN_ATR = 1;
 const TP_MAX_ATR = 10;
 const AMEND_MIN_GAP_ATR = 0.1;
 
@@ -1729,7 +1781,7 @@ export type ExchangeTpSl = {
  * 3×ATR target so every entry ships with a resting exchange TP.
  *
  * Entries: `side` is derived from the action. stop_loss_price MAY be a
- * structural invalidation stop (protective side, 0.25–3×ATR from the entry
+ * structural invalidation stop (protective side, 1–3×ATR from the entry
  * anchor); when absent or dropped, the caller attaches the code-owned 3×ATR
  * catastrophe stop instead. REVERSE is an entry for the OPPOSITE of the
  * current position side — same treatment. In-position (HOLD / partial CLOSE):
@@ -1778,9 +1830,9 @@ export function sanitizeExchangeTpSl(params: {
           : (params.side as 'long' | 'short');
     const dir = side === 'long' ? 1 : -1;
 
-    // Take profit: must sit on the profit side of price; entries need real room
-    // (≥0.5 ATR) so the resting TP isn't an instant fill, amends just need to
-    // clear the current price by a noise buffer.
+    // Take profit: must sit on the profit side of price; entries need real
+    // swing room (≥ENTRY_TP_MIN_ATR) so the target pays for the stop, amends
+    // just need to clear the current price by a noise buffer.
     let tp = Number.isFinite(params.takeProfitPrice as number) && (params.takeProfitPrice as number) > 0 ? Number(params.takeProfitPrice) : null;
     if (tp != null) {
         if (dir * (tp - price) <= 0) {
@@ -1871,6 +1923,8 @@ export function sanitizeEntryLimit(params: {
     price: number;
     primaryAtr: number | null;
     entryLimitPrice: number | null;
+    // Test seam; production callers rely on the env-derived default.
+    pullbackLimitEnabled?: boolean;
 }): { entryLimitPrice: number | null; dropEntry: boolean; notes: string[] } {
     const notes: string[] = [];
     const action = String(params.action || '').toUpperCase();
@@ -1886,6 +1940,14 @@ export function sanitizeEntryLimit(params: {
     if (raw == null) return { entryLimitPrice: null, dropEntry: false, notes };
     if (params.positionOpen || (action !== 'BUY' && action !== 'SELL') || !(price > 0)) {
         return { entryLimitPrice: null, dropEntry: false, notes: ['limit_not_applicable'] };
+    }
+    // Feature flag OFF (swing default): the prompt instructs entry_limit_price
+    // to be null, so a model-sent limit is a contract violation. Drop the entry
+    // rather than converting to market — the limit signals the model judged the
+    // CURRENT price wrong, and filling it here at market is the exact chase the
+    // flag-on prose forbids.
+    if (!(params.pullbackLimitEnabled ?? PULLBACK_LIMIT_ENABLED)) {
+        return { entryLimitPrice: null, dropEntry: true, notes: ['limit_disabled_entry_dropped'] };
     }
     if (!atr) return { entryLimitPrice: null, dropEntry: true, notes: ['limit_no_atr_entry_dropped'] };
 
@@ -1953,9 +2015,12 @@ export const SWING_DECISION_SCHEMA = {
             // (side/distance vs live price+ATR) is enforced in code after parse.
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
-            // Pullback limit entry (flat BUY/SELL only): rest a LIMIT at this
-            // price instead of entering at market. One-tick TTL — cancelled at
-            // the next AI evaluation / hourly tick if unfilled. null = market.
+            // Pullback limit entry (flat BUY/SELL, only when the
+            // SWING_PULLBACK_LIMIT_ENABLED day-trade flag is on): rest a LIMIT
+            // at this price instead of entering at market. One-tick TTL —
+            // cancelled at the next evaluation if unfilled. null = market;
+            // with the flag off (swing default) a non-null value drops the
+            // entry (sanitizeEntryLimit).
             entry_limit_price: { type: ['number', 'null'], minimum: 0 },
             // Flat-HOLD cooldown: quiet period request (minutes, code-clamped)
             // with optional wake bands that end it early when price crosses

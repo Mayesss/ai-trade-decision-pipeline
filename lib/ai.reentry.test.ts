@@ -31,6 +31,7 @@ function decide(
     action: 'BUY' | 'SELL',
     lastClosedPosition: Parameters<typeof resolveReentryCooldown>[0],
     context: PromptDecisionContext = openContext,
+    sessionOffenseEnabled = true, // reclaim-exception cases pin the day-trade flag ON
 ) {
     return postprocessDecision({
         decision: { action },
@@ -41,6 +42,7 @@ function decide(
         positionContext: null,
         policy: 'strict',
         lastClosedPosition,
+        sessionOffenseEnabled,
     });
 }
 
@@ -105,4 +107,17 @@ test('sweep-reclaim exception: bearishLiquidityRejection lifts the block for a s
 test('sweep-reclaim exception: absent or all-false signals leave the block intact', () => {
     const recentLongClose = { side: 'long' as const, exitTsMs: Date.now() - 60_000 };
     assert.equal(decide('BUY', recentLongClose, withSignals({})).action, 'HOLD');
+});
+
+test('session offense OFF (swing default): a live reclaim signal no longer lifts the block', () => {
+    const recentLongClose = { side: 'long' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(
+        decide('BUY', recentLongClose, withSignals({ bullishLiquidityReclaim: true }), false).action,
+        'HOLD',
+    );
+    const recentShortClose = { side: 'short' as const, exitTsMs: Date.now() - 60_000 };
+    assert.equal(
+        decide('SELL', recentShortClose, withSignals({ bearishLiquidityRejection: true }), false).action,
+        'HOLD',
+    );
 });

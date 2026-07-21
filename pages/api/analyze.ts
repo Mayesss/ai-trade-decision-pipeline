@@ -6,6 +6,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import {
     fetchMarketBundle as fetchBitgetMarketBundle,
     computeAnalytics,
+    fetchBitgetAccountEquityUsd,
     fetchPositionInfo as fetchBitgetPositionInfo,
     fetchRealizedRoi as fetchBitgetRealizedRoi,
     type PositionInfo,
@@ -16,6 +17,7 @@ import {
     calculateCapitalMultiTFIndicators,
     evaluateCapitalMinSizeAffordability,
     executeCapitalDecision,
+    fetchCapitalAccountEquityUsd,
     getCapitalCategoryLeverage,
     fetchCapitalMarketBundle,
     fetchCapitalMarketTradeability,
@@ -68,6 +70,7 @@ import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
+import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
 import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
@@ -228,6 +231,29 @@ const IN_POSITION_QUARTER_MOVE_ATR = (() => {
     return Number.isFinite(n) && n > 0 ? n : 0.5;
 })();
 
+// Real-swing cadence (default ON): cron ticks consult the AI only on primary
+// (4H) bar closes — flat scans AND in-position management. Between closes the
+// 15-min cron is a code-only watcher (bracket/thread reconcile, pending-entry
+// sweep, chart warm, tick_log) and the exchange-side TP/SL bracket owns the
+// position. Exceptions that still reach the AI off-boundary: a crossed flat
+// wake band (the model explicitly asked to be woken at that level), an
+// in-position move ≥ SWING_INPOS_EMERGENCY_MOVE_ATR primary ATR since the
+// AI's last look, a swept resting entry that needs a re-issue decision, and
+// manual/API calls. Off = the legacy 15-min AI cadence (churn mode).
+const EVAL_PRIMARY_CLOSE_ONLY = (() => {
+    const raw = String(process.env.SWING_EVAL_PRIMARY_CLOSE_ONLY ?? '')
+        .trim()
+        .toLowerCase();
+    return !['0', 'false', 'no', 'off'].includes(raw);
+})();
+// Off-boundary in-position wake threshold under the 4H cadence. Deliberately
+// far wider than IN_POSITION_QUARTER_MOVE_ATR: this is an emergency look
+// ("something structural may have happened"), not routine management.
+const IN_POSITION_EMERGENCY_MOVE_ATR = (() => {
+    const n = Number(process.env.SWING_INPOS_EMERGENCY_MOVE_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 1.5;
+})();
+
 // ------------------------------------------------------------------
 // In-memory position tracking for best-effort hold timing (resets on cold start).
 // ------------------------------------------------------------------
@@ -323,10 +349,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
         const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
-        // Default OFF: flat ticks now evaluate on the cron cadence (hourly ticks
-        // plus deduped quarter ticks) and are cost-gated by the actionability check
-        // (below), not by 4H candle close. A caller can still opt back into the old
-        // 4H-close cadence by passing enforcePrimaryCloseGate=true.
+        // The 4H-close cadence is normally controlled by the env flag
+        // SWING_EVAL_PRIMARY_CLOSE_ONLY (default ON — see EVAL_PRIMARY_CLOSE_ONLY
+        // above). This request param forces the gate on for a single call even
+        // when the env flag is off (debug / manual boundary checks).
         const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, false);
         const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
@@ -617,56 +643,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
-        const primaryCloseGateBlocked = !positionOpen && !primaryCloseTime;
-        if (primaryCloseGateBlocked && enforcePrimaryCloseGate) {
-            emitGateDebug('primary_close_gate_blocked', {
+        // 4H-close cadence active for this tick? Env flag governs cron ticks;
+        // the request param forces it for manual calls. The gate itself sits
+        // AFTER the watcher surface below (bracket read, thread reconcile,
+        // pending-entry sweep, chart warm) so off-boundary ticks still do all
+        // code-level upkeep — they only skip the AI.
+        const primaryCloseCadence =
+            (EVAL_PRIMARY_CLOSE_ONLY && automationCron) || enforcePrimaryCloseGate;
+        const offBoundaryTick = primaryCloseCadence && !primaryCloseTime;
+        if (offBoundaryTick) {
+            emitGateDebug('primary_close_off_boundary', {
                 gate: 'PRIMARY_CLOSE_TIME',
                 primaryCloseTime,
                 positionOpen,
                 enforcePrimaryCloseGate,
-                timeFrame,
-            });
-            const decision = {
-                action: 'HOLD',
-                bias: 'NEUTRAL',
-                signal_strength: 'LOW',
-                summary: 'not_primary_close',
-                reason: 'flat_skip_until_primary_close',
-            };
-            const execRes = { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' };
-            return res.status(200).json({
-                symbol,
-                platform,
-                newsSource,
-                category,
-                instrumentId,
-                timeFrame,
-                dryRun,
-                decisionPolicy,
-                decision,
-                execRes,
-                usedTape: false,
-                promptSkipped: true,
-                ...(debugGates
-                    ? {
-                          gateDebug: {
-                              blockedBy: 'PRIMARY_CLOSE_TIME',
-                              reason: 'flat_skip_until_primary_close',
-                              primaryCloseTime,
-                              enforcePrimaryCloseGate,
-                              positionOpen,
-                              timeFrame,
-                          },
-                      }
-                    : {}),
-            });
-        }
-        if (primaryCloseGateBlocked && !enforcePrimaryCloseGate) {
-            emitGateDebug('primary_close_gate_bypassed', {
-                gate: 'PRIMARY_CLOSE_TIME',
-                primaryCloseTime,
-                positionOpen,
-                enforcePrimaryCloseGate,
+                evalPrimaryCloseOnly: EVAL_PRIMARY_CLOSE_ONLY,
                 timeFrame,
             });
         }
@@ -1031,14 +1022,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             console.warn(`chart cache warm failed for ${symbol}:`, err);
         }
 
-        // In-position quarter ticks are event-driven: the resting TP/SL bracket
-        // fences the position between hourly evaluations, so the AI is only
-        // asked mid-hour ("is the setting still fine?") when price has moved at
-        // least IN_POSITION_QUARTER_MOVE_ATR primary ATR since its last look.
+        // In-position off-boundary ticks are event-driven: the resting TP/SL
+        // bracket fences the position between AI evaluations, so the AI is only
+        // asked early when price has moved enough since its last look to
+        // plausibly change the answer. Under the 4H-close cadence that means
+        // EVERY cron tick between bar closes, gated by the wide emergency
+        // threshold (IN_POSITION_EMERGENCY_MOVE_ATR); in legacy 15-min mode it
+        // is the old quarter-tick quiet skip (IN_POSITION_QUARTER_MOVE_ATR).
         // Reference = last real AI call's snapshot price (any tick — the entry
         // decision counts), falling back to entry price. Missing price/ATR fails
-        // OPEN (call the AI rather than fly blind); the skip is not persisted.
-        if (positionOpen && quarterTick) {
+        // OPEN (call the AI rather than fly blind).
+        const inPositionOffCadenceTick = primaryCloseCadence ? offBoundaryTick : quarterTick;
+        const inPositionMoveThresholdAtr = primaryCloseCadence
+            ? IN_POSITION_EMERGENCY_MOVE_ATR
+            : IN_POSITION_QUARTER_MOVE_ATR;
+        if (positionOpen && inPositionOffCadenceTick) {
             const tickerLight = Array.isArray(bundleLight?.ticker) ? bundleLight.ticker[0] : bundleLight?.ticker;
             const priceNow = Number(
                 tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
@@ -1067,11 +1065,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 refPrice != null && Number.isFinite(priceNow) && priceNow > 0 && Number.isFinite(atrNow) && atrNow > 0
                     ? Math.abs(priceNow - refPrice) / atrNow
                     : null;
-            if (moveAtr != null && moveAtr < IN_POSITION_QUARTER_MOVE_ATR) {
-                emitGateDebug('quarter_tick_in_position_quiet', {
-                    gate: 'QUARTER_TICK_IN_POSITION_QUIET',
+            if (moveAtr != null && moveAtr < inPositionMoveThresholdAtr) {
+                emitGateDebug('in_position_quiet_skip', {
+                    gate: 'IN_POSITION_QUIET',
                     moveAtr: Number(moveAtr.toFixed(3)),
-                    thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+                    thresholdAtr: inPositionMoveThresholdAtr,
                     refPrice,
                     priceNow,
                 });
@@ -1079,8 +1077,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
-                    summary: 'quarter_tick_quiet_position',
-                    reason: `in_position_skip_quiet_quarter_tick_move_${moveAtr.toFixed(2)}atr`,
+                    summary: 'quiet_position',
+                    reason: `in_position_skip_quiet_tick_move_${moveAtr.toFixed(2)}atr`,
                 };
                 await recordTickOutcome({
                     kind: 'skip',
@@ -1088,7 +1086,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     reason: decision.reason,
                     metrics: {
                         moveAtr: Number(moveAtr.toFixed(3)),
-                        thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+                        thresholdAtr: inPositionMoveThresholdAtr,
                         refPrice,
                         priceNow,
                     },
@@ -1103,15 +1101,103 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     dryRun,
                     decisionPolicy,
                     decision,
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'quarter_tick_quiet_position' },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'quiet_position' },
                     usedTape: false,
                     promptSkipped: true,
                 });
             }
-            emitGateDebug('quarter_tick_in_position_triggered', {
-                gate: 'QUARTER_TICK_IN_POSITION_TRIGGERED',
+            emitGateDebug('in_position_quiet_triggered', {
+                gate: 'IN_POSITION_QUIET_TRIGGERED',
                 moveAtr: moveAtr != null ? Number(moveAtr.toFixed(3)) : null,
-                thresholdAtr: IN_POSITION_QUARTER_MOVE_ATR,
+                thresholdAtr: inPositionMoveThresholdAtr,
+            });
+        }
+
+        // Flat off-boundary ticks under the 4H-close cadence: no AI call unless
+        // (a) this tick just swept a resting pullback entry — the model owes
+        // itself a re-issue/switch/drop decision — or (b) a flat wake band is
+        // crossed. The band is PEEKED here without consuming the cooldown row:
+        // the full cooldown handler below re-reads it, surfaces the crossing to
+        // the prompt as market.cooldown_wake and clears the row. Peek failure
+        // fails CLOSED (skip): missing a wake by one bar is recoverable, while
+        // failing open would re-create the 15-min churn cadence on every store
+        // hiccup.
+        if (!positionOpen && offBoundaryTick && !sweptPendingEntry) {
+            let wakeBandCrossed = false;
+            if (!dryRun) {
+                try {
+                    const cooldown = await getSwingAiCooldown(platform, symbol);
+                    if (cooldown) {
+                        const tickerLight = Array.isArray(bundleLight?.ticker)
+                            ? bundleLight.ticker[0]
+                            : bundleLight?.ticker;
+                        const priceNow = Number(
+                            tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
+                        );
+                        wakeBandCrossed =
+                            Number.isFinite(priceNow) &&
+                            priceNow > 0 &&
+                            ((cooldown.wakeAbove !== null && priceNow >= cooldown.wakeAbove) ||
+                                (cooldown.wakeBelow !== null && priceNow <= cooldown.wakeBelow));
+                    }
+                } catch (err) {
+                    console.warn(`wake-band peek failed for ${symbol}:`, err);
+                }
+            }
+            if (!wakeBandCrossed) {
+                emitGateDebug('primary_close_gate_blocked', {
+                    gate: 'PRIMARY_CLOSE_TIME',
+                    primaryCloseTime,
+                    positionOpen,
+                    enforcePrimaryCloseGate,
+                    evalPrimaryCloseOnly: EVAL_PRIMARY_CLOSE_ONLY,
+                    timeFrame,
+                });
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'not_primary_close',
+                    reason: 'flat_skip_until_primary_close',
+                };
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'primary_close_gate',
+                    reason: decision.reason,
+                    metrics: { primaryCloseTime, timeFrame },
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' },
+                    usedTape: false,
+                    promptSkipped: true,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'PRIMARY_CLOSE_TIME',
+                                  reason: 'flat_skip_until_primary_close',
+                                  primaryCloseTime,
+                                  enforcePrimaryCloseGate,
+                                  evalPrimaryCloseOnly: EVAL_PRIMARY_CLOSE_ONLY,
+                                  positionOpen,
+                                  timeFrame,
+                              },
+                          }
+                        : {}),
+                });
+            }
+            emitGateDebug('primary_close_gate_woken', {
+                gate: 'PRIMARY_CLOSE_TIME',
+                wakeBandCrossed: true,
+                primaryCloseTime,
             });
         }
 
@@ -2090,7 +2176,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             loadPromptLessons(symbol, category),
         ]);
         newsBundle = newsBundleRes;
-        const { nanoContext, nanoCandles } = nanoRes;
+        // Nano (15m) geometry is an ENTRY-TIMING tool: injected into the prompt
+        // only when flat. In-position ticks manage against primary (4H)
+        // structure — feeding 15m wave position there produced intraday exit
+        // narratives ("nano crest") that cut swing winners at +0.36R while the
+        // planned targets sat 3.5R away. The candles are still fetched every AI
+        // tick because event-reaction measurements reuse them below.
+        const { nanoContext: nanoContextRaw, nanoCandles } = nanoRes;
+        const nanoContext = positionOpen ? null : nanoContextRaw;
         // Post-event reaction measurements: only when a high-impact release is in
         // the recent lookback (forexEventContext.recentEvents), quantified from the
         // nano 15m candles already fetched above — zero extra I/O. Fails open like
@@ -2302,10 +2395,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Entry protective stop: the model's structural invalidation stop when it
-        // survived sanitation (sanitizeExchangeTpSl: protective side, 0.25–3×ATR
+        // survived sanitation (sanitizeExchangeTpSl: protective side, 1–3×ATR
         // from the bracket anchor), otherwise the deliberately WIDE ATR-based
         // catastrophe stop — a circuit breaker bounding the position during the
-        // ~1h gap between AI evaluations, not a tactical exit.
+        // gap between AI evaluations, not a tactical exit.
         const CATASTROPHE_STOP_ATR_MULT = 3;
         let stopLossPrice: number | null = null;
         // Any action that opens fresh exposure gets a protective stop —
@@ -2337,11 +2430,72 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Fixed-fractional risk sizing: one full stop-out costs RISK_EQUITY_PCT
+        // of account equity, so the finalized stop distance (structural or
+        // catastrophe) decides the notional and the margin follows from it at
+        // the execution leverage. Failure modes fail SMALL: no equity reading →
+        // fixed fallback risk inside resolveRiskBasedSizing; no stop/anchor →
+        // legacy fixed sideSizeUSDT. If the risk budget cannot buy the venue's
+        // minimum size, the entry is dropped — sizing UP would silently breach
+        // the risk budget, which is how the old fixed notional produced −$12
+        // outliers next to −$0.30 losers.
+        let execSideSizeUSDT = sideSizeUSDT;
+        if (bracketEntrySide && stopLossPrice != null) {
+            const equityUsd =
+                platform === 'capital'
+                    ? await fetchCapitalAccountEquityUsd().catch(() => null)
+                    : await fetchBitgetAccountEquityUsd();
+            const riskSizing = resolveRiskBasedSizing({
+                entryPrice: bracketAnchor,
+                stopPrice: stopLossPrice,
+                equityUsd,
+                leverage: execLeverage ?? null,
+            });
+            if (riskSizing) {
+                let minNotionalUsd: number | null = platform === 'bitget' ? 5 : null;
+                if (platform === 'capital') {
+                    const afford = await evaluateCapitalMinSizeAffordability(symbol).catch(() => null);
+                    minNotionalUsd = Number.isFinite(afford?.minNotionalUsd as number)
+                        ? Number(afford!.minNotionalUsd)
+                        : null;
+                }
+                emitGateDebug('risk_sizing', {
+                    gate: 'RISK_SIZING',
+                    riskUsd: Number(riskSizing.riskUsd.toFixed(2)),
+                    notionalUsd: Number(riskSizing.notionalUsd.toFixed(2)),
+                    marginUsd: Number(riskSizing.marginUsd.toFixed(2)),
+                    stopDistancePct: Number((riskSizing.stopDistancePct * 100).toFixed(3)),
+                    equityUsd,
+                    source: riskSizing.source,
+                    riskEquityPct: RISK_EQUITY_PCT,
+                    minNotionalUsd,
+                });
+                if (minNotionalUsd !== null && riskSizing.notionalUsd < minNotionalUsd) {
+                    (decision as any).action = 'HOLD';
+                    (decision as any).reason =
+                        `${String((decision as any).reason ?? '')} [entry dropped: risk_budget_below_min_size ` +
+                        `notional≈${riskSizing.notionalUsd.toFixed(0)} min≈${minNotionalUsd.toFixed(0)}]`.trim();
+                } else {
+                    execSideSizeUSDT = riskSizing.marginUsd;
+                }
+                // Persisted with the decision row so post-mortems can audit the
+                // realized risk against the budget.
+                (decision as any).risk_sizing = {
+                    risk_usd: Number(riskSizing.riskUsd.toFixed(2)),
+                    notional_usd: Number(riskSizing.notionalUsd.toFixed(2)),
+                    margin_usd: Number(riskSizing.marginUsd.toFixed(2)),
+                    stop_distance_pct: Number((riskSizing.stopDistancePct * 100).toFixed(3)),
+                    equity_usd: equityUsd,
+                    source: riskSizing.source,
+                };
+            }
+        }
+
         const execRes =
             platform === 'capital'
                 ? await executeCapitalDecision(
                       symbol,
-                      sideSizeUSDT,
+                      execSideSizeUSDT,
                       decision,
                       dryRun,
                       stopLossPrice,
@@ -2350,7 +2504,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   )
                 : await executeDecision(
                       symbol,
-                      sideSizeUSDT,
+                      execSideSizeUSDT,
                       decision,
                       productType!,
                       dryRun,
@@ -2611,7 +2765,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       gateDebug: {
                           enforcePrimaryCloseGate,
                           primaryCloseTime,
-                          primaryCloseGateBlocked,
+                          primaryCloseCadence,
                           positionOpen,
                           gateChecksCompleted: true,
                       },

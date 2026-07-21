@@ -41,13 +41,15 @@ test('entry BUY keeps a valid structural TP and a valid structural SL', () => {
     assert.equal(out.stopLossPrice, 97);
 });
 
-test('entry SL on the wrong side or inside 0.25 ATR is dropped (caller falls back to catastrophe stop)', () => {
+test('entry SL on the wrong side or inside 1 ATR is dropped (caller falls back to catastrophe stop)', () => {
     const wrongSide = entry('BUY', 104, 103); // SL above price on a long
     assert.equal(wrongSide.stopLossPrice, null);
     assert.ok(wrongSide.notes.includes('sl_wrong_side_dropped'));
-    const tooClose = entry('BUY', 104, 99.7); // 0.15 ATR below
+    const tooClose = entry('BUY', 104, 98.5); // 0.75 ATR below — inside swing noise
     assert.equal(tooClose.stopLossPrice, null);
     assert.ok(tooClose.notes.includes('sl_too_close_dropped'));
+    const atFloor = entry('BUY', 104, 98); // exactly 1 ATR — kept
+    assert.equal(atFloor.stopLossPrice, 98);
 });
 
 test('entry SL beyond 3 ATR is clamped to the catastrophe distance', () => {
@@ -61,11 +63,11 @@ test('entry without a TP falls back to 3×ATR on the profit side', () => {
     assert.equal(entry('SELL', null).takeProfitPrice, PRICE - 3 * ATR);
 });
 
-test('entry TP on the wrong side or inside 0.5 ATR is replaced by the fallback', () => {
+test('entry TP on the wrong side or inside 2 ATR is replaced by the fallback', () => {
     const wrongSide = entry('BUY', 95);
     assert.ok(wrongSide.notes.includes('tp_wrong_side_dropped'));
     assert.equal(wrongSide.takeProfitPrice, PRICE + 3 * ATR);
-    const tooClose = entry('SELL', 99.5); // 0.25 ATR away
+    const tooClose = entry('SELL', 97); // 1.5 ATR away — not a swing target
     assert.ok(tooClose.notes.includes('tp_too_close_dropped'));
     assert.equal(tooClose.takeProfitPrice, PRICE - 3 * ATR);
 });

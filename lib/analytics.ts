@@ -253,6 +253,23 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         markPrice,
     };
 }
+// Account equity (USDT futures account) for fixed-fractional risk sizing.
+// Best-effort: any failure returns null and the caller falls back to its
+// fixed risk amount.
+export async function fetchBitgetAccountEquityUsd(): Promise<number | null> {
+    try {
+        const productType = resolveProductType();
+        const accounts: any[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
+        const row =
+            (accounts || []).find((a) => String(a?.marginCoin || '').toUpperCase() === 'USDT') ?? accounts?.[0];
+        const n = Number(row?.accountEquity ?? row?.usdtEquity ?? row?.equity ?? row?.available);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    } catch (err) {
+        console.warn('bitget account equity fetch failed:', err);
+        return null;
+    }
+}
+
 function calculatePnLPercent(data: RawPosition): string {
     const sizeBase = num(data.total);
     const mark = Math.max(1e-9, num(data.markPrice));

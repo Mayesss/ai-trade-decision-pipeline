@@ -4,6 +4,8 @@ import test from 'node:test';
 import { sanitizeEntryLimit } from './ai';
 
 // Anchor: price 100, primary ATR 2. Usable pullback window: 0.1–1.5 ATR.
+// The suite pins pullbackLimitEnabled=true (the day-trade flag); the swing
+// default (OFF) is covered by its own test at the bottom.
 const PRICE = 100;
 const ATR = 2;
 
@@ -14,6 +16,7 @@ const run = (action: 'BUY' | 'SELL' | 'HOLD', limit: number | null, overrides: R
         price: PRICE,
         primaryAtr: ATR,
         entryLimitPrice: limit,
+        pullbackLimitEnabled: true,
         ...(overrides as any),
     });
 
@@ -76,4 +79,15 @@ test('missing ATR cannot validate the limit → entry dropped', () => {
     assert.equal(noAtr.entryLimitPrice, null);
     assert.equal(noAtr.dropEntry, true);
     assert.ok(noAtr.notes.includes('limit_no_atr_entry_dropped'));
+});
+
+test('flag OFF (swing default): a model-sent limit drops the entry, null passes through', () => {
+    const withLimit = run('BUY', 99, { pullbackLimitEnabled: false });
+    assert.equal(withLimit.entryLimitPrice, null);
+    assert.equal(withLimit.dropEntry, true);
+    assert.ok(withLimit.notes.includes('limit_disabled_entry_dropped'));
+    // Market entry (null limit) is unaffected by the flag.
+    const market = run('BUY', null, { pullbackLimitEnabled: false });
+    assert.equal(market.entryLimitPrice, null);
+    assert.equal(market.dropEntry, false);
 });
