@@ -588,6 +588,43 @@ export async function upsertSwingAiCooldown(params: {
     `);
 }
 
+// All cooldown rows carrying at least one wake band, across symbols/platforms —
+// the 1-minute wake-watcher's work list. Expired rows are included on purpose:
+// the analyze cooldown handler honors a band crossing on an expired-but-present
+// row too, so the watcher mirrors that contract (it only ever FIRES on a
+// crossing, never on bare expiry).
+export type SwingAiCooldownRow = SwingAiCooldown & { platform: string; symbol: string };
+
+export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldownRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<
+        Array<{
+            platform: unknown;
+            symbol: unknown;
+            until_ms: unknown;
+            wake_above: unknown;
+            wake_below: unknown;
+            set_at_ms: unknown;
+        }>
+    >(sql`
+        SELECT platform, symbol, until_ms, wake_above, wake_below, set_at_ms
+        FROM swing.ai_cooldowns
+        WHERE wake_above IS NOT NULL OR wake_below IS NOT NULL
+    `);
+    return (rows || [])
+        .map((row) => ({
+            platform: String(row.platform || ''),
+            symbol: String(row.symbol || ''),
+            untilMs: Number(row.until_ms) || 0,
+            wakeAbove: finitePos(row.wake_above),
+            wakeBelow: finitePos(row.wake_below),
+            setAtMs: Number(row.set_at_ms) || 0,
+        }))
+        .filter((row) => row.platform && row.symbol && (row.wakeAbove !== null || row.wakeBelow !== null));
+}
+
 export async function clearSwingAiCooldown(platform: string, symbol: string): Promise<void> {
     if (!isSwingPgConfigured()) return;
     await ensureSwingSchema();

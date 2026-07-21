@@ -71,6 +71,8 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
+import { wakeWatchRefKey, type WakeWatchRef } from '../../lib/swing/wakeWatch';
+import { kvSetJson } from '../../lib/kv';
 import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
@@ -2278,6 +2280,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const tpslAtrRaw = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
         const primaryAtrSane = Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null;
         const marketAnchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
+
+        // Last-AI-look reference for the 1-minute wake-watcher: price + primary
+        // ATR at the moment the model actually saw this market. The watcher
+        // compares the live price against it to decide an in-position emergency
+        // look (≥ N ATR move) without fetching candles per minute. Best-effort;
+        // never blocks the decision path.
+        if (!dryRun && Number.isFinite(marketAnchor) && (marketAnchor as number) > 0) {
+            kvSetJson(
+                wakeWatchRefKey(platform, symbol),
+                { price: marketAnchor, atr: primaryAtrSane, ts: Date.now() } satisfies WakeWatchRef,
+                7 * 24 * 3600,
+            ).catch((err: unknown) => console.warn(`wake-watch ref stamp failed for ${symbol}:`, err));
+        }
         const entryLimit = sanitizeEntryLimit({
             action: decision.action,
             positionOpen,

@@ -2305,6 +2305,54 @@ export async function fetchCapitalMarketTradeability(
   }
 }
 
+// All open positions in one call, reduced to what the 1-minute wake-watcher
+// needs: the epic (usable as the pipeline symbol on this venue — the resolver
+// maps an epic-shaped symbol to itself) and a live mid price straight from the
+// positions payload (no extra quote calls). Best-effort: [] on any failure.
+export type CapitalOpenPositionMarker = { epic: string | null; mid: number | null };
+export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPositionMarker[]> {
+  try {
+    const rows = await listOpenCapitalPositions();
+    return rows.map((row) => {
+      const epic = row?.market?.epic ? String(row.market.epic).toUpperCase() : null;
+      const bid = safeNumber(row?.market?.bid, NaN);
+      const offer = safeNumber(row?.market?.offer, NaN);
+      const mid =
+        Number.isFinite(bid) && bid > 0 && Number.isFinite(offer) && offer > 0
+          ? (bid + offer) / 2
+          : Number.isFinite(bid) && bid > 0
+            ? bid
+            : Number.isFinite(offer) && offer > 0
+              ? offer
+              : null;
+      return { epic, mid };
+    });
+  } catch (err) {
+    console.warn('[capital] open-position markers failed:', err);
+    return [];
+  }
+}
+
+// Light current-price read (one markets?epics= call, no candles) — used by the
+// 1-minute wake-watcher to compare price against flat wake bands. Returns the
+// mid of bid/offer, or null when no usable quote (venue closed quotes may be
+// stale — the caller treats null/stale as "no crossing").
+export async function fetchCapitalMidPrice(symbol: string): Promise<number | null> {
+  try {
+    const resolved = await resolveCapitalEpicRuntime(symbol);
+    const row = await loadMarketOverview(resolved.epic);
+    const bid = safeNumber(row?.bid, NaN);
+    const offer = safeNumber(row?.offer, NaN);
+    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(offer) && offer > 0) return (bid + offer) / 2;
+    if (Number.isFinite(bid) && bid > 0) return bid;
+    if (Number.isFinite(offer) && offer > 0) return offer;
+    return null;
+  } catch (err) {
+    console.warn(`[capital] mid-price read failed for ${symbol}:`, err);
+    return null;
+  }
+}
+
 async function loadMarketOverview(
   epic: string,
 ): Promise<CapitalMarketSearchRow | null> {
