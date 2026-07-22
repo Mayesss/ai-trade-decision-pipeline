@@ -28,6 +28,22 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/swing/analyze?symbol=DOGEUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=ADAUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=AVAXUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=BNBUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
       "schedule": "*/15 * * * *"
     },
@@ -69,6 +85,22 @@
     },
     {
       "path": "/api/swing/analyze?symbol=TLT&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=UK100&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=SILVER&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=GBPUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
       "schedule": "*/15 * * * *"
     },
     {
