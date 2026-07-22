@@ -58,7 +58,12 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 
 test('valid swing decisions conform to the schema', () => {
     const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
-    const noBracket = { take_profit_price: null, stop_loss_price: null, entry_limit_price: null };
+    const noBracket = {
+        take_profit_price: null,
+        stop_loss_price: null,
+        entry_limit_price: null,
+        entry_trigger_price: null,
+    };
     const noCooldown = {
         cooldown_minutes: null,
         cooldown_wake_above: null,
@@ -78,6 +83,7 @@ test('valid swing decisions conform to the schema', () => {
             take_profit_price: 71250.5,
             stop_loss_price: null,
             entry_limit_price: 70100,
+            entry_trigger_price: 69800,
         },
         { action: 'HOLD', summary: 'wait', reason: 'chop', exit_size_pct: null, leverage: null, ...manageOff, ...noBracket, ...noCooldown },
         // flat HOLD requesting a conditional cooldown
@@ -106,6 +112,7 @@ test('valid swing decisions conform to the schema', () => {
             take_profit_price: 72000,
             stop_loss_price: 68000,
             entry_limit_price: null,
+            entry_trigger_price: null,
         },
         { action: 'REVERSE', summary: 'flip', reason: 'structure flip', exit_size_pct: 100, leverage: 5, ...manageOff, ...noBracket, ...noCooldown },
         // margin-recycle maneuver: BE stop + leverage raise on an in-profit HOLD
@@ -136,6 +143,7 @@ test('invalid swing decisions are rejected', () => {
         take_profit_price: null,
         stop_loss_price: null,
         entry_limit_price: null,
+        entry_trigger_price: null,
         cooldown_minutes: null,
         cooldown_wake_above: null,
         cooldown_wake_below: null,
@@ -166,6 +174,8 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(!validate({ ...base, cooldown_wake_below: -5 }, SWING_DECISION_SCHEMA.schema));
     // wake note must be a string or null
     assert.ok(!validate({ ...base, cooldown_wake_note: 42 }, SWING_DECISION_SCHEMA.schema));
+    // entry trigger must be a number >= 0 or null
+    assert.ok(!validate({ ...base, entry_trigger_price: 'the breakout level' }, SWING_DECISION_SCHEMA.schema));
     // missing required key
     const { reason, ...missing } = base;
     assert.ok(!validate(missing, SWING_DECISION_SCHEMA.schema));

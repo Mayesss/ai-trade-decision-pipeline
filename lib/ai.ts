@@ -474,6 +474,10 @@ export function computeSwingState(
     // `note` is the plan the model attached when it set the band — echoed back
     // so the (stateless) wake evaluation knows why it was scheduled.
     cooldownWake?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null } | null,
+    // Set when the position's break-entry trigger has been closed back through
+    // by a primary bar (the model's own failed-break lesson). Surfaces as
+    // market.failed_break so the exit decision is made with the fact in hand.
+    failedBreak?: { side: 'long' | 'short'; triggerPrice: number; barClose: number; barClosedAtMs: number | null } | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -1132,6 +1136,18 @@ export function computeSwingState(
             market.cooldown_wake.note = cooldownWake.note.trim();
         }
     }
+    if (failedBreak && Number.isFinite(failedBreak.triggerPrice) && Number.isFinite(failedBreak.barClose)) {
+        const fbNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        market.failed_break = {
+            side: failedBreak.side,
+            trigger_price: failedBreak.triggerPrice,
+            bar_close: failedBreak.barClose,
+            bar_closed_minutes_ago:
+                failedBreak.barClosedAtMs && failedBreak.barClosedAtMs > 0
+                    ? Math.max(0, Math.round((fbNowMs - failedBreak.barClosedAtMs) / 60_000))
+                    : null,
+        };
+    }
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
@@ -1270,7 +1286,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point. When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure. If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.${sessionOffenseGuidance}${eventReactionGuidance}${btcContextGuidance}
 - ${costChurnLine}
 - In a position: PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.
-- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), or (b) the thesis completing at/near the target. Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
+- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), (b) the thesis completing at/near the target, or (c) a failed break-entry trigger (market.failed_break — see below). Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.${
         position_context
             ? `\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
             : ''
@@ -1284,6 +1300,8 @@ ${
             ? `- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.`
             : `- entry_limit_price: ALWAYS null — resting pullback limits are disabled (a resting limit's fill is adversely selected: it fills exactly when the level breaks against the thesis). Entries execute at market, so only enter when the timing is right NOW. If the setup is valid but the wave position is bad, HOLD and set cooldown_wake_above/below at the level you would rather pay — you will be re-evaluated the moment price gets there; entering there at market after a confirmed reaction beats resting blind in the move's path.`
     }
+- entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later ${primaryTimeframe} bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.
+- Failed-break trigger (market.failed_break, when present, in a position): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.
 - Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
 - Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? ${
         PULLBACK_LIMIT_ENABLED
@@ -1326,10 +1344,11 @@ TASKS:
         : 'entry_limit_price: ALWAYS null (market entries only — see guidance).'
 }
 6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, and cooldown_wake_note whenever a band is set): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.
-7) summary ≤3 lines; reason = brief rationale.
+7) entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.
+8) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line"${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_trigger_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line"${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -1657,6 +1676,12 @@ export function postprocessDecision(params: {
     // sanity is enforced by sanitizeEntryLimit in the API route.
     const entry_limit_price =
         !positionOpen && (action === 'BUY' || action === 'SELL') ? coercePrice(decision?.entry_limit_price) : null;
+    // Failed-break watch trigger: fresh flat entries only (REVERSE stays
+    // untracked — its side depends on the position being flipped, and the rare
+    // reverse can re-declare on the next look). Side sanity vs live price is
+    // enforced by sanitizeEntryTrigger in the API route.
+    const entry_trigger_price =
+        !positionOpen && (action === 'BUY' || action === 'SELL') ? coercePrice(decision?.entry_trigger_price) : null;
     // Flat-HOLD cooldown: type/eligibility coercion only — clamping and wake-band
     // side validation happen in sanitizeHoldCooldown in the API route (live price).
     const cooldownEligible = !positionOpen && action === 'HOLD';
@@ -1687,6 +1712,7 @@ export function postprocessDecision(params: {
         take_profit_price,
         stop_loss_price,
         entry_limit_price,
+        entry_trigger_price,
         cooldown_minutes,
         cooldown_wake_above,
         cooldown_wake_below,
@@ -1787,6 +1813,44 @@ export function sanitizeHoldCooldown(params: {
         wakeNote = null;
     }
     return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, notes };
+}
+
+// ------------------------------
+// Failed-break trigger sanitation
+// ------------------------------
+
+// Flat BUY/SELL only. The trigger is the broken level the entry thesis stands
+// on, so it must sit on the thesis side of current price: below it for a long
+// (price broke UP through the trigger), above it for a short. A wrong-side or
+// absurdly distant trigger is dropped (the entry itself is unaffected — the
+// failed-break watch is protective bookkeeping, never an order parameter).
+export function sanitizeEntryTrigger(params: {
+    action: string;
+    positionOpen: boolean;
+    price: number | null;
+    triggerPrice: unknown;
+}): { triggerPrice: number | null; notes: string[] } {
+    const notes: string[] = [];
+    const action = String(params.action || '').toUpperCase();
+    if (params.positionOpen || (action !== 'BUY' && action !== 'SELL')) {
+        return { triggerPrice: null, notes };
+    }
+    const raw = Number(params.triggerPrice);
+    if (!Number.isFinite(raw) || raw <= 0) return { triggerPrice: null, notes };
+    const price = Number(params.price);
+    if (!(Number.isFinite(price) && price > 0)) {
+        notes.push('entry_trigger_dropped_price_unknown');
+        return { triggerPrice: null, notes };
+    }
+    if (action === 'BUY' && raw >= price) {
+        notes.push('entry_trigger_dropped_not_below_price');
+        return { triggerPrice: null, notes };
+    }
+    if (action === 'SELL' && raw <= price) {
+        notes.push('entry_trigger_dropped_not_above_price');
+        return { triggerPrice: null, notes };
+    }
+    return { triggerPrice: raw, notes };
 }
 
 // ------------------------------
@@ -2038,6 +2102,7 @@ export const SWING_DECISION_SCHEMA = {
             'take_profit_price',
             'stop_loss_price',
             'entry_limit_price',
+            'entry_trigger_price',
             'cooldown_minutes',
             'cooldown_wake_above',
             'cooldown_wake_below',
@@ -2068,6 +2133,11 @@ export const SWING_DECISION_SCHEMA = {
             // with the flag off (swing default) a non-null value drops the
             // entry (sanitizeEntryLimit).
             entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Failed-break watch: on a breakout/breakdown-thesis entry, the
+            // trigger level whose break justifies the trade. Code watches it —
+            // a later primary bar closing back through it wakes the model with
+            // market.failed_break. null for bounce/range/other theses.
+            entry_trigger_price: { type: ['number', 'null'], minimum: 0 },
             // Flat-HOLD cooldown: quiet period request (minutes, code-clamped)
             // with optional wake bands that end it early when price crosses
             // them. Only honored when flat + action=HOLD.
@@ -2097,6 +2167,7 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             'take_profit_price',
             'stop_loss_price',
             'entry_limit_price',
+            'entry_trigger_price',
             'cooldown_minutes',
             'cooldown_wake_above',
             'cooldown_wake_below',
@@ -2111,6 +2182,8 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
             entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Failed-break watch (see SWING_DECISION_SCHEMA).
+            entry_trigger_price: { type: ['number', 'null'], minimum: 0 },
             // Flat-HOLD cooldown (see SWING_DECISION_SCHEMA).
             cooldown_minutes: { type: ['integer', 'null'] },
             cooldown_wake_above: { type: ['number', 'null'], minimum: 0 },

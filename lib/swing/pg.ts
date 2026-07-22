@@ -203,6 +203,27 @@ async function ensureSwingSchema(): Promise<void> {
         // deployments.
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_note TEXT`);
 
+        // break_triggers: failed-break watch armed at entry on breakout/
+        // breakdown-thesis trades. The model declares the trigger level that
+        // justified the trade (entry_trigger_price); if a later primary bar
+        // CLOSES back through it, the 1-min watcher fires an early analyze and
+        // the analyze route surfaces market.failed_break so the model decides
+        // the exit. One row per open position; consumed when surfaced, cleared
+        // when the position closes or a new entry carries no trigger.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.break_triggers (
+              platform      TEXT NOT NULL,
+              symbol        TEXT NOT NULL,
+              side          TEXT NOT NULL,
+              trigger_price NUMERIC NOT NULL,
+              time_frame    TEXT NOT NULL,
+              entry_at_ms   BIGINT NOT NULL,
+              created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT break_triggers_key PRIMARY KEY (platform, symbol),
+              CONSTRAINT break_triggers_side_check CHECK (side IN ('long', 'short'))
+            )`);
+
         // tick_log: one row per analyze-tick OUTCOME — gate skips (with the
         // stage/reason and gate measurements) and AI calls alike. Quarter-tick
         // and cooldown skips never reach swing.decisions and the KV scan-tick
@@ -645,6 +666,107 @@ export async function clearSwingAiCooldown(platform: string, symbol: string): Pr
     const db = swingPg();
     await db.$executeRaw(sql`
         DELETE FROM swing.ai_cooldowns
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
+
+// --------------------------------------------------------------------------
+// Break triggers (failed-break watch on breakout/breakdown entries)
+// --------------------------------------------------------------------------
+export type SwingBreakTrigger = {
+    side: 'long' | 'short';
+    triggerPrice: number;
+    timeFrame: string;
+    entryAtMs: number;
+};
+
+export type SwingBreakTriggerRow = SwingBreakTrigger & { platform: string; symbol: string };
+
+function parseBreakTriggerRow(row: any): SwingBreakTrigger | null {
+    const side = String(row?.side || '');
+    const triggerPrice = finitePos(row?.trigger_price);
+    const entryAtMs = Number(row?.entry_at_ms);
+    if ((side !== 'long' && side !== 'short') || triggerPrice === null) return null;
+    if (!Number.isFinite(entryAtMs) || entryAtMs <= 0) return null;
+    return {
+        side,
+        triggerPrice,
+        timeFrame: String(row?.time_frame || ''),
+        entryAtMs,
+    };
+}
+
+export async function getSwingBreakTrigger(platform: string, symbol: string): Promise<SwingBreakTrigger | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
+        SELECT side, trigger_price, time_frame, entry_at_ms
+        FROM swing.break_triggers
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+    return rows?.[0] ? parseBreakTriggerRow(rows[0]) : null;
+}
+
+export async function upsertSwingBreakTrigger(params: {
+    platform: string;
+    symbol: string;
+    side: 'long' | 'short';
+    triggerPrice: number;
+    timeFrame: string;
+    entryAtMs: number;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    if (!(Number.isFinite(params.triggerPrice) && params.triggerPrice > 0)) return;
+    if (!(Number.isFinite(params.entryAtMs) && params.entryAtMs > 0)) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        INSERT INTO swing.break_triggers (platform, symbol, side, trigger_price, time_frame, entry_at_ms)
+        VALUES (
+            ${normalizePlatform(params.platform)},
+            ${String(params.symbol || '').toUpperCase()},
+            ${params.side},
+            ${params.triggerPrice},
+            ${String(params.timeFrame || '')},
+            ${Math.floor(params.entryAtMs)}
+        )
+        ON CONFLICT (platform, symbol) DO UPDATE SET
+            side = EXCLUDED.side,
+            trigger_price = EXCLUDED.trigger_price,
+            time_frame = EXCLUDED.time_frame,
+            entry_at_ms = EXCLUDED.entry_at_ms,
+            updated_at = NOW()
+    `);
+}
+
+// The 1-minute watcher's work list. Rows whose position meanwhile closed are
+// cleaned up by the watcher itself (the bracket can close a position with no
+// analyze tick involved, so entry-side bookkeeping alone can't be trusted).
+export async function listSwingBreakTriggers(): Promise<SwingBreakTriggerRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
+        SELECT platform, symbol, side, trigger_price, time_frame, entry_at_ms
+        FROM swing.break_triggers
+    `);
+    const out: SwingBreakTriggerRow[] = [];
+    for (const row of rows || []) {
+        const parsed = parseBreakTriggerRow(row);
+        const platform = String((row as any)?.platform || '');
+        const symbol = String((row as any)?.symbol || '');
+        if (parsed && platform && symbol) out.push({ ...parsed, platform, symbol });
+    }
+    return out;
+}
+
+export async function clearSwingBreakTrigger(platform: string, symbol: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        DELETE FROM swing.break_triggers
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
 }

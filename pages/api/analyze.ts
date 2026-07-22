@@ -46,6 +46,7 @@ import {
     resolveDecisionPolicy,
     resolveExtensionThresholds,
     sanitizeEntryLimit,
+    sanitizeEntryTrigger,
     sanitizeExchangeTpSl,
     sanitizeHoldCooldown,
     REENTRY_COOLDOWN_MIN,
@@ -71,20 +72,29 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
-import { wakeWatchRefKey, type WakeWatchRef } from '../../lib/swing/wakeWatch';
+import {
+    breakTriggerFailed,
+    lastClosedBar,
+    timeframeToMs,
+    wakeWatchRefKey,
+    type WakeWatchRef,
+} from '../../lib/swing/wakeWatch';
 import { kvSetJson } from '../../lib/kv';
 import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
     clearSwingAiCooldown,
+    clearSwingBreakTrigger,
     endSwingAiThread,
     getSwingAiCooldown,
     getSwingAiThread,
+    getSwingBreakTrigger,
     insertSwingTickLog,
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
     upsertSwingAiCooldown,
     upsertSwingAiThread,
+    upsertSwingBreakTrigger,
     upsertSwingPosition,
 } from '../../lib/swing/pg';
 import {
@@ -1034,11 +1044,68 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Reference = last real AI call's snapshot price (any tick — the entry
         // decision counts), falling back to entry price. Missing price/ATR fails
         // OPEN (call the AI rather than fly blind).
+        // Failed-break watch: if this position entered on a breakout/breakdown
+        // trigger (swing.break_triggers row, armed at entry) and a primary bar
+        // has since CLOSED back through it, the break has failed — surface it
+        // to the model as market.failed_break and let the tick through even
+        // when quiet (the whole point is not waiting out the quiet skip on a
+        // sub-emergency drift back through the trigger). Detection runs on
+        // EVERY in-position tick, so the regular close-boundary call and a
+        // watcher-fired early call both catch it; the row is consumed on
+        // surfacing (one explicit exit decision per trigger, no per-bar
+        // nagging). Best-effort: a store hiccup just skips the check.
+        let failedBreak: {
+            side: 'long' | 'short';
+            triggerPrice: number;
+            barClose: number;
+            barClosedAtMs: number | null;
+        } | null = null;
+        if (positionOpen && !dryRun) {
+            try {
+                const breakTrigger = await getSwingBreakTrigger(platform, symbol);
+                if (breakTrigger) {
+                    const posSide = (positionInfo.holdSide ?? null) as 'long' | 'short' | null;
+                    if (posSide && posSide !== breakTrigger.side) {
+                        // Position flipped since the trigger was armed (e.g. a
+                        // REVERSE) — the old trigger no longer describes this
+                        // exposure.
+                        await clearSwingBreakTrigger(platform, symbol);
+                    } else {
+                        const tfMs = timeframeToMs(breakTrigger.timeFrame) ?? timeframeToMs(timeFrame);
+                        const bar = tfMs
+                            ? lastClosedBar((indicators as any)?.rawCandles?.[timeFrame], tfMs, Date.now())
+                            : null;
+                        if (
+                            bar &&
+                            bar.closeTs > breakTrigger.entryAtMs &&
+                            breakTriggerFailed(breakTrigger.side, breakTrigger.triggerPrice, bar.close)
+                        ) {
+                            failedBreak = {
+                                side: breakTrigger.side,
+                                triggerPrice: breakTrigger.triggerPrice,
+                                barClose: bar.close,
+                                barClosedAtMs: bar.closeTs,
+                            };
+                            await clearSwingBreakTrigger(platform, symbol);
+                            emitGateDebug('failed_break_detected', {
+                                gate: 'FAILED_BREAK',
+                                side: breakTrigger.side,
+                                triggerPrice: breakTrigger.triggerPrice,
+                                barClose: bar.close,
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn(`Failed-break check failed for ${symbol}:`, err);
+            }
+        }
+
         const inPositionOffCadenceTick = primaryCloseCadence ? offBoundaryTick : quarterTick;
         const inPositionMoveThresholdAtr = primaryCloseCadence
             ? IN_POSITION_EMERGENCY_MOVE_ATR
             : IN_POSITION_QUARTER_MOVE_ATR;
-        if (positionOpen && inPositionOffCadenceTick) {
+        if (positionOpen && inPositionOffCadenceTick && !failedBreak) {
             const tickerLight = Array.isArray(bundleLight?.ticker) ? bundleLight.ticker[0] : bundleLight?.ticker;
             const priceNow = Number(
                 tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
@@ -1816,6 +1883,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             capitalNowMs,
             capitalMarketContext,
             cooldownWake,
+            failedBreak,
         );
         const { context, actionability } = swingState;
 
@@ -2359,6 +2427,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             (decision as any).cooldown_notes = holdCooldown.notes;
         }
 
+        // Failed-break watch trigger: side-validate against live price and write
+        // the sanitized value back so history shows what was actually armed.
+        // Persisted after execution (below) — only a placed flat entry arms it.
+        const entryTrigger = sanitizeEntryTrigger({
+            action: decision.action,
+            positionOpen,
+            price: marketAnchor,
+            triggerPrice: (decision as any).entry_trigger_price,
+        });
+        (decision as any).entry_trigger_price = entryTrigger.triggerPrice;
+        if (entryTrigger.notes.length) {
+            (decision as any).entry_trigger_notes = entryTrigger.notes;
+        }
+
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
         const execLeverage = capitalLeverage ?? getTargetLeverage(decision);
         const execNotionalUSDT = sideSizeUSDT * (execLeverage ?? 1);
@@ -2617,6 +2699,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 });
             } catch (err) {
                 console.warn(`AI cooldown arm failed for ${symbol}:`, err);
+            }
+        }
+
+        // Failed-break watch bookkeeping (best-effort, never blocks): a PLACED
+        // flat entry arms the trigger the model declared (or clears a stale row
+        // when the new thesis is not a break); a placed full CLOSE or REVERSE
+        // ends the watched position, so its trigger goes too (REVERSE's new
+        // opposite side is untracked by design — the model can re-declare on
+        // its next look). Bracket-side closes are cleaned up by the watcher.
+        if (!dryRun && execRes?.placed) {
+            try {
+                const action = String(decision.action || '').toUpperCase();
+                if (!positionOpen && (action === 'BUY' || action === 'SELL')) {
+                    if (entryTrigger.triggerPrice) {
+                        await upsertSwingBreakTrigger({
+                            platform,
+                            symbol,
+                            side: action === 'BUY' ? 'long' : 'short',
+                            triggerPrice: entryTrigger.triggerPrice,
+                            timeFrame,
+                            entryAtMs: executedAtMs,
+                        });
+                    } else {
+                        await clearSwingBreakTrigger(platform, symbol);
+                    }
+                } else if (
+                    action === 'REVERSE' ||
+                    (action === 'CLOSE' && (decision.exit_size_pct == null || Number(decision.exit_size_pct) >= 100))
+                ) {
+                    await clearSwingBreakTrigger(platform, symbol);
+                }
+            } catch (err) {
+                console.warn(`Break-trigger bookkeeping failed for ${symbol}:`, err);
             }
         }
 
