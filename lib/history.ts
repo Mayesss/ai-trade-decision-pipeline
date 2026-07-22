@@ -37,6 +37,16 @@ export function isCooldownBandDecision(aiDecision: any): boolean {
     return (Number.isFinite(above) && above > 0) || (Number.isFinite(below) && below > 0);
 }
 
+// Wake-triggered evaluations enter the index too, whatever their outcome: the
+// wake CONSUMED the standing cooldown, and the chart truncates that band's
+// overlay at the next indexed decision — without this row a band woken into a
+// plain do-nothing HOLD (no marker action, no new band) would keep rendering
+// to its scheduled end. Like cooldown-band rows, these are NOT marker actions.
+export function isCooldownWakeEntry(entry: { snapshot?: any } | null | undefined): boolean {
+    const crossed = (entry as any)?.snapshot?.cooldownWake?.crossed;
+    return crossed === 'above' || crossed === 'below';
+}
+
 function markerIndexKey(symbol: string, platform?: string): string {
     return `${MARKER_INDEX_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
 }
@@ -220,8 +230,13 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
 
         // Mirror entry/exit decisions into the per-symbol marker index so the chart
         // can fetch just this symbol's markers without scanning the global index.
-        // Cooldown-band HOLDs ride along for the chart's wake-band segments.
-        if (isMarkerAction(entry.aiDecision?.action) || isCooldownBandDecision(entry.aiDecision)) {
+        // Cooldown-band HOLDs ride along for the chart's wake-band segments, and
+        // wake-triggered evaluations so a consumed band's overlay stops at the wake.
+        if (
+            isMarkerAction(entry.aiDecision?.action) ||
+            isCooldownBandDecision(entry.aiDecision) ||
+            isCooldownWakeEntry(entry)
+        ) {
             const mKey = markerIndexKey(entry.symbol, entry.platform);
             await kvZAdd(mKey, entry.timestamp, key);
             await kvZRemRangeByScore(mKey, 0, cutoff);
@@ -347,7 +362,7 @@ export async function loadSymbolMarkerHistory(
         if (seeded) return [];
 
         const legacy = (await loadDecisionHistory(symbol, 1200, platform)).filter(
-            (h) => isMarkerAction(h?.aiDecision?.action) || isCooldownBandDecision(h?.aiDecision),
+            (h) => isMarkerAction(h?.aiDecision?.action) || isCooldownBandDecision(h?.aiDecision) || isCooldownWakeEntry(h),
         );
         // Populate the index so future reads are fast.
         await Promise.all(
