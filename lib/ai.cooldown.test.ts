@@ -13,6 +13,41 @@ test('sanitizeHoldCooldown: valid flat HOLD request passes with bands intact', (
     assert.deepEqual(out.notes, []);
 });
 
+test('sanitizeHoldCooldown: wake note survives alongside a valid band, trimmed and capped', () => {
+    const out = sanitizeHoldCooldown({
+        ...base,
+        cooldownMinutes: 480,
+        wakeAbove: 105,
+        wakeBelow: null,
+        wakeNote: `  retest of broken 105 for long entry ${'x'.repeat(300)}  `,
+    });
+    assert.equal(out.wakeAbove, 105);
+    assert.ok(out.wakeNote?.startsWith('retest of broken 105 for long entry'));
+    assert.equal(out.wakeNote?.length, 200);
+});
+
+test('sanitizeHoldCooldown: wake note is dropped when no band survives', () => {
+    // Both bands wrong-side → dropped; a note is a plan attached to a band,
+    // so it must not persist bandless.
+    const out = sanitizeHoldCooldown({
+        ...base,
+        cooldownMinutes: 600,
+        wakeAbove: 99,
+        wakeBelow: 101,
+        wakeNote: 'retest plan',
+    });
+    assert.equal(out.wakeNote, null);
+    assert.ok(out.notes.includes('wake_note_dropped_no_band'));
+});
+
+test('sanitizeHoldCooldown: non-string / empty wake notes coerce to null', () => {
+    for (const wakeNote of [null, undefined, 42, {}, '   ']) {
+        const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeNote });
+        assert.equal(out.wakeNote, null);
+        assert.ok(!out.notes.includes('wake_note_dropped_no_band'));
+    }
+});
+
 test('sanitizeHoldCooldown: sub-bar requests clamp UP to the 6h floor (4H cadence)', () => {
     // Anything shorter than one primary bar would expire before the next
     // evaluation and suppress nothing — the floor makes every cooldown real.
@@ -108,6 +143,22 @@ test('computeSwingState: a crossed wake band surfaces as market.cooldown_wake wi
     const user = buildWakeUserPrompt({ crossed: 'above', level: 105, setAtMs: NOW_MS - 76 * 60_000 });
     const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
     assert.deepEqual(market.cooldown_wake, { crossed: 'above', level: 105, set_minutes_ago: 76 });
+});
+
+test('computeSwingState: the wake note is echoed back in market.cooldown_wake', () => {
+    const user = buildWakeUserPrompt({
+        crossed: 'above',
+        level: 105,
+        setAtMs: NOW_MS - 30 * 60_000,
+        note: '  acceptance above 105 → breakout check  ',
+    });
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    assert.deepEqual(market.cooldown_wake, {
+        crossed: 'above',
+        level: 105,
+        set_minutes_ago: 30,
+        note: 'acceptance above 105 → breakout check',
+    });
 });
 
 test('computeSwingState: unknown set time yields set_minutes_ago null', () => {

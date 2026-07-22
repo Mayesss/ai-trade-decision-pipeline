@@ -1337,7 +1337,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // crossing consumes the row and proceeds as a normal scan, no bypass.
         // Best-effort: a store hiccup fails open (evaluate rather than trust a
         // stale quiet period).
-        let cooldownWake: { crossed: 'above' | 'below'; level: number; setAtMs: number | null } | null = null;
+        let cooldownWake: {
+            crossed: 'above' | 'below';
+            level: number;
+            setAtMs: number | null;
+            note: string | null;
+        } | null = null;
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
                 const cooldown = await getSwingAiCooldown(platform, symbol);
@@ -1391,6 +1396,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             crossed: wokenAbove ? 'above' : 'below',
                             level: (wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow) as number,
                             setAtMs: cooldown.setAtMs > 0 ? cooldown.setAtMs : null,
+                            // The model's own plan for this band — echoed back in
+                            // market.cooldown_wake so the (stateless) wake scan
+                            // knows why it was scheduled.
+                            note: cooldown.wakeNote,
                         };
                         emitGateDebug('flat_cooldown_woken', {
                             gate: 'AI_COOLDOWN',
@@ -2340,10 +2349,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             cooldownMinutes: (decision as any).cooldown_minutes,
             wakeAbove: (decision as any).cooldown_wake_above,
             wakeBelow: (decision as any).cooldown_wake_below,
+            wakeNote: (decision as any).cooldown_wake_note,
         });
         (decision as any).cooldown_minutes = holdCooldown.cooldownMinutes;
         (decision as any).cooldown_wake_above = holdCooldown.wakeAbove;
         (decision as any).cooldown_wake_below = holdCooldown.wakeBelow;
+        (decision as any).cooldown_wake_note = holdCooldown.wakeNote;
         if (holdCooldown.notes.length) {
             (decision as any).cooldown_notes = holdCooldown.notes;
         }
@@ -2602,6 +2613,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     untilMs: executedAtMs + holdCooldown.cooldownMinutes * 60_000,
                     wakeAbove: holdCooldown.wakeAbove,
                     wakeBelow: holdCooldown.wakeBelow,
+                    wakeNote: holdCooldown.wakeNote,
                 });
             } catch (err) {
                 console.warn(`AI cooldown arm failed for ${symbol}:`, err);

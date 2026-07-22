@@ -196,6 +196,12 @@ async function ensureSwingSchema(): Promise<void> {
               updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               CONSTRAINT ai_cooldowns_key PRIMARY KEY (platform, symbol)
             )`);
+        // wake_note: the model's own one-line plan for the band ("retest of
+        // broken 118.4k for long entry") — echoed back verbatim in
+        // market.cooldown_wake when the band fires, so the wake evaluation
+        // (a stateless flat scan) knows WHY it was scheduled. Predates some
+        // deployments.
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_note TEXT`);
 
         // tick_log: one row per analyze-tick OUTCOME — gate skips (with the
         // stage/reason and gate measurements) and AI calls alike. Quarter-tick
@@ -532,6 +538,7 @@ export type SwingAiCooldown = {
     untilMs: number;
     wakeAbove: number | null;
     wakeBelow: number | null;
+    wakeNote: string | null;
     setAtMs: number;
 };
 
@@ -540,9 +547,9 @@ export async function getSwingAiCooldown(platform: string, symbol: string): Prom
     await ensureSwingSchema();
     const db = swingPg();
     const rows = await db.$queryRaw<
-        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; set_at_ms: unknown }>
+        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; wake_note: unknown; set_at_ms: unknown }>
     >(sql`
-        SELECT until_ms, wake_above, wake_below, set_at_ms
+        SELECT until_ms, wake_above, wake_below, wake_note, set_at_ms
         FROM swing.ai_cooldowns
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
@@ -554,6 +561,7 @@ export async function getSwingAiCooldown(platform: string, symbol: string): Prom
         untilMs,
         wakeAbove: finitePos(row.wake_above),
         wakeBelow: finitePos(row.wake_below),
+        wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
         setAtMs: Number(row.set_at_ms) || 0,
     };
 }
@@ -564,25 +572,29 @@ export async function upsertSwingAiCooldown(params: {
     untilMs: number;
     wakeAbove?: number | null;
     wakeBelow?: number | null;
+    wakeNote?: string | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     if (!Number.isFinite(params.untilMs) || params.untilMs <= Date.now()) return;
     await ensureSwingSchema();
     const db = swingPg();
+    const wakeNote = typeof params.wakeNote === 'string' && params.wakeNote.trim() ? params.wakeNote.trim() : null;
     await db.$executeRaw(sql`
-        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, set_at_ms)
+        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms)
         VALUES (
             ${normalizePlatform(params.platform)},
             ${String(params.symbol || '').toUpperCase()},
             ${Math.floor(params.untilMs)},
             ${finitePos(params.wakeAbove)},
             ${finitePos(params.wakeBelow)},
+            ${wakeNote},
             ${Date.now()}
         )
         ON CONFLICT (platform, symbol) DO UPDATE SET
             until_ms = EXCLUDED.until_ms,
             wake_above = EXCLUDED.wake_above,
             wake_below = EXCLUDED.wake_below,
+            wake_note = EXCLUDED.wake_note,
             set_at_ms = EXCLUDED.set_at_ms,
             updated_at = NOW()
     `);
@@ -606,10 +618,11 @@ export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldo
             until_ms: unknown;
             wake_above: unknown;
             wake_below: unknown;
+            wake_note: unknown;
             set_at_ms: unknown;
         }>
     >(sql`
-        SELECT platform, symbol, until_ms, wake_above, wake_below, set_at_ms
+        SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms
         FROM swing.ai_cooldowns
         WHERE wake_above IS NOT NULL OR wake_below IS NOT NULL
     `);
@@ -620,6 +633,7 @@ export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldo
             untilMs: Number(row.until_ms) || 0,
             wakeAbove: finitePos(row.wake_above),
             wakeBelow: finitePos(row.wake_below),
+            wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
             setAtMs: Number(row.set_at_ms) || 0,
         }))
         .filter((row) => row.platform && row.symbol && (row.wakeAbove !== null || row.wakeBelow !== null));

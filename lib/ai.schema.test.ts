@@ -59,7 +59,12 @@ test('SWING_DECISION_SCHEMA satisfies OpenAI strict structured-output invariants
 test('valid swing decisions conform to the schema', () => {
     const manageOff = { raise_leverage_to: null, move_stop_to_be: null };
     const noBracket = { take_profit_price: null, stop_loss_price: null, entry_limit_price: null };
-    const noCooldown = { cooldown_minutes: null, cooldown_wake_above: null, cooldown_wake_below: null };
+    const noCooldown = {
+        cooldown_minutes: null,
+        cooldown_wake_above: null,
+        cooldown_wake_below: null,
+        cooldown_wake_note: null,
+    };
     const valid = [
         // entry with a resting exchange-side TP target
         {
@@ -87,6 +92,7 @@ test('valid swing decisions conform to the schema', () => {
             cooldown_minutes: 180,
             cooldown_wake_above: 71500,
             cooldown_wake_below: 69200,
+            cooldown_wake_note: 'acceptance above 71.5k → breakout check; loss of 69.2k → breakdown check',
         },
         // in-position trim that also amends the standing bracket
         {
@@ -133,6 +139,7 @@ test('invalid swing decisions are rejected', () => {
         cooldown_minutes: null,
         cooldown_wake_above: null,
         cooldown_wake_below: null,
+        cooldown_wake_note: null,
     };
     // the base itself is valid, so each case below fails for its intended reason
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
@@ -157,6 +164,8 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(!validate({ ...base, cooldown_minutes: 90.5 }, SWING_DECISION_SCHEMA.schema));
     assert.ok(!validate({ ...base, cooldown_wake_above: 'breakout' }, SWING_DECISION_SCHEMA.schema));
     assert.ok(!validate({ ...base, cooldown_wake_below: -5 }, SWING_DECISION_SCHEMA.schema));
+    // wake note must be a string or null
+    assert.ok(!validate({ ...base, cooldown_wake_note: 42 }, SWING_DECISION_SCHEMA.schema));
     // missing required key
     const { reason, ...missing } = base;
     assert.ok(!validate(missing, SWING_DECISION_SCHEMA.schema));
