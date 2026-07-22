@@ -670,16 +670,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     limitOrders.sort((a, b) => a.fromTime - b.fromTime);
 
     // Cooldown wake bands: each flat-HOLD cooldown draws its wake_above/below
-    // levels as gray dashed horizontal segments spanning exactly the cooldown
-    // window (set → until). Historical windows come from the indexed cooldown
-    // HOLD rows; the ACTIVE cooldown is merged from its Neon row so it renders
-    // even when its decision row predates the cooldown indexing (or expired
-    // from KV). Times in epoch seconds, like candles/markers.
+    // levels as gray dashed horizontal segments spanning the cooldown window
+    // (set → until, truncated at consumption). Historical windows come from the
+    // indexed cooldown HOLD rows; the ACTIVE cooldown is merged from its Neon
+    // row so it renders even when its decision row predates the cooldown
+    // indexing (or expired from KV). Times in epoch seconds, like candles/markers.
     type CooldownBandSegment = {
       fromTime: number;
       toTime: number;
       wakeAbove: number | null;
       wakeBelow: number | null;
+    };
+    // Only one cooldown row exists per (platform, symbol) and every AI call
+    // consumes or replaces it, so ANY later indexed decision (entry/exit or a
+    // new banded cooldown HOLD) proves the earlier cooldown ended by then —
+    // typically a wake-band crossing. Draw the lived window, not the requested
+    // one: a band woken early must stop at the wake, not overlap its successor.
+    const decisionTimesSec = (indexedHistory || [])
+      .filter((h) => (h as any)?.dryRun !== true && Number(h?.timestamp) > 0)
+      .map((h) => Math.floor(Number(h.timestamp) / 1000))
+      .sort((a, b) => a - b);
+    const truncateAtNextDecision = (s: CooldownBandSegment): CooldownBandSegment => {
+      // 60s epsilon so a segment is never cut by its own decision row.
+      const next = decisionTimesSec.find((t) => t > s.fromTime + 60);
+      return next !== undefined && next < s.toTime ? { ...s, toTime: next } : s;
     };
     const cooldowns: CooldownBandSegment[] = (indexedHistory || [])
       .filter((h) => (h as any)?.dryRun !== true && isCooldownBandDecision(h?.aiDecision))
@@ -694,7 +708,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           wakeBelow: positiveNumber(d?.cooldown_wake_below),
         };
       })
-      .filter((s) => Number.isFinite(s.fromTime) && s.fromTime > 0 && s.toTime > s.fromTime);
+      .filter((s) => Number.isFinite(s.fromTime) && s.fromTime > 0 && s.toTime > s.fromTime)
+      .map(truncateAtNextDecision)
+      .filter((s) => s.toTime > s.fromTime);
     try {
       const active = await getSwingAiCooldown(platform, symbol);
       if (active && (active.wakeAbove !== null || active.wakeBelow !== null)) {
