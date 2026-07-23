@@ -182,8 +182,11 @@ async function ensureSwingSchema(): Promise<void> {
         // do here, don't re-evaluate for N minutes — unless price crosses a wake
         // band"). One row per (platform, symbol); consulted by the pre-AI
         // cooldown gate on fresh flat scans only (in-position ticks and
-        // pending-entry re-evaluations are never suppressed) and deleted when it
-        // expires, a wake band triggers, or the next AI call goes through.
+        // pending-entry re-evaluations are never suppressed). A triggered wake
+        // band CLAIMS the row (claimed_until_ms lease) rather than deleting it,
+        // so a run that dies mid-AI leaves the wake recoverable — the row is
+        // deleted only after the wake's decision is durably recorded, on bare
+        // expiry, or when the next AI call arms a fresh cooldown over it.
         await db.$executeRaw(sql`
             CREATE TABLE IF NOT EXISTS swing.ai_cooldowns (
               platform    TEXT NOT NULL,
@@ -202,6 +205,9 @@ async function ensureSwingSchema(): Promise<void> {
         // (a stateless flat scan) knows WHY it was scheduled. Predates some
         // deployments.
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_note TEXT`);
+        // claimed_until_ms: in-flight lease on a triggered wake (see table
+        // comment above). Predates some deployments.
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS claimed_until_ms BIGINT`);
 
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
@@ -601,7 +607,7 @@ export async function upsertSwingAiCooldown(params: {
     const db = swingPg();
     const wakeNote = typeof params.wakeNote === 'string' && params.wakeNote.trim() ? params.wakeNote.trim() : null;
     await db.$executeRaw(sql`
-        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms)
+        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms)
         VALUES (
             ${normalizePlatform(params.platform)},
             ${String(params.symbol || '').toUpperCase()},
@@ -609,7 +615,8 @@ export async function upsertSwingAiCooldown(params: {
             ${finitePos(params.wakeAbove)},
             ${finitePos(params.wakeBelow)},
             ${wakeNote},
-            ${Date.now()}
+            ${Date.now()},
+            NULL
         )
         ON CONFLICT (platform, symbol) DO UPDATE SET
             until_ms = EXCLUDED.until_ms,
@@ -617,15 +624,58 @@ export async function upsertSwingAiCooldown(params: {
             wake_below = EXCLUDED.wake_below,
             wake_note = EXCLUDED.wake_note,
             set_at_ms = EXCLUDED.set_at_ms,
+            claimed_until_ms = NULL,
             updated_at = NOW()
     `);
+}
+
+// Atomically lease a triggered cooldown row for one analyze run. The lease
+// (claimed_until_ms) replaces the old delete-at-detection: if the AI-bearing
+// run dies mid-flight the row survives, the lease expires, and the watcher
+// re-fires the wake instead of losing it until the next primary close (the
+// AVAX 2026-07-23 blind spot). Returns the row when THIS caller won the lease;
+// null when another run's lease is still live (skip quietly) or no row exists.
+export const SWING_AI_COOLDOWN_CLAIM_TTL_MS = 10 * 60_000;
+
+export async function claimSwingAiCooldown(
+    platform: string,
+    symbol: string,
+    ttlMs: number = SWING_AI_COOLDOWN_CLAIM_TTL_MS,
+): Promise<SwingAiCooldown | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const now = Date.now();
+    const rows = await db.$queryRaw<
+        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; wake_note: unknown; set_at_ms: unknown }>
+    >(sql`
+        UPDATE swing.ai_cooldowns
+        SET claimed_until_ms = ${Math.floor(now + Math.max(60_000, ttlMs))}, updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)}
+          AND symbol = ${String(symbol || '').toUpperCase()}
+          AND (claimed_until_ms IS NULL OR claimed_until_ms < ${now})
+        RETURNING until_ms, wake_above, wake_below, wake_note, set_at_ms
+    `);
+    const row = rows?.[0];
+    if (!row) return null;
+    const untilMs = Number(row.until_ms);
+    if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
+    return {
+        untilMs,
+        wakeAbove: finitePos(row.wake_above),
+        wakeBelow: finitePos(row.wake_below),
+        wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
+        setAtMs: Number(row.set_at_ms) || 0,
+    };
 }
 
 // All cooldown rows carrying at least one wake band, across symbols/platforms —
 // the 1-minute wake-watcher's work list. Expired rows are included on purpose:
 // the analyze cooldown handler honors a band crossing on an expired-but-present
 // row too, so the watcher mirrors that contract (it only ever FIRES on a
-// crossing, never on bare expiry).
+// crossing, never on bare expiry). Rows under a live claim lease are excluded:
+// an analyze run is already working that wake, and if it dies the lease expiry
+// puts the row back on this list.
 export type SwingAiCooldownRow = SwingAiCooldown & { platform: string; symbol: string };
 
 export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldownRow[]> {
@@ -645,7 +695,8 @@ export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldo
     >(sql`
         SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms
         FROM swing.ai_cooldowns
-        WHERE wake_above IS NOT NULL OR wake_below IS NOT NULL
+        WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL)
+          AND (claimed_until_ms IS NULL OR claimed_until_ms < ${Date.now()})
     `);
     return (rows || [])
         .map((row) => ({

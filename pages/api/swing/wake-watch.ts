@@ -20,8 +20,11 @@ export const config = { runtime: 'nodejs' };
 // timeout GET that kicks the analyze invocation and returns — the analyze run
 // completes server-side. A fired KV marker (TTL 4 min) prevents consecutive
 // watcher ticks from double-firing the same event while that run is in flight;
-// the durable dedupe is the analyze handler itself (it consumes the cooldown
-// row / re-stamps the AI-look ref, so the trigger condition disappears).
+// the durable dedupe is the analyze handler itself (it claims the cooldown row
+// with a lease and deletes it only once the decision is recorded / re-stamps
+// the AI-look ref). Claimed rows are excluded from the band work list, so a
+// run that dies mid-AI puts its wake back on the list when the lease expires
+// instead of losing it until the next primary close.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';

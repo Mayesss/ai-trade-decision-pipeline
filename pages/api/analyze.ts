@@ -83,6 +83,7 @@ import { kvSetJson } from '../../lib/kv';
 import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
+    claimSwingAiCooldown,
     clearSwingAiCooldown,
     clearSwingBreakTrigger,
     endSwingAiThread,
@@ -330,6 +331,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Non-null once this request is identified as a swing cron invocation; the
     // finally block below then counts it toward the cycle's warm latch.
     let swingWarmLatchCycleId: number | null = null;
+    // Set once the tick is identified — lets the catch-all below leave a
+    // durable tick_log row for a mid-flight crash. Without it a crashed run is
+    // invisible (no tick, no decision): that's how the AVAX 2026-07-23 lost
+    // wake stayed undiagnosed for two hours.
+    let tickErrorContext: {
+        symbol: string;
+        platform: string;
+        cadence: 'hourly' | 'quarter' | 'manual';
+        dryRun: boolean;
+    } | null = null;
     try {
         if (req.method !== 'GET') {
             return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -417,6 +428,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // recordSwingLastScan never throws, so this can't fail the tick.
         if (automationCron) await recordSwingLastScan(platform, symbol);
         const tickCadence = automationCron ? (quarterTick ? 'quarter' : 'hourly') : 'manual';
+        tickErrorContext = { symbol, platform, cadence: tickCadence, dryRun };
         // Durable per-tick outcome (swing.tick_log): EVERY tick that ends —
         // gate skip or real AI call — leaves one Postgres row with the stage,
         // reason and gate measurements. Quarter-tick and cooldown skips never
@@ -1185,9 +1197,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Flat off-boundary ticks under the 4H-close cadence: no AI call unless
         // (a) this tick just swept a resting pullback entry — the model owes
         // itself a re-issue/switch/drop decision — or (b) a flat wake band is
-        // crossed. The band is PEEKED here without consuming the cooldown row:
-        // the full cooldown handler below re-reads it, surfaces the crossing to
-        // the prompt as market.cooldown_wake and clears the row. Peek failure
+        // crossed. The band is PEEKED here without touching the cooldown row:
+        // the full cooldown handler below re-reads it, claims the row (lease)
+        // and surfaces the crossing to the prompt as market.cooldown_wake; the
+        // row is deleted only after the decision is recorded. Peek failure
         // fails CLOSED (skip): missing a wake by one bar is recoverable, while
         // failing open would re-create the 15-min churn cadence on every store
         // hiccup.
@@ -1400,8 +1413,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // signal-strength gate and the AI was woken ~1h late, at the crest). A
         // crossed band sets cooldownWake, which bypasses the flat QUALITY gates
         // below and reaches the prompt as market.cooldown_wake; the HARD gates
-        // (base executability, event blackout) still apply. Expiry without a
-        // crossing consumes the row and proceeds as a normal scan, no bypass.
+        // (base executability, event blackout) still apply — a hard-gate skip
+        // keeps the lease, so the wake retries after lease expiry instead of
+        // being swallowed. Expiry without a crossing consumes the row and
+        // proceeds as a normal scan, no bypass.
         // Best-effort: a store hiccup fails open (evaluate rather than trust a
         // stale quiet period).
         let cooldownWake: {
@@ -1410,6 +1425,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             setAtMs: number | null;
             note: string | null;
         } | null = null;
+        // True when THIS run holds the claim lease on a triggered wake row.
+        // The row is deleted only after the wake's decision is durably
+        // recorded (post-decision consume below) — delete-at-detection lost
+        // the wake forever when the AI-bearing run died mid-flight (AVAX
+        // 2026-07-23: 2h blind spot through the exact move the band watched).
+        let cooldownRowClaimed = false;
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
                 const cooldown = await getSwingAiCooldown(platform, symbol);
@@ -1459,6 +1480,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         });
                     }
                     if (wokenAbove || wokenBelow) {
+                        // Lease the row instead of deleting it (see
+                        // cooldownRowClaimed above). A held lease means another
+                        // analyze run — usually the wake-watcher's fired call —
+                        // is already mid-flight on this exact wake: end this
+                        // tick quietly rather than double-calling the AI.
+                        const claimed = await claimSwingAiCooldown(platform, symbol);
+                        if (!claimed) {
+                            const decision = {
+                                action: 'HOLD',
+                                bias: 'NEUTRAL',
+                                signal_strength: 'LOW',
+                                summary: 'cooldown_wake_in_flight',
+                                reason: 'flat_skip_cooldown_wake_claim_held',
+                            };
+                            await recordTickOutcome({
+                                kind: 'skip',
+                                stage: 'flat_cooldown',
+                                reason: decision.reason,
+                                gates: gatesOut.gates,
+                                metrics: {
+                                    ...gatesOut.metrics,
+                                    cooldown: { wakeAbove: cooldown.wakeAbove, wakeBelow: cooldown.wakeBelow },
+                                },
+                            });
+                            return res.status(200).json({
+                                symbol,
+                                platform,
+                                newsSource,
+                                category,
+                                instrumentId,
+                                timeFrame,
+                                dryRun,
+                                decisionPolicy,
+                                decision,
+                                execRes: { placed: false, orderId: null, clientOid: null, reason: 'flat_cooldown' },
+                                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                                usedTape,
+                                promptSkipped: true,
+                            });
+                        }
+                        cooldownRowClaimed = true;
                         cooldownWake = {
                             crossed: wokenAbove ? 'above' : 'below',
                             level: (wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow) as number,
@@ -1475,8 +1537,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             price: effectivePrice,
                             expired,
                         });
+                    } else {
+                        // Bare expiry, no crossing: nothing to protect — consume
+                        // the row now and proceed as a normal scan (no bypass).
+                        await clearSwingAiCooldown(platform, symbol);
                     }
-                    await clearSwingAiCooldown(platform, symbol);
                 }
             } catch (err) {
                 console.warn(`AI cooldown check failed for ${symbol}:`, err);
@@ -2839,6 +2904,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesOut.metrics,
             kvMarker: false,
         });
+        // Consume the claimed wake row only NOW — the wake's decision is
+        // durably recorded above, so a crash anywhere earlier leaves the row
+        // (lease expires, watcher re-fires) instead of losing the wake. When
+        // this decision armed a fresh cooldown, the upsert already replaced
+        // the row and reset the lease — nothing to clear.
+        if (cooldownRowClaimed && !holdCooldown.cooldownMinutes) {
+            try {
+                await clearSwingAiCooldown(platform, symbol);
+            } catch (err) {
+                console.warn(`wake cooldown consume failed for ${symbol}:`, err);
+            }
+        }
         // New decision recorded → bust the dashboard summary cache so the next load
         // reflects it. Best-effort; never blocks the trading path.
         await invalidateSwingSummaryCache();
@@ -2916,6 +2993,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
     } catch (err: any) {
         console.error('Error in /api/analyze:', err);
+        // Durable trace of the crash (best-effort): without this row a run
+        // that dies between the gates and the decision record leaves no
+        // evidence in tick_log at all. insertSwingTickLog never throws.
+        if (tickErrorContext) {
+            await insertSwingTickLog({
+                tsMs: Date.now(),
+                symbol: tickErrorContext.symbol,
+                platform: tickErrorContext.platform,
+                kind: 'skip',
+                stage: 'handler_error',
+                reason: String(err?.message || err).slice(0, 300),
+                cadence: tickErrorContext.cadence,
+                dryRun: tickErrorContext.dryRun,
+            });
+        }
         return res.status(500).json({ error: err.message || String(err) });
     } finally {
         // Countdown latch: the last swing cron of the 15-minute cycle to finish
