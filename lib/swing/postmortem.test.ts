@@ -8,6 +8,7 @@ import {
     pickPivotalDecisions,
     postmortemPnl,
     shouldEnqueuePostmortem,
+    summarizePostExitBars,
     truncateMiddle,
 } from './postmortem';
 
@@ -170,4 +171,43 @@ test('buildPostmortemDossier: digests calls, merges skips, inlines pivotal promp
     assert.ok(!aiUserMessage.includes('USER PROMPT AT MIN 180')); // dry-run excluded
     assert.equal(aiUserMessage.split('SYSTEM PROMPT TEXT').length, 2); // exactly once
     assert.ok(aiUserMessage.includes('quiet_position'));
+});
+
+// ---------------------------------------------------------------------------
+// Post-exit market summary (pure over venue candle arrays)
+// ---------------------------------------------------------------------------
+
+test('summarizePostExitBars: measures high/low/last vs exit price inside the window', () => {
+    const exitMs = T0;
+    const bars = [
+        [T0 - 15 * MIN, 100, 101, 99, 100.5], // before exit — excluded
+        [T0 + 15 * MIN, 100, 104, 99.5, 103],
+        [T0 + 30 * MIN, 103, 105, 102, 102.5],
+        [T0 + 999 * MIN, 102, 120, 80, 90], // past toMs — excluded
+    ];
+    const out = summarizePostExitBars({ exitPrice: 100, exitMs, toMs: T0 + 60 * MIN, bars });
+    assert.ok(out);
+    assert.equal(out?.bars, 2);
+    assert.equal(out?.high, 105);
+    assert.equal(out?.low, 99.5);
+    assert.equal(out?.last_close, 102.5);
+    assert.equal(out?.max_up_from_exit_pct, 5);
+    assert.equal(out?.max_down_from_exit_pct, -0.5);
+    assert.equal(out?.last_from_exit_pct, 2.5);
+});
+
+test('summarizePostExitBars: null without a usable exit price or without in-window bars', () => {
+    const bars = [[T0 + MIN, 100, 101, 99, 100]];
+    assert.equal(summarizePostExitBars({ exitPrice: null, exitMs: T0, toMs: T0 + 60 * MIN, bars }), null);
+    assert.equal(summarizePostExitBars({ exitPrice: 0, exitMs: T0, toMs: T0 + 60 * MIN, bars }), null);
+    assert.equal(summarizePostExitBars({ exitPrice: 100, exitMs: T0, toMs: T0 + 60 * MIN, bars: [] }), null);
+    assert.equal(
+        summarizePostExitBars({
+            exitPrice: 100,
+            exitMs: T0,
+            toMs: T0 + 60 * MIN,
+            bars: [[T0 - 60 * MIN, 100, 101, 99, 100]],
+        }),
+        null,
+    );
 });

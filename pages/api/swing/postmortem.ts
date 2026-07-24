@@ -20,7 +20,7 @@ import {
     loadSwingPostmortems,
     type SwingPostmortemStatus,
 } from '../../../lib/swing/pg';
-import { runSwingPostmortem } from '../../../lib/swing/postmortem';
+import { resolveSwingPostmortemDelayMs, runSwingPostmortem } from '../../../lib/swing/postmortem';
 
 function parseBoolParam(value: string | string[] | undefined): boolean {
     const v = Array.isArray(value) ? value[0] : value;
@@ -88,7 +88,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (drain) {
         const limit = Math.max(1, Math.min(5, Number(firstParam(q.limit as string | string[])) || 3));
-        const claimed = await claimQueuedSwingPostmortems(limit);
+        // Only mature rows: the post-close delay must have elapsed so the
+        // dossier's post-exit tail is fully recorded. ?force=true drains
+        // everything regardless (operator intent).
+        const claimed = await claimQueuedSwingPostmortems(
+            limit,
+            force ? {} : { exitTsBeforeMs: Date.now() - resolveSwingPostmortemDelayMs() },
+        );
         const results = [];
         for (const row of claimed) {
             results.push(await runSwingPostmortem(row));

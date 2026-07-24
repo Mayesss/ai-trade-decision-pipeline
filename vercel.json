@@ -110,6 +110,10 @@
     {
       "path": "/api/swing/wake-watch",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/swing/postmortem-drain",
+      "schedule": "7,22,37,52 * * * *"
     }
   ]
 }

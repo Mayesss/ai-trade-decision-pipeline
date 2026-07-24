@@ -1032,10 +1032,18 @@ export async function claimSwingPostmortemById(
 }
 
 // Claim the oldest queued rows (drain mode). Sequential worker — small limit.
-export async function claimQueuedSwingPostmortems(limit: number): Promise<SwingPostmortemRow[]> {
+// opts.exitTsBeforeMs: only claim rows whose position exited at or before this
+// timestamp (the post-close maturity delay — the dossier's post-exit tail must
+// be fully recorded before the analyst runs). Rows without an exit timestamp
+// are always claimable. Omit to claim regardless of maturity.
+export async function claimQueuedSwingPostmortems(
+    limit: number,
+    opts: { exitTsBeforeMs?: number | null } = {},
+): Promise<SwingPostmortemRow[]> {
     if (!isSwingPgConfigured()) return [];
     await ensureSwingSchema();
     const capped = Math.max(1, Math.min(10, Math.floor(limit)));
+    const cutoff = Number.isFinite(Number(opts.exitTsBeforeMs)) ? Math.floor(Number(opts.exitTsBeforeMs)) : null;
     const db = swingPg();
     const rows = await db.$queryRaw<Array<any>>(sql`
         UPDATE swing.postmortems
@@ -1043,6 +1051,11 @@ export async function claimQueuedSwingPostmortems(limit: number): Promise<SwingP
         WHERE id IN (
             SELECT id FROM swing.postmortems
             WHERE status = 'queued'
+              AND (
+                ${cutoff}::bigint IS NULL
+                OR exit_ts_ms IS NULL
+                OR exit_ts_ms <= ${cutoff}::bigint
+              )
             ORDER BY created_at ASC
             LIMIT ${capped}
         )

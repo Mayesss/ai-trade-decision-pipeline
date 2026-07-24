@@ -9,6 +9,8 @@
 // code feeds them back to the trading AI yet.
 import { callSwingDecision } from '../aiProvider';
 import type { PositionWindow } from '../analytics';
+import { bitgetFetch, resolveProductType } from '../bitget';
+import { fetchCapitalCandlesByEpicDateRange, resolveCapitalEpic } from '../capital';
 import type { AnalysisPlatform } from '../platform';
 import { resolveSwingCategory } from './category';
 import { applyLessonDecision, resolveLessonDecision } from './lessons';
@@ -81,7 +83,20 @@ export async function maybeEnqueueSwingPostmortem(
             pnlPct: window.pnlPct ?? window.pnlGrossPct ?? null,
             pnlNet: window.pnlNet ?? null,
         });
-        if (id != null) triggerSwingPostmortemWorker(id);
+        if (id != null) {
+            // Close-triggered rows wait out the post-close delay so the dossier
+            // tail has real recorded data; the drain cron picks them up once
+            // mature. Manual/backfill triggers (operator intent, usually old
+            // closes) keep the immediate worker kick.
+            const matureAtMs = (window.exitTimestamp ?? Date.now()) + resolveSwingPostmortemDelayMs();
+            if (trigger !== 'close' || Date.now() >= matureAtMs) {
+                triggerSwingPostmortemWorker(id);
+            } else {
+                console.log(
+                    `[postmortem] #${id} queued for ${window.symbol}; matures ${new Date(matureAtMs).toISOString()} (post-close delay — drain cron runs it)`,
+                );
+            }
+        }
         return id;
     } catch (err) {
         console.warn(`postmortem enqueue failed for ${window?.symbol}:`, err);
@@ -127,7 +142,123 @@ export function triggerSwingPostmortemWorker(id: number): void {
 // storage for zero information.
 // ---------------------------------------------------------------------------
 export const POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS = 24 * 60 * 60 * 1000;
-export const POSTMORTEM_TAIL_AFTER_EXIT_MS = 60 * 60 * 1000;
+
+// Post-mortems are deliberately DELAYED past the close: the analyst needs to
+// see what the market did after the exit (price reversing right past a swept
+// stop → misplaced SL; continuation through the original target after an AI
+// CLOSE → premature exit; continued adverse movement → the exit was right) to
+// separate exit-quality defects from a genuinely broken thesis. Close-triggered
+// rows only become claimable at exit + delay; the dossier tail spans the same
+// window so it is fully recorded by the time the row runs.
+export function resolveSwingPostmortemDelayMs(): number {
+    const raw = Number(process.env.SWING_POSTMORTEM_DELAY_MINUTES);
+    const minutes = Number.isFinite(raw) && raw >= 0 ? raw : 240;
+    return Math.floor(minutes * 60 * 1000);
+}
+
+export function postmortemTailAfterExitMs(): number {
+    // Never below the pre-delay tail (1h) so a zero-delay config keeps the
+    // original window semantics.
+    return Math.max(60 * 60 * 1000, resolveSwingPostmortemDelayMs());
+}
+
+// ---------------------------------------------------------------------------
+// Post-exit market summary: what price did AFTER the close, as measurements
+// (high/low/last vs exit price) — the analyst judges premature-close /
+// misplaced-SL from these, we don't pre-chew a verdict.
+// ---------------------------------------------------------------------------
+const POST_EXIT_CANDLE_TIMEFRAME = '15m';
+
+// Pure over venue candle arrays ([ts, open, high, low, close, ...] — the shape
+// both bitget and the Capital normalizer emit). Exported for tests.
+export function summarizePostExitBars(params: {
+    exitPrice: number | null | undefined;
+    exitMs: number;
+    toMs: number;
+    bars: unknown[];
+}): Record<string, unknown> | null {
+    const exitPrice = Number(params.exitPrice);
+    if (!(Number.isFinite(exitPrice) && exitPrice > 0)) return null;
+    const rows = (Array.isArray(params.bars) ? params.bars : [])
+        .map((b: any) => ({
+            ts: Number(b?.[0]),
+            high: Number(b?.[2]),
+            low: Number(b?.[3]),
+            close: Number(b?.[4]),
+        }))
+        .filter(
+            (b) =>
+                Number.isFinite(b.ts) &&
+                b.ts >= params.exitMs &&
+                b.ts <= params.toMs &&
+                Number.isFinite(b.high) &&
+                Number.isFinite(b.low) &&
+                b.high > 0 &&
+                b.low > 0,
+        )
+        .sort((a, b) => a.ts - b.ts);
+    if (!rows.length) return null;
+    const high = Math.max(...rows.map((b) => b.high));
+    const low = Math.min(...rows.map((b) => b.low));
+    const lastClose = rows[rows.length - 1].close;
+    const pct = (p: number) => Number((((p - exitPrice) / exitPrice) * 100).toFixed(3));
+    return {
+        timeframe: POST_EXIT_CANDLE_TIMEFRAME,
+        from_utc: new Date(params.exitMs).toISOString(),
+        to_utc: new Date(rows[rows.length - 1].ts).toISOString(),
+        bars: rows.length,
+        exit_price: exitPrice,
+        high,
+        low,
+        last_close: Number.isFinite(lastClose) && lastClose > 0 ? lastClose : null,
+        max_up_from_exit_pct: pct(high),
+        max_down_from_exit_pct: pct(low),
+        last_from_exit_pct: Number.isFinite(lastClose) && lastClose > 0 ? pct(lastClose) : null,
+    };
+}
+
+// Venue fetch wrapper. Best-effort: any failure returns null and the dossier
+// simply omits the section (the post-mortem must never fail on candle reads).
+async function buildPostExitMarketSummary(params: {
+    platform: string;
+    symbol: string;
+    exitPrice: number | null | undefined;
+    exitMs: number;
+    toMs: number;
+}): Promise<Record<string, unknown> | null> {
+    const toMs = Math.min(params.toMs, Date.now());
+    if (!(toMs > params.exitMs)) return null;
+    try {
+        let bars: unknown[] = [];
+        if (String(params.platform).toLowerCase() === 'capital') {
+            const epic = resolveCapitalEpic(params.symbol).epic;
+            bars = await fetchCapitalCandlesByEpicDateRange(
+                epic,
+                POST_EXIT_CANDLE_TIMEFRAME,
+                params.exitMs,
+                toMs,
+            );
+        } else {
+            bars = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
+                symbol: params.symbol,
+                productType: resolveProductType() as string,
+                granularity: POST_EXIT_CANDLE_TIMEFRAME,
+                startTime: String(params.exitMs),
+                endTime: String(toMs),
+                limit: '200',
+            });
+        }
+        return summarizePostExitBars({
+            exitPrice: params.exitPrice,
+            exitMs: params.exitMs,
+            toMs,
+            bars: Array.isArray(bars) ? bars : [],
+        });
+    } catch (err) {
+        console.warn(`[postmortem] post-exit candle read failed for ${params.platform}:${params.symbol}:`, err);
+        return null;
+    }
+}
 // Fallback when the position row has no entry timestamp (Capital transaction
 // imports occasionally lack it): assume at most this much position lifetime.
 export const POSTMORTEM_MAX_LIFETIME_MS = 48 * 60 * 60 * 1000;
@@ -174,6 +305,9 @@ export type PostmortemDossier = {
     // The active lesson-library slice shown to the analyst (dedup/adherence
     // context) — provenance for reinforce decisions.
     lessons_shown?: Array<{ id: number; scope: string; lesson: string }>;
+    // Price path recorded AFTER the close (the run is delayed past the exit so
+    // this window exists) — exit-quality evidence for the analyst.
+    post_exit_market?: Record<string, unknown>;
 };
 
 const numOrNull = (v: unknown): number | null => {
@@ -295,6 +429,9 @@ export function buildPostmortemDossier(input: {
     // Active lesson library covering this instrument — shown to the analyst
     // so it can judge adherence and never emit duplicates.
     library?: SwingLessonRow[];
+    // Post-exit price summary (buildPostExitMarketSummary) — optional, omitted
+    // when candles were unavailable.
+    postExitMarket?: Record<string, unknown> | null;
 }): { dossier: PostmortemDossier; aiUserMessage: string } {
     const calls = input.decisions.filter((d) => !isSkipDecision(d) && !d.dryRun);
     const decisionSkips = input.decisions.filter((d) => isSkipDecision(d) && !d.dryRun).map(digestDecisionSkip);
@@ -330,6 +467,7 @@ export function buildPostmortemDossier(input: {
             skipped_ticks: skips,
             pivotal_decision_ids: pivotal.map((d) => d.id),
             ...(lessonsShown.length ? { lessons_shown: lessonsShown } : {}),
+            ...(input.postExitMarket ? { post_exit_market: input.postExitMarket } : {}),
         };
         const aiUserMessage = renderPostmortemUserMessage(dossier, pivotal, systemPrompt);
         if (aiUserMessage.length <= MAX_AI_USER_CHARS || maxFull === 0) {
@@ -348,6 +486,12 @@ function renderPostmortemUserMessage(
     parts.push('## POSITION (closed — subject of this post-mortem)');
     parts.push(JSON.stringify(dossier.position, null, 1));
     parts.push(`## ANALYSIS WINDOW\n${dossier.window.from_utc} → ${dossier.window.to_utc}`);
+    if (dossier.post_exit_market) {
+        parts.push(
+            '## POST-EXIT MARKET (price path recorded AFTER the close — exit-quality evidence only)',
+        );
+        parts.push(JSON.stringify(dossier.post_exit_market, null, 1));
+    }
     parts.push(
         `## COUNTS\n${JSON.stringify(dossier.counts)}${
             dossier.counts.dropped_ai_calls || dossier.counts.dropped_skips
@@ -452,6 +596,7 @@ Rules:
 - Anchor every claim to a timestamp from the dossier. Do not invent data that is not present.
 - Explicitly examine the SKIPPED ticks: did a gate (cooldown, dedupe, off-boundary bar-close cadence, quiet-position threshold) hide actionable information while the position was moving against its thesis? Remember the pipeline BY DESIGN only consults the model on primary bar closes and fences positions with the exchange bracket in between — a skip is only a defect if an ON-CADENCE look or a wider/different bracket could have acted on what the skip hid. If yes, describe it in gate_impact; if no, set gate_impact to null.
 - Judge the bracket geometry: was the stop at a level the recorded volatility (ATR fields in the prompts/metrics) made likely to be swept? Was the TP realistic for the holding window?
+- POST-EXIT MARKET (section, when present): the run is deliberately delayed past the close so you can see the price path AFTER the exit. Use it to judge EXIT quality only: a stop swept immediately before a reversal well past the stop level points to misplaced SL geometry; continuation through the original target after an AI CLOSE points to a premature exit; continued adverse movement CONFIRMS the exit was right. It must never retroactively fault the ENTRY or any in-trade decision — the no-hindsight rule above still governs those; this section exists solely so exit-mechanics verdicts rest on measurements instead of guesses.
 - Judge entry mechanics: market vs pullback limit (resting limits only exist on trades from when that tool was enabled), and whether a resting limit filled into momentum against the position (adverse selection).
 - what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
@@ -479,17 +624,25 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
         const exitMs = row.exitTsMs ?? Date.now();
         const entryMs = row.entryTsMs ?? exitMs - POSTMORTEM_MAX_LIFETIME_MS;
         const fromMs = entryMs - POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS;
-        const toMs = exitMs + POSTMORTEM_TAIL_AFTER_EXIT_MS;
+        const toMs = exitMs + postmortemTailAfterExitMs();
         const assetClass = resolveSwingCategory({
             symbol: row.symbol,
             platform: row.platform as AnalysisPlatform,
         });
-        const [decisions, ticks, library] = await Promise.all([
+        const [decisions, ticks, library, postExitMarket] = await Promise.all([
             loadSwingDecisionWindow({ symbol: row.symbol, platform: row.platform, fromMs, toMs }),
             loadSwingTickLog({ symbol: row.symbol, platform: row.platform, fromMs, toMs, limit: 3000 }),
             // Library slice shown to the analyst: adherence check + dedup —
             // fails open to [] (the analyst then simply can't reinforce).
             loadActiveSwingLessons({ symbol: row.symbol, assetClass }).catch(() => [] as SwingLessonRow[]),
+            // What price did after the close — the reason the run is delayed.
+            buildPostExitMarketSummary({
+                platform: row.platform,
+                symbol: row.symbol,
+                exitPrice: row.exitPrice,
+                exitMs,
+                toMs,
+            }),
         ]);
         if (!decisions.length && !ticks.length) {
             throw new Error(`no recorded ticks/decisions in window ${new Date(fromMs).toISOString()}..${new Date(toMs).toISOString()}`);
@@ -506,7 +659,15 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
             pnl_pct: row.pnlPct,
             pnl_net: row.pnlNet,
         };
-        const { dossier, aiUserMessage } = buildPostmortemDossier({ position, fromMs, toMs, decisions, ticks, library });
+        const { dossier, aiUserMessage } = buildPostmortemDossier({
+            position,
+            fromMs,
+            toMs,
+            decisions,
+            ticks,
+            library,
+            postExitMarket,
+        });
         const { json: report, model, usage } = await callSwingDecision({
             system: POSTMORTEM_SYSTEM_PROMPT,
             user: aiUserMessage,
