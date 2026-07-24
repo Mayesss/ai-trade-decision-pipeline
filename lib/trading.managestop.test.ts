@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { pickTighterStop } from './trading';
+import { pickTighterStop, recycleLeverageCeiling } from './trading';
 
 // After the margin-recycle maneuver rests a breakeven stop, the AI's same-tick
 // stop amend may only TIGHTEN past that trigger — long: higher, short: lower.
@@ -29,4 +29,10 @@ test('no usable AI stop: nothing to amend regardless of trigger', () => {
     assert.equal(pickTighterStop('long', null, null), null);
     assert.equal(pickTighterStop('short', 99.92, 0), null);
     assert.equal(pickTighterStop('short', 99.92, NaN), null);
+});
+
+// Liq-safe ceiling for recycle raises: liq distance ≈ 1/lev − mmr must stay ≥
+// the buffer. Defaults (400bps buffer + 100bps assumed mmr) → floor(10000/500).
+test('recycleLeverageCeiling: defaults land at 20x', () => {
+    assert.equal(recycleLeverageCeiling(), 20);
 });

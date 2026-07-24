@@ -52,6 +52,29 @@ const MARGIN_RECYCLE_FEE_BUFFER_BPS = Number(process.env.CRYPTO_BE_STOP_FEE_BUFF
 // direction — avoids setting a breakeven stop while price still hugs entry
 // (instant/whipsaw stop-out).
 const MARGIN_RECYCLE_MIN_PROFIT_BPS = Number(process.env.CRYPTO_MARGIN_RECYCLE_MIN_PROFIT_BPS ?? 40);
+// Auto-recycle: with the master flag on, the maneuver is code-enforced on any
+// position whose profit cushion exceeds the auto guard — it no longer depends
+// on the AI opting in via raise_leverage_to/move_stop_to_be (observed live:
+// the model almost never opts in, even on textbook profitable trims). Opt out
+// with CRYPTO_MARGIN_RECYCLE_AUTO=false. The auto guard is deliberately wider
+// than MIN_PROFIT_BPS: a breakeven stop rested on a 40bps cushion converts
+// most winners into scratches on noise; auto waits for a real cushion.
+const MARGIN_RECYCLE_AUTO = process.env.CRYPTO_MARGIN_RECYCLE_AUTO !== 'false';
+const MARGIN_RECYCLE_AUTO_MIN_PROFIT_BPS = Number(process.env.CRYPTO_MARGIN_RECYCLE_AUTO_MIN_PROFIT_BPS ?? 250);
+// Liquidation-safety ceiling for any recycle raise. Isolated liq distance from
+// entry ≈ 1/leverage − maintenance margin rate; the raise must keep that
+// distance at least LIQ_BUFFER so a gap through the breakeven stop hits the
+// stop, not liquidation (the BE stop is a trigger order — at extreme leverage
+// the liq price sits inside normal noise and fires first). 400+100 bps → 20x.
+const MARGIN_RECYCLE_LIQ_BUFFER_BPS = Number(process.env.CRYPTO_MARGIN_RECYCLE_LIQ_BUFFER_BPS ?? 400);
+const MARGIN_RECYCLE_ASSUMED_MMR_BPS = Number(process.env.CRYPTO_MARGIN_RECYCLE_ASSUMED_MMR_BPS ?? 100);
+
+// Highest leverage the recycle maneuver may set: liq distance (≈ 1/lev − mmr)
+// stays ≥ the configured buffer. Exported for tests.
+export function recycleLeverageCeiling(): number {
+    const denomBps = Math.max(50, MARGIN_RECYCLE_LIQ_BUFFER_BPS + MARGIN_RECYCLE_ASSUMED_MMR_BPS);
+    return Math.max(1, Math.floor(10000 / denomBps));
+}
 
 function normalizeClosePct(pct: unknown) {
     const n = Number(pct);
@@ -112,6 +135,31 @@ export async function postSetLeverage(symbol: string, productType: ProductType, 
     return bitgetFetch('POST', '/api/v2/mix/account/set-leverage', {}, body);
 }
 
+// Bitget's set-leverage writes to the slot of the symbol's CURRENT margin mode
+// (the marginMode field in its body is not a documented parameter and is
+// ignored), so a symbol still in crossed mode takes the leverage on the crossed
+// slot and the isolated order then opens at the stale isolated setting
+// (observed live: BGBUSDT opened at 1x after a "successful" 5x set, consuming
+// 5x the intended margin). Force the symbol to isolated before setting
+// leverage. Rejected while a position is open — fine: an open position means
+// the isolated slot is already the effective one.
+async function ensureIsolatedMarginMode(
+    symbol: string,
+    productType: ProductType,
+): Promise<{ ok: boolean; error?: string }> {
+    try {
+        await bitgetFetch('POST', '/api/v2/mix/account/set-margin-mode', {}, {
+            symbol,
+            productType: (productType as string).toUpperCase(),
+            marginCoin: 'USDT',
+            marginMode: 'isolated',
+        });
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+}
+
 async function applyLeverage(params: {
     symbol: string;
     productType: ProductType;
@@ -124,9 +172,15 @@ async function applyLeverage(params: {
     if (!target) return { applied: false, leverage: null, skipped: true };
     if (dryRun) return { applied: false, leverage: target, dryRun: true };
 
+    const marginMode = await ensureIsolatedMarginMode(symbol, productType);
     try {
         const res = await postSetLeverage(symbol, productType, target, holdSide);
-        return { applied: true, leverage: target, raw: res };
+        return {
+            applied: true,
+            leverage: target,
+            raw: res,
+            ...(marginMode.ok ? {} : { marginModeError: marginMode.error }),
+        };
     } catch (err) {
         console.warn('Failed to set leverage:', err);
         return {
@@ -495,8 +549,14 @@ export function getTargetLeverage(decision: TradeDecision): number | null {
 
 // Profit-lock margin-recycle maneuver (crypto only). Runs on HOLD and partial
 // CLOSE before the normal action handling: move the stop to breakeven, then raise
-// leverage toward the symbol max (freeing isolated margin without cutting size).
-// Returns null when the feature is off or the decision requests no management.
+// leverage (freeing isolated margin without cutting size). Two triggers:
+//   - AI-requested (move_stop_to_be / raise_leverage_to), behind MIN_PROFIT_BPS;
+//   - AUTO (default on): past AUTO_MIN_PROFIT_BPS the sequence is code-enforced
+//     with a computed leverage target — the model proved unwilling to opt in.
+// Every raise (AI or auto) is capped at recycleLeverageCeiling(): the liq price
+// must stay clear of the breakeven trigger, so max margin is freed WITHOUT the
+// gap-through-the-stop liquidation risk of literal exchange-max leverage.
+// Returns null when the feature is off or there is nothing to manage.
 // Exported for scripts/validate-bitget-tpsl.ts (demo phase F runs the real
 // maneuver → trim → post-trim amend sequence end-to-end).
 export async function maybeManagePosition(args: {
@@ -513,27 +573,33 @@ export async function maybeManagePosition(args: {
         decision.raise_leverage_to != null && Number.isFinite(Number(decision.raise_leverage_to));
     // A leverage raise ALWAYS forces a breakeven stop first — never sit at higher
     // leverage without protection. A bare move_stop_to_be is honored on its own.
-    const wantBE = decision.move_stop_to_be === true || wantLevRaise;
-    if (!wantBE && !wantLevRaise) return null;
+    const aiRequested = decision.move_stop_to_be === true || wantLevRaise;
+    if (!aiRequested && !MARGIN_RECYCLE_AUTO) return null;
 
     const pos = args.pos ?? (await fetchPositionInfo(symbol));
-    if (pos.status !== 'open' || !pos.holdSide) return { managed: false, note: 'no_open_position' };
+    if (pos.status !== 'open' || !pos.holdSide) {
+        // Auto probes every tick — stay quiet (null) when there is nothing to
+        // manage; only an explicit AI request deserves a surfaced no-op.
+        return aiRequested ? { managed: false, note: 'no_open_position' } : null;
+    }
 
     const entry = Number(pos.entryPrice);
     const mark = Number(pos.markPrice);
     const currentLev = Number(pos.leverage);
     if (!(entry > 0) || !(mark > 0) || !(currentLev > 0)) {
-        return { managed: false, note: 'management_missing_price_or_leverage' };
+        return aiRequested ? { managed: false, note: 'management_missing_price_or_leverage' } : null;
     }
     const side = pos.holdSide;
 
-    // Profit guard: only manage once price has moved past entry by at least
-    // MIN_PROFIT_BPS in the favorable direction, so a breakeven stop won't trigger
-    // immediately (or whipsaw) on noise around entry.
+    // Profit guards: an AI request needs MIN_PROFIT_BPS (a breakeven stop rested
+    // on top of entry noise stops out immediately); auto engages only past the
+    // wider AUTO_MIN_PROFIT_BPS cushion.
     const favMoveBps = (side === 'long' ? (mark - entry) / entry : (entry - mark) / entry) * 10000;
-    if (!(favMoveBps >= MARGIN_RECYCLE_MIN_PROFIT_BPS)) {
+    const autoEngaged = MARGIN_RECYCLE_AUTO && favMoveBps >= MARGIN_RECYCLE_AUTO_MIN_PROFIT_BPS;
+    if (aiRequested && !(favMoveBps >= MARGIN_RECYCLE_MIN_PROFIT_BPS)) {
         return { managed: false, note: 'profit_guard_not_met', favMoveBps: Number(favMoveBps.toFixed(2)) };
     }
+    if (!aiRequested && !autoEngaged) return null;
 
     const meta = await fetchSymbolMeta(symbol, productType);
     const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
@@ -544,24 +610,48 @@ export async function maybeManagePosition(args: {
     // net non-negative after round-trip venue fees.
     const feeMult = MARGIN_RECYCLE_FEE_BUFFER_BPS / 10000;
     const beTrigger = side === 'long' ? entry * (1 + feeMult) : entry * (1 - feeMult);
-    const clampMax = Number.isFinite(symbolMax) && symbolMax > 0 ? symbolMax : currentLev;
+    const symbolCap = Number.isFinite(symbolMax) && symbolMax > 0 ? symbolMax : currentLev;
+    const clampMax = Math.min(symbolCap, recycleLeverageCeiling());
+    // Auto raises to the liq-safe ceiling (max margin freed); an AI target is
+    // honored but never above that ceiling.
+    const desiredLev = autoEngaged
+        ? Math.max(wantLevRaise ? Number(decision.raise_leverage_to) : 0, recycleLeverageCeiling())
+        : wantLevRaise
+          ? Number(decision.raise_leverage_to)
+          : null;
+
+    // Never loosen protection: auto re-runs every tick, so once the stop has been
+    // trailed TIGHTER than breakeven (by the AI or a previous maneuver), resting
+    // the BE trigger again would move it backwards. Skip the BE leg then — the
+    // tighter standing stop already satisfies the raise-needs-protection rule.
+    const beTriggerQ = Number(beTrigger.toFixed(Math.max(0, pricePlace)));
+    let existingStop: number | null = null;
+    try {
+        existingStop = (await fetchPositionTpsl(symbol, productType)).stopLoss?.price ?? null;
+    } catch (err) {
+        console.warn(`Could not read standing stop for ${symbol} before BE move:`, err);
+    }
+    const stopAlreadyTighter =
+        existingStop != null &&
+        (side === 'long' ? existingStop >= beTriggerQ : existingStop <= beTriggerQ);
+    const wantBE = (aiRequested || autoEngaged) && !stopAlreadyTighter;
 
     if (dryRun) {
-        const plannedTrigger = Number(beTrigger.toFixed(Math.max(0, pricePlace)));
         return {
             managed: true,
             dryRun: true,
             side,
             entry,
             mark,
-            beStop: { plannedTrigger },
+            auto: autoEngaged,
+            beStop: { plannedTrigger: beTriggerQ },
             // Normalized BE trigger for the post-maneuver stop-amend guard
             // (pickTighterStop) — present whenever the maneuver owns the stop.
-            beTriggerPrice: wantBE ? plannedTrigger : null,
-            plannedLeverage: wantLevRaise
-                ? clampManagementLeverage(decision.raise_leverage_to, currentLev, clampMax)
-                : null,
+            beTriggerPrice: wantBE ? beTriggerQ : null,
+            plannedLeverage:
+                desiredLev != null ? clampManagementLeverage(desiredLev, currentLev, clampMax) : null,
             currentLeverage: currentLev,
+            ...(stopAlreadyTighter ? { note: 'stop_already_tighter_than_be' } : {}),
         };
     }
 
@@ -575,7 +665,13 @@ export async function maybeManagePosition(args: {
             pos,
         });
         if (!beResult.ok) {
-            return { managed: false, beStop: beResult, leverageRaised: false, note: 'be_stop_failed_leverage_skipped' };
+            return {
+                managed: false,
+                auto: autoEngaged,
+                beStop: beResult,
+                leverageRaised: false,
+                note: 'be_stop_failed_leverage_skipped',
+            };
         }
     }
 
@@ -584,8 +680,8 @@ export async function maybeManagePosition(args: {
     let leverageRaised = false;
     let newLeverage = currentLev;
     let leverageError: string | undefined;
-    if (wantLevRaise) {
-        const targetLev = clampManagementLeverage(decision.raise_leverage_to, currentLev, clampMax);
+    if (desiredLev != null) {
+        const targetLev = clampManagementLeverage(desiredLev, currentLev, clampMax);
         if (targetLev) {
             try {
                 await postSetLeverage(symbol, productType, targetLev, side);
@@ -600,15 +696,19 @@ export async function maybeManagePosition(args: {
     return {
         managed: true,
         side,
+        auto: autoEngaged,
         beStop: beResult,
         // Normalized BE trigger for the post-maneuver stop-amend guard
-        // (pickTighterStop) — set only when the BE stop actually rests.
+        // (pickTighterStop) — set only when the BE stop actually rests. When the
+        // BE leg was skipped for an already-tighter stop this stays null and the
+        // route's tighten-only sanitize keeps guarding the standing stop.
         beTriggerPrice: beResult?.ok ? beResult.triggerPrice : null,
         leverageRaised,
         // Surfaced so extractCapturedLeverages records the post-raise leverage on
         // this decision's history entry, keeping the captured-leverage timeline true.
         leverage: newLeverage,
         currentLeverage: currentLev,
+        ...(stopAlreadyTighter ? { note: 'stop_already_tighter_than_be' } : {}),
         ...(leverageError ? { leverageError } : {}),
     };
 }
@@ -674,13 +774,29 @@ export async function executeDecision(
             if (entryLimitPrice != null) body['price'] = entryLimitPrice.toFixed(Math.max(0, pricePlace));
         }
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+        // Verify the fill's actual leverage (market entries only — a resting
+        // limit has no position yet). A mismatch means set-leverage landed on
+        // the wrong slot (see ensureIsolatedMarginMode); surfaced, not fatal,
+        // and the actual value wins so the captured-leverage timeline stays true.
+        let actualLeverage: number | null = null;
+        if (entryLimitPrice == null) {
+            try {
+                const posAfter = await fetchPositionInfo(symbol);
+                if (posAfter.status === 'open') actualLeverage = Number(posAfter.leverage) || null;
+            } catch {
+                // best-effort — the entry itself succeeded
+            }
+        }
         return {
             placed: true,
             orderId: res?.orderId || res?.order_id || null,
             clientOid,
-            leverage: leverageResult.leverage,
+            leverage: actualLeverage ?? leverageResult.leverage,
             leverageApplied: leverageResult.applied,
             leverageError: leverageResult.error,
+            ...(actualLeverage != null && targetLeverage != null && actualLeverage !== targetLeverage
+                ? { leverageMismatch: true, targetLeverage }
+                : {}),
             ...(entryLimitPrice != null ? { pendingEntry: true, entryLimitPrice } : {}),
         };
     }
