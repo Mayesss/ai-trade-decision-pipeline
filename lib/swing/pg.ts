@@ -546,6 +546,25 @@ export async function listSwingPendingEntryThreads(): Promise<Array<{ platform: 
     return rows.map((row) => ({ platform: row.platform, symbol: row.symbol }));
 }
 
+// Threads that believe they are managing an open position. The wake-watcher
+// diffs these against the brokers' live open-position lists every minute: an
+// in_position thread whose symbol is flat on the venue means the position was
+// closed venue-side (TP/SL bracket, manual, liquidation) since the last analyze
+// tick — an executed AI CLOSE ends its thread in the same tick, so it never
+// shows up here. Firing analyze for the symbol runs the existing close
+// reconcile (thread end, Capital close persistence, overlay invalidation).
+export async function listSwingInPositionThreads(): Promise<Array<{ platform: string; symbol: string }>> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ platform: string; symbol: string }>>(sql`
+        SELECT platform, symbol
+        FROM swing.ai_threads
+        WHERE status = 'in_position'
+    `);
+    return rows.map((row) => ({ platform: row.platform, symbol: row.symbol }));
+}
+
 // Resting pullback limit filled → the same conversation now manages the position.
 export async function markSwingAiThreadInPosition(platform: string, symbol: string): Promise<void> {
     if (!isSwingPgConfigured()) return;

@@ -15,6 +15,12 @@ export const config = { runtime: 'nodejs' };
 //      SWING_INPOS_EMERGENCY_MOVE_ATR fires the analyze route early. The
 //      exchange-side bracket remains the actual guard — this only gets the
 //      model's eyes on a violent move sooner.
+//   3. Failed-break triggers: shortly after each primary bar close, armed
+//      break-trigger rows are checked against the last closed bar.
+//   4. Venue-side closes: in_position AI threads whose symbol is flat on the
+//      venue (TP/SL bracket fill, manual close, liquidation) fire analyze so
+//      the close is reconciled/persisted within ~a minute instead of at the
+//      next 15-min tick.
 //
 // Firing = invokeCronEndpoint (the scalp cron-chaining pattern): a short-
 // timeout GET that kicks the analyze invocation and returns — the analyze run
@@ -41,6 +47,7 @@ import {
     clearSwingBreakTrigger,
     listSwingAiCooldownsWithWakeBands,
     listSwingBreakTriggers,
+    listSwingInPositionThreads,
 } from '../../../lib/swing/pg';
 import {
     breakTriggerFailed,
@@ -131,7 +138,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
     };
 
-    const [bandRows, breakTriggerRows, bitgetPositionsRaw, capitalMarkers] = await Promise.all([
+    const [bandRows, breakTriggerRows, inPositionThreads, bitgetPositionsRaw, capitalMarkers] = await Promise.all([
         listSwingAiCooldownsWithWakeBands().catch((err) => {
             console.warn('[wake-watch] cooldown list failed:', err);
             return [];
@@ -140,16 +147,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             console.warn('[wake-watch] break-trigger list failed:', err);
             return [];
         }),
+        listSwingInPositionThreads().catch((err) => {
+            console.warn('[wake-watch] in-position thread list failed:', err);
+            return [];
+        }),
         bitgetFetch('GET', '/api/v2/mix/position/all-position', {
             productType: getTradeProductType() as string,
         }).catch((err: unknown) => {
+            // null (not []) so close-detection can tell "venue unreachable"
+            // apart from "venue says flat" — see step 4.
             console.warn('[wake-watch] bitget all-position failed:', err);
-            return [] as unknown[];
+            return null;
         }),
         fetchCapitalOpenPositionMarkers(),
     ]);
 
-    const bitgetPositions = (Array.isArray(bitgetPositionsRaw) ? bitgetPositionsRaw : [])
+    const bitgetFetchOk = Array.isArray(bitgetPositionsRaw);
+    const capitalFetchOk = Array.isArray(capitalMarkers);
+    const capitalMarkerRows = capitalMarkers ?? [];
+    const bitgetPositions = (bitgetFetchOk ? (bitgetPositionsRaw as unknown[]) : [])
         .map((row: any) => ({
             symbol: String(row?.symbol || '').toUpperCase(),
             price: Number(row?.markPrice),
@@ -158,7 +174,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .filter((p) => p.symbol && Number.isFinite(p.size) && p.size > 0);
     const openBySymbol = new Set<string>([
         ...bitgetPositions.map((p) => `bitget:${p.symbol}`),
-        ...capitalMarkers.filter((m) => m.epic).map((m) => `capital:${m.epic}`),
+        ...capitalMarkerRows.filter((m) => m.epic).map((m) => `capital:${m.epic}`),
     ]);
 
     // 1) Flat wake bands. A band row for a symbol that meanwhile has an open
@@ -183,7 +199,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             symbol: p.symbol,
             price: Number.isFinite(p.price) && p.price > 0 ? p.price : null,
         })),
-        ...capitalMarkers
+        ...capitalMarkerRows
             .filter((m) => m.epic)
             .map((m) => ({ platform: 'capital', symbol: m.epic as string, price: m.mid })),
     ];
@@ -244,11 +260,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
     }
 
+    // 4) Venue-side closes (TP/SL bracket fills, manual closes, liquidations):
+    // an in_position AI thread whose symbol is flat on the venue means the
+    // position closed since the last analyze tick — an executed AI CLOSE ends
+    // its thread in the same tick, so it never appears here. Fire analyze so
+    // its existing close reconcile runs now (thread end, Capital close
+    // persistence, overlay cache invalidation) instead of up to 15 minutes
+    // later. Gated per venue on a SUCCESSFUL position fetch: a failed fetch
+    // must not read as "every position closed at once". The fired analyze
+    // re-checks broker reality itself, so a race against a mid-tick thread
+    // update costs at most one redundant invocation (deduped by the KV marker).
+    let closesDetected = 0;
+    for (const row of inPositionThreads) {
+        const platform = String(row.platform || '').toLowerCase();
+        const symbol = String(row.symbol || '').toUpperCase();
+        if (platform === 'capital') {
+            if (!capitalFetchOk) continue;
+            let epic = symbol;
+            try {
+                epic = String(resolveCapitalEpic(symbol).epic || symbol).toUpperCase();
+            } catch {
+                /* unresolvable → compare on the raw symbol */
+            }
+            if (openBySymbol.has(`capital:${epic}`)) continue;
+        } else {
+            if (!bitgetFetchOk) continue;
+            if (openBySymbol.has(`${platform}:${symbol}`)) continue;
+        }
+        closesDetected++;
+        await maybeFire(platform, symbol, 'position_closed');
+    }
+
     return res.status(200).json({
         ok: true,
         bandsChecked,
         positionsChecked: positionMarkers.length,
         breakTriggersChecked,
+        inPositionThreads: inPositionThreads.length,
+        closesDetected,
         emergencyThresholdAtr: EMERGENCY_MOVE_ATR,
         fired,
     });

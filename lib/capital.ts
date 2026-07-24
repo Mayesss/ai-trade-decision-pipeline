@@ -2308,9 +2308,12 @@ export async function fetchCapitalMarketTradeability(
 // All open positions in one call, reduced to what the 1-minute wake-watcher
 // needs: the epic (usable as the pipeline symbol on this venue — the resolver
 // maps an epic-shaped symbol to itself) and a live mid price straight from the
-// positions payload (no extra quote calls). Best-effort: [] on any failure.
+// positions payload (no extra quote calls). Returns NULL on failure — the
+// watcher's close-detection must be able to tell "venue says flat" ([]) apart
+// from "venue unreachable" (null), or an outage minute would read as every
+// position having closed at once.
 export type CapitalOpenPositionMarker = { epic: string | null; mid: number | null };
-export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPositionMarker[]> {
+export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPositionMarker[] | null> {
   try {
     const rows = await listOpenCapitalPositions();
     return rows.map((row) => {
@@ -2329,7 +2332,7 @@ export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPosi
     });
   } catch (err) {
     console.warn('[capital] open-position markers failed:', err);
-    return [];
+    return null;
   }
 }
 
