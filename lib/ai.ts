@@ -321,6 +321,21 @@ export const PULLBACK_LIMIT_ENABLED = flagOn(process.env.SWING_PULLBACK_LIMIT_EN
 // opening-drive tactics) + the sweep-reclaim re-entry-cooldown exception.
 export const SESSION_OFFENSE_ENABLED = flagOn(process.env.SWING_SESSION_OFFENSE_ENABLED);
 
+// In-position wake bands: the model declares price levels INSIDE its bracket
+// at which the 1-min watcher fires an early management look ("wake me if we
+// lose 3.42 support") instead of waiting for the next primary bar close.
+// Purely additive — suppresses nothing; replaced by every real in-position AI
+// call (null = cleared). Gates the prompt prose, the eligibility routing in
+// normalizeDecision, and the analyze/watcher wiring.
+export const POSITION_WAKE_ENABLED = flagOn(process.env.ENABLE_POSITION_WAKE_BANDS);
+// Min band distance from current price in primary-ATR units — the churn guard:
+// a band glued to price would re-fire a full AI call every ~5 min (the
+// watcher's fired-marker TTL).
+export const POSITION_WAKE_MIN_ATR = (() => {
+    const n = Number(process.env.SWING_POSITION_WAKE_MIN_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 0.3;
+})();
+
 export type LastClosedPosition = {
     side: 'long' | 'short';
     exitTsMs: number;
@@ -478,6 +493,16 @@ export function computeSwingState(
     // by a primary bar (the model's own failed-break lesson). Surfaces as
     // market.failed_break so the exit decision is made with the fact in hand.
     failedBreak?: { side: 'long' | 'short'; triggerPrice: number; barClose: number; barClosedAtMs: number | null } | null,
+    // In-position wake bands (ENABLE_POSITION_WAKE_BANDS). `fired` = price
+    // crossed a band the model set on a previous management look — THIS tick
+    // exists (or is let through) because of it; surfaces as
+    // market.position_wake. `armed` = the standing bands on an ordinary look;
+    // surfaces as market.position_wake_armed so re-stating them is trivial
+    // under the replace-on-every-look contract. Fired suppresses armed.
+    positionWake?: {
+        fired?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null } | null;
+        armed?: { above: number | null; below: number | null; note?: string | null; setAtMs?: number | null } | null;
+    } | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -1148,6 +1173,33 @@ export function computeSwingState(
                     : null,
         };
     }
+    if (positionWake?.fired && Number.isFinite(positionWake.fired.level)) {
+        const pwNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        market.position_wake = {
+            crossed: positionWake.fired.crossed,
+            level: positionWake.fired.level,
+            set_minutes_ago:
+                positionWake.fired.setAtMs && positionWake.fired.setAtMs > 0
+                    ? Math.max(0, Math.round((pwNowMs - positionWake.fired.setAtMs) / 60_000))
+                    : null,
+        };
+        if (typeof positionWake.fired.note === 'string' && positionWake.fired.note.trim()) {
+            market.position_wake.note = positionWake.fired.note.trim();
+        }
+    } else if (positionWake?.armed && (positionWake.armed.above !== null || positionWake.armed.below !== null)) {
+        const pwNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        market.position_wake_armed = {
+            above: positionWake.armed.above,
+            below: positionWake.armed.below,
+            set_minutes_ago:
+                positionWake.armed.setAtMs && positionWake.armed.setAtMs > 0
+                    ? Math.max(0, Math.round((pwNowMs - positionWake.armed.setAtMs) / 60_000))
+                    : null,
+        };
+        if (typeof positionWake.armed.note === 'string' && positionWake.armed.note.trim()) {
+            market.position_wake_armed.note = positionWake.armed.note.trim();
+        }
+    }
     if (capitalMarketContext?.venue_session) {
         market.venue_session = capitalMarketContext.venue_session;
     }
@@ -1237,6 +1289,16 @@ export function computeSwingState(
             ? `\n- BTC regime (market.btc_context, when present — non-BTC crypto only): this asset's measured coupling to BTC — corr_30d/corr_90d (daily-return correlation), beta_90d, btc.ret_*_bp (BTC's own recent moves), and alt_vs_btc_residual_7d_bp (this asset's 7d return minus beta x BTC's; positive = idiosyncratic strength). At high correlation (corr ≳ 0.8) alts rarely sustain moves against the BTC regime: a fresh position against BTC's current direction needs idiosyncratic justification (see the residual and news), and a deteriorating BTC weakens an otherwise clean alt setup. At lower correlation weigh BTC context proportionally less. Measurements, not a verdict — combine with structure/location as usual, never a standalone trigger.`
             : '';
 
+    // In-position wake bands (ENABLE_POSITION_WAKE_BANDS): how to SET them (rides
+    // the bracket section) and how to read a FIRED one (market.position_wake).
+    // Additive early looks only — the flat cooldown machinery is untouched.
+    const positionWakeGuidance = POSITION_WAKE_ENABLED
+        ? `\n  • Wake bands (in a position, HOLD or partial CLOSE only — enforced in code): set cooldown_wake_above / cooldown_wake_below to the price levels INSIDE your bracket where you want to look again the MOMENT price touches them instead of at the next ${primaryTimeframe} close — the structural levels that would change your management ("losing 3.42 support = thesis damaged → decide exit", "at 117.8k resistance decide trail vs take"). Bands are watched roughly once per MINUTE; they suppress nothing (your regular ${primaryTimeframe}-close look still happens) and they are never protection — the bracket remains the guard, a band is only an early look. Enforced in code: above must sit above current price, below beneath it; a band at/beyond your standing SL/TP is dropped (the bracket fires there first); a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the decision you plan to make there; it returns as market.position_wake.note when the band fires. Your bands are REPLACED by every decision you make: re-state them each look if you still want them (market.position_wake_armed shows what is currently armed); null clears them. cooldown_minutes stays null in a position.`
+        : '';
+    const positionWakeTriggerGuidance = POSITION_WAKE_ENABLED
+        ? `\n- Position-wake trigger (market.position_wake, when present, in a position): THIS look exists because price crossed the wake band you set on a previous management look (crossed = which side, level, set_minutes_ago, note = the plan you attached). Treat the note as a standing order from your past self: execute that plan if current structure confirms it, or explicitly override it in your reason (what changed?) — never ignore it. Being woken within ~a minute of a fast cross is the expected signature of the event you scheduled, not by itself alarming; judge whether the move through the level is real (acceptance, structure break) or a sweep, and manage accordingly.`
+        : '';
+
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
     // this prose only explains how to read them, so the system prompt stays
     // byte-identical across ticks (prompt-caching prefix stability). Fields that
@@ -1261,7 +1323,7 @@ Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, 
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed (flat)${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
+- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'}${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
@@ -1294,14 +1356,14 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Exchange-side TP/SL bracket (${bracketVenueNote}):
   • On BUY/SELL — and on REVERSE, for the NEW opposite-side position — ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until it fills or a later evaluation amends it. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.
   • In a position (HOLD or partial CLOSE), you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.
-  • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.
+  • Both must sit on the correct side of current price; a stop may never sit wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from current price, and a stop AMENDMENT may only TIGHTEN — a level looser than the standing stop is dropped. Invalid values are clamped or dropped in code — don't waste them.${positionWakeGuidance}
 ${
         PULLBACK_LIMIT_ENABLED
             ? `- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.`
             : `- entry_limit_price: ALWAYS null — resting pullback limits are disabled (a resting limit's fill is adversely selected: it fills exactly when the level breaks against the thesis). Entries execute at market, so only enter when the timing is right NOW. If the setup is valid but the wave position is bad, HOLD and set cooldown_wake_above/below at the level you would rather pay — you will be re-evaluated the moment price gets there; entering there at market after a confirmed reaction beats resting blind in the move's path.`
     }
 - entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later ${primaryTimeframe} bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.
-- Failed-break trigger (market.failed_break, when present, in a position): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.
+- Failed-break trigger (market.failed_break, when present, in a position): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.${positionWakeTriggerGuidance}
 - Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
 - Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? ${
         PULLBACK_LIMIT_ENABLED
@@ -1343,7 +1405,7 @@ TASKS:
         ? 'entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.'
         : 'entry_limit_price: ALWAYS null (market entries only — see guidance).'
 }
-6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, and cooldown_wake_note whenever a band is set): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.
+6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, and cooldown_wake_note whenever a band is set): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.${POSITION_WAKE_ENABLED ? ' In a position (HOLD/partial CLOSE), cooldown_wake_above/below instead arm in-position wake bands (see wake-band guidance; cooldown_minutes stays null).' : ''}
 7) entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.
 8) summary ≤3 lines; reason = brief rationale.
 
@@ -1689,13 +1751,21 @@ export function postprocessDecision(params: {
         cooldownEligible && Number.isFinite(Number(decision?.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
             ? Math.round(Number(decision.cooldown_minutes))
             : null;
-    const cooldown_wake_above = cooldownEligible ? coercePrice(decision?.cooldown_wake_above) : null;
-    const cooldown_wake_below = cooldownEligible ? coercePrice(decision?.cooldown_wake_below) : null;
-    // The band's plan, echoed back at fire time (market.cooldown_wake.note).
-    // Only meaningful alongside a band; length-capped, never trusted raw.
+    // In-position wake bands ride the same cooldown_wake_* fields, routed by
+    // position state: eligible on in-position HOLD / partial CLOSE (same gate
+    // as TP/SL amends). cooldown_minutes stays flat-only. Level sanity happens
+    // in sanitizePositionWake in the API route (live price + bracket). Flag is
+    // read at CALL time (like ENABLE_CRYPTO_MARGIN_RECYCLE above) so tests can
+    // toggle it.
+    const wakeEligible = cooldownEligible || (flagOn(process.env.ENABLE_POSITION_WAKE_BANDS) && tpslAmendEligible);
+    const cooldown_wake_above = wakeEligible ? coercePrice(decision?.cooldown_wake_above) : null;
+    const cooldown_wake_below = wakeEligible ? coercePrice(decision?.cooldown_wake_below) : null;
+    // The band's plan, echoed back at fire time (market.cooldown_wake.note /
+    // market.position_wake.note). Only meaningful alongside a band;
+    // length-capped, never trusted raw.
     const rawWakeNote = decision?.cooldown_wake_note;
     const cooldown_wake_note =
-        cooldownEligible &&
+        wakeEligible &&
         (cooldown_wake_above !== null || cooldown_wake_below !== null) &&
         typeof rawWakeNote === 'string' &&
         rawWakeNote.trim()
@@ -1813,6 +1883,119 @@ export function sanitizeHoldCooldown(params: {
         wakeNote = null;
     }
     return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, notes };
+}
+
+// ------------------------------
+// In-position wake-band sanitation
+// ------------------------------
+
+export type PositionWakeBands = {
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    // The model's one-line plan for the band ("losing 3.42 = thesis dead →
+    // decide exit") — stored on the thread and echoed back as
+    // market.position_wake.note when the band fires.
+    wakeNote: string | null;
+    notes: string[];
+};
+
+// In-position HOLD / partial CLOSE only (the TP/SL-amend eligibility). Bands
+// are early-look requests, never protection — each one must sit on the correct
+// side of current price, STRICTLY inside the standing bracket (at/beyond SL or
+// TP the venue closes the position first, so the band is unreachable), and at
+// least POSITION_WAKE_MIN_ATR primary-ATRs from price (a band glued to price
+// would re-fire a full AI call every few minutes). A violating band is dropped
+// with a note; the decision itself is never affected. Callers pass the bracket
+// as it stands AFTER this tick's amend sanitation (amended ?? standing), so
+// bands validate against the levels that will actually rest on the venue.
+// Deliberately does NOT check ENABLE_POSITION_WAKE_BANDS itself (pure,
+// testable): with the flag off, normalizeDecision already nulls the fields
+// and the analyze route never persists.
+export function sanitizePositionWake(params: {
+    action: string;
+    positionOpen: boolean;
+    exitSizePct: number | null;
+    price: number | null;
+    primaryAtr: number | null;
+    takeProfitPrice: number | null;
+    stopLossPrice: number | null;
+    wakeAbove: unknown;
+    wakeBelow: unknown;
+    wakeNote?: unknown;
+}): PositionWakeBands {
+    const notes: string[] = [];
+    const none = (): PositionWakeBands => ({ wakeAbove: null, wakeBelow: null, wakeNote: null, notes });
+    const action = String(params.action).toUpperCase();
+    const eligible =
+        params.positionOpen &&
+        (action === 'HOLD' || (action === 'CLOSE' && params.exitSizePct != null && params.exitSizePct < 100));
+    if (!eligible) return none();
+
+    const price = Number(params.price);
+    if (!(Number.isFinite(price) && price > 0)) {
+        const rawAbove = Number(params.wakeAbove);
+        const rawBelow = Number(params.wakeBelow);
+        if ((Number.isFinite(rawAbove) && rawAbove > 0) || (Number.isFinite(rawBelow) && rawBelow > 0)) {
+            notes.push('wake_bands_dropped_price_unknown');
+        }
+        return none();
+    }
+
+    let above: number | null = Number.isFinite(Number(params.wakeAbove)) && Number(params.wakeAbove) > 0 ? Number(params.wakeAbove) : null;
+    let below: number | null = Number.isFinite(Number(params.wakeBelow)) && Number(params.wakeBelow) > 0 ? Number(params.wakeBelow) : null;
+
+    // Side of current price.
+    if (above !== null && above <= price) {
+        notes.push('wake_above_dropped_not_above_price');
+        above = null;
+    }
+    if (below !== null && below >= price) {
+        notes.push('wake_below_dropped_not_below_price');
+        below = null;
+    }
+
+    // Strictly inside the bracket. Which bracket leg sits on which side of
+    // price depends on position side, but not here: both legs are themselves
+    // side-validated, so it suffices that a band never sits at/beyond ANY
+    // bracket level on its own side of price.
+    const tp = Number(params.takeProfitPrice);
+    const sl = Number(params.stopLossPrice);
+    const bracketAbove = [tp, sl].filter((v) => Number.isFinite(v) && v > price);
+    const bracketBelow = [sl, tp].filter((v) => Number.isFinite(v) && v > 0 && v < price);
+    if (above !== null && bracketAbove.length && above >= Math.min(...bracketAbove)) {
+        notes.push('wake_above_dropped_beyond_bracket');
+        above = null;
+    }
+    if (below !== null && bracketBelow.length && below <= Math.max(...bracketBelow)) {
+        notes.push('wake_below_dropped_beyond_bracket');
+        below = null;
+    }
+
+    // Min distance from price (churn guard). Unknown ATR fails open — the side
+    // and bracket checks still bound the band, and a missing ATR is rare.
+    const atr = Number(params.primaryAtr);
+    if (Number.isFinite(atr) && atr > 0) {
+        const minDist = POSITION_WAKE_MIN_ATR * atr;
+        if (above !== null && above - price < minDist) {
+            notes.push('wake_above_dropped_too_close');
+            above = null;
+        }
+        if (below !== null && price - below < minDist) {
+            notes.push('wake_below_dropped_too_close');
+            below = null;
+        }
+    } else if (above !== null || below !== null) {
+        notes.push('wake_min_dist_unverified');
+    }
+
+    const rawNote = params.wakeNote;
+    let wakeNote: string | null =
+        typeof rawNote === 'string' && rawNote.trim() ? rawNote.trim().slice(0, 200) : null;
+    if (wakeNote !== null && above === null && below === null) {
+        notes.push('wake_note_dropped_no_band');
+        wakeNote = null;
+    }
+    return { wakeAbove: above, wakeBelow: below, wakeNote, notes };
 }
 
 // ------------------------------

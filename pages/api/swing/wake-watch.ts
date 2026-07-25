@@ -33,6 +33,7 @@ export const config = { runtime: 'nodejs' };
 // instead of losing it until the next primary close.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
+import { POSITION_WAKE_ENABLED } from '../../../lib/ai';
 import { requireAdminAccess } from '../../../lib/admin';
 import { bitgetFetch } from '../../../lib/bitget';
 import {
@@ -192,7 +193,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (crossed) await maybeFire(row.platform, row.symbol, `wake_band_${crossed}`);
     }
 
-    // 2) In-position emergency moves vs the last-AI-look reference.
+    // 2) In-position wake bands + emergency moves. Bands are AI-declared levels
+    // inside the bracket, stored on the in_position thread (zero extra queries —
+    // they ride the close-detection list) and checked against the same live
+    // price the emergency check uses. Band first: the more specific fire
+    // reason wins, and the shared per-symbol fired marker dedupes the pair
+    // anyway. For Capital the thread stores the raw symbol while markers carry
+    // the epic — key the band map under both so the lookup can't miss.
+    const wakeByKey = new Map<string, { wakeAbove: number | null; wakeBelow: number | null }>();
+    if (POSITION_WAKE_ENABLED) {
+        for (const row of inPositionThreads) {
+            if (row.wakeAbove === null && row.wakeBelow === null) continue;
+            const platform = String(row.platform || '').toLowerCase();
+            const symbol = String(row.symbol || '').toUpperCase();
+            const bands = { wakeAbove: row.wakeAbove, wakeBelow: row.wakeBelow };
+            wakeByKey.set(`${platform}:${symbol}`, bands);
+            if (platform === 'capital') {
+                try {
+                    const epic = String(resolveCapitalEpic(symbol).epic || '').toUpperCase();
+                    if (epic) wakeByKey.set(`capital:${epic}`, bands);
+                } catch {
+                    /* unresolvable → raw-symbol key only */
+                }
+            }
+        }
+    }
     const positionMarkers: Array<{ platform: string; symbol: string; price: number | null }> = [
         ...bitgetPositions.map((p) => ({
             platform: 'bitget',
@@ -204,6 +229,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .map((m) => ({ platform: 'capital', symbol: m.epic as string, price: m.mid })),
     ];
     for (const marker of positionMarkers) {
+        const bands = wakeByKey.get(`${marker.platform}:${marker.symbol}`);
+        const bandCrossed = bands ? wakeBandCrossed(marker.price, bands.wakeAbove, bands.wakeBelow) : null;
+        if (bandCrossed) {
+            await maybeFire(marker.platform, marker.symbol, `position_wake_${bandCrossed}`);
+            continue;
+        }
         const ref = await kvGetJson<WakeWatchRef>(wakeWatchRefKey(marker.platform, marker.symbol)).catch(
             () => null,
         );

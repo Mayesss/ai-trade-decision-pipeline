@@ -49,6 +49,8 @@ import {
     sanitizeEntryTrigger,
     sanitizeExchangeTpSl,
     sanitizeHoldCooldown,
+    sanitizePositionWake,
+    POSITION_WAKE_ENABLED,
     REENTRY_COOLDOWN_MIN,
     resolveReentryCooldown,
     SWING_DECISION_SCHEMA,
@@ -76,6 +78,7 @@ import {
     breakTriggerFailed,
     lastClosedBar,
     timeframeToMs,
+    wakeBandCrossed,
     wakeWatchRefKey,
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
@@ -93,6 +96,7 @@ import {
     insertSwingTickLog,
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
+    setSwingThreadWake,
     upsertSwingAiCooldown,
     upsertSwingAiThread,
     upsertSwingBreakTrigger,
@@ -803,6 +807,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // sweeps) is provider-independent and keeps using the row as-is.
         let aiThreadProvider: string | null = null;
         let aiThreadTranscript: unknown[] | null = null;
+        // In-position wake bands armed on this thread by a previous management
+        // look (ENABLE_POSITION_WAKE_BANDS) — checked against live price below
+        // and echoed to the prompt; replaced after every real AI decision.
+        let threadWake: { above: number | null; below: number | null; note: string | null; setAtMs: number | null } | null =
+            null;
         // The thread row claims a pullback limit is resting while we're flat —
         // cross-checked against what the hourly sweep actually finds below.
         let aiThreadWasPendingEntry = false;
@@ -818,6 +827,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         aiThreadResponseId = aiThread.lastResponseId;
                         aiThreadProvider = aiThread.provider;
                         aiThreadTranscript = aiThread.transcript;
+                        if (POSITION_WAKE_ENABLED && (aiThread.wakeAbove !== null || aiThread.wakeBelow !== null)) {
+                            threadWake = {
+                                above: aiThread.wakeAbove,
+                                below: aiThread.wakeBelow,
+                                note: aiThread.wakeNote,
+                                setAtMs: aiThread.wakeSetAtMs,
+                            };
+                        }
                     } else if (aiThread.status === 'in_position') {
                         await endSwingAiThread(platform, symbol);
                         // The previous tick had a position, now flat with no AI CLOSE
@@ -1113,11 +1130,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // In-position wake band (ENABLE_POSITION_WAKE_BANDS): price at/beyond a
+        // band the model set on a previous management look (stored on the AI
+        // thread). Detection runs on EVERY in-position tick — the 1-min
+        // watcher's fired call and the regular close-boundary tick both catch
+        // it — and lets the tick through the quiet skip below (the whole point
+        // is an early look at a sub-emergency move onto the model's own
+        // level). NOT cleared here: bands are replaced only after a real AI
+        // decision is durably recorded, so a run that dies mid-AI leaves them
+        // armed and the watcher re-fires instead of losing the wake.
+        let positionWakeFired: {
+            crossed: 'above' | 'below';
+            level: number;
+            setAtMs: number | null;
+            note: string | null;
+        } | null = null;
+        if (positionOpen && threadWake) {
+            const tickerLight = Array.isArray(bundleLight?.ticker) ? bundleLight.ticker[0] : bundleLight?.ticker;
+            const priceNow = Number(
+                tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
+            );
+            const crossed = wakeBandCrossed(priceNow, threadWake.above, threadWake.below);
+            if (crossed) {
+                positionWakeFired = {
+                    crossed,
+                    level: (crossed === 'above' ? threadWake.above : threadWake.below) as number,
+                    setAtMs: threadWake.setAtMs,
+                    note: threadWake.note,
+                };
+                emitGateDebug('position_wake_detected', {
+                    gate: 'POSITION_WAKE',
+                    crossed,
+                    level: positionWakeFired.level,
+                    price: priceNow,
+                });
+            }
+        }
+
         const inPositionOffCadenceTick = primaryCloseCadence ? offBoundaryTick : quarterTick;
         const inPositionMoveThresholdAtr = primaryCloseCadence
             ? IN_POSITION_EMERGENCY_MOVE_ATR
             : IN_POSITION_QUARTER_MOVE_ATR;
-        if (positionOpen && inPositionOffCadenceTick && !failedBreak) {
+        if (positionOpen && inPositionOffCadenceTick && !failedBreak && !positionWakeFired) {
             const tickerLight = Array.isArray(bundleLight?.ticker) ? bundleLight.ticker[0] : bundleLight?.ticker;
             const priceNow = Number(
                 tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
@@ -1949,6 +2003,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             capitalMarketContext,
             cooldownWake,
             failedBreak,
+            // Fired band → market.position_wake; armed-but-quiet bands →
+            // market.position_wake_armed (fired suppresses armed inside).
+            { fired: positionWakeFired, armed: threadWake },
         );
         const { context, actionability } = swingState;
 
@@ -2475,21 +2532,45 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // against live price; write the SANITIZED values back onto the decision
         // so history/dashboard show what was actually armed. Persisted after
         // execution (below) — only a flat HOLD ever carries non-null values.
+        // The cooldown_wake_* fields carry FLAT cooldown bands or IN-POSITION
+        // wake bands depending on position state (normalizeDecision routes
+        // eligibility); read the raw values once, run the state's sanitizer,
+        // and write the surviving values back so history shows what was armed.
+        const rawWakeAbove = (decision as any).cooldown_wake_above;
+        const rawWakeBelow = (decision as any).cooldown_wake_below;
+        const rawWakeNote = (decision as any).cooldown_wake_note;
         const holdCooldown = sanitizeHoldCooldown({
             action: decision.action,
             positionOpen,
             price: marketAnchor,
             cooldownMinutes: (decision as any).cooldown_minutes,
-            wakeAbove: (decision as any).cooldown_wake_above,
-            wakeBelow: (decision as any).cooldown_wake_below,
-            wakeNote: (decision as any).cooldown_wake_note,
+            wakeAbove: rawWakeAbove,
+            wakeBelow: rawWakeBelow,
+            wakeNote: rawWakeNote,
+        });
+        // In-position wake bands: side vs live price, strictly inside the
+        // bracket as it will actually rest (this tick's sanitized amend, else
+        // the standing leg), min ATR distance (churn guard). All-null when
+        // flat, when the flag is off, or on a non-HOLD/non-partial action.
+        const positionWakeBands = sanitizePositionWake({
+            action: decision.action,
+            positionOpen,
+            exitSizePct: (decision as any).exit_size_pct ?? null,
+            price: marketAnchor,
+            primaryAtr: primaryAtrSane,
+            takeProfitPrice: exchangeTpsl.takeProfitPrice ?? currentTakeProfit,
+            stopLossPrice: exchangeTpsl.stopLossPrice ?? currentStopLoss,
+            wakeAbove: rawWakeAbove,
+            wakeBelow: rawWakeBelow,
+            wakeNote: rawWakeNote,
         });
         (decision as any).cooldown_minutes = holdCooldown.cooldownMinutes;
-        (decision as any).cooldown_wake_above = holdCooldown.wakeAbove;
-        (decision as any).cooldown_wake_below = holdCooldown.wakeBelow;
-        (decision as any).cooldown_wake_note = holdCooldown.wakeNote;
-        if (holdCooldown.notes.length) {
-            (decision as any).cooldown_notes = holdCooldown.notes;
+        (decision as any).cooldown_wake_above = positionOpen ? positionWakeBands.wakeAbove : holdCooldown.wakeAbove;
+        (decision as any).cooldown_wake_below = positionOpen ? positionWakeBands.wakeBelow : holdCooldown.wakeBelow;
+        (decision as any).cooldown_wake_note = positionOpen ? positionWakeBands.wakeNote : holdCooldown.wakeNote;
+        const wakeNotes = [...holdCooldown.notes, ...positionWakeBands.notes];
+        if (wakeNotes.length) {
+            (decision as any).cooldown_notes = wakeNotes;
         }
 
         // Failed-break watch trigger: side-validate against live price and write
@@ -2857,6 +2938,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // bypass the flat quality gates). Persisting it makes "what does the
             // AI do when its own wake level fires, and does it pay" a SQL query.
             cooldownWake,
+            // In-position wake-band trigger (null unless this call exists
+            // because price crossed a band the model set on a previous
+            // management look) — same SQL-ability rationale as cooldownWake.
+            positionWake: positionWakeFired,
             // Sanitized exchange-side bracket that actually went to execution,
             // plus any clamp/drop notes (e.g. tp_wrong_side_dropped) — makes
             // "what did the model ask for vs what shipped" a SQL query.
@@ -2914,6 +2999,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 await clearSwingAiCooldown(platform, symbol);
             } catch (err) {
                 console.warn(`wake cooldown consume failed for ${symbol}:`, err);
+            }
+        }
+        // Replace the thread's in-position wake bands with what THIS decision
+        // asked for — nulls included (replace-on-every-look; consuming a fired
+        // band falls out of replacement, since a restated just-fired band was
+        // already dropped by the side check). Only after the history append
+        // above, so a run dying earlier leaves the old bands armed and the
+        // watcher re-fires instead of half-consuming the wake. Fresh-entry
+        // calls write nulls, clearing stale bands a re-used thread row
+        // inherited; a 0-row update (no thread) is harmless.
+        if (POSITION_WAKE_ENABLED && !dryRun && aiResponseId) {
+            try {
+                await setSwingThreadWake({
+                    platform,
+                    symbol,
+                    wakeAbove: positionWakeBands.wakeAbove,
+                    wakeBelow: positionWakeBands.wakeBelow,
+                    wakeNote: positionWakeBands.wakeNote,
+                    setAtMs: executedAtMs,
+                });
+            } catch (err) {
+                console.warn(`position wake persist failed for ${symbol}:`, err);
             }
         }
         // New decision recorded → bust the dashboard summary cache so the next load

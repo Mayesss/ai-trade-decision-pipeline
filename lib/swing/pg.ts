@@ -177,6 +177,16 @@ async function ensureSwingSchema(): Promise<void> {
         // Existing deployments predate the provider/transcript columns.
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai'`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS transcript JSONB`);
+        // In-position wake bands: AI-declared price levels INSIDE the bracket at
+        // which the 1-min watcher fires an early analyze look ("wake me if we
+        // lose 3.42 support") instead of waiting for the next 4H close. Stored
+        // on the thread because their lifecycle IS the position's: replaced by
+        // every real in-position AI call (null = cleared), gone when the thread
+        // ends. Purely additive — they suppress nothing (unlike ai_cooldowns).
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_above NUMERIC`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_below NUMERIC`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_note TEXT`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_set_at_ms BIGINT`);
 
         // ai_cooldowns: AI-requested quiet periods on FLAT symbols ("nothing to
         // do here, don't re-evaluate for N minutes — unless price crosses a wake
@@ -476,6 +486,11 @@ export type SwingAiThread = {
     provider: string;
     // Claude only: full message history ({role, content}[]) resent each tick.
     transcript: unknown[] | null;
+    // In-position wake bands (see schema comment) — null when none armed.
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    wakeNote: string | null;
+    wakeSetAtMs: number | null;
 };
 
 export async function getSwingAiThread(platform: string, symbol: string): Promise<SwingAiThread | null> {
@@ -483,9 +498,19 @@ export async function getSwingAiThread(platform: string, symbol: string): Promis
     await ensureSwingSchema();
     const db = swingPg();
     const rows = await db.$queryRaw<
-        Array<{ status: string; last_response_id: string; turns: number; provider: string | null; transcript: unknown }>
+        Array<{
+            status: string;
+            last_response_id: string;
+            turns: number;
+            provider: string | null;
+            transcript: unknown;
+            wake_above: unknown;
+            wake_below: unknown;
+            wake_note: unknown;
+            wake_set_at_ms: unknown;
+        }>
     >(sql`
-        SELECT status, last_response_id, turns, provider, transcript
+        SELECT status, last_response_id, turns, provider, transcript, wake_above, wake_below, wake_note, wake_set_at_ms
         FROM swing.ai_threads
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
@@ -498,6 +523,10 @@ export async function getSwingAiThread(platform: string, symbol: string): Promis
         turns: Number(row.turns) || 1,
         provider: row.provider === 'claude' ? 'claude' : 'openai',
         transcript: Array.isArray(row.transcript) ? row.transcript : null,
+        wakeAbove: finitePos(row.wake_above),
+        wakeBelow: finitePos(row.wake_below),
+        wakeNote: typeof row.wake_note === 'string' && row.wake_note ? row.wake_note : null,
+        wakeSetAtMs: finitePos(row.wake_set_at_ms),
     };
 }
 
@@ -553,16 +582,55 @@ export async function listSwingPendingEntryThreads(): Promise<Array<{ platform: 
 // tick — an executed AI CLOSE ends its thread in the same tick, so it never
 // shows up here. Firing analyze for the symbol runs the existing close
 // reconcile (thread end, Capital close persistence, overlay invalidation).
-export async function listSwingInPositionThreads(): Promise<Array<{ platform: string; symbol: string }>> {
+// Wake bands ride along (usually null) so the watcher's per-minute band check
+// costs zero extra queries on top of the close-detection list it already loads.
+export async function listSwingInPositionThreads(): Promise<
+    Array<{ platform: string; symbol: string; wakeAbove: number | null; wakeBelow: number | null }>
+> {
     if (!isSwingPgConfigured()) return [];
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<{ platform: string; symbol: string }>>(sql`
-        SELECT platform, symbol
+    const rows = await db.$queryRaw<
+        Array<{ platform: string; symbol: string; wake_above: unknown; wake_below: unknown }>
+    >(sql`
+        SELECT platform, symbol, wake_above, wake_below
         FROM swing.ai_threads
         WHERE status = 'in_position'
     `);
-    return rows.map((row) => ({ platform: row.platform, symbol: row.symbol }));
+    return rows.map((row) => ({
+        platform: row.platform,
+        symbol: row.symbol,
+        wakeAbove: finitePos(row.wake_above),
+        wakeBelow: finitePos(row.wake_below),
+    }));
+}
+
+// Replace the thread's in-position wake bands with what the latest real AI call
+// asked for — nulls included (replace-on-every-look: a decision that carries no
+// bands CLEARS them; a stale band is worse than a forgotten one). Called only
+// after the decision is durably recorded, so a run that dies mid-AI leaves the
+// old bands armed and the watcher re-fires instead of losing the wake.
+export async function setSwingThreadWake(params: {
+    platform: string;
+    symbol: string;
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    wakeNote: string | null;
+    setAtMs: number;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const hasBand = finitePos(params.wakeAbove) !== null || finitePos(params.wakeBelow) !== null;
+    await db.$executeRaw(sql`
+        UPDATE swing.ai_threads
+        SET wake_above = ${finitePos(params.wakeAbove)},
+            wake_below = ${finitePos(params.wakeBelow)},
+            wake_note = ${hasBand && params.wakeNote ? params.wakeNote : null},
+            wake_set_at_ms = ${hasBand ? params.setAtMs : null},
+            updated_at = NOW()
+        WHERE platform = ${normalizePlatform(params.platform)} AND symbol = ${String(params.symbol || '').toUpperCase()}
+    `);
 }
 
 // Resting pullback limit filled → the same conversation now manages the position.
