@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { computeSwingState, postprocessDecision, sanitizePositionWake, POSITION_WAKE_MIN_ATR } from './ai';
 import type { PromptDecisionContext } from './ai';
+import { isCooldownBandDecision, isPositionWakeBandDecision, isPositionWakeEntry } from './history';
 
 // In-position wake bands: sanitizePositionWake is pure (the
 // ENABLE_POSITION_WAKE_BANDS flag gates the postprocessDecision routing at
@@ -301,4 +302,28 @@ test('computeSwingState: armed bands echo as market.position_wake_armed on quiet
 test('computeSwingState: no bands → neither key present', () => {
     const user = buildUserPrompt({ fired: null, armed: null });
     assert.ok(!user.includes('position_wake'));
+});
+
+// ---- chart-index predicates (lib/history.ts) ----
+
+test('index predicates: bands-without-minutes discriminates in-position from flat cooldown rows', () => {
+    const inPosHold = { action: 'HOLD', cooldown_minutes: null, cooldown_wake_above: 110 };
+    const inPosTrim = { action: 'CLOSE', exit_size_pct: 40, cooldown_minutes: null, cooldown_wake_below: 95 };
+    const flatCooldown = { action: 'HOLD', cooldown_minutes: 480, cooldown_wake_above: 110 };
+    assert.equal(isPositionWakeBandDecision(inPosHold), true);
+    assert.equal(isPositionWakeBandDecision(inPosTrim), true);
+    // A flat cooldown row belongs to the OTHER predicate — never both.
+    assert.equal(isPositionWakeBandDecision(flatCooldown), false);
+    assert.equal(isCooldownBandDecision(flatCooldown), true);
+    assert.equal(isCooldownBandDecision(inPosHold), false);
+    // No band / wrong action → neither.
+    assert.equal(isPositionWakeBandDecision({ action: 'HOLD' }), false);
+    assert.equal(isPositionWakeBandDecision({ action: 'BUY', cooldown_wake_above: 110 }), false);
+});
+
+test('index predicates: fired position-wake rows are recognized via snapshot.positionWake', () => {
+    assert.equal(isPositionWakeEntry({ snapshot: { positionWake: { crossed: 'below' } } }), true);
+    assert.equal(isPositionWakeEntry({ snapshot: { cooldownWake: { crossed: 'below' } } }), false);
+    assert.equal(isPositionWakeEntry({ snapshot: {} }), false);
+    assert.equal(isPositionWakeEntry(null), false);
 });

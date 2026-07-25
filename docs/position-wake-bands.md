@@ -190,6 +190,25 @@ dedupes band-vs-emergency anyway. Zero extra fetches, zero extra queries.
 - **REVERSE / full CLOSE**: fields ineligible (not HOLD/partial) → nulls → replace
   clears; thread end deletes anyway.
 
+## UI (chart overlay) — added 2026-07-25
+
+In-position bands ride the chart's existing cooldown-band overlay (gray dashed
+level-window segments) with zero frontend change — the `ChartPanel` renderer is
+level-window generic and the segments join the same `cooldowns` array:
+
+- `lib/history.ts`: `isPositionWakeBandDecision` (band present + NO
+  `cooldown_minutes` — a sufficient discriminator, since flat bands cannot survive
+  sanitation without minutes) and `isPositionWakeEntry` (`snapshot.positionWake`,
+  the truncation row) both enter the per-symbol marker index.
+- `pages/api/chart.ts`: historical rows draw a one-primary-bar window (a band lives
+  until the next look replaces it), truncated at the next indexed decision — the
+  lived window, like flat cooldowns. The currently-armed bands are merged from the
+  `ai_threads` row (extend-or-add to now), mirroring the active-cooldown merge.
+  Data-driven, no flag check: with the flag off no such rows/bands exist.
+
+Decision-JSON surfaces (dashboard detail, legacy band read) show the sanitized
+`cooldown_wake_*` fields on in-position rows for free via the write-back.
+
 ## Config
 
 - `ENABLE_POSITION_WAKE_BANDS` — gates prompt block, watcher check, detection,

@@ -15,10 +15,13 @@ import {
   loadSymbolMarkerHistory,
   extractCapturedLeverages,
   isCooldownBandDecision,
+  isPositionWakeBandDecision,
 } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
-import { loadClosedSwingPositions, getSwingAiCooldown, loadSwingPostmortems } from '../../lib/swing/pg';
+import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
+import { PRIMARY_TIMEFRAME } from '../../lib/constants';
+import { timeframeToMs } from '../../lib/swing/wakeWatch';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
   assembleCapitalPositionWindows,
@@ -727,6 +730,49 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } catch (err) {
       console.warn(`Could not read active AI cooldown for ${symbol}:`, err);
+    }
+
+    // In-position wake bands (ENABLE_POSITION_WAKE_BANDS) ride the same overlay
+    // array — the renderer is level-window generic, so no frontend change.
+    // Historical rows have no until_ms: a band lives until the next AI look
+    // replaces it, at most one primary bar away, so the assumed window is one
+    // primary bar, truncated at the next indexed decision (a marker action, a
+    // restated band, or the fired wake row) — the lived window, like cooldowns.
+    // Data-driven, no flag check: with the flag off no such rows exist.
+    const primaryBarSec = Math.floor((timeframeToMs(PRIMARY_TIMEFRAME) ?? 4 * 60 * 60_000) / 1000);
+    const positionWakeSegments: CooldownBandSegment[] = (indexedHistory || [])
+      .filter((h) => (h as any)?.dryRun !== true && isPositionWakeBandDecision(h?.aiDecision))
+      .map((h) => {
+        const d = h.aiDecision as any;
+        const fromTime = Math.floor(Number(h.timestamp) / 1000);
+        return {
+          fromTime,
+          toTime: fromTime + primaryBarSec,
+          wakeAbove: positiveNumber(d?.cooldown_wake_above),
+          wakeBelow: positiveNumber(d?.cooldown_wake_below),
+        };
+      })
+      .filter((s) => Number.isFinite(s.fromTime) && s.fromTime > 0)
+      .map(truncateAtNextDecision)
+      .filter((s) => s.toTime > s.fromTime);
+    cooldowns.push(...positionWakeSegments);
+    // Currently-armed bands from the AI thread: extend (or add) their segment
+    // to now — the thread row is the live truth, its decision row only assumed
+    // a one-bar window.
+    try {
+      const thread = await getSwingAiThread(platform, symbol);
+      if (thread?.status === 'in_position' && (thread.wakeAbove !== null || thread.wakeBelow !== null)) {
+        const fromTime = Math.floor(((thread.wakeSetAtMs ?? 0) > 0 ? (thread.wakeSetAtMs as number) : nowMs) / 1000);
+        const nowSec = Math.floor(nowMs / 1000);
+        const indexed = cooldowns.find((s) => Math.abs(s.fromTime - fromTime) <= 120);
+        if (indexed) {
+          indexed.toTime = Math.max(indexed.toTime, nowSec);
+        } else {
+          cooldowns.push({ fromTime, toTime: nowSec, wakeAbove: thread.wakeAbove, wakeBelow: thread.wakeBelow });
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not read active position wake bands for ${symbol}:`, err);
     }
     cooldowns.sort((a, b) => a.fromTime - b.fromTime);
 

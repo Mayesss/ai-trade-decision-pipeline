@@ -47,6 +47,30 @@ export function isCooldownWakeEntry(entry: { snapshot?: any } | null | undefined
     return crossed === 'above' || crossed === 'below';
 }
 
+// In-position wake bands (ENABLE_POSITION_WAKE_BANDS) enter the index for the
+// same chart overlay. They ride the same cooldown_wake_* decision fields but
+// NEVER alongside cooldown_minutes (flat-only, and flat bands cannot survive
+// sanitation without minutes) — so "band present, no minutes" is a sufficient
+// discriminator; the action check just guards the invariant (HOLD or partial
+// CLOSE are the only band-eligible in-position actions).
+export function isPositionWakeBandDecision(aiDecision: any): boolean {
+    const action = String(aiDecision?.action || '').trim().toUpperCase();
+    if (action !== 'HOLD' && action !== 'CLOSE') return false;
+    const minutes = Number(aiDecision?.cooldown_minutes);
+    if (Number.isFinite(minutes) && minutes > 0) return false;
+    const above = Number(aiDecision?.cooldown_wake_above);
+    const below = Number(aiDecision?.cooldown_wake_below);
+    return (Number.isFinite(above) && above > 0) || (Number.isFinite(below) && below > 0);
+}
+
+// Fired in-position wakes mirror isCooldownWakeEntry: the crossing consumed the
+// band (replace-on-decision), so the row must exist in the index to truncate
+// the band's overlay at the wake instead of at its assumed one-bar end.
+export function isPositionWakeEntry(entry: { snapshot?: any } | null | undefined): boolean {
+    const crossed = (entry as any)?.snapshot?.positionWake?.crossed;
+    return crossed === 'above' || crossed === 'below';
+}
+
 function markerIndexKey(symbol: string, platform?: string): string {
     return `${MARKER_INDEX_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
 }
@@ -235,7 +259,9 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
         if (
             isMarkerAction(entry.aiDecision?.action) ||
             isCooldownBandDecision(entry.aiDecision) ||
-            isCooldownWakeEntry(entry)
+            isCooldownWakeEntry(entry) ||
+            isPositionWakeBandDecision(entry.aiDecision) ||
+            isPositionWakeEntry(entry)
         ) {
             const mKey = markerIndexKey(entry.symbol, entry.platform);
             await kvZAdd(mKey, entry.timestamp, key);
@@ -362,7 +388,12 @@ export async function loadSymbolMarkerHistory(
         if (seeded) return [];
 
         const legacy = (await loadDecisionHistory(symbol, 1200, platform)).filter(
-            (h) => isMarkerAction(h?.aiDecision?.action) || isCooldownBandDecision(h?.aiDecision) || isCooldownWakeEntry(h),
+            (h) =>
+                isMarkerAction(h?.aiDecision?.action) ||
+                isCooldownBandDecision(h?.aiDecision) ||
+                isCooldownWakeEntry(h) ||
+                isPositionWakeBandDecision(h?.aiDecision) ||
+                isPositionWakeEntry(h),
         );
         // Populate the index so future reads are fast.
         await Promise.all(
