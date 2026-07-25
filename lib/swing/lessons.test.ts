@@ -53,6 +53,20 @@ test('selectPromptLessons: carries scope for the [scope] prompt tag', () => {
     assert.deepEqual(picked, [{ scope: 'symbol', lesson: 'Symbol quirk.' }]);
 });
 
+test('resolveLessonDecision: bad_luck verdict never yields a lesson, even if the analyst emits one', () => {
+    const shown = [row({ id: 7, lesson: 'Existing wording.', confidence: 0.8 })];
+    const asNew = resolveLessonDecision(
+        { verdict: 'bad_luck', lesson_action: 'new', lesson: 'Do X.', lesson_scope: 'global', confidence: 0.9 },
+        [],
+    );
+    assert.deepEqual(asNew, { kind: 'none', reason: 'bad_luck_no_lesson' });
+    const asReinforce = resolveLessonDecision(
+        { verdict: 'bad_luck', lesson_action: 'reinforce', reinforce_lesson_id: 7, confidence: 0.9 },
+        shown,
+    );
+    assert.deepEqual(asReinforce, { kind: 'none', reason: 'bad_luck_no_lesson' });
+});
+
 test('resolveLessonDecision: new lesson with text → add with scope/confidence', () => {
     const d = resolveLessonDecision(
         { lesson_action: 'new', lesson: 'Do X.', lesson_scope: 'asset_class', confidence: 0.7 },

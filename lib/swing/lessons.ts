@@ -78,6 +78,7 @@ export type LessonDecision =
 // reinforce without any usable text keeps the existing row's wording.
 export function resolveLessonDecision(
     report: {
+        verdict?: string | null;
         lesson?: string | null;
         lesson_action?: string | null;
         lesson_scope?: string | null;
@@ -86,6 +87,14 @@ export function resolveLessonDecision(
     },
     shownLessons: SwingLessonRow[],
 ): LessonDecision {
+    // Hard gate, not just prompt guidance: a bad_luck verdict means the process
+    // was sound and the loss was variance — there is no failure mode to teach,
+    // so nothing may enter the library (the same setup can win next time; a
+    // "lesson" from it would just bias the trading AI against sound setups).
+    // This also blocks reinforce: variance proves nothing about a lesson.
+    if (String(report?.verdict || '').toLowerCase() === 'bad_luck') {
+        return { kind: 'none', reason: 'bad_luck_no_lesson' };
+    }
     const action = String(report?.lesson_action || '').toLowerCase();
     const text = typeof report?.lesson === 'string' && report.lesson.trim() ? report.lesson.trim().slice(0, 300) : null;
     const scope: SwingLessonScope = ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope as string)
