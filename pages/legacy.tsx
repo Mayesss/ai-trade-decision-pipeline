@@ -8081,13 +8081,7 @@ export default function Home() {
               {strategyMode === "swing" ? (
                 <div className="relative flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    {swingCronControlUpdating
-                      ? "…"
-                      : !swingCronControlLoaded
-                        ? "cron"
-                        : swingCronHardDeactivated
-                          ? "cron off"
-                          : "cron on"}
+                    {swingCronControlUpdating ? "…" : "cron"}
                   </span>
                   <button
                     type="button"

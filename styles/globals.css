@@ -94,6 +94,42 @@
   color: rgb(113 113 122 / 1);
 }
 
+/* Hover highlights: Tailwind's hover: variants are their own classes, so the
+   static remaps above never catch them — without these, hovering a button in
+   dark mode flashes its light-theme fill (a bright box on the dark card).
+   Same zinc mapping as the static classes, one step lighter than the resting
+   surface so the hover still reads as a lift. */
+.theme-dark .hover\:bg-slate-50:hover,
+.theme-dark .hover\:bg-slate-100:hover {
+  background-color: rgb(39 39 42 / 1); /* zinc-800 */
+}
+
+.theme-dark .hover\:bg-slate-200\/70:hover {
+  background-color: rgb(63 63 70 / 0.7); /* zinc-700/70 */
+}
+
+.theme-dark .hover\:text-slate-900:hover {
+  color: rgb(244 244 245 / 1); /* zinc-100 */
+}
+
+.theme-dark .hover\:text-slate-700:hover {
+  color: rgb(212 212 216 / 1); /* zinc-300 */
+}
+
+.theme-dark .hover\:border-slate-300:hover {
+  border-color: rgb(82 82 91 / 1); /* zinc-600 */
+}
+
+.theme-dark .hover\:border-slate-400:hover,
+.theme-dark .hover\:border-slate-500:hover {
+  border-color: rgb(113 113 122 / 1); /* zinc-500 */
+}
+
+/* Accent hover text follows the accent desaturation (text-sky-700 -> grey). */
+.theme-dark .hover\:text-sky-700:hover {
+  color: rgb(244 244 245 / 1); /* zinc-100 */
+}
+
 .theme-dark .bg-emerald-50 {
   background-color: rgb(6 78 59 / 0.3);
 }

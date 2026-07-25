@@ -303,6 +303,11 @@ const CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS = Math.max(
 );
 
 let cachedSession: SessionState | null = null;
+// Account UTC offset in HOURS from the session response (timezoneOffset) —
+// the timezone all unsuffixed Capital timestamps (updateTime, snapshotTime)
+// are expressed in. null until the first session; survives session refreshes
+// (the account's preference doesn't change between them).
+let capitalAccountTzOffsetHours: number | null = null;
 let capitalSessionPromise: Promise<SessionState> | null = null;
 const resolvedEpicCache = new Map<string, ResolveEpicResult>();
 const capitalFxConversionQuoteCache = new Map<string, { price: number; expiresAtMs: number }>();
@@ -405,7 +410,9 @@ function midFromQuote(value: any): number | null {
 // which made local dev (Berlin) and Vercel (UTC) parse the same transaction
 // 2h apart — and, with the epoch embedded in the Neon position_key, persist
 // every transaction twice. Offset-less strings are UTC by API contract, so
-// force it.
+// force it. ONLY for *UTC-named fields (dateUTC, snapshotTimeUTC,
+// updateTimeUTC) — the unsuffixed variants (updateTime, snapshotTime) are in
+// the ACCOUNT's timezone, use toCapitalAccountTimestampMs for those.
 function toIsoTimestampMs(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
   const str = String(raw).trim();
@@ -413,6 +420,30 @@ function toIsoTimestampMs(raw: unknown): number | null {
   const isoNoOffset = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(str);
   const ts = Date.parse(isoNoOffset ? `${str.replace(' ', 'T')}Z` : str);
   return Number.isFinite(ts) ? ts : null;
+}
+
+// Account-timezone timestamps (snapshot.updateTime, snapshotTime — the fields
+// WITHOUT a UTC suffix): the session response declares the account's UTC
+// offset in hours (timezoneOffset, captured in createSession); subtract it to
+// get a real epoch. Parsing these as UTC put the chart's live Capital tick 2h
+// in the future of every candle (account tz Europe/Berlin, CEST = UTC+2).
+// Unknown offset (session payload missing the field) degrades to the old
+// treat-as-UTC behavior rather than dropping the timestamp.
+function toCapitalAccountTimestampMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  const str = String(raw).trim();
+  if (!str) return null;
+  const isoNoOffset = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(str);
+  if (!isoNoOffset) {
+    const ts = Date.parse(str);
+    return Number.isFinite(ts) ? ts : null;
+  }
+  const ts = Date.parse(`${str.replace(' ', 'T')}Z`);
+  if (!Number.isFinite(ts)) return null;
+  const offsetHours = Number.isFinite(capitalAccountTzOffsetHours as number)
+    ? (capitalAccountTzOffsetHours as number)
+    : 0;
+  return ts - offsetHours * 60 * 60_000;
 }
 
 function timeframeToMinutes(tf: string): number {
@@ -625,6 +656,14 @@ async function createSession(forceRefresh = false): Promise<SessionState> {
       throw new Error("Capital session missing CST/X-SECURITY-TOKEN headers");
     }
 
+    // Account UTC offset (hours) — the timezone of every unsuffixed timestamp
+    // the API returns (see toCapitalAccountTimestampMs). Best-effort: a
+    // missing field keeps the previous value.
+    const tzOffset = Number(payload?.timezoneOffset);
+    if (Number.isFinite(tzOffset) && Math.abs(tzOffset) <= 14) {
+      capitalAccountTzOffsetHours = tzOffset;
+    }
+
     cachedSession = {
       cst,
       securityToken,
@@ -804,9 +843,11 @@ function parseCapitalCandles(payload: any): any[] {
   const prices = extractRows<any>(payload, ["prices", "Price", "data"]);
   const candles = prices
     .map((p) => {
-      const tsRaw =
-        p?.snapshotTimeUTC ?? p?.snapshotTime ?? p?.time ?? p?.timestamp;
-      const tsMs = toIsoTimestampMs(tsRaw);
+      // snapshotTimeUTC is UTC by contract; snapshotTime (and the generic
+      // fallbacks) are in the ACCOUNT's timezone.
+      const tsMs =
+        toIsoTimestampMs(p?.snapshotTimeUTC) ??
+        toCapitalAccountTimestampMs(p?.snapshotTime ?? p?.time ?? p?.timestamp);
       const open = midFromQuote(p?.openPrice) ?? safeNumber(p?.open, NaN);
       const high = midFromQuote(p?.highPrice) ?? safeNumber(p?.high, NaN);
       const low = midFromQuote(p?.lowPrice) ?? safeNumber(p?.low, NaN);
@@ -2400,15 +2441,15 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
     market?.snapshot?.lastTraded ?? market?.lastTraded ?? market?.last,
     NaN,
   );
+  // UTC-suffixed fields are UTC by contract; the unsuffixed fallbacks are in
+  // the ACCOUNT's timezone (parsing them as UTC showed the chart's live tick
+  // 2h ahead on Capital symbols).
   const snapshotTsMs =
-    toIsoTimestampMs(
-      market?.snapshot?.updateTimeUTC ??
-        market?.snapshot?.updateTime ??
-        market?.snapshotTimeUTC ??
-        market?.snapshotTime ??
-        market?.updateTime ??
-        market?.timestamp,
-    ) ?? null;
+    toIsoTimestampMs(market?.snapshot?.updateTimeUTC ?? market?.snapshotTimeUTC) ??
+    toCapitalAccountTimestampMs(
+      market?.snapshot?.updateTime ?? market?.snapshotTime ?? market?.updateTime ?? market?.timestamp,
+    ) ??
+    null;
   const minDealSize = safeNumber(market?.dealingRules?.minDealSize?.value, NaN);
   const minDealSizeSafe =
     Number.isFinite(minDealSize) && minDealSize > 0 ? minDealSize : null;
@@ -2680,9 +2721,9 @@ function extractPositionSize(position: CapitalPositionRow): number | null {
 function extractEntryTimestamp(
   position: CapitalPositionRow,
 ): number | undefined {
-  const ts = toIsoTimestampMs(
-    position?.position?.createdDateUTC ?? position?.position?.createdDate,
-  );
+  const ts =
+    toIsoTimestampMs(position?.position?.createdDateUTC) ??
+    toCapitalAccountTimestampMs(position?.position?.createdDate);
   if (!Number.isFinite(ts as number)) return undefined;
   return Number(ts);
 }
@@ -4016,8 +4057,10 @@ export async function listCapitalPendingEntryOrders(symbol: string): Promise<Cap
       if (!dealId) return null;
       const level = safeNumber(data?.orderLevel ?? data?.level, NaN);
       const size = safeNumber(data?.orderSize ?? data?.size, NaN);
-      const createdRaw = data?.createdDateUTC ?? data?.createdDate;
-      const createdAtMs = createdRaw ? Date.parse(String(createdRaw)) : NaN;
+      // createdDateUTC is UTC; createdDate is account-timezone — and a bare
+      // Date.parse would additionally vary with the SERVER's timezone.
+      const createdAtMs =
+        toIsoTimestampMs(data?.createdDateUTC) ?? toCapitalAccountTimestampMs(data?.createdDate) ?? NaN;
       return {
         dealId,
         direction: data?.direction ? String(data.direction) : null,
