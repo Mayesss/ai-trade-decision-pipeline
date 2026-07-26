@@ -2645,6 +2645,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [showRawResponse, setShowRawResponse] = useState(false);
   const [cronConfirmOpen, setCronConfirmOpen] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<
     Record<string, EvaluateJobRecord>
@@ -4254,6 +4255,7 @@ export default function Home() {
 
   useEffect(() => {
     setShowPrompt(false);
+    setShowRawResponse(false);
   }, [active, symbols]);
 
   // Decision prices span BTC (~118,000) to forex (~1.08) — scale the decimals
@@ -9516,12 +9518,18 @@ export default function Home() {
                             );
                           })}
                         </div>
-                        <div className="mt-3">
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
                           <button
                             onClick={() => setShowPrompt((prev) => !prev)}
                             className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
                           >
                             {showPrompt ? "Hide prompt" : "Show prompt"}
+                          </button>
+                          <button
+                            onClick={() => setShowRawResponse((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                          >
+                            {showRawResponse ? "Hide raw response" : "Show raw response"}
                           </button>
                         </div>
                         {showPrompt && (
@@ -9542,6 +9550,18 @@ export default function Home() {
                                 {renderPromptContent(displayPrompt?.user)}
                               </div>
                             </div>
+                          </div>
+                        )}
+                        {showRawResponse && (
+                          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Raw response
+                            </div>
+                            <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-700">
+                              {displayDecision
+                                ? JSON.stringify(displayDecision, null, 2)
+                                : "—"}
+                            </pre>
                           </div>
                         )}
                       </>
