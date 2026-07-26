@@ -9557,7 +9557,7 @@ export default function Home() {
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                               Raw response
                             </div>
-                            <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-700">
+                            <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-700">
                               {displayDecision
                                 ? JSON.stringify(displayDecision, null, 2)
                                 : "—"}
