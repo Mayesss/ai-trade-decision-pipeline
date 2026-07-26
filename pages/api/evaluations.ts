@@ -9,6 +9,7 @@ import {
 import { fetchCapitalPositionInfo, fetchCapitalRealizedRoi } from '../../lib/capital';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
+import { getSwingDecisionPrompt } from '../../lib/swing/pg';
 import { bitgetFetch, resolveProductType } from '../../lib/bitget';
 
 type EnrichedEntry = {
@@ -160,6 +161,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               : typeof latest.snapshot?.newsSource === 'string'
               ? latest.snapshot.newsSource
               : null;
+        }
+        // KV entries no longer embed prompts; pull the latest one from the
+        // Neon dual-write when the viewer would otherwise show nothing.
+        if (latest && !lastPrompt && lastDecisionTs && !(lastDecision as any)?.promptSkipped) {
+          try {
+            lastPrompt = await getSwingDecisionPrompt(platform, symbol, lastDecisionTs);
+          } catch (err) {
+            console.warn(`Could not load prompt from Neon for ${symbol}:`, err);
+          }
         }
         const history = latest && hasExplicitLatestPlatform
           ? historyAny.filter((entry) => extractPlatformFromHistoryEntry(entry) === platform)

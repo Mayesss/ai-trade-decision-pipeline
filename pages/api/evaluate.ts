@@ -3,6 +3,7 @@ import crypto from 'crypto';
 
 import { requireAdminAccess } from '../../lib/admin';
 import { loadDecisionHistory } from '../../lib/history';
+import { loadSwingDecisionWindow } from '../../lib/swing/pg';
 import { callStatelessAI } from '../../lib/aiProvider';
 import { AI_MODEL } from '../../lib/constants';
 import { setEvaluation } from '../../lib/utils';
@@ -155,6 +156,33 @@ async function runEvaluation(params: {
     const history = await loadDecisionHistory(symbol, limit);
     if (!history.length) {
         throw new Error('no_history');
+    }
+
+    // KV history entries no longer embed prompts (KV bandwidth); the judge
+    // still wants them, so hydrate from the Neon dual-write in one window
+    // query keyed by (platform, decided_at_ms). Rows predating the change
+    // keep their KV copy; missing rows just evaluate promptless.
+    try {
+        const withoutPrompt = history.filter((h) => !h.prompt);
+        if (withoutPrompt.length) {
+            const tss = history.map((h) => Number(h.timestamp)).filter((t) => Number.isFinite(t) && t > 0);
+            const platform = history.find((h) => typeof h.platform === 'string')?.platform;
+            if (tss.length && platform) {
+                const rows = await loadSwingDecisionWindow({
+                    symbol,
+                    platform,
+                    fromMs: Math.min(...tss),
+                    toMs: Math.max(...tss),
+                    limit: Math.max(history.length, 100),
+                });
+                const byTs = new Map(rows.map((r) => [r.decidedAtMs, r.prompt]));
+                for (const h of history) {
+                    if (!h.prompt) h.prompt = byTs.get(Number(h.timestamp)) as any ?? null;
+                }
+            }
+        }
+    } catch (err) {
+        console.warn(`prompt hydration from Neon failed for ${symbol}:`, err);
     }
 
     const condensed = history.map((item) => ({

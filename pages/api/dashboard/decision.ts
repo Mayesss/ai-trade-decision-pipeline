@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
 import { loadDecisionAt, loadDecisionHistory } from '../../../lib/history';
+import { getSwingDecisionPrompt } from '../../../lib/swing/pg';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/platform';
 
@@ -96,6 +97,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } catch (err) {
     console.warn(`Could not load latest decision for ${symbolRaw}:`, err);
+  }
+
+  // KV history entries no longer embed the prompt (it dominated KV bandwidth);
+  // the prompt viewer's copy comes from the Neon dual-write on demand. Rows
+  // written before the change still carry it in KV — the fallback only fires
+  // when the entry has none. Real AI calls only: skip rows never had a prompt.
+  if (
+    payload.lastDecision &&
+    !payload.lastPrompt &&
+    payload.lastDecisionTs &&
+    payload.platform &&
+    !payload.lastDecision.promptSkipped
+  ) {
+    try {
+      payload.lastPrompt = await getSwingDecisionPrompt(payload.platform, symbolRaw, payload.lastDecisionTs);
+    } catch (err) {
+      console.warn(`Could not load prompt from Neon for ${symbolRaw}:`, err);
+    }
   }
 
   return res.status(200).json(payload);

@@ -18,6 +18,15 @@ const MARKER_INDEX_PREFIX = 'decision:markers';
 // One-shot flag marking that a symbol's marker index has been backfilled from the
 // legacy global index, so the slow fallback scan runs at most once per symbol.
 const MARKER_SEEDED_PREFIX = 'decision:markers:seeded';
+// Per-symbol FULL decision index (every row, not just markers): symbol-filtered
+// loadDecisionHistory reads used to page the GLOBAL index 50 keys at a time to
+// find one symbol's rows — ~120 KV commands per symbol at 25 symbols (~1-in-25
+// key density). At 25 symbols × ~96 dashboard-summary rebuilds/day that alone
+// was ~290k commands/day (≈ the whole Upstash PAYG budget). This index makes a
+// symbol read 1 ZREVRANGE + a few MGETs. Backfilled once per symbol from the
+// global index (seeded flag, same pattern as the marker index).
+const SYMBOL_INDEX_PREFIX = 'decision:symidx';
+const SYMBOL_SEEDED_PREFIX = 'decision:symidx:seeded';
 const MARKER_ACTIONS = new Set(['BUY', 'SELL', 'CLOSE']);
 
 function isMarkerAction(action: unknown): boolean {
@@ -77,6 +86,14 @@ function markerIndexKey(symbol: string, platform?: string): string {
 
 function markerSeededKey(symbol: string, platform?: string): string {
     return `${MARKER_SEEDED_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
+}
+
+function symbolIndexKey(symbol: string, platform?: string): string {
+    return `${SYMBOL_INDEX_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
+}
+
+function symbolSeededKey(symbol: string, platform?: string): string {
+    return `${SYMBOL_SEEDED_PREFIX}:${normalizeHistoryPlatform(platform)}:${symbol.toUpperCase()}`;
 }
 
 function ensureKvConfig() {
@@ -243,14 +260,21 @@ function keyFor(symbol: string, timestamp: number, platform?: string) {
 export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
     try {
         const key = keyFor(entry.symbol, entry.timestamp, entry.platform);
-        // store entry with TTL
-        await kvSetEx(key, HISTORY_TTL_SECONDS, JSON.stringify(entry));
+        // Store the entry WITHOUT the prompt: the full prompt (system + the
+        // STATE/MARKET user turn) is 50-150KB and rides in prompt_json on the
+        // Neon dual-write below — keeping a KV copy made every history read
+        // (summary rebuilds, recent-actions loads, timelines) re-download it.
+        // The dashboard prompt viewer fetches it from Neon on demand.
+        await kvSetEx(key, HISTORY_TTL_SECONDS, JSON.stringify({ ...entry, prompt: null }));
         // add to index
         await kvZAdd(HISTORY_INDEX_KEY, entry.timestamp, key);
+        // ...and to the per-symbol full index (fast path for symbol reads).
+        await kvZAdd(symbolIndexKey(entry.symbol, entry.platform), entry.timestamp, key);
 
         // prune index entries older than TTL (by timestamp score)
         const cutoff = Date.now() - HISTORY_TTL_SECONDS * 1000;
         await kvZRemRangeByScore(HISTORY_INDEX_KEY, 0, cutoff);
+        await kvZRemRangeByScore(symbolIndexKey(entry.symbol, entry.platform), 0, cutoff);
 
         // Mirror entry/exit decisions into the per-symbol marker index so the chart
         // can fetch just this symbol's markers without scanning the global index.
@@ -304,10 +328,15 @@ export async function loadDecisionAt(
     }
 }
 
-export async function loadDecisionHistory(symbol?: string, limit = 20, platform?: string): Promise<DecisionHistoryEntry[]> {
-    ensureKvConfig();
-    const upperSymbol = symbol?.toUpperCase();
-    const normalizedPlatform = platform ? normalizeHistoryPlatform(platform) : undefined;
+// The original global-index pagination. For a symbol-filtered read this costs
+// ~2 commands per 50-key page at 1-in-N-symbols key density — kept only for
+// symbol-less/platform-less callers and as the one-time backfill source for
+// the per-symbol index below.
+async function loadDecisionHistoryGlobalScan(
+    upperSymbol: string | undefined,
+    normalizedPlatform: string | undefined,
+    limit: number,
+): Promise<DecisionHistoryEntry[]> {
     const batchSize = 50;
     let start = 0;
     const results: DecisionHistoryEntry[] = [];
@@ -338,6 +367,58 @@ export async function loadDecisionHistory(symbol?: string, limit = 20, platform?
         }
     }
     return results;
+}
+
+export async function loadDecisionHistory(symbol?: string, limit = 20, platform?: string): Promise<DecisionHistoryEntry[]> {
+    ensureKvConfig();
+    const upperSymbol = symbol?.toUpperCase();
+    const normalizedPlatform = platform ? normalizeHistoryPlatform(platform) : undefined;
+
+    // Fast path — per-symbol index: 1 ZREVRANGE + ceil(limit/50) MGETs instead
+    // of paging the global index (which reads ~2 commands per 50 keys of which
+    // only ~1/25 belong to this symbol). Rows written before this index
+    // existed are pulled in by a one-time global-scan backfill per symbol.
+    if (upperSymbol && normalizedPlatform) {
+        try {
+            const idxKey = symbolIndexKey(upperSymbol, normalizedPlatform);
+            const keys = await kvZRevRange(idxKey, 0, limit - 1);
+            if (keys.length < limit) {
+                const seeded = await kvGet(symbolSeededKey(upperSymbol, normalizedPlatform));
+                if (!seeded) {
+                    const legacy = await loadDecisionHistoryGlobalScan(upperSymbol, normalizedPlatform, 1200);
+                    await Promise.all(
+                        legacy.map((h) =>
+                            kvZAdd(idxKey, h.timestamp, keyFor(h.symbol, h.timestamp, h.platform)).catch(
+                                () => undefined,
+                            ),
+                        ),
+                    );
+                    await kvSetEx(symbolSeededKey(upperSymbol, normalizedPlatform), HISTORY_TTL_SECONDS, '1');
+                    // The scan already produced the answer, newest-first.
+                    return legacy.slice(0, limit);
+                }
+            }
+            const results: DecisionHistoryEntry[] = [];
+            for (let i = 0; i < keys.length && results.length < limit; i += 50) {
+                const values = await kvMGet(keys.slice(i, i + 50));
+                for (const raw of values) {
+                    // null = entry expired (7d TTL) under a not-yet-pruned index key.
+                    if (!raw) continue;
+                    try {
+                        results.push(JSON.parse(raw));
+                    } catch (err) {
+                        console.warn('Skipping invalid history entry:', err);
+                    }
+                    if (results.length >= limit) break;
+                }
+            }
+            return results;
+        } catch (err) {
+            console.warn('Symbol decision index read failed, falling back to global scan:', err);
+        }
+    }
+
+    return loadDecisionHistoryGlobalScan(upperSymbol, normalizedPlatform, limit);
 }
 
 // Fetch just the entry/exit marker decisions (BUY/SELL/CLOSE) for one symbol in a

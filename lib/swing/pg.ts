@@ -974,6 +974,31 @@ export async function upsertSwingDecision(entry: DecisionHistoryEntry): Promise<
     return id == null ? null : Number(id);
 }
 
+// One decision's prompt, on demand. KV history entries no longer carry the
+// 50-150KB prompt (it dominated KV bandwidth); the dashboard prompt viewer
+// fetches it here by the dual-write's natural key when the KV entry has none.
+export async function getSwingDecisionPrompt(
+    platform: string,
+    symbol: string,
+    decidedAtMs: number,
+): Promise<{ system?: string; user?: string } | null> {
+    if (!isSwingPgConfigured()) return null;
+    const ts = Math.floor(Number(decidedAtMs));
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ prompt_json: unknown }>>(sql`
+        SELECT prompt_json
+        FROM swing.decisions
+        WHERE decided_at_ms = ${ts}
+          AND platform = ${normalizePlatform(platform)}
+          AND symbol = ${String(symbol || '').toUpperCase()}
+        LIMIT 1
+    `);
+    const prompt = rows?.[0]?.prompt_json;
+    return prompt && typeof prompt === 'object' ? (prompt as { system?: string; user?: string }) : null;
+}
+
 // --------------------------------------------------------------------------
 // Post-mortems (per-closed-position forensic reports)
 // --------------------------------------------------------------------------
