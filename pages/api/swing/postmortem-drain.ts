@@ -12,6 +12,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
+import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { claimQueuedSwingPostmortems, isSwingPgConfigured } from '../../../lib/swing/pg';
 import { resolveSwingPostmortemDelayMs, runSwingPostmortem } from '../../../lib/swing/postmortem';
 
@@ -25,6 +26,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     if (!isSwingPgConfigured()) {
         return res.status(200).json({ ok: true, processed: 0, note: 'pg_not_configured' });
+    }
+
+    // AI provider down for a non-self-healing reason (subscription lapse, bad
+    // key)? Don't burn claims and doomed API attempts every 15 minutes — leave
+    // the rows queued; they analyze themselves once the flag clears. Transient
+    // degradation is NOT gated: the next pass may well succeed.
+    const aiHealth = await loadSwingAiHealth();
+    if (aiHealth.degraded && (aiHealth.kind === 'billing' || aiHealth.kind === 'config')) {
+        return res.status(200).json({
+            ok: true,
+            processed: 0,
+            note: 'ai_unavailable',
+            aiHealth: { kind: aiHealth.kind, sinceMs: aiHealth.sinceMs, reason: aiHealth.reason },
+        });
     }
 
     const claimed = await claimQueuedSwingPostmortems(DRAIN_LIMIT, {

@@ -82,7 +82,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (runId == null) return res.status(404).json({ error: 'postmortem_row_not_found' });
         const claimed = await claimSwingPostmortemById(runId, { force: true });
         if (!claimed) return res.status(409).json({ error: 'claim_failed', id: runId });
-        const result = await runSwingPostmortem(claimed);
+        const result = await runSwingPostmortem(claimed, { force: true });
         return res.status(200).json({ enqueued: !alreadyExisted, ...result });
     }
 
@@ -111,7 +111,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // Not claimable = another worker owns it or it already finished.
                 return res.status(200).json({ id, status: row.status, claimed: false });
             }
-            const result = await runSwingPostmortem(claimed);
+            const result = await runSwingPostmortem(claimed, { force });
             return res.status(200).json(result);
         }
         const row = await loadSwingPostmortemById(id);
@@ -123,7 +123,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const list = await loadSwingPostmortems({
         symbol: firstParam(q.symbol as string | string[]) || null,
         platform: firstParam(q.platform as string | string[]) || null,
-        status: (['queued', 'running', 'succeeded', 'failed'] as SwingPostmortemStatus[]).includes(
+        status: (['queued', 'running', 'succeeded', 'failed', 'skipped'] as SwingPostmortemStatus[]).includes(
             status as SwingPostmortemStatus,
         )
             ? (status as SwingPostmortemStatus)

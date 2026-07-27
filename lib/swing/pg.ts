@@ -313,6 +313,25 @@ async function ensureSwingSchema(): Promise<void> {
         // global) — the curator finalizes it on the lessons row. Predates
         // phase 3 rows are NULL.
         await db.$executeRaw(sql`ALTER TABLE swing.postmortems ADD COLUMN IF NOT EXISTS lesson_scope TEXT`);
+        // 'skipped' status (2026-07): a post-mortem deliberately not run —
+        // the position had ai_unavailable ticks during its life (AI outage),
+        // so the analyst would judge a trade the AI never fully managed.
+        // CREATE TABLE IF NOT EXISTS never updates the CHECK on existing
+        // deployments; recreate it once when the old definition is found.
+        await db.$executeRaw(sql`
+            DO $$
+            BEGIN
+              IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'postmortems_status_check'
+                  AND conrelid = 'swing.postmortems'::regclass
+                  AND pg_get_constraintdef(oid) NOT LIKE '%skipped%'
+              ) THEN
+                ALTER TABLE swing.postmortems DROP CONSTRAINT postmortems_status_check;
+                ALTER TABLE swing.postmortems ADD CONSTRAINT postmortems_status_check
+                  CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'skipped'));
+              END IF;
+            END $$`);
 
         // lessons: the CURATED lesson library fed into future prompts (phase 3).
         // Not a raw append of every post-mortem lesson: a curator AI call
@@ -1002,7 +1021,7 @@ export async function getSwingDecisionPrompt(
 // --------------------------------------------------------------------------
 // Post-mortems (per-closed-position forensic reports)
 // --------------------------------------------------------------------------
-export type SwingPostmortemStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export type SwingPostmortemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
 export type SwingPostmortemTrigger = 'close' | 'manual' | 'backfill';
 
 export type SwingPostmortemEnqueueInput = {
@@ -1194,6 +1213,36 @@ export async function failSwingPostmortem(id: number, error: string): Promise<vo
     await db.$executeRaw(sql`
         UPDATE swing.postmortems
         SET status = 'failed', error = ${String(error).slice(0, 2000)}
+        WHERE id = ${Math.floor(id)};
+    `);
+}
+
+// Terminal skip: the analysis is deliberately not wanted (AI coverage gap
+// during the position). Not re-claimed by the drain ('queued' only) nor by a
+// plain by-id claim ('queued'/'failed') — only force regenerates it. The note
+// rides in the error column so reports show WHY it was skipped.
+export async function skipSwingPostmortem(id: number, note: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.postmortems
+        SET status = 'skipped', error = ${String(note).slice(0, 2000)}
+        WHERE id = ${Math.floor(id)};
+    `);
+}
+
+// Put a claimed row back in the queue after a retryable failure (AI provider
+// outage: quota lapse, rate limit). The drain re-claims it on a later pass —
+// once the subscription/key is fixed the backlog analyzes itself. The error
+// text is kept for visibility while the row waits.
+export async function requeueSwingPostmortem(id: number, error: string): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.postmortems
+        SET status = 'queued', error = ${String(error).slice(0, 2000)}
         WHERE id = ${Math.floor(id)};
     `);
 }

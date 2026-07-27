@@ -7,6 +7,7 @@
 // swing AI provider with a forensic prompt, and persists the report plus a 1-2
 // line lesson. Lessons are STORED for later prompt injection (phase 3) — no
 // code feeds them back to the trading AI yet.
+import { AiCallError } from '../aiError';
 import { callSwingDecision } from '../aiProvider';
 import type { PositionWindow } from '../analytics';
 import { bitgetFetch, resolveProductType } from '../bitget';
@@ -21,6 +22,8 @@ import {
     loadActiveSwingLessons,
     loadSwingDecisionWindow,
     loadSwingTickLog,
+    requeueSwingPostmortem,
+    skipSwingPostmortem,
     type SwingDecisionFullRow,
     type SwingLessonRow,
     type SwingPostmortemRow,
@@ -611,15 +614,27 @@ Respond with strict JSON per the provided schema.`;
 
 export type PostmortemRunResult = {
     id: number;
-    status: 'succeeded' | 'failed';
+    status: 'succeeded' | 'failed' | 'skipped' | 'requeued';
     verdict?: string | null;
     lesson?: string | null;
     error?: string;
 };
 
+// A transient AI failure (rate limit, 5xx) is retried by requeueing, but not
+// forever — a row that keeps bouncing eventually fails for good. Billing/
+// config failures requeue WITHOUT a cap: they are gated at the drain (health
+// flag), so attempts only grow at the outage edges, and the whole point is
+// that the backlog runs itself once the subscription is paid.
+const POSTMORTEM_MAX_TRANSIENT_ATTEMPTS = 5;
+
 // Runs one CLAIMED post-mortem row end-to-end and persists the outcome.
 // The caller owns claiming (claimSwingPostmortemById / claimQueuedSwingPostmortems).
-export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<PostmortemRunResult> {
+// opts.force (manual regenerate): also analyze positions with an AI coverage
+// gap — the default is to SKIP those (see below).
+export async function runSwingPostmortem(
+    row: SwingPostmortemRow,
+    opts: { force?: boolean } = {},
+): Promise<PostmortemRunResult> {
     try {
         const exitMs = row.exitTsMs ?? Date.now();
         const entryMs = row.entryTsMs ?? exitMs - POSTMORTEM_MAX_LIFETIME_MS;
@@ -646,6 +661,27 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
         ]);
         if (!decisions.length && !ticks.length) {
             throw new Error(`no recorded ticks/decisions in window ${new Date(fromMs).toISOString()}..${new Date(toMs).toISOString()}`);
+        }
+        // AI coverage gap: if in-position ticks died with ai_unavailable (AI
+        // outage — quota lapse, key problem), the AI never fully managed this
+        // trade. A post-mortem would judge a counterfactual — with the AI
+        // present it might have closed the loser sooner — so skip it for good
+        // instead of distilling misleading lessons. Only real (non-dryRun)
+        // ticks inside the position's actual lifetime count.
+        if (!opts.force) {
+            const gapTicks = ticks.filter(
+                (t) =>
+                    t.stage === 'ai_unavailable' &&
+                    !t.dryRun &&
+                    t.tsMs >= entryMs &&
+                    t.tsMs <= exitMs,
+            );
+            if (gapTicks.length) {
+                const note = `skipped: ${gapTicks.length} ai_unavailable tick(s) during position (first ${new Date(gapTicks[0].tsMs).toISOString()}) — AI did not fully manage this trade`;
+                await skipSwingPostmortem(row.id, note);
+                console.log(`[postmortem] #${row.id} ${note}`);
+                return { id: row.id, status: 'skipped', error: note };
+            }
         }
         const position = {
             platform: row.platform,
@@ -700,6 +736,21 @@ export async function runSwingPostmortem(row: SwingPostmortemRow): Promise<Postm
         return { id: row.id, status: 'succeeded', verdict, lesson };
     } catch (err: any) {
         const message = err?.message || String(err);
+        // AI provider failures are retryable — the trade data is fine, only
+        // the analyst was unreachable. Requeue instead of terminally failing
+        // so the drain picks the row up again once the provider recovers
+        // (billing: after the subscription is paid; transient: next pass,
+        // capped so a persistent mystery error still lands in 'failed').
+        if (err instanceof AiCallError) {
+            const retryable =
+                err.kind === 'billing' ||
+                err.kind === 'config' ||
+                (err.kind === 'transient' && row.attempts < POSTMORTEM_MAX_TRANSIENT_ATTEMPTS);
+            if (retryable) {
+                await requeueSwingPostmortem(row.id, message).catch(() => undefined);
+                return { id: row.id, status: 'requeued', error: message };
+            }
+        }
         await failSwingPostmortem(row.id, message).catch(() => undefined);
         return { id: row.id, status: 'failed', error: message };
     }
