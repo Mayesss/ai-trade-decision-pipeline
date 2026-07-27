@@ -416,6 +416,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             instrumentId,
         });
         const automationCron = isAutomationCronRequest(req);
+        // Set by the 1-minute wake-watcher on the analyze calls it fires
+        // (wake=1). Those calls carry no Vercel cron headers, so without this
+        // marker they'd be indistinguishable from manual operator ticks — and
+        // would bypass the swing-cron hard-deactivation kill switch below.
+        // Deliberately NOT folded into automationCron: wake fires must skip
+        // the cadence gates (that is their purpose) and must not join the
+        // warm-latch cycle count.
+        const wakeFireRequest = parseBoolParam(body.wake as string | string[] | undefined, false);
         // Arm the warm latch as early as possible so EVERY swing cron invocation
         // counts — including gate skips, venue-closed exits and hard-deactivation
         // returns. If any early-return path bypassed the increment, the cycle's
@@ -536,7 +544,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // next load reflects it. Best-effort; never blocks the trading path.
             await invalidateSwingSummaryCache();
         };
-        const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && automationCron;
+        // The kill switch binds every AUTOMATED invocation: the 15-min crons
+        // AND wake-watcher fires (wake=1). Only genuine manual operator calls
+        // (dashboard button, direct API hit) stay exempt.
+        const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && (automationCron || wakeFireRequest);
         if (isSwingCronAnalyzeRequest) {
             const swingCronControl = await loadSwingCronControlState();
             if (swingCronControl.hardDeactivated) {

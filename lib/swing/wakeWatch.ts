@@ -141,13 +141,30 @@ export function minutesSinceBarBoundary(tfMs: number, nowMs: number): number | n
     return (nowMs % tfMs) / 60_000;
 }
 
+// The emergency comparison only means "emergency" while the ref is recent: it
+// measures the move SINCE THE LAST AI LOOK, and its job is to beat the regular
+// cadence by minutes. Once the ref is older than ~1.5x the 4H look cadence, no
+// look has happened for a while (AI outage, venue closure) — price is then
+// almost always ≥ the threshold away from the frozen anchor, which made the
+// condition permanently true and re-fired doomed analyze calls every ~4 min
+// through the whole 2026-07-27 quota outage. A stale ref fails quiet: the
+// regular cadence (which resumes the moment the AI is back) owns the position.
+export const WAKE_REF_MAX_AGE_MINUTES_DEFAULT = 360;
+
+export function wakeRefMaxAgeMinutes(): number {
+    const raw = Number(process.env.SWING_WAKE_REF_MAX_AGE_MINUTES ?? WAKE_REF_MAX_AGE_MINUTES_DEFAULT);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : WAKE_REF_MAX_AGE_MINUTES_DEFAULT;
+}
+
 // In-position emergency: absolute move (either direction) since the last AI
 // look, in primary-ATR units. Null when the ref is unusable — the watcher then
 // stays quiet and the regular cadence owns the position (fail quiet, not loud:
-// a missing ref must not cause per-minute AI calls).
+// a missing ref must not cause per-minute AI calls). Passing nowMs enables the
+// staleness guard above; omitting it preserves the raw measurement.
 export function emergencyMoveAtr(
     price: number | null | undefined,
     ref: WakeWatchRef | null | undefined,
+    nowMs?: number,
 ): number | null {
     const p = Number(price);
     if (!(Number.isFinite(p) && p > 0)) return null;
@@ -155,5 +172,10 @@ export function emergencyMoveAtr(
     const atr = Number(ref?.atr);
     if (!(Number.isFinite(refPrice) && refPrice > 0)) return null;
     if (!(Number.isFinite(atr) && atr > 0)) return null;
+    if (Number.isFinite(nowMs as number)) {
+        const refTs = Number(ref?.ts);
+        if (!(Number.isFinite(refTs) && refTs > 0)) return null;
+        if ((nowMs as number) - refTs > wakeRefMaxAgeMinutes() * 60_000) return null;
+    }
     return Math.abs(p - refPrice) / atr;
 }

@@ -50,6 +50,8 @@ import {
     listSwingBreakTriggers,
     listSwingInPositionThreads,
 } from '../../../lib/swing/pg';
+import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
+import { loadSwingCronControlState } from '../../../lib/swing/cronControl';
 import {
     breakTriggerFailed,
     emergencyMoveAtr,
@@ -125,10 +127,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // KV down → fire anyway: a rare duplicate AI call beats a missed wake.
             console.warn(`[wake-watch] fired-marker failed for ${platform}:${symbol}:`, err);
         }
+        // Fire-time guards — checked HERE (after the fired-marker dedupe, so a
+        // blocked event re-checks at most every ~4 min per symbol, and only on
+        // actual fire attempts, never per watcher minute — KV cost ≈ zero):
+        // - kill switch: the fired analyze call carries wake=1 and is blocked
+        //   server-side too, but not firing at all spares the invocation;
+        // - AI health: a billing/config outage doesn't self-heal — every fire
+        //   would 500 until a human acts, so stay quiet (transient degradation
+        //   still fires: the next call may well succeed). Fail open on KV
+        //   errors — a wrongly-suppressed wake is worse than a wasted call.
+        try {
+            const [cronControl, aiHealth] = await Promise.all([
+                loadSwingCronControlState(),
+                loadSwingAiHealth(),
+            ]);
+            const blocked = cronControl.hardDeactivated
+                ? 'swing_cron_hard_deactivated'
+                : aiHealth.degraded && (aiHealth.kind === 'billing' || aiHealth.kind === 'config')
+                  ? `ai_unavailable_${aiHealth.kind}`
+                  : null;
+            if (blocked) {
+                fired.push({ platform, symbol, reason, invoked: false, error: `blocked:${blocked}` });
+                console.log(`[wake-watch] suppressed ${platform}:${symbol} (${reason}): ${blocked}`);
+                return;
+            }
+        } catch (err) {
+            console.warn(`[wake-watch] fire guards unreadable for ${platform}:${symbol}; firing anyway:`, err);
+        }
         const result = await invokeCronEndpoint(
             req,
             '/api/swing/analyze',
-            { symbol, platform, decisionPolicy: 'balanced', ...(forwardDryRun ? { dryRun: true } : {}) },
+            // wake=1: lets analyze apply the swing-cron kill switch to this
+            // call — wake fires carry no Vercel cron headers, so without the
+            // marker they'd be classified as manual operator ticks and bypass
+            // the hard-deactivation gate entirely.
+            { symbol, platform, decisionPolicy: 'balanced', wake: true, ...(forwardDryRun ? { dryRun: true } : {}) },
             5_000,
         );
         // A timeout abort means the analyze invocation was kicked and keeps
@@ -242,7 +275,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const ref = await kvGetJson<WakeWatchRef>(wakeWatchRefKey(marker.platform, marker.symbol)).catch(
             () => null,
         );
-        const moveAtr = emergencyMoveAtr(marker.price, ref);
+        // nowMs enables the ref-staleness guard: a frozen anchor (no AI look
+        // for > SWING_WAKE_REF_MAX_AGE_MINUTES) reads as quiet, not emergency.
+        const moveAtr = emergencyMoveAtr(marker.price, ref, Date.now());
         if (moveAtr != null && moveAtr >= EMERGENCY_MOVE_ATR) {
             await maybeFire(marker.platform, marker.symbol, `emergency_move_${moveAtr.toFixed(2)}atr`);
         }

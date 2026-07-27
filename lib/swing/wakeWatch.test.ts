@@ -10,6 +10,7 @@ import {
     timeframeToMs,
     wakeBandCrossed,
     WAKE_PLAN_GRACE_MINUTES_DEFAULT,
+    WAKE_REF_MAX_AGE_MINUTES_DEFAULT,
 } from './wakeWatch';
 
 const GRACE_MS = WAKE_PLAN_GRACE_MINUTES_DEFAULT * 60_000;
@@ -65,6 +66,20 @@ test('emergencyMoveAtr: unusable ref or price fails QUIET (null)', () => {
     assert.equal(emergencyMoveAtr(103, { price: 100, atr: 0, ts: 0 }), null);
     assert.equal(emergencyMoveAtr(103, { price: NaN, atr: 2, ts: 0 }), null);
     assert.equal(emergencyMoveAtr(null, { price: 100, atr: 2, ts: 0 }), null);
+});
+
+test('emergencyMoveAtr: with nowMs a stale ref fails QUIET, a fresh one measures', () => {
+    const now = 1_750_000_000_000;
+    const maxAgeMs = WAKE_REF_MAX_AGE_MINUTES_DEFAULT * 60_000;
+    const fresh = { price: 100, atr: 2, ts: now - maxAgeMs + 60_000 };
+    const stale = { price: 100, atr: 2, ts: now - maxAgeMs - 60_000 };
+    assert.equal(emergencyMoveAtr(103, fresh, now), 1.5);
+    // Frozen anchor (outage / venue closure): quiet, the regular cadence owns it.
+    assert.equal(emergencyMoveAtr(103, stale, now), null);
+    // A ref with no usable timestamp cannot prove freshness → quiet too.
+    assert.equal(emergencyMoveAtr(103, { price: 100, atr: 2, ts: 0 }, now), null);
+    // Without nowMs the raw measurement is preserved (age unchecked).
+    assert.equal(emergencyMoveAtr(103, stale), 1.5);
 });
 
 // ---- failed-break watch helpers ----
