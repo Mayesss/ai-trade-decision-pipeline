@@ -77,6 +77,7 @@ import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
 import {
     breakTriggerFailed,
+    flatWakePlanStale,
     lastClosedBar,
     timeframeToMs,
     wakeBandCrossed,
@@ -1547,6 +1548,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             level: number;
             setAtMs: number | null;
             note: string | null;
+            // Band crossed past its plan horizon (cooldown end + one primary
+            // candle of grace — lib/swing/wakeWatch.flatWakePlanStale): the
+            // note reaches the prompt flagged expired (an idea to re-derive,
+            // not a schedule to execute) and does NOT bypass the flat quality
+            // gates below.
+            expired: boolean;
         } | null = null;
         // True when THIS run holds the claim lease on a triggered wake row.
         // The row is deleted only after the wake's decision is durably
@@ -1602,7 +1609,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             promptSkipped: true,
                         });
                     }
-                    if (wokenAbove || wokenBelow) {
+                    if ((wokenAbove || wokenBelow) && flatWakePlanStale(cooldown.untilMs, cooldown.setAtMs, Date.now())) {
+                        // Crossed PAST the plan horizon (cooldown end + one
+                        // primary candle of grace): the scheduled check never
+                        // ran while it was fresh (venue closure, AI outage).
+                        // Consume the row now — no lease, no retry, and no
+                        // quality-gate bypass — and hand the note to the prompt
+                        // flagged expired, so the model treats it as an old
+                        // idea to re-derive from current structure rather than
+                        // a standing order to execute (GOLD 2026-07-27).
+                        await clearSwingAiCooldown(platform, symbol);
+                        cooldownWake = {
+                            crossed: wokenAbove ? 'above' : 'below',
+                            level: (wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow) as number,
+                            setAtMs: cooldown.setAtMs > 0 ? cooldown.setAtMs : null,
+                            note: cooldown.wakeNote,
+                            expired: true,
+                        };
+                        emitGateDebug('flat_cooldown_woken_stale', {
+                            gate: 'AI_COOLDOWN',
+                            crossed: cooldownWake.crossed,
+                            level: cooldownWake.level,
+                            price: effectivePrice,
+                            untilMs: cooldown.untilMs,
+                            setAtMs: cooldown.setAtMs,
+                        });
+                    } else if (wokenAbove || wokenBelow) {
                         // Lease the row instead of deleting it (see
                         // cooldownRowClaimed above). A held lease means another
                         // analyze run — usually the wake-watcher's fired call —
@@ -1652,6 +1684,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             // market.cooldown_wake so the (stateless) wake scan
                             // knows why it was scheduled.
                             note: cooldown.wakeNote,
+                            expired: false,
                         };
                         emitGateDebug('flat_cooldown_woken', {
                             gate: 'AI_COOLDOWN',
@@ -1671,6 +1704,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Only a FRESH wake earns the flat quality-gate bypass below. An
+        // expired one (crossed past its plan horizon) rides to the prompt as
+        // context if the tick passes the gates on its own merits — a stale
+        // plan is re-evaluated as an idea, never fast-tracked as a schedule.
+        const cooldownWakeActive = cooldownWake !== null && !cooldownWake.expired;
         const momentumSignals = computeMomentumSignals({
             price: effectivePrice,
             indicators,
@@ -1687,7 +1725,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 enforceRecentTape: platform !== 'capital',
             });
 
-        if (!positionOpen && calmMarket && !cooldownWake) {
+        if (!positionOpen && calmMarket && !cooldownWakeActive) {
             const decision = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
@@ -1846,7 +1884,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // fire on ticks that actually run, and reclaims resolve in minutes.
         const sweepWindow =
             venueEvents?.liquidity_phase === 'opening_drive' || venueEvents?.liquidity_phase === 'thin_reopen';
-        if (!positionOpen && quarterTick && !aiThreadResponseId && !sweepWindow && !cooldownWake) {
+        if (!positionOpen && quarterTick && !aiThreadResponseId && !sweepWindow && !cooldownWakeActive) {
             const cooldownNow = resolveReentryCooldown(lastClosedPosition);
             if (cooldownNow) {
                 const decision = {
@@ -2098,7 +2136,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the old signal_strength≥MEDIUM gate. Flat entries only — in-position ticks
         // always proceed (exits/trims can be needed regardless). Predicate:
         // evaluateActionability in lib/ai.ts.
-        if (!positionOpen && !actionability.actionable && !cooldownWake) {
+        if (!positionOpen && !actionability.actionable && !cooldownWakeActive) {
             const decision = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
@@ -2154,7 +2192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // budget gate stacked on actionability: both must pass before we spend the
         // call. Flat entries only — in-position ticks always proceed (exits/trims
         // can be needed regardless).
-        if (!positionOpen && context.signal_strength === 'LOW' && !cooldownWake) {
+        if (!positionOpen && context.signal_strength === 'LOW' && !cooldownWakeActive) {
             const decision = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
@@ -2217,7 +2255,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const microOverextended = Number.isFinite(microExtAtr) && Math.abs(microExtAtr) >= extThresholds.microAvoid;
         const primaryOverextended =
             Number.isFinite(primaryExtAtr) && Math.abs(primaryExtAtr) >= extThresholds.primaryAvoid;
-        if (!positionOpen && (microOverextended || primaryOverextended) && !cooldownWake) {
+        if (!positionOpen && (microOverextended || primaryOverextended) && !cooldownWakeActive) {
             const extDetail = [
                 microOverextended ? `micro_${microExtAtr.toFixed(2)}atr` : null,
                 primaryOverextended ? `primary_${primaryExtAtr.toFixed(2)}atr` : null,
@@ -2287,7 +2325,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 0.25-ATR gate anyway (the hourly tick is the backstop regardless).
         // 55min ceiling means hourly ticks are never deduped; missing inputs
         // fail open.
-        if (!positionOpen && quarterTick && !cooldownWake) {
+        if (!positionOpen && quarterTick && !cooldownWakeActive) {
             // recentHistory is newest-first, so find() already returns the most
             // recent flat AI call (the old .reverse() picked the OLDEST in the
             // window, deduping against a stale price reference).

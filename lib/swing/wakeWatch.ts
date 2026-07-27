@@ -23,6 +23,43 @@ export const wakeWatchFiredKey = (platform: string, symbol: string) =>
     `swing:wakewatch:fired:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
 export const WAKE_WATCH_FIRED_TTL_SECONDS = 240;
 
+// ---------------------------------------------------------------------------
+// Wake-plan staleness. A wake note is the model's PLAN for a level ("breakdown
+// below X → short check") — a plan has a horizon. For a flat cooldown band the
+// horizon is explicit: the AI-chosen cooldown end (until_ms) plus one primary
+// candle of grace. A band crossed after that (long venue closure, AI outage —
+// GOLD 2026-07-27 fired 3.5h past its cooldown end after a 14h quota blackout
+// and was executed as a schedule) is a stale IDEA, not a standing order: it no
+// longer grants the off-cadence wake, and if the note reaches the prompt it is
+// flagged expired so the model re-derives the setup instead of executing it.
+// In-position bands have no until_ms (replace-on-every-look); their staleness
+// anchor is set_at + the same grace, applied at prompt-build time only (the
+// early look itself stays valuable for management).
+// ---------------------------------------------------------------------------
+
+export const WAKE_PLAN_GRACE_MINUTES_DEFAULT = 240; // one 4H primary candle
+
+export function wakePlanGraceMinutes(): number {
+    const raw = Number(process.env.SWING_WAKE_PLAN_GRACE_MINUTES ?? WAKE_PLAN_GRACE_MINUTES_DEFAULT);
+    return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : WAKE_PLAN_GRACE_MINUTES_DEFAULT;
+}
+
+// Flat cooldown band: stale once now is past the plan's own horizon. A row
+// with no usable until_ms falls back to set_at + grace; with neither, never
+// stale (fail open — the prompt's set_minutes_ago still shows the age).
+export function flatWakePlanStale(
+    untilMs: number | null | undefined,
+    setAtMs: number | null | undefined,
+    nowMs: number,
+): boolean {
+    const graceMs = wakePlanGraceMinutes() * 60_000;
+    const until = Number(untilMs);
+    if (Number.isFinite(until) && until > 0) return nowMs > until + graceMs;
+    const setAt = Number(setAtMs);
+    if (Number.isFinite(setAt) && setAt > 0) return nowMs > setAt + graceMs;
+    return false;
+}
+
 // Same semantics as the analyze cooldown handler: at/beyond either band = wake.
 export function wakeBandCrossed(
     price: number | null | undefined,

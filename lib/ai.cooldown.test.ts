@@ -171,3 +171,27 @@ test('computeSwingState: no wake trigger → market.cooldown_wake absent', () =>
     const user = buildWakeUserPrompt(null);
     assert.ok(!user.includes('cooldown_wake"'));
 });
+
+test('computeSwingState: an expired wake is flagged so the note reads as a stale idea', () => {
+    const user = buildWakeUserPrompt({
+        crossed: 'below',
+        level: 4092.31,
+        setAtMs: NOW_MS - 15 * 60 * 60_000,
+        note: 'breakdown below 4092.31 → short check',
+        expired: true,
+    });
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    assert.deepEqual(market.cooldown_wake, {
+        crossed: 'below',
+        level: 4092.31,
+        set_minutes_ago: 15 * 60,
+        note: 'breakdown below 4092.31 → short check',
+        expired: true,
+    });
+});
+
+test('computeSwingState: a fresh wake carries no expired field', () => {
+    const user = buildWakeUserPrompt({ crossed: 'above', level: 105, setAtMs: NOW_MS - 30 * 60_000, expired: false });
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    assert.equal('expired' in market.cooldown_wake, false);
+});

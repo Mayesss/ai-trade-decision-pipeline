@@ -4,11 +4,36 @@ import test from 'node:test';
 import {
     breakTriggerFailed,
     emergencyMoveAtr,
+    flatWakePlanStale,
     lastClosedBar,
     minutesSinceBarBoundary,
     timeframeToMs,
     wakeBandCrossed,
+    WAKE_PLAN_GRACE_MINUTES_DEFAULT,
 } from './wakeWatch';
+
+const GRACE_MS = WAKE_PLAN_GRACE_MINUTES_DEFAULT * 60_000;
+
+test('flatWakePlanStale: fresh during the cooldown and within grace after it', () => {
+    const until = 1_750_000_000_000;
+    // Mid-cooldown: the scheduled scenario, never stale.
+    assert.equal(flatWakePlanStale(until, until - 6 * 3_600_000, until - 3_600_000), false);
+    // Just past cooldown end, inside grace: still the planned horizon.
+    assert.equal(flatWakePlanStale(until, null, until + GRACE_MS - 60_000), false);
+});
+
+test('flatWakePlanStale: stale past cooldown end + grace (the GOLD outage shape)', () => {
+    const until = 1_750_000_000_000;
+    assert.equal(flatWakePlanStale(until, null, until + GRACE_MS + 60_000), true);
+});
+
+test('flatWakePlanStale: no until_ms falls back to set_at + grace; neither → never stale', () => {
+    const setAt = 1_750_000_000_000;
+    assert.equal(flatWakePlanStale(null, setAt, setAt + GRACE_MS - 60_000), false);
+    assert.equal(flatWakePlanStale(0, setAt, setAt + GRACE_MS + 60_000), true);
+    // Fail open: with no usable timestamps the band keeps working.
+    assert.equal(flatWakePlanStale(null, 0, Number.MAX_SAFE_INTEGER), false);
+});
 
 test('wakeBandCrossed: at/beyond a band wakes, inside stays quiet', () => {
     assert.equal(wakeBandCrossed(105, 105, 95), 'above');

@@ -53,6 +53,7 @@ import {
 import {
     breakTriggerFailed,
     emergencyMoveAtr,
+    flatWakePlanStale,
     lastClosedBar,
     minutesSinceBarBoundary,
     timeframeToMs,
@@ -180,10 +181,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // 1) Flat wake bands. A band row for a symbol that meanwhile has an open
     // position is stale (cooldowns are flat-only) — skip it; the in-position
-    // path below owns that symbol.
+    // path below owns that symbol. A band past its plan horizon (cooldown end
+    // + grace) no longer earns an off-cadence fire either — the next regular
+    // tick consumes the row and hands the note over as an expired idea.
     let bandsChecked = 0;
     for (const row of bandRows) {
         if (openBySymbol.has(`${row.platform}:${row.symbol}`)) continue;
+        if (flatWakePlanStale(row.untilMs, row.setAtMs, Date.now())) continue;
         bandsChecked++;
         const price =
             row.platform === 'capital'

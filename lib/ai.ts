@@ -12,6 +12,7 @@ import {
 } from './constants';
 import { AiCallError } from './aiError';
 import type { MultiTFIndicators } from './indicators';
+import { wakePlanGraceMinutes } from './swing/wakeWatch';
 import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
@@ -492,7 +493,10 @@ export function computeSwingState(
     // the flat quality gates for these ticks). Surfaces as market.cooldown_wake.
     // `note` is the plan the model attached when it set the band — echoed back
     // so the (stateless) wake evaluation knows why it was scheduled.
-    cooldownWake?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null } | null,
+    // `expired` = the band crossed past its plan horizon (cooldown end + one
+    // primary candle of grace): the caller does NOT bypass the quality gates
+    // for it, and the prompt flags it as a stale idea to re-derive.
+    cooldownWake?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null; expired?: boolean } | null,
     // Set when the position's break-entry trigger has been closed back through
     // by a primary bar (the model's own failed-break lesson). Surfaces as
     // market.failed_break so the exit decision is made with the fact in hand.
@@ -1160,6 +1164,9 @@ export function computeSwingState(
                 cooldownWake.setAtMs && cooldownWake.setAtMs > 0
                     ? Math.max(0, Math.round((wakeNowMs - cooldownWake.setAtMs) / 60_000))
                     : null,
+            // Present (true) only when the band crossed past its plan horizon —
+            // prose tells the model to treat the note as a stale idea.
+            ...(cooldownWake.expired ? { expired: true } : {}),
         };
         if (typeof cooldownWake.note === 'string' && cooldownWake.note.trim()) {
             market.cooldown_wake.note = cooldownWake.note.trim();
@@ -1179,13 +1186,18 @@ export function computeSwingState(
     }
     if (positionWake?.fired && Number.isFinite(positionWake.fired.level)) {
         const pwNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        const pwSetMinutesAgo =
+            positionWake.fired.setAtMs && positionWake.fired.setAtMs > 0
+                ? Math.max(0, Math.round((pwNowMs - positionWake.fired.setAtMs) / 60_000))
+                : null;
         market.position_wake = {
             crossed: positionWake.fired.crossed,
             level: positionWake.fired.level,
-            set_minutes_ago:
-                positionWake.fired.setAtMs && positionWake.fired.setAtMs > 0
-                    ? Math.max(0, Math.round((pwNowMs - positionWake.fired.setAtMs) / 60_000))
-                    : null,
+            set_minutes_ago: pwSetMinutesAgo,
+            // In-position bands are replaced on every look, so an age past one
+            // primary candle of grace means no look happened in between (venue
+            // closure, AI outage) — the attached plan predates a blind window.
+            ...(pwSetMinutesAgo !== null && pwSetMinutesAgo > wakePlanGraceMinutes() ? { expired: true } : {}),
         };
         if (typeof positionWake.fired.note === 'string' && positionWake.fired.note.trim()) {
             market.position_wake.note = positionWake.fired.note.trim();
@@ -1300,7 +1312,7 @@ export function computeSwingState(
         ? `\n  • Wake bands (in a position, HOLD or partial CLOSE only — enforced in code): set cooldown_wake_above / cooldown_wake_below to the price levels INSIDE your bracket where you want to look again the MOMENT price touches them instead of at the next ${primaryTimeframe} close — the structural levels that would change your management ("losing 3.42 support = thesis damaged → decide exit", "at 117.8k resistance decide trail vs take"). Bands are watched roughly once per MINUTE; they suppress nothing (your regular ${primaryTimeframe}-close look still happens) and they are never protection — the bracket remains the guard, a band is only an early look. Enforced in code: above must sit above current price, below beneath it; a band at/beyond your standing SL/TP is dropped (the bracket fires there first); a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the decision you plan to make there; it returns as market.position_wake.note when the band fires. Your bands are REPLACED by every decision you make: re-state them each look if you still want them (market.position_wake_armed shows what is currently armed); null clears them. cooldown_minutes stays null in a position.`
         : '';
     const positionWakeTriggerGuidance = POSITION_WAKE_ENABLED
-        ? `\n- Position-wake trigger (market.position_wake, when present, in a position): THIS look exists because price crossed the wake band you set on a previous management look (crossed = which side, level, set_minutes_ago, note = the plan you attached). Treat the note as a standing order from your past self: execute that plan if current structure confirms it, or explicitly override it in your reason (what changed?) — never ignore it. Being woken within ~a minute of a fast cross is the expected signature of the event you scheduled, not by itself alarming; judge whether the move through the level is real (acceptance, structure break) or a sweep, and manage accordingly.`
+        ? `\n- Position-wake trigger (market.position_wake, when present, in a position): THIS look exists because price crossed the wake band you set on a previous management look (crossed = which side, level, set_minutes_ago, note = the plan you attached). Treat the note as a standing order from your past self: execute that plan if current structure confirms it, or explicitly override it in your reason (what changed?) — never ignore it. Being woken within ~a minute of a fast cross is the expected signature of the event you scheduled, not by itself alarming; judge whether the move through the level is real (acceptance, structure break) or a sweep, and manage accordingly. If expired: true (set_minutes_ago is past ~one primary candle — no management look happened in between: venue closure or an outage), the plan predates a blind window: judge the position fresh against current structure (and any gap) first, and treat the note as background, not as the decision.`
         : '';
 
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
@@ -1369,7 +1381,7 @@ ${
 - entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later ${primaryTimeframe} bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.
 - Failed-break trigger (market.failed_break, when present, in a position): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.${positionWakeTriggerGuidance}
 - Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
-- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? ${
+- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
         PULLBACK_LIMIT_ENABLED
             ? 'If the move is real but price has already run multiple ATR beyond the level, a pullback limit at the broken level’s retest is the natural tool — you asked to be woken precisely so you would not have to chase later.'
             : 'Only if the move is real but price has already run multiple ATR beyond the level, set a fresh wake band at the broken level WITH a note naming the intended entry ("retest of X after breakout → long on hold") so the retest wake arrives with the plan in hand.'
