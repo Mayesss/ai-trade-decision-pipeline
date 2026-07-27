@@ -57,6 +57,7 @@ import {
     SWING_DECISION_SCHEMA_NO_LEVERAGE,
 } from '../../lib/ai';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
+import { AiCallError } from '../../lib/aiError';
 import { callSwingDecision, resolveSwingAiProvider } from '../../lib/aiProvider';
 import { truncateClaudeTranscript } from '../../lib/claudeAi';
 import { getGates } from '../../lib/gates';
@@ -3103,17 +3104,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Durable trace of the crash (best-effort): without this row a run
         // that dies between the gates and the decision record leaves no
         // evidence in tick_log at all. insertSwingTickLog never throws.
+        // An AI-call failure (typed AiCallError — quota lapse, bad key, model
+        // outage) gets its own stage so it's tellable apart from code crashes.
         if (tickErrorContext) {
+            const stage = err instanceof AiCallError ? 'ai_unavailable' : 'handler_error';
+            const reason = String(err?.message || err).slice(0, 300);
             await insertSwingTickLog({
                 tsMs: Date.now(),
                 symbol: tickErrorContext.symbol,
                 platform: tickErrorContext.platform,
                 kind: 'skip',
-                stage: 'handler_error',
-                reason: String(err?.message || err).slice(0, 300),
+                stage,
+                reason,
                 cadence: tickErrorContext.cadence,
                 dryRun: tickErrorContext.dryRun,
             });
+            // Stage the failure on the KV last-scan marker too — it's what the
+            // dashboard tooltip reads. Before this, an error tick skipped the
+            // marker entirely, so an AI outage produced ZERO UI signal (the
+            // marker just went stale). recordSwingLastScan never throws.
+            await recordSwingLastScan(tickErrorContext.platform, tickErrorContext.symbol, { stage, reason });
         }
         return res.status(500).json({ error: err.message || String(err) });
     } finally {

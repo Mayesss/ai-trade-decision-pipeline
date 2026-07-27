@@ -7,7 +7,9 @@
 // pass system/user/schema plus a thread context and get parsed JSON back.
 
 import { callAIThread } from './ai';
+import { coerceAiCallError } from './aiError';
 import { callClaudeSwingDecision } from './claudeAi';
+import { reportSwingAiFailure, reportSwingAiSuccess } from './swing/aiHealth';
 
 export type SwingAiProvider = 'openai' | 'claude';
 
@@ -65,22 +67,37 @@ export async function callSwingDecision(params: {
     thread?: SwingThreadContext | null;
 }): Promise<SwingDecisionCallResult> {
     const provider = resolveSwingAiProvider();
-    if (provider === 'claude') {
-        // Stateless Messages API: conversation context is the stored transcript
-        // (phase 3 persists it; until then in-position ticks run stateless —
-        // the prompt's "position adopted mid-life" branch covers that).
-        const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
-            params.system,
-            params.user,
-            params.schema,
-            { transcript: params.thread?.transcript ?? null },
-        );
-        return { json, responseId, provider, model, usage, appendTurns };
+    // Every failure leaves here as a typed AiCallError (billing/config/
+    // transient — lib/aiError.ts) and updates the global health flag
+    // (lib/swing/aiHealth.ts). This is the single choke point for all swing AI
+    // traffic, so a lapsed subscription latches the flag on the first tick
+    // instead of dying as an anonymous 500 per symbol.
+    try {
+        let result: SwingDecisionCallResult;
+        if (provider === 'claude') {
+            // Stateless Messages API: conversation context is the stored transcript
+            // (phase 3 persists it; until then in-position ticks run stateless —
+            // the prompt's "position adopted mid-life" branch covers that).
+            const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
+                params.system,
+                params.user,
+                params.schema,
+                { transcript: params.thread?.transcript ?? null },
+            );
+            result = { json, responseId, provider, model, usage, appendTurns };
+        } else {
+            const { json, responseId, model, usage } = await callAIThread(params.system, params.user, params.schema, {
+                previousResponseId: params.thread?.previousResponseId ?? null,
+            });
+            result = { json, responseId, provider, model, usage };
+        }
+        await reportSwingAiSuccess();
+        return result;
+    } catch (err) {
+        const aiErr = coerceAiCallError(err, provider);
+        await reportSwingAiFailure(aiErr);
+        throw aiErr;
     }
-    const { json, responseId, model, usage } = await callAIThread(params.system, params.user, params.schema, {
-        previousResponseId: params.thread?.previousResponseId ?? null,
-    });
-    return { json, responseId, provider, model, usage };
 }
 
 // Stateless convenience path (forex advisor, evaluations): same provider

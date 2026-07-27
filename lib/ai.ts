@@ -10,6 +10,7 @@ import {
     PRIMARY_TIMEFRAME,
     TRADE_WINDOW_MINUTES,
 } from './constants';
+import { AiCallError } from './aiError';
 import type { MultiTFIndicators } from './indicators';
 import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
@@ -2395,22 +2396,36 @@ export type AiThreadCallResult = {
     } | null;
 };
 
-async function readAiErrorDetails(res: Response): Promise<string> {
+// Parses the error body once and keeps BOTH halves: the human message (for
+// the thrown error text) and the machine `error.code`/`error.type` (e.g.
+// `insufficient_quota`) that AiCallError classification runs on — previously
+// the code was parsed here and thrown away.
+async function readAiErrorDetails(res: Response): Promise<{ details: string; code: string | null }> {
     try {
         const errJson = await res.json();
         const msg =
             (errJson as any)?.error?.message ||
             (errJson as any)?.message ||
             (typeof errJson === 'string' ? errJson : JSON.stringify(errJson));
-        return msg ? ` - ${msg}` : '';
+        const code = (errJson as any)?.error?.code || (errJson as any)?.error?.type || null;
+        return { details: msg ? ` - ${msg}` : '', code: typeof code === 'string' && code ? code : null };
     } catch {
         try {
             const errText = await res.text();
-            return errText ? ` - ${errText.slice(0, 600)}` : '';
+            return { details: errText ? ` - ${errText.slice(0, 600)}` : '', code: null };
         } catch {
-            return '';
+            return { details: '', code: null };
         }
     }
+}
+
+function openAiCallError(res: Response, details: string, code: string | null): AiCallError {
+    return new AiCallError({
+        message: `AI error: ${res.status} ${res.statusText}${details}`,
+        provider: 'openai',
+        status: res.status,
+        code,
+    });
 }
 
 // OpenAI Responses API (stateful). When `previousResponseId` is passed the server
@@ -2427,7 +2442,7 @@ export async function callAIThread(
     opts?: { previousResponseId?: string | null },
 ): Promise<AiThreadCallResult> {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+    if (!apiKey) throw new AiCallError({ message: 'Missing OPENAI_API_KEY', provider: 'openai', kind: 'config' });
 
     // Structured Outputs (json_schema, strict) guarantees the response shape at the
     // API layer when a caller supplies a schema; otherwise fall back to JSON mode.
@@ -2465,19 +2480,19 @@ export async function callAIThread(
     let usedPreviousResponseId = opts?.previousResponseId ?? null;
     let res = await request(usedPreviousResponseId);
     if (!res.ok && usedPreviousResponseId && (res.status === 400 || res.status === 404)) {
-        const details = await readAiErrorDetails(res);
+        const { details, code } = await readAiErrorDetails(res);
         if (/previous[_ ]?response/i.test(details)) {
             console.warn(`AI thread head ${usedPreviousResponseId} rejected (${res.status}${details}); retrying stateless`);
             usedPreviousResponseId = null;
             res = await request(null);
         } else {
-            throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
+            throw openAiCallError(res, details, code);
         }
     }
 
     if (!res.ok) {
-        const details = await readAiErrorDetails(res);
-        throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
+        const { details, code } = await readAiErrorDetails(res);
+        throw openAiCallError(res, details, code);
     }
 
     const data = await res.json();

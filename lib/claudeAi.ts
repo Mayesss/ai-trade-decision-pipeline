@@ -19,6 +19,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 
+import { AiCallError } from './aiError';
+
 const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-8';
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
@@ -38,7 +40,8 @@ function resolveClaudeEffort(): ClaudeEffort {
 let cachedClient: Anthropic | null = null;
 function claudeClient(): Anthropic {
     if (cachedClient) return cachedClient;
-    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+    if (!process.env.ANTHROPIC_API_KEY)
+        throw new AiCallError({ message: 'Missing ANTHROPIC_API_KEY', provider: 'claude', kind: 'config' });
     cachedClient = new Anthropic();
     return cachedClient;
 }
@@ -173,23 +176,39 @@ export async function callClaudeSwingDecision(
         outputConfig.format = { type: 'json_schema', schema: toClaudeSchema(schema.schema) };
     }
 
-    const response = await client.messages.create({
-        model: resolveClaudeModel(),
-        // Output ceiling shared by adaptive thinking + the (small) JSON decision;
-        // generous so thinking never truncates the answer mid-thought.
-        max_tokens: 16000,
-        thinking: { type: 'adaptive' },
-        output_config: outputConfig,
-        system: [
-            {
-                type: 'text',
-                text: system,
-                // 1h TTL: survives the 15-min cron gap (5-min default would not).
-                cache_control: { type: 'ephemeral', ttl: '1h' },
-            },
-        ],
-        messages: [...priorTurns, userTurn],
-    });
+    let response: Anthropic.Message;
+    try {
+        response = await client.messages.create({
+            model: resolveClaudeModel(),
+            // Output ceiling shared by adaptive thinking + the (small) JSON decision;
+            // generous so thinking never truncates the answer mid-thought.
+            max_tokens: 16000,
+            thinking: { type: 'adaptive' },
+            output_config: outputConfig,
+            system: [
+                {
+                    type: 'text',
+                    text: system,
+                    // 1h TTL: survives the 15-min cron gap (5-min default would not).
+                    cache_control: { type: 'ephemeral', ttl: '1h' },
+                },
+            ],
+            messages: [...priorTurns, userTurn],
+        });
+    } catch (err) {
+        // Typed failure surface (lib/aiError.ts): Anthropic's out-of-credit
+        // rejection is a 400 invalid_request ("credit balance is too low"),
+        // caught by the message classifier; auth errors carry their status.
+        if (err instanceof Anthropic.APIError) {
+            throw new AiCallError({
+                message: `Claude AI error: ${err.status ?? '?'} - ${err.message}`,
+                provider: 'claude',
+                status: typeof err.status === 'number' ? err.status : null,
+                code: (err.error as any)?.error?.type ?? null,
+            });
+        }
+        throw err;
+    }
 
     if (response.stop_reason === 'refusal') {
         throw new Error('Claude refused the swing decision request (stop_reason=refusal)');
