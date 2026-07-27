@@ -2760,6 +2760,17 @@ export default function Home() {
     useState<SwingCronControlState | null>(null);
   const [swingCronControlUpdating, setSwingCronControlUpdating] =
     useState(false);
+  // AI provider health (swing:ai:health:v1) — rides on the warm-status poll.
+  // degraded with kind billing/config means AI calls fail until a human acts
+  // (pay the subscription / fix the key); open positions run on their
+  // exchange-side TP/SL bracket only.
+  const [swingAiHealth, setSwingAiHealth] = useState<{
+    degraded: boolean;
+    provider: string | null;
+    kind: string | null;
+    reason: string | null;
+    sinceMs: number | null;
+  } | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [themePreference, setThemePreference] =
@@ -4215,6 +4226,19 @@ export default function Home() {
         });
         if (!res.ok || cancelled) return;
         const json = await res.json();
+        const health = json?.aiHealth;
+        if (health && typeof health === "object") {
+          setSwingAiHealth({
+            degraded: health.degraded === true,
+            provider: typeof health.provider === "string" ? health.provider : null,
+            kind: typeof health.kind === "string" ? health.kind : null,
+            reason: typeof health.reason === "string" ? health.reason : null,
+            sinceMs:
+              Number.isFinite(Number(health.sinceMs)) && Number(health.sinceMs) > 0
+                ? Number(health.sinceMs)
+                : null,
+          });
+        }
         const warmedAtMs = Number(json?.warmedAtMs);
         if (!Number.isFinite(warmedAtMs) || warmedAtMs <= 0) return;
         const seen = swingWarmSeenMsRef.current;
@@ -8080,6 +8104,43 @@ export default function Home() {
               </div>
               {/* Cron + theme switches: always stacked, one per line. */}
               <div className="flex flex-col items-end gap-2">
+              {/* AI outage banner: billing/config failures don't self-heal —
+                  decisions, in-position management and postmortems are all
+                  stopped until a human pays the bill / fixes the key. Full
+                  reason lives in the title tooltip. Full-strength bg-*-50
+                  on purpose: opacity variants miss the .theme-dark remap. */}
+              {strategyMode === "swing" && swingAiHealth?.degraded ? (
+                <div
+                  title={[
+                    swingAiHealth.reason,
+                    swingAiHealth.sinceMs
+                      ? `since ${new Date(swingAiHealth.sinceMs).toLocaleString()}`
+                      : null,
+                    swingAiHealth.kind === "billing" || swingAiHealth.kind === "config"
+                      ? "In-position AI management is down — open positions are protected by their exchange-side TP/SL bracket only."
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  className={`flex max-w-xs items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                    swingAiHealth.kind === "transient"
+                      ? "border-amber-300 bg-amber-50 text-amber-700"
+                      : "border-rose-300 bg-rose-50 text-rose-700"
+                  }`}
+                >
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">
+                    {swingAiHealth.kind === "billing"
+                      ? "AI down — billing/quota"
+                      : swingAiHealth.kind === "config"
+                        ? "AI down — key/config"
+                        : "AI degraded"}
+                    {swingAiHealth.sinceMs
+                      ? ` since ${new Date(swingAiHealth.sinceMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      : ""}
+                  </span>
+                </div>
+              ) : null}
               {strategyMode === "swing" ? (
                 <div className="relative flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
