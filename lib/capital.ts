@@ -2307,6 +2307,9 @@ export type CapitalMarketTradeability = {
   epic: string | null;
   session: {
     isOpen: boolean | null;
+    // Start of the current session span (null when closed/unknown) — feeds the
+    // post-open warmup gate and the prompt's minutes_since_open context.
+    openedAtMs: number | null;
     closesAtMs: number | null;
     nextOpenAtMs: number | null;
   } | null;

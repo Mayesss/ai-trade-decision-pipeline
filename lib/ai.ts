@@ -102,6 +102,9 @@ export type CapitalMarketContextForPrompt = {
         closes_at_utc: string;
         minutes_to_close: number;
         reopens_at_utc: string | null;
+        // Minutes since the current session opened (null when the schedule
+        // doesn't expose it). Small values mean gap candles and wide spreads.
+        minutes_since_open: number | null;
     } | null;
     // Venue liquidity clock (lib/swing/sessionEvents): cash opens/closes,
     // lunch breaks, Globex halts, weekly thin reopen + derived phase. Present
@@ -1238,7 +1241,7 @@ export function computeSwingState(
     // given tick's payload doesn't carry the block (venue_session is only built
     // while the venue is inside a session).
     const venueSessionNote = isCapital
-        ? `\nVenue session (market.venue_session, ISO UTC; present only while the venue is open): when present, the current session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap.`
+        ? `\nVenue session (market.venue_session, ISO UTC; present only while the venue is open): when present, the current session ends at closes_at_utc (minutes_to_close min from now) and trading resumes at reopens_at_utc. While the venue is closed your exchange-side TP/SL bracket CANNOT fill, and the reopen can gap past your stop for a worse fill. Near the session end, avoid opening fresh risk unless the setup explicitly justifies holding through the closed-venue gap. minutes_since_open (when present) is the current session's age: small values mean the open just happened — spreads are still wide, the gap candle distorts short-timeframe indicators, and structure read from pre-close candles may no longer hold. Managing a position right after the open, judge the gap itself (did it break the thesis level?) rather than indicator readings that have not digested it yet.`
         : '';
 
     // Venue liquidity clock: schedule facts (when the tape's character changes),

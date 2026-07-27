@@ -660,6 +660,74 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
+        // Post-open warmup gate (Capital only; crypto never closes): the first
+        // minutes after a session opens are auction noise — spreads are wide
+        // and every indicator still reflects the prior session plus one
+        // distorted gap candle, so fresh-entry judgment is at its worst exactly
+        // when overnight gaps cross wake bands and fire early looks. Hard-skip
+        // FLAT ticks of EVERY cadence (wake-fired calls are classified manual,
+        // and they're the ones that hit right at open) until the session is
+        // SWING_CAPITAL_OPEN_WARMUP_MINUTES old. In-position ticks pass: the
+        // first look at a position that gapped over the closure is the look
+        // that matters most. No schedule data (openedAtMs null) fails open.
+        const openWarmupMinutes = (() => {
+            const raw = Number(process.env.SWING_CAPITAL_OPEN_WARMUP_MINUTES ?? 30);
+            return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+        })();
+        const sessionOpenedAtMs = capitalMarketInfo?.session?.openedAtMs ?? null;
+        if (platform === 'capital' && !positionOpen && openWarmupMinutes > 0 && sessionOpenedAtMs !== null) {
+            const minutesSinceOpen = (Date.now() - sessionOpenedAtMs) / 60_000;
+            if (minutesSinceOpen >= 0 && minutesSinceOpen < openWarmupMinutes) {
+                emitGateDebug('open_warmup_gate', {
+                    gate: 'OPEN_WARMUP',
+                    minutesSinceOpen: Math.round(minutesSinceOpen),
+                    warmupMinutes: openWarmupMinutes,
+                });
+                const reason = `open_warmup:${Math.round(minutesSinceOpen)}m_of_${openWarmupMinutes}m_since_open`;
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'open_warmup_gate',
+                    reason,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'open_warmup_gate' };
+                // Quarter ticks skip persistence (same policy as the closed-
+                // market gate) — the warmup window would otherwise write a
+                // burst of skip rows every session open.
+                if (!quarterTick) {
+                    await persistPreAiSkip({
+                        stage: 'open_warmup_gate',
+                        decision,
+                        execResult: execRes,
+                        snapshot: { sessionOpenedAtMs, warmupMinutes: openWarmupMinutes },
+                    });
+                }
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    usedTape: false,
+                    promptSkipped: true,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'OPEN_WARMUP',
+                                  minutesSinceOpen: Math.round(minutesSinceOpen),
+                                  warmupMinutes: openWarmupMinutes,
+                              },
+                          }
+                        : {}),
+                });
+            }
+        }
         // Bounded account-leverage history: one snapshot per HOURLY tick per
         // symbol (quarter ticks skip it so the flat 15m cadence doesn't 4x the
         // table). Best-effort; never blocks the trading path on failure.
@@ -1965,6 +2033,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       ),
                       reopens_at_utc: Number.isFinite(capitalMarketInfo.session.nextOpenAtMs as number)
                           ? new Date(capitalMarketInfo.session.nextOpenAtMs as number).toISOString()
+                          : null,
+                      // Session age: lets the model treat a just-opened venue
+                      // (gap candles, wide spreads, indicators still digesting)
+                      // differently from a mature session. In-position ticks
+                      // are the main consumers — flat ticks inside the warmup
+                      // window never reach the prompt (open_warmup_gate).
+                      minutes_since_open: Number.isFinite(capitalMarketInfo.session.openedAtMs as number)
+                          ? Math.max(
+                                0,
+                                Math.round((capitalNowMs - (capitalMarketInfo.session.openedAtMs as number)) / 60_000),
+                            )
                           : null,
                   }
                 : null;

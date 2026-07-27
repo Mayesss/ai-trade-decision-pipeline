@@ -214,6 +214,9 @@ export type OpeningHoursState = {
   // null = unknown (no schedule, or a non-UTC zone we can't safely interpret).
   // Callers must treat null as "no data", never as "closed".
   isOpen: boolean | null;
+  // Start of the CURRENT merged session span (null when closed/unknown) —
+  // "how long has this session been open" for post-open warmup gating.
+  openedAtMs: number | null;
   closesAtMs: number | null;
   nextOpenAtMs: number | null;
 };
@@ -229,14 +232,14 @@ export function resolveOpeningHoursState(
   nowMs: number,
 ): OpeningHoursState {
   if (!openingHours || !supportsUtcSchedule(openingHours)) {
-    return { isOpen: null, closesAtMs: null, nextOpenAtMs: null };
+    return { isOpen: null, openedAtMs: null, closesAtMs: null, nextOpenAtMs: null };
   }
   if (openingHours.alwaysOpen) {
-    return { isOpen: true, closesAtMs: null, nextOpenAtMs: null };
+    return { isOpen: true, openedAtMs: null, closesAtMs: null, nextOpenAtMs: null };
   }
   const windows = buildScheduleWindows(openingHours, nowMs);
   if (!windows.length) {
-    return { isOpen: null, closesAtMs: null, nextOpenAtMs: null };
+    return { isOpen: null, openedAtMs: null, closesAtMs: null, nextOpenAtMs: null };
   }
   const spans: ResolvedScheduleWindow[] = [];
   for (const window of windows) {
@@ -254,6 +257,7 @@ export function resolveOpeningHoursState(
     const reopen = spans.find((span) => span.openAtMs >= current.closeAtMs);
     return {
       isOpen: true,
+      openedAtMs: current.openAtMs,
       closesAtMs: current.closeAtMs,
       nextOpenAtMs: reopen?.openAtMs ?? null,
     };
@@ -261,6 +265,7 @@ export function resolveOpeningHoursState(
   const next = spans.find((span) => span.openAtMs > nowMs);
   return {
     isOpen: false,
+    openedAtMs: null,
     closesAtMs: next?.closeAtMs ?? null,
     nextOpenAtMs: next?.openAtMs ?? null,
   };

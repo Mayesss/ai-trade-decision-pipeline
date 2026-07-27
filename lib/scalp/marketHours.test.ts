@@ -114,6 +114,8 @@ test("opening-hours state: mid-session close is the merged session end past midn
     ts("2026-07-13T20:00:00.000Z"),
   );
   assert.equal(state.isOpen, true);
+  // The merged span opened Mon 10:00 — the anchor for post-open warmup gating.
+  assert.equal(state.openedAtMs, ts("2026-07-13T10:00:00.000Z"));
   // Mon 10:00 → Tue 02:00 is one continuous session. Close carries the
   // schedule's inclusive-minute grain, so allow Tue 02:00–02:01.
   const closeMin = ts("2026-07-14T02:00:00.000Z");
@@ -144,7 +146,7 @@ test("opening-hours state: non-UTC zone and missing schedule are unknown, never 
     alwaysOpen: false,
     windows: [{ day: "mon" as const, openTime: "10:00", closeTime: "22:00" }],
   };
-  const unknown = { isOpen: null, closesAtMs: null, nextOpenAtMs: null };
+  const unknown = { isOpen: null, openedAtMs: null, closesAtMs: null, nextOpenAtMs: null };
   assert.deepEqual(
     resolveOpeningHoursState(londonSchedule, ts("2026-07-13T20:00:00.000Z")),
     unknown,
@@ -163,6 +165,6 @@ test("opening-hours state: alwaysOpen is open with no boundaries", () => {
   });
   assert.deepEqual(
     resolveOpeningHoursState(schedule, ts("2026-07-13T20:00:00.000Z")),
-    { isOpen: true, closesAtMs: null, nextOpenAtMs: null },
+    { isOpen: true, openedAtMs: null, closesAtMs: null, nextOpenAtMs: null },
   );
 });
