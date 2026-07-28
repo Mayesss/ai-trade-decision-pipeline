@@ -10,10 +10,11 @@
 // separate curator AI call.
 //
 // INJECTION (read side): flat/managed ticks load the active lessons for
-// (symbol ∪ its asset class ∪ global), confidence-sorted, capped at
-// MAX_PROMPT_LESSONS, and render them as a cautionary block in the USER
-// prompt (the cached system prefix stays byte-stable). SWING_LESSONS_MODE=off
-// disables injection; the library keeps building regardless.
+// (symbol ∪ its asset class ∪ global), confidence-sorted, capped per scope
+// bucket (PROMPT_LESSON_SCOPE_CAPS), and render them as a cautionary block in
+// the USER prompt (the cached system prefix stays byte-stable).
+// SWING_LESSONS_MODE=off disables injection; the library keeps building
+// regardless.
 import {
     insertSwingLesson,
     loadActiveSwingLessons,
@@ -22,7 +23,19 @@ import {
     type SwingLessonScope,
 } from './pg';
 
-export const MAX_PROMPT_LESSONS = 10;
+// Per-scope prompt buckets: each scope gets its own guaranteed slots, so a
+// wall of high-confidence globals can never crowd out the lesson written
+// specifically for this symbol (narrow scopes accrue support slower and would
+// systematically lose a single confidence-sorted pool). Worst case
+// 3+5+10 = 18 lessons ≈ ~1.4k tokens in the user turn.
+export const PROMPT_LESSON_SCOPE_CAPS: Record<SwingLessonScope, number> = {
+    symbol: 3,
+    asset_class: 5,
+    global: 10,
+};
+
+// Prompt render order: most trade-specific first.
+const PROMPT_SCOPE_ORDER: SwingLessonScope[] = ['symbol', 'asset_class', 'global'];
 
 export type SwingLessonsMode = 'on' | 'off';
 
@@ -35,19 +48,27 @@ export function resolveSwingLessonsMode(): SwingLessonsMode {
 
 export type PromptLesson = { scope: SwingLessonScope; lesson: string };
 
-// Pure selection half (tested): confidence first, then how many post-mortems
-// back the lesson, then recency. Cap for the prompt.
-export function selectPromptLessons(rows: SwingLessonRow[], max: number = MAX_PROMPT_LESSONS): PromptLesson[] {
-    return [...rows]
+// Pure selection half (tested): within each scope bucket, confidence first,
+// then how many post-mortems back the lesson, then recency; each bucket capped
+// independently. Output ordered symbol → asset_class → global.
+export function selectPromptLessons(
+    rows: SwingLessonRow[],
+    caps: Partial<Record<SwingLessonScope, number>> = PROMPT_LESSON_SCOPE_CAPS,
+): PromptLesson[] {
+    const sorted = [...rows]
         .filter((r) => r.status === 'active' && r.lesson.trim().length > 0)
         .sort(
             (a, b) =>
                 b.confidence - a.confidence ||
                 b.supportCount - a.supportCount ||
                 b.updatedAtMs - a.updatedAtMs,
-        )
-        .slice(0, Math.max(0, max))
-        .map((r) => ({ scope: r.scope, lesson: r.lesson.trim() }));
+        );
+    return PROMPT_SCOPE_ORDER.flatMap((scope) =>
+        sorted
+            .filter((r) => r.scope === scope)
+            .slice(0, Math.max(0, caps[scope] ?? 0))
+            .map((r) => ({ scope: r.scope, lesson: r.lesson.trim() })),
+    );
 }
 
 // Read side used by the tick: [] when injection is off / no library yet /
@@ -55,7 +76,10 @@ export function selectPromptLessons(rows: SwingLessonRow[], max: number = MAX_PR
 export async function loadPromptLessons(symbol: string, assetClass: string | null): Promise<PromptLesson[]> {
     if (resolveSwingLessonsMode() === 'off') return [];
     try {
-        const rows = await loadActiveSwingLessons({ symbol, assetClass });
+        // limit 100: the DB query is confidence-ordered across ALL scopes, so a
+        // tight limit could truncate low-confidence narrow-scope rows before the
+        // per-scope buckets ever see them.
+        const rows = await loadActiveSwingLessons({ symbol, assetClass, limit: 100 });
         return selectPromptLessons(rows);
     } catch (err) {
         console.warn(`lesson load failed for ${symbol}:`, err);

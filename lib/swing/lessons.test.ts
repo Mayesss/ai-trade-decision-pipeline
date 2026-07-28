@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { SwingLessonRow } from './pg';
-import { MAX_PROMPT_LESSONS, resolveLessonDecision, selectPromptLessons } from './lessons';
+import { PROMPT_LESSON_SCOPE_CAPS, resolveLessonDecision, selectPromptLessons } from './lessons';
 
 const row = (extra: Partial<SwingLessonRow>): SwingLessonRow => ({
     id: 1,
@@ -25,25 +25,51 @@ test('selectPromptLessons: confidence-sorted, support/recency tiebreaks, capped'
         row({ id: 3, confidence: 0.6, supportCount: 3, updatedAtMs: 50, lesson: 'Backed lesson.' }),
         row({ id: 4, confidence: 0.6, supportCount: 1, updatedAtMs: 200, lesson: 'Newer lesson.' }),
     ];
-    const picked = selectPromptLessons(rows, 3);
+    const picked = selectPromptLessons(rows, { global: 3 });
     assert.equal(picked.length, 3);
     assert.equal(picked[0].lesson, 'Top lesson.'); // highest confidence
     assert.equal(picked[1].lesson, 'Backed lesson.'); // support_count beats recency
     assert.equal(picked[2].lesson, 'Newer lesson.'); // recency last tiebreak
 });
 
-test('selectPromptLessons: retired and empty lessons excluded; default cap holds', () => {
+test('selectPromptLessons: retired and empty lessons excluded; per-scope default caps hold', () => {
+    const cap = PROMPT_LESSON_SCOPE_CAPS.global;
     const rows = [
         row({ id: 1, status: 'retired', confidence: 1 }),
         row({ id: 2, lesson: '   ' }),
-        ...Array.from({ length: MAX_PROMPT_LESSONS + 2 }, (_, i) =>
+        ...Array.from({ length: cap + 2 }, (_, i) =>
             row({ id: 10 + i, confidence: 0.5 + i / 100, lesson: `L${i}` }),
         ),
     ];
     const picked = selectPromptLessons(rows);
-    assert.equal(picked.length, MAX_PROMPT_LESSONS);
+    assert.equal(picked.length, cap);
     assert.ok(picked.every((p) => p.lesson.startsWith('L')));
-    assert.equal(picked[0].lesson, `L${MAX_PROMPT_LESSONS + 1}`);
+    assert.equal(picked[0].lesson, `L${cap + 1}`);
+});
+
+test('selectPromptLessons: scope buckets are independent and ordered symbol-first', () => {
+    const symCap = PROMPT_LESSON_SCOPE_CAPS.symbol;
+    const rows = [
+        // Fill global beyond its cap with max-confidence rows...
+        ...Array.from({ length: PROMPT_LESSON_SCOPE_CAPS.global + 3 }, (_, i) =>
+            row({ id: 100 + i, scope: 'global', confidence: 1, lesson: `G${i}` }),
+        ),
+        // ...they must not crowd out low-confidence narrow-scope lessons.
+        ...Array.from({ length: symCap + 1 }, (_, i) =>
+            row({ id: 200 + i, scope: 'symbol', symbol: 'ETHUSDT', confidence: 0.1 + i / 100, lesson: `S${i}` }),
+        ),
+        row({ id: 300, scope: 'asset_class', assetClass: 'crypto', confidence: 0.2, lesson: 'A0' }),
+    ];
+    const picked = selectPromptLessons(rows);
+    assert.equal(picked.length, symCap + 1 + PROMPT_LESSON_SCOPE_CAPS.global);
+    // Most specific scope renders first, capped at its own bucket size.
+    assert.deepEqual(
+        picked.slice(0, symCap).map((p) => p.scope),
+        Array(symCap).fill('symbol'),
+    );
+    assert.equal(picked[0].lesson, `S${symCap}`); // best symbol lesson leads
+    assert.equal(picked[symCap].scope, 'asset_class');
+    assert.ok(picked.slice(symCap + 1).every((p) => p.scope === 'global'));
 });
 
 test('selectPromptLessons: carries scope for the [scope] prompt tag', () => {
