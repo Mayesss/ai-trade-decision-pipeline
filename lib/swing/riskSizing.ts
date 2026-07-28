@@ -22,7 +22,7 @@ export type RiskBasedSizing = {
 // Risk per trade as % of account equity.
 export const RISK_EQUITY_PCT = (() => {
     const n = Number(process.env.SWING_RISK_EQUITY_PCT);
-    return Number.isFinite(n) && n > 0 && n <= 5 ? n : 1;
+    return Number.isFinite(n) && n > 0 && n <= 20 ? n : 10;
 })();
 
 // Absolute risk used when no equity reading is available (fetch failed and no
@@ -56,9 +56,11 @@ export function resolveRiskBasedSizing(params: {
     const riskUsd = equityUsd !== null ? (equityUsd * riskEquityPct) / 100 : fallbackRiskUsd;
 
     let notionalUsd = riskUsd / stopDistancePct;
-    // Exposure ceiling: never let a tight (1-ATR minimum) stop turn 1% risk
-    // into more than 2× the account in notional — beyond that, gap/slippage
-    // risk dominates the modeled stop-out cost.
+    // Exposure ceiling: never let a tight (1-ATR minimum) stop turn the fixed
+    // risk fraction into more than 2× the account in notional — beyond that,
+    // gap/slippage risk dominates the modeled stop-out cost. NOTE: at 10% risk
+    // this cap binds for any stop tighter than 5% of entry, silently reducing
+    // realized risk to 2 × stopDistancePct of equity.
     if (equityUsd !== null && notionalUsd > equityUsd * 2) notionalUsd = equityUsd * 2;
 
     const lev = Number.isFinite(params.leverage as number) && (params.leverage as number) > 0
