@@ -383,6 +383,20 @@ async function ensureSwingSchema(): Promise<void> {
               created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )`);
         await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS account_snapshots_lookup_idx ON swing.account_snapshots (platform, symbol, captured_at DESC)`);
+
+        // weekly_digests: one persisted health/performance digest per review
+        // window (Sunday cron). Deliberately denormalized JSONB — the digest is
+        // a snapshot of aggregations over tables that may later be pruned
+        // (tick_log), so it must stay self-contained.
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.weekly_digests (
+              id             BIGSERIAL PRIMARY KEY,
+              window_from_ms BIGINT NOT NULL,
+              window_to_ms   BIGINT NOT NULL,
+              digest_json    JSONB NOT NULL,
+              created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              CONSTRAINT weekly_digests_window UNIQUE (window_from_ms, window_to_ms)
+            )`);
     })().catch((err) => {
         // allow a later retry rather than caching a failed bootstrap
         swingSchemaReady = null;

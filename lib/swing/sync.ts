@@ -29,6 +29,10 @@ export async function recordSwingAccountSnapshot(params: {
     capturedAtMs: number;
     positionInfo?: { status?: string; leverage?: number | null; available?: unknown; total?: unknown } | null;
     leverageHint?: number | null;
+    // Account-level equity at capture time (broker-fetched by the caller —
+    // positionInfo is per-symbol and carries no account equity, which is why
+    // the equity column stayed NULL from 2026-07-21 until 2026-07-28).
+    equityUsd?: number | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     const pos = params.positionInfo;
@@ -40,6 +44,7 @@ export async function recordSwingAccountSnapshot(params: {
             symbol: params.symbol,
             capturedAtMs: params.capturedAtMs,
             leverage,
+            equity: finiteNum(params.equityUsd),
             available: open ? finiteNum(pos?.available) : null,
             openPosition: open ? pos : null,
         });

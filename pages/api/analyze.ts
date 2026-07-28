@@ -744,11 +744,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // symbol (quarter ticks skip it so the flat 15m cadence doesn't 4x the
         // table). Best-effort; never blocks the trading path on failure.
         if (!quarterTick) {
+            // Account equity is NOT in positionInfo (per-symbol) — one broker
+            // call per hourly snapshot buys the durable equity curve the weekly
+            // digest draws down/drawdown from. Best-effort: null on failure.
+            const snapshotEquityUsd =
+                platform === 'capital'
+                    ? await fetchCapitalAccountEquityUsd().catch(() => null)
+                    : await fetchBitgetAccountEquityUsd().catch(() => null);
             await recordSwingAccountSnapshot({
                 platform,
                 symbol,
                 capturedAtMs: Date.now(),
                 positionInfo: positionInfo as any,
+                equityUsd: snapshotEquityUsd,
             });
         }
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);

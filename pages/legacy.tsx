@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
+import WeeklyDigestPanel from "../components/WeeklyDigestPanel";
 import {
   AllCommunityModule,
   ModuleRegistry,
@@ -9662,6 +9663,10 @@ export default function Home() {
                   renderDecisionCardSkeleton()
                 )}
 
+                <WeeklyDigestPanel
+                  getAdminHeaders={buildAdminHeaders}
+                  onUnauthorized={() => handleAuthExpired()}
+                />
               </div>
             ) : (
               renderDashboardSkeleton()
