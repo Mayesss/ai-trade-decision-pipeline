@@ -1,7 +1,7 @@
 // lib/trading.ts
 
 import crypto from 'crypto';
-import { bitgetFetch, resolveProductType } from './bitget';
+import { BitgetApiError, bitgetFetch, resolveProductType } from './bitget';
 import type { ProductType } from './bitget';
 
 import { computeOrderSize, fetchPositionInfo, fetchSymbolMeta } from './analytics';
@@ -773,7 +773,26 @@ export async function executeDecision(
             if (hasTp) body['presetStopSurplusPrice'] = Number(takeProfitPrice).toFixed(Math.max(0, pricePlace));
             if (entryLimitPrice != null) body['price'] = entryLimitPrice.toFixed(Math.max(0, pricePlace));
         }
-        const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+        // 40762 (order amount exceeds balance) is an expected outcome, not a
+        // crash: available margin can move between the caller's pre-check and
+        // this call (fees, ticks, a concurrent fill). Surface it as a failed
+        // placement so the tick records the decision instead of dying.
+        let res: any;
+        try {
+            res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+        } catch (err) {
+            if (err instanceof BitgetApiError && err.code === '40762') {
+                return {
+                    placed: false,
+                    orderId: null,
+                    clientOid,
+                    leverage: leverageResult.leverage,
+                    reason: 'insufficient_balance',
+                    error: err.message,
+                };
+            }
+            throw err;
+        }
         // Verify the fill's actual leverage (market entries only — a resting
         // limit has no position yet). A mismatch means set-leverage landed on
         // the wrong slot (see ensureIsolatedMarginMode); surfaced, not fatal,

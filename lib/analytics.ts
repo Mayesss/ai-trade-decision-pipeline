@@ -270,6 +270,57 @@ export async function fetchBitgetAccountEquityUsd(): Promise<number | null> {
     }
 }
 
+// USDT margin actually spendable on a NEW isolated order right now (equity
+// minus margin locked in open positions/orders). This is what Bitget checks
+// order margin against — exceeding it rejects with error 40762.
+export async function fetchBitgetAccountAvailableMarginUsd(): Promise<number | null> {
+    try {
+        const productType = resolveProductType();
+        const accounts: any[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
+        const row =
+            (accounts || []).find((a) => String(a?.marginCoin || '').toUpperCase() === 'USDT') ?? accounts?.[0];
+        const n = Number(row?.isolatedMaxAvailable ?? row?.crossedMaxAvailable ?? row?.available);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch (err) {
+        console.warn('bitget available margin fetch failed:', err);
+        return null;
+    }
+}
+
+// Smallest order Bitget accepts, and the leverage cap execution enforces
+// (margin recycle / entry raises are all clamped to liq-safe 20x).
+export const BITGET_MIN_NOTIONAL_USDT = 5;
+const BITGET_MAX_ENTRY_LEVERAGE = 20;
+
+export type BitgetMinSizeAffordability = {
+    affordable: boolean;
+    availableMarginUsd: number | null;
+    requiredMarginUsd: number | null;
+    minNotionalUsd: number;
+    minDealSize: number | null;
+    leverage: number;
+};
+
+// Can the account cover the SMALLEST order Bitget would accept for ANY symbol
+// right now? Mirrors evaluateCapitalMinSizeAffordability for the pre-AI skip:
+// required margin assumes the MOST permissive leverage (20x), so this only
+// trips when literally no entry could be placed — e.g. equity fully locked in
+// open positions (available ≈ $0), which is how entries died venue-side with
+// 40762 on 2026-07-24. Fails OPEN on a fetch hiccup; the exec-time
+// available-margin drop still guards the real order.
+export async function evaluateBitgetMinSizeAffordability(): Promise<BitgetMinSizeAffordability> {
+    const availableMarginUsd = await fetchBitgetAccountAvailableMarginUsd();
+    const requiredMarginUsd = BITGET_MIN_NOTIONAL_USDT / BITGET_MAX_ENTRY_LEVERAGE;
+    return {
+        affordable: availableMarginUsd === null ? true : availableMarginUsd >= requiredMarginUsd,
+        availableMarginUsd,
+        requiredMarginUsd,
+        minNotionalUsd: BITGET_MIN_NOTIONAL_USDT,
+        minDealSize: null,
+        leverage: BITGET_MAX_ENTRY_LEVERAGE,
+    };
+}
+
 function calculatePnLPercent(data: RawPosition): string {
     const sizeBase = num(data.total);
     const mark = Math.max(1e-9, num(data.markPrice));

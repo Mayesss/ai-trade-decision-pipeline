@@ -6,6 +6,8 @@ import { requireAdminAccess } from '../../lib/admin';
 import {
     fetchMarketBundle as fetchBitgetMarketBundle,
     computeAnalytics,
+    evaluateBitgetMinSizeAffordability,
+    fetchBitgetAccountAvailableMarginUsd,
     fetchBitgetAccountEquityUsd,
     fetchPositionInfo as fetchBitgetPositionInfo,
     fetchRealizedRoi as fetchBitgetRealizedRoi,
@@ -779,13 +781,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // Margin-aware pre-skip (Capital, flat only): if the account can't cover the
-        // smallest tradeable size for this symbol, opening is impossible — skip before
-        // spending the AI call and record it as an intentional skip rather than letting
-        // it surface later as an INSUFFICIENT_AVAILABLE_MARGIN exec rejection. Open
-        // positions are exempt: HOLD/CLOSE still need to run to manage them. Fails open.
-        if (platform === 'capital' && !positionOpen) {
-            const afford = await evaluateCapitalMinSizeAffordability(symbol).catch(() => null);
+        // Margin-aware pre-skip (flat only): if the account can't cover the
+        // smallest tradeable size, opening is impossible — skip before spending
+        // the AI call and record it as an intentional skip rather than letting
+        // it surface later as a venue rejection (Capital
+        // INSUFFICIENT_AVAILABLE_MARGIN / Bitget 40762). Open positions are
+        // exempt: HOLD/CLOSE still need to run to manage them. Fails open.
+        if (!positionOpen) {
+            const afford =
+                platform === 'capital'
+                    ? await evaluateCapitalMinSizeAffordability(symbol).catch(() => null)
+                    : await evaluateBitgetMinSizeAffordability().catch(() => null);
             if (afford && afford.affordable === false) {
                 const need =
                     typeof afford.requiredMarginUsd === 'number' ? Math.ceil(afford.requiredMarginUsd) : null;
@@ -2861,11 +2867,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     riskEquityPct: RISK_EQUITY_PCT,
                     minNotionalUsd,
                 });
+                // Venue-side balance check (Bitget): the exchange rejects any
+                // order whose margin exceeds the spendable balance with error
+                // 40762 — which used to escape as a tick-killing handler_error
+                // (6× on 2026-07-24). Capital has its own exec-time sizing
+                // gate. 2% headroom for fees/price drift between check and
+                // fill; fails open (null read) — the venue still backstops.
+                let bitgetAvailableUsd: number | null = null;
+                if (platform === 'bitget' && !dryRun) {
+                    bitgetAvailableUsd = await fetchBitgetAccountAvailableMarginUsd();
+                }
                 if (minNotionalUsd !== null && riskSizing.notionalUsd < minNotionalUsd) {
                     (decision as any).action = 'HOLD';
                     (decision as any).reason =
                         `${String((decision as any).reason ?? '')} [entry dropped: risk_budget_below_min_size ` +
                         `notional≈${riskSizing.notionalUsd.toFixed(0)} min≈${minNotionalUsd.toFixed(0)}]`.trim();
+                } else if (bitgetAvailableUsd !== null && riskSizing.marginUsd > bitgetAvailableUsd * 0.98) {
+                    (decision as any).action = 'HOLD';
+                    (decision as any).reason =
+                        `${String((decision as any).reason ?? '')} [entry dropped: insufficient_available_margin ` +
+                        `need≈${riskSizing.marginUsd.toFixed(2)} have≈${bitgetAvailableUsd.toFixed(2)}]`.trim();
                 } else {
                     execSideSizeUSDT = riskSizing.marginUsd;
                 }
