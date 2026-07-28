@@ -36,14 +36,14 @@ test('selectPromptLessons: retired and empty lessons excluded; default cap holds
     const rows = [
         row({ id: 1, status: 'retired', confidence: 1 }),
         row({ id: 2, lesson: '   ' }),
-        ...Array.from({ length: 10 }, (_, i) =>
+        ...Array.from({ length: MAX_PROMPT_LESSONS + 2 }, (_, i) =>
             row({ id: 10 + i, confidence: 0.5 + i / 100, lesson: `L${i}` }),
         ),
     ];
     const picked = selectPromptLessons(rows);
     assert.equal(picked.length, MAX_PROMPT_LESSONS);
     assert.ok(picked.every((p) => p.lesson.startsWith('L')));
-    assert.equal(picked[0].lesson, 'L9');
+    assert.equal(picked[0].lesson, `L${MAX_PROMPT_LESSONS + 1}`);
 });
 
 test('selectPromptLessons: carries scope for the [scope] prompt tag', () => {

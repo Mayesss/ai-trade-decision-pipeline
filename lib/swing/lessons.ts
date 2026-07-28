@@ -22,7 +22,7 @@ import {
     type SwingLessonScope,
 } from './pg';
 
-export const MAX_PROMPT_LESSONS = 5;
+export const MAX_PROMPT_LESSONS = 10;
 
 export type SwingLessonsMode = 'on' | 'off';
 
