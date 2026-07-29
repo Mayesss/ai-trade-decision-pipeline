@@ -755,7 +755,10 @@ export async function upsertSwingAiCooldown(params: {
 // re-fires the wake instead of losing it until the next primary close (the
 // AVAX 2026-07-23 blind spot). Returns the row when THIS caller won the lease;
 // null when another run's lease is still live (skip quietly) or no row exists.
-export const SWING_AI_COOLDOWN_CLAIM_TTL_MS = 10 * 60_000;
+// TTL: must outlive a healthy analyze run (~2 min incl. AI latency) but not
+// much more — every extra minute is added wake latency after a genuine crash
+// (each dead claim pushed the BGBUSDT 2026-07-29 wake out by a full lease).
+export const SWING_AI_COOLDOWN_CLAIM_TTL_MS = 5 * 60_000;
 
 export async function claimSwingAiCooldown(
     platform: string,

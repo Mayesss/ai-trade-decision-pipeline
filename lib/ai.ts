@@ -319,6 +319,7 @@ export const REENTRY_COOLDOWN_MIN = (() => {
 // Session/venue FACTS (schedules, levels, sweep measurements) render regardless
 // of these flags; only the tactics prose and mechanisms are gated.
 const flagOn = (raw: unknown) => ['1', 'true', 'yes', 'on'].includes(String(raw ?? '').trim().toLowerCase());
+const flagOff = (raw: unknown) => ['0', 'false', 'no', 'off'].includes(String(raw ?? '').trim().toLowerCase());
 // Resting pullback-limit entries (entry_limit_price tool + cancelled_pending_entry
 // context). Off = market entries only; a model-sent limit drops the entry.
 export const PULLBACK_LIMIT_ENABLED = flagOn(process.env.SWING_PULLBACK_LIMIT_ENABLED);
@@ -331,8 +332,9 @@ export const SESSION_OFFENSE_ENABLED = flagOn(process.env.SWING_SESSION_OFFENSE_
 // lose 3.42 support") instead of waiting for the next primary bar close.
 // Purely additive — suppresses nothing; replaced by every real in-position AI
 // call (null = cleared). Gates the prompt prose, the eligibility routing in
-// normalizeDecision, and the analyze/watcher wiring.
-export const POSITION_WAKE_ENABLED = flagOn(process.env.ENABLE_POSITION_WAKE_BANDS);
+// normalizeDecision, and the analyze/watcher wiring. Default ON — set
+// ENABLE_POSITION_WAKE_BANDS=false to deactivate (opt-out, not opt-in).
+export const POSITION_WAKE_ENABLED = !flagOff(process.env.ENABLE_POSITION_WAKE_BANDS);
 // Min band distance from current price in primary-ATR units — the churn guard:
 // a band glued to price would re-fire a full AI call every ~5 min (the
 // watcher's fired-marker TTL).
@@ -1773,7 +1775,7 @@ export function postprocessDecision(params: {
     // in sanitizePositionWake in the API route (live price + bracket). Flag is
     // read at CALL time (like ENABLE_CRYPTO_MARGIN_RECYCLE above) so tests can
     // toggle it.
-    const wakeEligible = cooldownEligible || (flagOn(process.env.ENABLE_POSITION_WAKE_BANDS) && tpslAmendEligible);
+    const wakeEligible = cooldownEligible || (!flagOff(process.env.ENABLE_POSITION_WAKE_BANDS) && tpslAmendEligible);
     const cooldown_wake_above = wakeEligible ? coercePrice(decision?.cooldown_wake_above) : null;
     const cooldown_wake_below = wakeEligible ? coercePrice(decision?.cooldown_wake_below) : null;
     // The band's plan, echoed back at fire time (market.cooldown_wake.note /

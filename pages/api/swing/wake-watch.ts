@@ -1,4 +1,7 @@
-export const config = { runtime: 'nodejs' };
+// maxDuration: a firing run WAITS for its analyze invocations to complete
+// (see maybeFire) — detection itself takes seconds, but a fire adds the full
+// analyze runtime (~60-120s of AI latency, capped at 240s per fire).
+export const config = { runtime: 'nodejs', maxDuration: 300 };
 // 1-minute wake-watcher (cron * * * * *): closes the gap between "price crossed
 // a level the AI asked to be woken at" and "the next 15-min tick happens to
 // notice" — worst-case wake latency drops to ~a minute. It does NO AI work:
@@ -22,15 +25,21 @@ export const config = { runtime: 'nodejs' };
 //      the close is reconciled/persisted within ~a minute instead of at the
 //      next 15-min tick.
 //
-// Firing = invokeCronEndpoint (the scalp cron-chaining pattern): a short-
-// timeout GET that kicks the analyze invocation and returns — the analyze run
-// completes server-side. A fired KV marker (TTL 4 min) prevents consecutive
-// watcher ticks from double-firing the same event while that run is in flight;
-// the durable dedupe is the analyze handler itself (it claims the cooldown row
-// with a lease and deletes it only once the decision is recorded / re-stamps
-// the AI-look ref). Claimed rows are excluded from the band work list, so a
-// run that dies mid-AI puts its wake back on the list when the lease expires
-// instead of losing it until the next primary close.
+// Firing = invokeCronEndpoint held OPEN until analyze responds (240s cap).
+// The old scalp kick-and-detach (5s abort, "the analyze run completes
+// server-side") was a lie on Vercel: a function whose client disconnected is
+// only kept alive by luck, and most detached wake runs were hard-killed
+// mid-AI-call AFTER claiming the cooldown row — each death locked the wake
+// behind the claim lease and pushed the real look 15-50 min out (BGBUSDT
+// 2026-07-29). Detection stays fast: fires are collected and awaited together
+// (Promise.all) just before the response, so one slow analyze never delays
+// checking the other symbols. A fired KV marker (TTL 4 min) prevents
+// consecutive watcher ticks from double-firing the same event while that run
+// is in flight; the durable dedupe is the analyze handler itself (it claims
+// the cooldown row with a lease and deletes it only once the decision is
+// recorded / re-stamps the AI-look ref). Claimed rows are excluded from the
+// band work list, so a run that dies mid-AI puts its wake back on the list
+// when the lease expires instead of losing it until the next primary close.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { POSITION_WAKE_ENABLED } from '../../../lib/ai';
@@ -117,6 +126,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const forwardDryRun = ['1', 'true', 'yes', 'on'].includes(dryRunRaw);
 
     const fired: FiredEntry[] = [];
+    // Long analyze invocations, started inside maybeFire but awaited together
+    // right before the response — the detection loops stay quick while every
+    // fired run keeps a connected client until it completes (or the 240s cap).
+    const pendingFires: Promise<void>[] = [];
     const maybeFire = async (platform: string, symbol: string, reason: string) => {
         const firedKey = wakeWatchFiredKey(platform, symbol);
         try {
@@ -154,22 +167,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } catch (err) {
             console.warn(`[wake-watch] fire guards unreadable for ${platform}:${symbol}; firing anyway:`, err);
         }
-        const result = await invokeCronEndpoint(
-            req,
-            '/api/swing/analyze',
-            // wake=1: lets analyze apply the swing-cron kill switch to this
-            // call — wake fires carry no Vercel cron headers, so without the
-            // marker they'd be classified as manual operator ticks and bypass
-            // the hard-deactivation gate entirely.
-            { symbol, platform, decisionPolicy: 'balanced', wake: true, ...(forwardDryRun ? { dryRun: true } : {}) },
-            5_000,
-        );
-        // A timeout abort means the analyze invocation was kicked and keeps
-        // running server-side — that counts as fired (scalp chaining pattern).
-        const invoked = result.invoked || String(result.error || '').toLowerCase().includes('abort');
-        fired.push({ platform, symbol, reason, invoked, error: invoked ? null : result.error });
-        console.log(
-            `[wake-watch] fired ${platform}:${symbol} (${reason}) invoked=${invoked}${invoked ? '' : ` error=${result.error}`}`,
+        pendingFires.push(
+            invokeCronEndpoint(
+                req,
+                '/api/swing/analyze',
+                // wake=1: lets analyze apply the swing-cron kill switch to this
+                // call — wake fires carry no Vercel cron headers, so without the
+                // marker they'd be classified as manual operator ticks and bypass
+                // the hard-deactivation gate entirely.
+                { symbol, platform, decisionPolicy: 'balanced', wake: true, ...(forwardDryRun ? { dryRun: true } : {}) },
+                // Held open for the whole analyze run (~60-120s of AI latency):
+                // a detached run gets hard-killed by the platform more often
+                // than not, and it dies AFTER claiming the cooldown row.
+                240_000,
+            ).then((result) => {
+                // An abort here means analyze outlived even the 240s cap — the
+                // run may still finish server-side, so count it as fired (the
+                // claim lease + fired marker cover the retry either way).
+                const invoked = result.invoked || String(result.error || '').toLowerCase().includes('abort');
+                fired.push({ platform, symbol, reason, invoked, error: invoked ? null : result.error });
+                console.log(
+                    `[wake-watch] fired ${platform}:${symbol} (${reason}) invoked=${invoked}${invoked ? '' : ` error=${result.error}`}`,
+                );
+            }),
         );
     };
 
@@ -360,6 +380,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         closesDetected++;
         await maybeFire(platform, symbol, 'position_closed');
     }
+
+    // Wait for every fired analyze run to finish before responding: the open
+    // request is what keeps the fired run alive on Vercel (invokeCronEndpoint
+    // never rejects, so this cannot throw). Concurrent fires overlap; the
+    // per-symbol fired marker + cooldown claim lease dedupe the next watcher
+    // minute that starts while these are still in flight.
+    await Promise.all(pendingFires);
 
     return res.status(200).json({
         ok: true,
