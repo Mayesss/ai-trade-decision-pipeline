@@ -69,6 +69,7 @@ test('valid swing decisions conform to the schema', () => {
         cooldown_wake_above: null,
         cooldown_wake_below: null,
         cooldown_wake_note: null,
+        cooldown_wake_sustain_minutes: null,
     };
     const valid = [
         // entry with a resting exchange-side TP target
@@ -99,6 +100,7 @@ test('valid swing decisions conform to the schema', () => {
             cooldown_wake_above: 71500,
             cooldown_wake_below: 69200,
             cooldown_wake_note: 'acceptance above 71.5k → breakout check; loss of 69.2k → breakdown check',
+            cooldown_wake_sustain_minutes: 30,
         },
         // in-position trim that also amends the standing bracket
         {
@@ -148,6 +150,7 @@ test('invalid swing decisions are rejected', () => {
         cooldown_wake_above: null,
         cooldown_wake_below: null,
         cooldown_wake_note: null,
+        cooldown_wake_sustain_minutes: null,
     };
     // the base itself is valid, so each case below fails for its intended reason
     assert.ok(validate(base, SWING_DECISION_SCHEMA.schema));
@@ -174,6 +177,9 @@ test('invalid swing decisions are rejected', () => {
     assert.ok(!validate({ ...base, cooldown_wake_below: -5 }, SWING_DECISION_SCHEMA.schema));
     // wake note must be a string or null
     assert.ok(!validate({ ...base, cooldown_wake_note: 42 }, SWING_DECISION_SCHEMA.schema));
+    // sustain window must be an integer >= 0 or null
+    assert.ok(!validate({ ...base, cooldown_wake_sustain_minutes: 7.5 }, SWING_DECISION_SCHEMA.schema));
+    assert.ok(!validate({ ...base, cooldown_wake_sustain_minutes: 'until it holds' }, SWING_DECISION_SCHEMA.schema));
     // entry trigger must be a number >= 0 or null
     assert.ok(!validate({ ...base, entry_trigger_price: 'the breakout level' }, SWING_DECISION_SCHEMA.schema));
     // missing required key

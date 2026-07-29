@@ -12,7 +12,12 @@ import {
 } from './constants';
 import { AiCallError } from './aiError';
 import type { MultiTFIndicators } from './indicators';
-import { wakePlanGraceMinutes } from './swing/wakeWatch';
+import {
+    clampWakeSustainMinutes,
+    wakePlanGraceMinutes,
+    WAKE_SUSTAIN_MAX_MINUTES,
+    WAKE_SUSTAIN_MIN_MINUTES,
+} from './swing/wakeWatch';
 import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
@@ -498,7 +503,16 @@ export function computeSwingState(
     // `expired` = the band crossed past its plan horizon (cooldown end + one
     // primary candle of grace): the caller does NOT bypass the quality gates
     // for it, and the prompt flags it as a stale idea to re-derive.
-    cooldownWake?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null; expired?: boolean } | null,
+    // `sustainedMinutes` = the band carried a sustained-confirmation window
+    // and price held beyond it that long before this wake fired.
+    cooldownWake?: {
+        crossed: 'above' | 'below';
+        level: number;
+        setAtMs: number | null;
+        note?: string | null;
+        expired?: boolean;
+        sustainedMinutes?: number | null;
+    } | null,
     // Set when the position's break-entry trigger has been closed back through
     // by a primary bar (the model's own failed-break lesson). Surfaces as
     // market.failed_break so the exit decision is made with the fact in hand.
@@ -513,6 +527,18 @@ export function computeSwingState(
         fired?: { crossed: 'above' | 'below'; level: number; setAtMs: number | null; note?: string | null } | null;
         armed?: { above: number | null; below: number | null; note?: string | null; setAtMs?: number | null } | null;
     } | null,
+    // Failed touches of the standing flat wake band (touched, then reclaimed
+    // before the sustained-confirmation window elapsed). Surfaces as
+    // market.wake_band_sweeps on any flat look that carries the row — fired
+    // wakes, expiry consumes and ordinary scans alike: a swept level is
+    // liquidity-grab evidence the model should see at its next calm look.
+    wakeSweeps?: Array<{
+        side: 'above' | 'below';
+        level: number;
+        touchedAtMs: number;
+        reclaimedAtMs: number;
+        extreme: number | null;
+    }> | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -1169,10 +1195,27 @@ export function computeSwingState(
             // Present (true) only when the band crossed past its plan horizon —
             // prose tells the model to treat the note as a stale idea.
             ...(cooldownWake.expired ? { expired: true } : {}),
+            // Present only when the band carried a sustained-confirmation
+            // window: price has already HELD beyond the level this long.
+            ...(Number.isFinite(Number(cooldownWake.sustainedMinutes)) && Number(cooldownWake.sustainedMinutes) > 0
+                ? { sustained_minutes: Math.round(Number(cooldownWake.sustainedMinutes)) }
+                : {}),
         };
         if (typeof cooldownWake.note === 'string' && cooldownWake.note.trim()) {
             market.cooldown_wake.note = cooldownWake.note.trim();
         }
+    }
+    if (Array.isArray(wakeSweeps) && wakeSweeps.length > 0) {
+        const swNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        market.wake_band_sweeps = wakeSweeps
+            .filter((s) => Number.isFinite(s.level) && s.touchedAtMs > 0 && s.reclaimedAtMs > 0)
+            .map((s) => ({
+                side: s.side,
+                level: s.level,
+                touched_minutes_ago: Math.max(0, Math.round((swNowMs - s.touchedAtMs) / 60_000)),
+                held_minutes: Math.max(0, Math.round((s.reclaimedAtMs - s.touchedAtMs) / 60_000)),
+                ...(s.extreme !== null && Number.isFinite(s.extreme) ? { extreme: s.extreme } : {}),
+            }));
     }
     if (failedBreak && Number.isFinite(failedBreak.triggerPrice) && Number.isFinite(failedBreak.barClose)) {
         const fbNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
@@ -1382,8 +1425,8 @@ ${
     }
 - entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later ${primaryTimeframe} bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.
 - Failed-break trigger (market.failed_break, when present, in a position): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.${positionWakeTriggerGuidance}
-- Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
-- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
+- Flat cooldown (flat HOLD only; ignored on any other action or in a position — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes (${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}, code clamps) to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. wake_above must sit above current price, wake_below below it (a wrong-side band is dropped, the cooldown stays). Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. For BREAKOUT/BREAKDOWN-intent bands you may ALSO set cooldown_wake_sustain_minutes (${WAKE_SUSTAIN_MIN_MINUTES}–${WAKE_SUSTAIN_MAX_MINUTES}, code clamps): the wake then fires only if price is STILL beyond the band that many minutes after first touch — a one-tick stop-run sweep never wakes you, and each failed touch is instead reported back as market.wake_band_sweeps on your next look (a swept level is evidence of a liquidity grab, not acceptance). Choose the window by how long a fake at that level typically takes to reject (15–30 min is a sane default on this timeframe). Leave it null when the touch ITSELF is what you must see immediately (air-pocket breakdown levels, "any tag of X changes my read") — null means the wake fires on first touch, unfiltered. The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.
+- Wake-band trigger (market.cooldown_wake, when present): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule above does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes is present, this wake is already CONFIRMED by construction — price has held beyond your band that many minutes (you asked for exactly this filter), so the sweep-vs-break question is largely answered; weigh entry timing and location instead. market.wake_band_sweeps (when present, on any flat look): earlier touches of your band that FAILED to hold (side, level, when, how deep, how long they lasted) — repeated sweeps of the same level mark a liquidity grab zone, not acceptance; treat additional pokes there with suspicion and consider fading rather than following. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
         PULLBACK_LIMIT_ENABLED
             ? 'If the move is real but price has already run multiple ATR beyond the level, a pullback limit at the broken level’s retest is the natural tool — you asked to be woken precisely so you would not have to chase later.'
             : 'Only if the move is real but price has already run multiple ATR beyond the level, set a fresh wake band at the broken level WITH a note naming the intended entry ("retest of X after breakout → long on hold") so the retest wake arrives with the plan in hand.'
@@ -1423,12 +1466,12 @@ TASKS:
         ? 'entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.'
         : 'entry_limit_price: ALWAYS null (market entries only — see guidance).'
 }
-6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, and cooldown_wake_note whenever a band is set): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.${POSITION_WAKE_ENABLED ? ' In a position (HOLD/partial CLOSE), cooldown_wake_above/below instead arm in-position wake bands (see wake-band guidance; cooldown_minutes stays null).' : ''}
+6) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, cooldown_wake_note whenever a band is set, and cooldown_wake_sustain_minutes for breakout-intent bands that should only wake on a HELD break): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.${POSITION_WAKE_ENABLED ? ' In a position (HOLD/partial CLOSE), cooldown_wake_above/below instead arm in-position wake bands (see wake-band guidance; cooldown_minutes stays null).' : ''}
 7) entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.
 8) summary ≤3 lines; reason = brief rationale.
 
 Respond with strict JSON only:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_trigger_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line"${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_trigger_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line","cooldown_wake_sustain_minutes":null|minutes${leverageJsonField}${manageJsonField}}
 `;
 
         return { system: sys, user };
@@ -1789,6 +1832,17 @@ export function postprocessDecision(params: {
         rawWakeNote.trim()
             ? rawWakeNote.trim().slice(0, 200)
             : null;
+    // Sustained confirmation: FLAT bands only (an in-position band guards a
+    // live position, where the instant look is right whether the break is
+    // real or fake). Type coercion here; clamping in sanitizeHoldCooldown.
+    const rawSustain = Number(decision?.cooldown_wake_sustain_minutes);
+    const cooldown_wake_sustain_minutes =
+        cooldownEligible &&
+        (cooldown_wake_above !== null || cooldown_wake_below !== null) &&
+        Number.isFinite(rawSustain) &&
+        rawSustain > 0
+            ? Math.round(rawSustain)
+            : null;
 
     return {
         ...decision,
@@ -1805,6 +1859,7 @@ export function postprocessDecision(params: {
         cooldown_wake_above,
         cooldown_wake_below,
         cooldown_wake_note,
+        cooldown_wake_sustain_minutes,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
@@ -1846,6 +1901,12 @@ export type HoldCooldown = {
     // one band survives sanitation: a note is a plan attached to a band, not
     // a general memo.
     wakeNote: string | null;
+    // Sustained-confirmation window (minutes, clamped to
+    // [WAKE_SUSTAIN_MIN_MINUTES, WAKE_SUSTAIN_MAX_MINUTES]): the band wakes
+    // only if price is still beyond it this long after first touch; failed
+    // touches return as market.wake_band_sweeps. null = instant touch wake.
+    // Like the note, only kept while at least one band survives.
+    sustainMinutes: number | null;
     notes: string[];
 };
 
@@ -1861,14 +1922,15 @@ export function sanitizeHoldCooldown(params: {
     wakeAbove: unknown;
     wakeBelow: unknown;
     wakeNote?: unknown;
+    wakeSustainMinutes?: unknown;
 }): HoldCooldown {
     const notes: string[] = [];
     if (params.positionOpen || String(params.action).toUpperCase() !== 'HOLD') {
-        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, notes };
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, sustainMinutes: null, notes };
     }
     const rawMinutes = Number(params.cooldownMinutes);
     if (!Number.isFinite(rawMinutes) || rawMinutes <= 0) {
-        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, notes };
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, sustainMinutes: null, notes };
     }
     const cooldownMinutes = Math.min(HOLD_COOLDOWN_MAX_MINUTES, Math.max(HOLD_COOLDOWN_MIN_MINUTES, Math.round(rawMinutes)));
     if (cooldownMinutes !== Math.round(rawMinutes)) notes.push(`clamped_${Math.round(rawMinutes)}m_to_${cooldownMinutes}m`);
@@ -1900,7 +1962,15 @@ export function sanitizeHoldCooldown(params: {
         notes.push('wake_note_dropped_no_band');
         wakeNote = null;
     }
-    return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, notes };
+    const rawSustain = Number(params.wakeSustainMinutes);
+    let sustainMinutes: number | null = clampWakeSustainMinutes(params.wakeSustainMinutes);
+    if (sustainMinutes !== null && above === null && below === null) {
+        notes.push('wake_sustain_dropped_no_band');
+        sustainMinutes = null;
+    } else if (sustainMinutes !== null && sustainMinutes !== Math.round(rawSustain)) {
+        notes.push(`wake_sustain_clamped_${Math.round(rawSustain)}m_to_${sustainMinutes}m`);
+    }
+    return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, sustainMinutes, notes };
 }
 
 // ------------------------------
@@ -2308,6 +2378,7 @@ export const SWING_DECISION_SCHEMA = {
             'cooldown_wake_above',
             'cooldown_wake_below',
             'cooldown_wake_note',
+            'cooldown_wake_sustain_minutes',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
@@ -2348,6 +2419,10 @@ export const SWING_DECISION_SCHEMA = {
             // One-line plan the band encodes — persisted with the cooldown row
             // and echoed back as market.cooldown_wake.note when the band fires.
             cooldown_wake_note: { type: ['string', 'null'] },
+            // Sustained confirmation for breakout-intent bands: wake only if
+            // price still beyond the band this many minutes after first touch
+            // (code-clamped; flat bands only). null = instant touch wake.
+            cooldown_wake_sustain_minutes: { type: ['integer', 'null'], minimum: 0 },
         },
     },
 } as const;
@@ -2373,6 +2448,7 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             'cooldown_wake_above',
             'cooldown_wake_below',
             'cooldown_wake_note',
+            'cooldown_wake_sustain_minutes',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
@@ -2390,6 +2466,8 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             cooldown_wake_above: { type: ['number', 'null'], minimum: 0 },
             cooldown_wake_below: { type: ['number', 'null'], minimum: 0 },
             cooldown_wake_note: { type: ['string', 'null'] },
+            // Sustained confirmation (see SWING_DECISION_SCHEMA).
+            cooldown_wake_sustain_minutes: { type: ['integer', 'null'], minimum: 0 },
         },
     },
 } as const;

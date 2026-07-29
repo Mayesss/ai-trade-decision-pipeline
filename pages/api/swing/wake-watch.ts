@@ -58,6 +58,8 @@ import {
     listSwingAiCooldownsWithWakeBands,
     listSwingBreakTriggers,
     listSwingInPositionThreads,
+    replaceSwingWakeSweeps,
+    setSwingWakeTouch,
 } from '../../../lib/swing/pg';
 import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { loadSwingCronControlState } from '../../../lib/swing/cronControl';
@@ -67,6 +69,7 @@ import {
     flatWakePlanStale,
     lastClosedBar,
     minutesSinceBarBoundary,
+    sustainedWakeStep,
     timeframeToMs,
     wakeBandCrossed,
     wakeWatchFiredKey,
@@ -237,6 +240,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // path below owns that symbol. A band past its plan horizon (cooldown end
     // + grace) no longer earns an off-cadence fire either — the next regular
     // tick consumes the row and hands the note over as an expired idea.
+    // Bands carrying wake_sustain_minutes fire only after price has HELD
+    // beyond the band that long (sustainedWakeStep); a touch that reclaims
+    // earlier is recorded on the row as sweep evidence instead of waking.
     let bandsChecked = 0;
     for (const row of bandRows) {
         if (openBySymbol.has(`${row.platform}:${row.symbol}`)) continue;
@@ -246,8 +252,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             row.platform === 'capital'
                 ? await fetchCapitalMidPrice(row.symbol)
                 : await fetchBitgetLastPrice(row.symbol);
-        const crossed = wakeBandCrossed(price, row.wakeAbove, row.wakeBelow);
-        if (crossed) await maybeFire(row.platform, row.symbol, `wake_band_${crossed}`);
+        if (!row.sustainMinutes) {
+            const crossed = wakeBandCrossed(price, row.wakeAbove, row.wakeBelow);
+            if (crossed) await maybeFire(row.platform, row.symbol, `wake_band_${crossed}`);
+            continue;
+        }
+        const step = sustainedWakeStep({
+            price: Number.isFinite(Number(price)) && Number(price) > 0 ? Number(price) : null,
+            wakeAbove: row.wakeAbove,
+            wakeBelow: row.wakeBelow,
+            sustainMinutes: row.sustainMinutes,
+            touchSide: row.touchSide,
+            touchStartedMs: row.touchStartedMs,
+            touchExtreme: row.touchExtreme,
+            nowMs: Date.now(),
+        });
+        // Persistence is best-effort: a failed write means this minute's state
+        // transition is retried next minute from the re-read row (arm re-arms
+        // one minute later, a lost sweep costs evidence, never a wake).
+        try {
+            if (step.kind === 'fire') {
+                await maybeFire(row.platform, row.symbol, `wake_band_${step.side}_sustained_${step.heldMinutes}m`);
+            } else if (step.kind === 'arm') {
+                if (step.sweep) {
+                    await replaceSwingWakeSweeps(row.platform, row.symbol, [...row.sweeps, step.sweep]);
+                }
+                await setSwingWakeTouch(row.platform, row.symbol, {
+                    side: step.side,
+                    startedMs: Date.now(),
+                    extreme: Number(price),
+                });
+            } else if (step.kind === 'extend') {
+                await setSwingWakeTouch(row.platform, row.symbol, {
+                    side: step.side,
+                    startedMs: row.touchStartedMs as number,
+                    extreme: step.extreme,
+                });
+            } else if (step.kind === 'sweep') {
+                await replaceSwingWakeSweeps(row.platform, row.symbol, [...row.sweeps, step.sweep]);
+            }
+        } catch (err) {
+            console.warn(`[wake-watch] sustained-band persistence failed for ${row.platform}:${row.symbol}:`, err);
+        }
     }
 
     // 2) In-position wake bands + emergency moves. Bands are AI-declared levels

@@ -195,3 +195,34 @@ test('computeSwingState: a fresh wake carries no expired field', () => {
     const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
     assert.equal('expired' in market.cooldown_wake, false);
 });
+
+test('sanitizeHoldCooldown: sustain minutes survive alongside a valid band, clamped into bounds', () => {
+    const ok = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 30 });
+    assert.equal(ok.sustainMinutes, 30);
+    assert.deepEqual(ok.notes, []);
+    const low = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 1 });
+    assert.equal(low.sustainMinutes, 5);
+    assert.ok(low.notes.some((n) => n.startsWith('wake_sustain_clamped_')));
+    const high = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 240 });
+    assert.equal(high.sustainMinutes, 60);
+});
+
+test('sanitizeHoldCooldown: sustain is dropped when no band survives, null when absent', () => {
+    // Wrong-side band → band dropped → sustain has nothing to confirm.
+    const out = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 99, wakeBelow: null, wakeSustainMinutes: 30 });
+    assert.equal(out.wakeAbove, null);
+    assert.equal(out.sustainMinutes, null);
+    assert.ok(out.notes.includes('wake_sustain_dropped_no_band'));
+    const absent = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null });
+    assert.equal(absent.sustainMinutes, null);
+    const zero = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 0 });
+    assert.equal(zero.sustainMinutes, null);
+    assert.ok(!zero.notes.some((n) => n.includes('sustain')));
+});
+
+test('sanitizeHoldCooldown: sustain nulled with everything else when not a flat HOLD', () => {
+    const inPos = sanitizeHoldCooldown({ ...base, positionOpen: true, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 30 });
+    assert.equal(inPos.sustainMinutes, null);
+    const buy = sanitizeHoldCooldown({ ...base, action: 'BUY', cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeSustainMinutes: 30 });
+    assert.equal(buy.sustainMinutes, null);
+});

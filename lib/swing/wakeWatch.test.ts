@@ -3,14 +3,18 @@ import test from 'node:test';
 
 import {
     breakTriggerFailed,
+    clampWakeSustainMinutes,
     emergencyMoveAtr,
     flatWakePlanStale,
     lastClosedBar,
     minutesSinceBarBoundary,
+    sustainedWakeStep,
     timeframeToMs,
     wakeBandCrossed,
     WAKE_PLAN_GRACE_MINUTES_DEFAULT,
     WAKE_REF_MAX_AGE_MINUTES_DEFAULT,
+    WAKE_SUSTAIN_MAX_MINUTES,
+    WAKE_SUSTAIN_MIN_MINUTES,
 } from './wakeWatch';
 
 const GRACE_MS = WAKE_PLAN_GRACE_MINUTES_DEFAULT * 60_000;
@@ -138,4 +142,129 @@ test('minutesSinceBarBoundary: minutes into the current bar', () => {
     assert.equal(minutesSinceBarBoundary(tfMs, boundary + 3 * 60_000), 3);
     assert.equal(minutesSinceBarBoundary(tfMs, boundary), 0);
     assert.equal(minutesSinceBarBoundary(0, boundary), null);
+});
+
+// ---------------------------------------------------------------------------
+// Sustained wake confirmation
+// ---------------------------------------------------------------------------
+
+// Band above 105 / below 95, 30-min confirmation window.
+const NOW = 1_750_000_000_000;
+const sustainedBase = {
+    wakeAbove: 105,
+    wakeBelow: 95,
+    sustainMinutes: 30,
+    touchSide: null as 'above' | 'below' | null,
+    touchStartedMs: null as number | null,
+    touchExtreme: null as number | null,
+    nowMs: NOW,
+};
+
+test('clampWakeSustainMinutes: clamps into the bounded window, null for non-positive', () => {
+    assert.equal(clampWakeSustainMinutes(30), 30);
+    assert.equal(clampWakeSustainMinutes(1), WAKE_SUSTAIN_MIN_MINUTES);
+    assert.equal(clampWakeSustainMinutes(500), WAKE_SUSTAIN_MAX_MINUTES);
+    assert.equal(clampWakeSustainMinutes(0), null);
+    assert.equal(clampWakeSustainMinutes(-5), null);
+    assert.equal(clampWakeSustainMinutes(null), null);
+    assert.equal(clampWakeSustainMinutes('abc'), null);
+});
+
+test('sustainedWakeStep: no cross, no touch → idle', () => {
+    assert.deepEqual(sustainedWakeStep({ ...sustainedBase, price: 100 }), { kind: 'idle' });
+});
+
+test('sustainedWakeStep: first minute beyond the band arms the touch, no fire', () => {
+    const step = sustainedWakeStep({ ...sustainedBase, price: 106 });
+    assert.deepEqual(step, { kind: 'arm', side: 'above', sweep: null });
+});
+
+test('sustainedWakeStep: touch held but window not yet elapsed → extend on new extreme, hold otherwise', () => {
+    const touched = { ...sustainedBase, touchSide: 'above' as const, touchStartedMs: NOW - 10 * 60_000 };
+    // No stored extreme yet → any valid price persists one.
+    assert.deepEqual(sustainedWakeStep({ ...touched, price: 106 }), { kind: 'extend', side: 'above', extreme: 106 });
+    // Beyond the stored extreme → push it.
+    assert.deepEqual(
+        sustainedWakeStep({ ...touched, price: 108, touchExtreme: 107 }),
+        { kind: 'extend', side: 'above', extreme: 108 },
+    );
+    // Inside the stored extreme → nothing to write.
+    assert.deepEqual(sustainedWakeStep({ ...touched, price: 106, touchExtreme: 107 }), { kind: 'hold' });
+});
+
+test('sustainedWakeStep: window elapsed while still beyond → fire with held minutes', () => {
+    const step = sustainedWakeStep({
+        ...sustainedBase,
+        price: 106,
+        touchSide: 'above',
+        touchStartedMs: NOW - 31 * 60_000,
+        touchExtreme: 108,
+    });
+    assert.deepEqual(step, { kind: 'fire', side: 'above', heldMinutes: 31 });
+});
+
+test('sustainedWakeStep: reclaimed before the window → sweep with touch evidence', () => {
+    const step = sustainedWakeStep({
+        ...sustainedBase,
+        price: 100,
+        touchSide: 'above',
+        touchStartedMs: NOW - 12 * 60_000,
+        touchExtreme: 107.5,
+    });
+    assert.deepEqual(step, {
+        kind: 'sweep',
+        sweep: { side: 'above', level: 105, touchedAtMs: NOW - 12 * 60_000, reclaimedAtMs: NOW, extreme: 107.5 },
+    });
+});
+
+test('sustainedWakeStep: side flip re-arms the new side and sweeps the failed old touch', () => {
+    const step = sustainedWakeStep({
+        ...sustainedBase,
+        price: 94,
+        touchSide: 'above',
+        touchStartedMs: NOW - 8 * 60_000,
+        touchExtreme: 106,
+    });
+    assert.deepEqual(step, {
+        kind: 'arm',
+        side: 'below',
+        sweep: { side: 'above', level: 105, touchedAtMs: NOW - 8 * 60_000, reclaimedAtMs: NOW, extreme: 106 },
+    });
+});
+
+test('sustainedWakeStep: below-side mirror — arm, fire, sweep', () => {
+    assert.deepEqual(sustainedWakeStep({ ...sustainedBase, price: 94 }), { kind: 'arm', side: 'below', sweep: null });
+    assert.deepEqual(
+        sustainedWakeStep({
+            ...sustainedBase,
+            price: 94,
+            touchSide: 'below',
+            touchStartedMs: NOW - 45 * 60_000,
+            touchExtreme: 93,
+        }),
+        { kind: 'fire', side: 'below', heldMinutes: 45 },
+    );
+    const sweep = sustainedWakeStep({
+        ...sustainedBase,
+        price: 96,
+        touchSide: 'below',
+        touchStartedMs: NOW - 5 * 60_000,
+        touchExtreme: 93.4,
+    });
+    assert.equal(sweep.kind, 'sweep');
+    assert.equal((sweep as any).sweep.level, 95);
+});
+
+test('sustainedWakeStep: unusable price with a live touch stays put (no false sweep)', () => {
+    // A failed price fetch must not read as "price reclaimed the band".
+    const step = sustainedWakeStep({
+        ...sustainedBase,
+        price: null,
+        touchSide: 'above',
+        touchStartedMs: NOW - 10 * 60_000,
+        touchExtreme: 107,
+    });
+    assert.deepEqual(step, { kind: 'hold' });
+    // And with no touch either, it is just an idle minute.
+    assert.deepEqual(sustainedWakeStep({ ...sustainedBase, price: null }), { kind: 'idle' });
 });

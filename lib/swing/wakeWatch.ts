@@ -74,6 +74,124 @@ export function wakeBandCrossed(
 }
 
 // ---------------------------------------------------------------------------
+// Sustained wake confirmation. A flat wake band mostly encodes a breakout/
+// breakdown plan, and the first touch of such a level is the moment of MAX
+// ambiguity — a stop-run sweep and a real break look identical for the first
+// minutes. The model may therefore attach cooldown_wake_sustain_minutes to a
+// band: the wake fires only if price is STILL beyond the band that many
+// minutes after first touch. A touch that reclaims earlier never wakes the
+// model at all — it is recorded as a SWEEP on the cooldown row and handed to
+// the model as market.wake_band_sweeps evidence on its next look (a failed
+// poke is signal, just not an emergency). Deliberately a PERSISTENCE filter,
+// not a delay: "wake me N minutes after touch regardless" would spend a look
+// on reclaimed chop and hand back N minutes on real breaks without filtering
+// anything. In-position bands are exempt by design — they guard a live
+// position, where an instant look is right whether the break is real or fake.
+// ---------------------------------------------------------------------------
+
+export const WAKE_SUSTAIN_MIN_MINUTES = 5;
+export const WAKE_SUSTAIN_MAX_MINUTES = 60;
+
+export function clampWakeSustainMinutes(raw: unknown): number | null {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.min(WAKE_SUSTAIN_MAX_MINUTES, Math.max(WAKE_SUSTAIN_MIN_MINUTES, Math.round(n)));
+}
+
+export type WakeSweepEvent = {
+    side: 'above' | 'below';
+    level: number;
+    touchedAtMs: number;
+    reclaimedAtMs: number;
+    extreme: number | null;
+};
+
+// One watcher-minute of a sustained band, as a pure state transition.
+// The caller persists what the step tells it to and nothing else:
+//   fire   — confirmation window held: fire the wake (touch state is consumed
+//            with the row by the analyze run).
+//   arm    — first minute beyond the band (or beyond the OTHER band after a
+//            side flip): start/restart the touch. On a flip the failed old
+//            touch rides along as `sweep`.
+//   extend — touch continues with a new excursion extreme worth persisting.
+//   hold   — touch continues, nothing to write this minute.
+//   sweep  — price back inside the bands before the window elapsed: record
+//            the failed touch, clear the touch state.
+//   idle   — no cross, no touch.
+export type SustainedWakeStep =
+    | { kind: 'fire'; side: 'above' | 'below'; heldMinutes: number }
+    | { kind: 'arm'; side: 'above' | 'below'; sweep: WakeSweepEvent | null }
+    | { kind: 'extend'; side: 'above' | 'below'; extreme: number }
+    | { kind: 'hold' }
+    | { kind: 'sweep'; sweep: WakeSweepEvent }
+    | { kind: 'idle' };
+
+function bandLevel(side: 'above' | 'below', wakeAbove: number | null, wakeBelow: number | null): number | null {
+    return side === 'above' ? wakeAbove : wakeBelow;
+}
+
+export function sustainedWakeStep(params: {
+    price: number | null;
+    wakeAbove: number | null;
+    wakeBelow: number | null;
+    sustainMinutes: number;
+    touchSide: 'above' | 'below' | null;
+    touchStartedMs: number | null;
+    touchExtreme: number | null;
+    nowMs: number;
+}): SustainedWakeStep {
+    const { price, wakeAbove, wakeBelow, sustainMinutes, touchSide, touchStartedMs, touchExtreme, nowMs } = params;
+    const touching = touchSide !== null && Number.isFinite(Number(touchStartedMs)) && Number(touchStartedMs) > 0;
+    // Unusable price = the market is UNOBSERVABLE this minute, not "back
+    // inside the bands" — a failed ticker fetch must never record a false
+    // sweep (or false-fail a touch). Hold still and retry next minute.
+    if (!(Number.isFinite(Number(price)) && Number(price) > 0)) {
+        return touching ? { kind: 'hold' } : { kind: 'idle' };
+    }
+    const crossed = wakeBandCrossed(price, wakeAbove, wakeBelow);
+
+    const sweepOf = (side: 'above' | 'below'): WakeSweepEvent | null => {
+        const level = bandLevel(side, wakeAbove, wakeBelow);
+        if (level === null || !touching) return null;
+        return {
+            side,
+            level,
+            touchedAtMs: Number(touchStartedMs),
+            reclaimedAtMs: nowMs,
+            extreme: touchExtreme,
+        };
+    };
+
+    if (!crossed) {
+        if (!touching) return { kind: 'idle' };
+        const sweep = sweepOf(touchSide as 'above' | 'below');
+        // sweep is null only if the touched side's band level vanished
+        // mid-touch — unreachable via upsert (which resets touch state too);
+        // fail quiet rather than record a level-less event.
+        return sweep ? { kind: 'sweep', sweep } : { kind: 'idle' };
+    }
+
+    if (!touching || touchSide !== crossed) {
+        // First minute beyond this band. If a touch on the OTHER side was
+        // live, price traversed the whole range — that touch failed.
+        const sweep = touching && touchSide !== crossed ? sweepOf(touchSide as 'above' | 'below') : null;
+        return { kind: 'arm', side: crossed, sweep };
+    }
+
+    const heldMs = nowMs - Number(touchStartedMs);
+    if (heldMs >= sustainMinutes * 60_000) {
+        return { kind: 'fire', side: crossed, heldMinutes: Math.max(0, Math.round(heldMs / 60_000)) };
+    }
+
+    const p = Number(price);
+    const storedExtreme = Number(touchExtreme);
+    const beyondStored =
+        !Number.isFinite(storedExtreme) || (crossed === 'above' ? p > storedExtreme : p < storedExtreme);
+    if (Number.isFinite(p) && p > 0 && beyondStored) return { kind: 'extend', side: crossed, extreme: p };
+    return { kind: 'hold' };
+}
+
+// ---------------------------------------------------------------------------
 // Failed-break watch (swing.break_triggers): on a breakout/breakdown entry the
 // model declares the trigger level that justified the trade; if a LATER
 // primary bar CLOSES back through it, the break has failed and the model

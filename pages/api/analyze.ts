@@ -101,10 +101,12 @@ import {
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
     setSwingThreadWake,
+    setSwingWakeTouch,
     upsertSwingAiCooldown,
     upsertSwingAiThread,
     upsertSwingBreakTrigger,
     upsertSwingPosition,
+    type SwingWakeSweep,
 } from '../../lib/swing/pg';
 import {
     attachRecentActionOutcomes,
@@ -1365,6 +1367,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         const priceNow = Number(
                             tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
                         );
+                        // Deliberately the RAW crossing, even for sustained
+                        // bands: an unconfirmed crossing passes the peek, the
+                        // cooldown handler below then skips quietly but arms/
+                        // refreshes the touch backstop — a few no-AI ticks
+                        // while a touch confirms is the price of the fallback.
                         wakeBandCrossed =
                             Number.isFinite(priceNow) &&
                             priceNow > 0 &&
@@ -1579,6 +1586,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // not a schedule to execute) and does NOT bypass the flat quality
             // gates below.
             expired: boolean;
+            // Sustained band only: minutes the cross had held when it woke.
+            sustainedMinutes?: number | null;
         } | null = null;
         // True when THIS run holds the claim lease on a triggered wake row.
         // The row is deleted only after the wake's decision is durably
@@ -1586,13 +1595,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the wake forever when the AI-bearing run died mid-flight (AVAX
         // 2026-07-23: 2h blind spot through the exact move the band watched).
         let cooldownRowClaimed = false;
+        // Sustained-confirmation extras: how long the crossing has held when a
+        // sustained band wakes (→ market.cooldown_wake.sustained_minutes), and
+        // the row's failed-touch history (→ market.wake_band_sweeps).
+        let cooldownWakeSustainedMinutes: number | null = null;
+        let wakeBandSweeps: SwingWakeSweep[] | null = null;
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
                 const cooldown = await getSwingAiCooldown(platform, symbol);
                 if (cooldown) {
-                    const wokenAbove = cooldown.wakeAbove !== null && effectivePrice >= cooldown.wakeAbove;
-                    const wokenBelow = cooldown.wakeBelow !== null && effectivePrice <= cooldown.wakeBelow;
+                    let wokenAbove = cooldown.wakeAbove !== null && effectivePrice >= cooldown.wakeAbove;
+                    let wokenBelow = cooldown.wakeBelow !== null && effectivePrice <= cooldown.wakeBelow;
                     const expired = Date.now() >= cooldown.untilMs;
+                    // Failed touches of this row's band (sustained bands only)
+                    // — surfaced as market.wake_band_sweeps on whichever look
+                    // consumes or fires the row.
+                    if (cooldown.sweeps.length > 0) wakeBandSweeps = cooldown.sweeps;
+                    // Sustained band: a raw crossing only WAKES once price has
+                    // held beyond the band for the model's confirmation window
+                    // (wake_touch_* is stamped by the 1-min watcher). An
+                    // unconfirmed crossing stays a quiet cooldown tick — but
+                    // arm the touch state as a backstop so confirmation still
+                    // accrues on cron ticks alone if the watcher is down.
+                    if (cooldown.sustainMinutes && (wokenAbove || wokenBelow)) {
+                        const side: 'above' | 'below' = wokenAbove ? 'above' : 'below';
+                        const heldMs =
+                            cooldown.touchSide === side && cooldown.touchStartedMs
+                                ? Date.now() - cooldown.touchStartedMs
+                                : null;
+                        if (heldMs !== null && heldMs >= cooldown.sustainMinutes * 60_000) {
+                            cooldownWakeSustainedMinutes = Math.max(
+                                cooldown.sustainMinutes,
+                                Math.round(heldMs / 60_000),
+                            );
+                        } else {
+                            wokenAbove = false;
+                            wokenBelow = false;
+                            if (cooldown.touchSide !== side || !cooldown.touchStartedMs) {
+                                await setSwingWakeTouch(platform, symbol, {
+                                    side,
+                                    startedMs: Date.now(),
+                                    extreme: effectivePrice,
+                                }).catch((err) =>
+                                    console.warn(`wake touch backstop failed for ${symbol}:`, err),
+                                );
+                            }
+                        }
+                    }
                     if (!expired && !wokenAbove && !wokenBelow) {
                         const minutesLeft = Math.max(1, Math.round((cooldown.untilMs - Date.now()) / 60_000));
                         emitGateDebug('flat_cooldown_active', {
@@ -1710,6 +1759,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             // knows why it was scheduled.
                             note: cooldown.wakeNote,
                             expired: false,
+                            // Non-null only when this wake carried a sustained-
+                            // confirmation window: how long the cross has held.
+                            sustainedMinutes: cooldownWakeSustainedMinutes,
                         };
                         emitGateDebug('flat_cooldown_woken', {
                             gate: 'AI_COOLDOWN',
@@ -2149,6 +2201,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // Fired band → market.position_wake; armed-but-quiet bands →
             // market.position_wake_armed (fired suppresses armed inside).
             { fired: positionWakeFired, armed: threadWake },
+            // Failed sustained-band touches → market.wake_band_sweeps.
+            wakeBandSweeps,
         );
         const { context, actionability } = swingState;
 
@@ -2690,6 +2744,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             wakeAbove: rawWakeAbove,
             wakeBelow: rawWakeBelow,
             wakeNote: rawWakeNote,
+            wakeSustainMinutes: (decision as any).cooldown_wake_sustain_minutes,
         });
         // In-position wake bands: side vs live price, strictly inside the
         // bracket as it will actually rest (this tick's sanitized amend, else
@@ -2711,6 +2766,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         (decision as any).cooldown_wake_above = positionOpen ? positionWakeBands.wakeAbove : holdCooldown.wakeAbove;
         (decision as any).cooldown_wake_below = positionOpen ? positionWakeBands.wakeBelow : holdCooldown.wakeBelow;
         (decision as any).cooldown_wake_note = positionOpen ? positionWakeBands.wakeNote : holdCooldown.wakeNote;
+        // Sustained confirmation is a flat-band concept only (in-position
+        // bands stay instant by design).
+        (decision as any).cooldown_wake_sustain_minutes = positionOpen ? null : holdCooldown.sustainMinutes;
         const wakeNotes = [...holdCooldown.notes, ...positionWakeBands.notes];
         if (wakeNotes.length) {
             (decision as any).cooldown_notes = wakeNotes;
@@ -3000,6 +3058,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     wakeAbove: holdCooldown.wakeAbove,
                     wakeBelow: holdCooldown.wakeBelow,
                     wakeNote: holdCooldown.wakeNote,
+                    wakeSustainMinutes: holdCooldown.sustainMinutes,
                 });
             } catch (err) {
                 console.warn(`AI cooldown arm failed for ${symbol}:`, err);

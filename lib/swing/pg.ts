@@ -218,6 +218,19 @@ async function ensureSwingSchema(): Promise<void> {
         // claimed_until_ms: in-flight lease on a triggered wake (see table
         // comment above). Predates some deployments.
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS claimed_until_ms BIGINT`);
+        // Sustained-confirmation wake bands. wake_sustain_minutes: AI-chosen
+        // confirmation window — the band wakes only if price is STILL beyond
+        // it that many minutes after first touch (null = instant touch wake).
+        // wake_touch_*: the watcher's in-flight touch state (side, first-touch
+        // ts, max excursion) — set while a touch is being confirmed, cleared
+        // on reclaim or fire. wake_sweeps: failed touches (touched then
+        // reclaimed before confirming), surfaced to the model as
+        // market.wake_band_sweeps evidence on its next look.
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_sustain_minutes INT`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_side TEXT`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_started_ms BIGINT`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_extreme NUMERIC`);
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_sweeps JSONB`);
 
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
@@ -681,36 +694,106 @@ export async function markSwingAiThreadInPosition(platform: string, symbol: stri
 // --------------------------------------------------------------------------
 // AI cooldowns (flat-symbol quiet periods, optionally price-banded)
 // --------------------------------------------------------------------------
+// A failed touch of a sustained wake band: price crossed the band but was
+// reclaimed before the confirmation window elapsed. Kept on the cooldown row
+// (last few only) and handed to the model as market.wake_band_sweeps.
+export type SwingWakeSweep = {
+    side: 'above' | 'below';
+    level: number;
+    touchedAtMs: number;
+    reclaimedAtMs: number;
+    // Max excursion beyond the band while the touch lasted (watcher-sampled,
+    // ~1-min resolution) — how deep the sweep ran before failing.
+    extreme: number | null;
+};
+
+export const SWING_WAKE_SWEEPS_MAX = 5;
+
 export type SwingAiCooldown = {
     untilMs: number;
     wakeAbove: number | null;
     wakeBelow: number | null;
     wakeNote: string | null;
     setAtMs: number;
+    // Sustained confirmation (null = instant touch wake).
+    sustainMinutes: number | null;
+    touchSide: 'above' | 'below' | null;
+    touchStartedMs: number | null;
+    touchExtreme: number | null;
+    sweeps: SwingWakeSweep[];
 };
 
-export async function getSwingAiCooldown(platform: string, symbol: string): Promise<SwingAiCooldown | null> {
-    if (!isSwingPgConfigured()) return null;
-    await ensureSwingSchema();
-    const db = swingPg();
-    const rows = await db.$queryRaw<
-        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; wake_note: unknown; set_at_ms: unknown }>
-    >(sql`
-        SELECT until_ms, wake_above, wake_below, wake_note, set_at_ms
-        FROM swing.ai_cooldowns
-        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
-    `);
-    const row = rows?.[0];
-    if (!row) return null;
+type CooldownDbRow = {
+    until_ms: unknown;
+    wake_above: unknown;
+    wake_below: unknown;
+    wake_note: unknown;
+    set_at_ms: unknown;
+    wake_sustain_minutes: unknown;
+    wake_touch_side: unknown;
+    wake_touch_started_ms: unknown;
+    wake_touch_extreme: unknown;
+    wake_sweeps: unknown;
+};
+
+const COOLDOWN_SELECT_COLUMNS = sql`until_ms, wake_above, wake_below, wake_note, set_at_ms,
+        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_sweeps`;
+
+function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
+    // Driver-dependent: jsonb may arrive parsed or as text.
+    let parsed: unknown = raw;
+    if (typeof raw === 'string' && raw.trim()) {
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            parsed = null;
+        }
+    }
+    const arr = Array.isArray(parsed) ? parsed : [];
+    return arr
+        .map((entry: any) => ({
+            side: entry?.side === 'above' ? ('above' as const) : entry?.side === 'below' ? ('below' as const) : null,
+            level: finitePos(entry?.level),
+            touchedAtMs: Number(entry?.touched_at_ms) || 0,
+            reclaimedAtMs: Number(entry?.reclaimed_at_ms) || 0,
+            extreme: finitePos(entry?.extreme),
+        }))
+        .filter((s): s is SwingWakeSweep => s.side !== null && s.level !== null && s.touchedAtMs > 0 && s.reclaimedAtMs > 0)
+        .slice(-SWING_WAKE_SWEEPS_MAX);
+}
+
+function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
     const untilMs = Number(row.until_ms);
     if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
+    const sustainRaw = Number(row.wake_sustain_minutes);
+    const touchSide = row.wake_touch_side === 'above' ? 'above' : row.wake_touch_side === 'below' ? 'below' : null;
+    const touchStartedMs = Number(row.wake_touch_started_ms);
     return {
         untilMs,
         wakeAbove: finitePos(row.wake_above),
         wakeBelow: finitePos(row.wake_below),
         wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
         setAtMs: Number(row.set_at_ms) || 0,
+        sustainMinutes: Number.isFinite(sustainRaw) && sustainRaw > 0 ? Math.floor(sustainRaw) : null,
+        touchSide,
+        touchStartedMs: touchSide && Number.isFinite(touchStartedMs) && touchStartedMs > 0 ? touchStartedMs : null,
+        touchExtreme: finitePos(row.wake_touch_extreme),
+        sweeps: parseWakeSweeps(row.wake_sweeps),
     };
+}
+
+export async function getSwingAiCooldown(platform: string, symbol: string): Promise<SwingAiCooldown | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<CooldownDbRow>>(sql`
+        SELECT ${COOLDOWN_SELECT_COLUMNS}
+        FROM swing.ai_cooldowns
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+    const row = rows?.[0];
+    if (!row) return null;
+    return parseCooldownRow(row);
 }
 
 export async function upsertSwingAiCooldown(params: {
@@ -720,14 +803,21 @@ export async function upsertSwingAiCooldown(params: {
     wakeAbove?: number | null;
     wakeBelow?: number | null;
     wakeNote?: string | null;
+    // Sustained confirmation window (minutes); null/absent = instant touch
+    // wake. A fresh cooldown always resets touch state and sweep evidence —
+    // the new bands encode a NEW plan, and the model was just shown the old
+    // sweeps on the look that produced this decision.
+    wakeSustainMinutes?: number | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     if (!Number.isFinite(params.untilMs) || params.untilMs <= Date.now()) return;
     await ensureSwingSchema();
     const db = swingPg();
     const wakeNote = typeof params.wakeNote === 'string' && params.wakeNote.trim() ? params.wakeNote.trim() : null;
+    const sustainRaw = Number(params.wakeSustainMinutes);
+    const sustainMinutes = Number.isFinite(sustainRaw) && sustainRaw > 0 ? Math.floor(sustainRaw) : null;
     await db.$executeRaw(sql`
-        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms)
+        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms, wake_sustain_minutes)
         VALUES (
             ${normalizePlatform(params.platform)},
             ${String(params.symbol || '').toUpperCase()},
@@ -736,7 +826,8 @@ export async function upsertSwingAiCooldown(params: {
             ${finitePos(params.wakeBelow)},
             ${wakeNote},
             ${Date.now()},
-            NULL
+            NULL,
+            ${sustainMinutes}
         )
         ON CONFLICT (platform, symbol) DO UPDATE SET
             until_ms = EXCLUDED.until_ms,
@@ -745,7 +836,63 @@ export async function upsertSwingAiCooldown(params: {
             wake_note = EXCLUDED.wake_note,
             set_at_ms = EXCLUDED.set_at_ms,
             claimed_until_ms = NULL,
+            wake_sustain_minutes = EXCLUDED.wake_sustain_minutes,
+            wake_touch_side = NULL,
+            wake_touch_started_ms = NULL,
+            wake_touch_extreme = NULL,
+            wake_sweeps = NULL,
             updated_at = NOW()
+    `);
+}
+
+// Arm (or refresh) the in-flight touch state on a sustained wake band: called
+// by the watcher on the first observed minute beyond the band, and again to
+// push the excursion extreme while the touch lasts. Idempotent — concurrent
+// watcher minutes writing the same touch are harmless.
+export async function setSwingWakeTouch(
+    platform: string,
+    symbol: string,
+    touch: { side: 'above' | 'below'; startedMs: number; extreme: number | null },
+): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.ai_cooldowns
+        SET wake_touch_side = ${touch.side},
+            wake_touch_started_ms = ${Math.floor(touch.startedMs)},
+            wake_touch_extreme = ${finitePos(touch.extreme)},
+            updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
+
+// A touch failed to confirm (price reclaimed the band before the sustain
+// window elapsed): persist the full capped sweep list (caller appends and
+// caps — last SWING_WAKE_SWEEPS_MAX) and clear the touch state in one write.
+export async function replaceSwingWakeSweeps(
+    platform: string,
+    symbol: string,
+    sweeps: SwingWakeSweep[],
+): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const dbShape = sweeps.slice(-SWING_WAKE_SWEEPS_MAX).map((s) => ({
+        side: s.side,
+        level: s.level,
+        touched_at_ms: s.touchedAtMs,
+        reclaimed_at_ms: s.reclaimedAtMs,
+        extreme: s.extreme,
+    }));
+    await db.$executeRaw(sql`
+        UPDATE swing.ai_cooldowns
+        SET wake_sweeps = ${JSON.stringify(dbShape)}::jsonb,
+            wake_touch_side = NULL,
+            wake_touch_started_ms = NULL,
+            wake_touch_extreme = NULL,
+            updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
 }
 
@@ -769,27 +916,17 @@ export async function claimSwingAiCooldown(
     await ensureSwingSchema();
     const db = swingPg();
     const now = Date.now();
-    const rows = await db.$queryRaw<
-        Array<{ until_ms: unknown; wake_above: unknown; wake_below: unknown; wake_note: unknown; set_at_ms: unknown }>
-    >(sql`
+    const rows = await db.$queryRaw<Array<CooldownDbRow>>(sql`
         UPDATE swing.ai_cooldowns
         SET claimed_until_ms = ${Math.floor(now + Math.max(60_000, ttlMs))}, updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)}
           AND symbol = ${String(symbol || '').toUpperCase()}
           AND (claimed_until_ms IS NULL OR claimed_until_ms < ${now})
-        RETURNING until_ms, wake_above, wake_below, wake_note, set_at_ms
+        RETURNING ${COOLDOWN_SELECT_COLUMNS}
     `);
     const row = rows?.[0];
     if (!row) return null;
-    const untilMs = Number(row.until_ms);
-    if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
-    return {
-        untilMs,
-        wakeAbove: finitePos(row.wake_above),
-        wakeBelow: finitePos(row.wake_below),
-        wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
-        setAtMs: Number(row.set_at_ms) || 0,
-    };
+    return parseCooldownRow(row);
 }
 
 // All cooldown rows carrying at least one wake band, across symbols/platforms —
@@ -805,33 +942,26 @@ export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldo
     if (!isSwingPgConfigured()) return [];
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<
-        Array<{
-            platform: unknown;
-            symbol: unknown;
-            until_ms: unknown;
-            wake_above: unknown;
-            wake_below: unknown;
-            wake_note: unknown;
-            set_at_ms: unknown;
-        }>
-    >(sql`
-        SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms
+    const rows = await db.$queryRaw<Array<CooldownDbRow & { platform: unknown; symbol: unknown }>>(sql`
+        SELECT platform, symbol, ${COOLDOWN_SELECT_COLUMNS}
         FROM swing.ai_cooldowns
         WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL)
           AND (claimed_until_ms IS NULL OR claimed_until_ms < ${Date.now()})
     `);
     return (rows || [])
-        .map((row) => ({
-            platform: String(row.platform || ''),
-            symbol: String(row.symbol || ''),
-            untilMs: Number(row.until_ms) || 0,
-            wakeAbove: finitePos(row.wake_above),
-            wakeBelow: finitePos(row.wake_below),
-            wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
-            setAtMs: Number(row.set_at_ms) || 0,
-        }))
-        .filter((row) => row.platform && row.symbol && (row.wakeAbove !== null || row.wakeBelow !== null));
+        .map((row) => {
+            const parsed = parseCooldownRow(row);
+            if (!parsed) return null;
+            return {
+                ...parsed,
+                platform: String(row.platform || ''),
+                symbol: String(row.symbol || ''),
+            };
+        })
+        .filter(
+            (row): row is SwingAiCooldownRow =>
+                row !== null && Boolean(row.platform && row.symbol) && (row.wakeAbove !== null || row.wakeBelow !== null),
+        );
 }
 
 export async function clearSwingAiCooldown(platform: string, symbol: string): Promise<void> {
