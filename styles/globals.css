@@ -549,9 +549,9 @@ body {
   position: absolute;
   left: 50%;
   bottom: 50%;
-  width: 22%;
-  min-width: 1.5px;
-  margin-left: -11%;
+  width: 16%;
+  min-width: 1.25px;
+  margin-left: -8%;
   border-radius: 9999px;
   transform-origin: 50% 100%;
   background-color: rgb(255 255 255 / 1);
