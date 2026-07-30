@@ -87,6 +87,7 @@ type EvaluationEntry = {
   lastWasAiCall?: boolean;
   lastAiDecisionTs?: number | null;
   lastAiDecisionAction?: string | null;
+  lastAiDecisionCooldownMinutes?: number | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -150,6 +151,8 @@ type DashboardSummaryRow = {
   lastAiDecisionTs?: number | null;
   // Its action (BUY/SELL/CLOSE/HOLD/…) — colors the pill's decision dot.
   lastAiDecisionAction?: string | null;
+  // Flat-HOLD cooldown that call armed, if any — clock hands inside the dot.
+  lastAiDecisionCooldownMinutes?: number | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
   lastScanStage?: string | null;
@@ -8049,6 +8052,11 @@ export default function Home() {
                                   lastAiAction === "REVERSE"
                                 ? "timeline-dot-trim"
                                 : "timeline-dot-ai";
+                        // A flat HOLD that armed a cooldown gets clock hands
+                        // inside the dot instead of a plain filled circle.
+                        const holdCooldown =
+                          lastAiAction === "HOLD" &&
+                          Number(tab?.lastAiDecisionCooldownMinutes) > 0;
                         const openPnlValue =
                           openDirection && typeof tab?.openPnl === "number"
                             ? tab.openPnl
@@ -8142,7 +8150,11 @@ export default function Home() {
                             >
                               {aiDecisionRecent || pendingLimit ? (
                                 <span
-                                  className={`pill-decision-dot h-2 w-2 shrink-0 ${decisionDotClass} ${
+                                  className={`pill-decision-dot shrink-0 ${
+                                    holdCooldown
+                                      ? "timeline-dot-clock h-3 w-3"
+                                      : "h-2 w-2"
+                                  } ${decisionDotClass} ${
                                     pendingLimit ? "pill-dot-hollow" : ""
                                   }`}
                                 />

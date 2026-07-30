@@ -533,6 +533,46 @@ body {
   outline-color: rgb(255 255 255 / 1);
 }
 
+/* Clock-hands variant: a flat HOLD that armed a cooldown gets hour + minute
+   needles drawn inside the dot (pseudo-elements, so it stacks on any fill
+   class). Hands use the OPPOSITE contrast of the .timeline-dot-ai fill —
+   white needles on the black light-mode dot, near-black on the white dark
+   dot. Percent-sized so the same class works on the 8px pill/quarter dot and
+   the 14px hourly timeline dot. */
+.timeline-dot-clock {
+  position: relative;
+}
+
+.timeline-dot-clock::before,
+.timeline-dot-clock::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 50%;
+  width: 22%;
+  min-width: 1.5px;
+  margin-left: -11%;
+  border-radius: 9999px;
+  transform-origin: 50% 100%;
+  background-color: rgb(255 255 255 / 1);
+}
+
+/* Minute hand pointing at 12… */
+.timeline-dot-clock::before {
+  height: 38%;
+}
+
+/* …hour hand toward ~4 o'clock. */
+.timeline-dot-clock::after {
+  height: 28%;
+  transform: rotate(115deg);
+}
+
+.theme-dark .timeline-dot-clock::before,
+.theme-dark .timeline-dot-clock::after {
+  background-color: rgb(15 23 42 / 1);
+}
+
 /* Trim/partial-close keeps its amber in BOTH themes — a custom property so the
    dark-theme accent desaturation (bg-amber-* -> grey) can't wash it out.
    Light mode uses a lighter amber; dark keeps the stronger one for contrast. */

@@ -2061,6 +2061,8 @@ export default function ChartPanel(props: ChartPanelProps) {
               threadSegments.some(
                 (segment) => x >= segment.left && x <= segment.left + segment.width,
               );
+            // A flat HOLD that armed a cooldown gets clock hands inside the dot.
+            const isCooldownHold = tick.kind === 'ai_call' && Number(tick.cooldownMinutes) > 0;
             const label = timelineTickLabel(tick);
             return (
               <button
@@ -2077,8 +2079,8 @@ export default function ChartPanel(props: ChartPanelProps) {
                   className={`timeline-dot ${tick.hourly ? 'h-3.5 w-3.5' : 'h-2 w-2'} rounded-full ${timelineDotFillClass(
                     tick,
                   )} ${isContextSkip ? 'timeline-dot-context-skip' : ''} ${
-                    isSelected ? 'timeline-dot-selected' : ''
-                  }`}
+                    isCooldownHold ? 'timeline-dot-clock' : ''
+                  } ${isSelected ? 'timeline-dot-selected' : ''}`}
                 />
               </button>
             );

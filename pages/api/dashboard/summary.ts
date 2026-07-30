@@ -68,6 +68,9 @@ type SummaryEntry = {
   lastAiDecisionTs?: number | null;
   // Its action (BUY/SELL/CLOSE/HOLD/…) — colors the pill's decision dot.
   lastAiDecisionAction?: string | null;
+  // Flat-HOLD cooldown that call armed, if any — draws clock hands inside the
+  // pill's decision dot.
+  lastAiDecisionCooldownMinutes?: number | null;
   // Whether the venue was closed at the most recent decision (Capital reports
   // marketStatus != TRADEABLE → analyze.ts persists a capital_market_closed
   // pre-AI skip). Crons run hourly, so this tracks "market currently closed".
@@ -387,6 +390,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let lastWasAiCall = false;
       let lastAiDecisionTs: number | null = null;
       let lastAiDecisionAction: string | null = null;
+      let lastAiDecisionCooldownMinutes: number | null = null;
       let marketClosed = false;
       let lastScanAt: number | null = null;
       let lastScanStage: string | null = null;
@@ -412,6 +416,8 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         const latestAiCall = history.find(isRealAiCall);
         lastAiDecisionTs = latestAiCall?.timestamp ?? null;
         lastAiDecisionAction = String((latestAiCall?.aiDecision as any)?.action || '').toUpperCase() || null;
+        const cooldownMin = Number((latestAiCall?.aiDecision as any)?.cooldown_minutes);
+        lastAiDecisionCooldownMinutes = Number.isFinite(cooldownMin) && cooldownMin > 0 ? cooldownMin : null;
         // Venue closed at the last cron tick — analyze.ts skips before the AI
         // with skipStage === 'capital_market_closed'. Crypto (bitget) never
         // hits this gate, so it stays open 24/7.
@@ -651,6 +657,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastWasAiCall,
         lastAiDecisionTs,
         lastAiDecisionAction,
+        lastAiDecisionCooldownMinutes,
         marketClosed,
         lastScanAt,
         lastScanStage,
