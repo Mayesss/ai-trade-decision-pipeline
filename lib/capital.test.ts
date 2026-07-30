@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  capitalMidPriceFromMarketRow,
   executeCapitalDecision,
   resolveCapitalEpic,
   resolveCapitalForexBaseUnitUsdFromQuotes,
@@ -413,4 +414,35 @@ test("Capital full close uses documented dealId close endpoint", async (t) => {
     ),
     false,
   );
+});
+
+test("capitalMidPriceFromMarketRow reads the nested ?epics= marketDetails shape", () => {
+  // The shape that broke every Capital wake fire: quote under `snapshot`.
+  const detailsRow = {
+    instrument: { epic: "GOLD" },
+    snapshot: { marketStatus: "TRADEABLE", bid: 4080.1, offer: 4080.5 },
+  };
+  assert.equal(capitalMidPriceFromMarketRow(detailsRow), (4080.1 + 4080.5) / 2);
+  // Flat searchTerm shape keeps working.
+  assert.equal(capitalMidPriceFromMarketRow({ epic: "GOLD", bid: 100, offer: 102 }), 101);
+  // One-sided quotes fall back to the available side.
+  assert.equal(capitalMidPriceFromMarketRow({ snapshot: { bid: 100 } }), 100);
+  assert.equal(capitalMidPriceFromMarketRow({ snapshot: { offer: 102 } }), 102);
+});
+
+test("capitalMidPriceFromMarketRow fails quiet on closed markets and junk", () => {
+  // A closed market's frozen quote must not read as a band crossing.
+  assert.equal(
+    capitalMidPriceFromMarketRow({ snapshot: { marketStatus: "CLOSED", bid: 100, offer: 102 } }),
+    null,
+  );
+  assert.equal(
+    capitalMidPriceFromMarketRow({ snapshot: { marketStatus: "EDITS_ONLY", bid: 100, offer: 102 } }),
+    null,
+  );
+  // Missing status = tradeable by default (some shapes omit it).
+  assert.equal(capitalMidPriceFromMarketRow({ snapshot: { bid: 100, offer: 102 } }), 101);
+  assert.equal(capitalMidPriceFromMarketRow(null), null);
+  assert.equal(capitalMidPriceFromMarketRow({}), null);
+  assert.equal(capitalMidPriceFromMarketRow({ snapshot: { bid: "n/a", offer: -1 } }), null);
 });

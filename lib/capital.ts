@@ -2380,20 +2380,39 @@ export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPosi
   }
 }
 
+// Pure quote extraction for the wake-watcher's price check. Handles BOTH row
+// shapes Capital returns: /markets?searchTerm= rows carry bid/offer/epic at
+// the TOP level, while /markets?epics= rows are marketDetails objects with the
+// quote nested under `snapshot` (and the epic under `instrument`). Reading
+// only the flat shape made this return null on EVERY ?epics= response — which
+// silently disabled all Capital wake-band fires from the day the watcher
+// shipped (12 of 13 wake evaluations landed on cron ticks, 2026-07-30 audit).
+// A non-TRADEABLE marketStatus also returns null: a closed market's frozen
+// quote must not read as a band crossing (the fired analyze would only die at
+// the venue-closed gate).
+export function capitalMidPriceFromMarketRow(row: unknown): number | null {
+  if (!row || typeof row !== "object") return null;
+  const r = row as any;
+  const snapshot = r.snapshot && typeof r.snapshot === "object" ? r.snapshot : null;
+  const status = normalizeCapitalText(snapshot?.marketStatus ?? r.marketStatus ?? r.status);
+  if (status && status.toUpperCase() !== "TRADEABLE") return null;
+  const bid = safeNumber(snapshot?.bid ?? r.bid, NaN);
+  const offer = safeNumber(snapshot?.offer ?? r.offer, NaN);
+  if (Number.isFinite(bid) && bid > 0 && Number.isFinite(offer) && offer > 0) return (bid + offer) / 2;
+  if (Number.isFinite(bid) && bid > 0) return bid;
+  if (Number.isFinite(offer) && offer > 0) return offer;
+  return null;
+}
+
 // Light current-price read (one markets?epics= call, no candles) — used by the
 // 1-minute wake-watcher to compare price against flat wake bands. Returns the
-// mid of bid/offer, or null when no usable quote (venue closed quotes may be
-// stale — the caller treats null/stale as "no crossing").
+// mid of bid/offer, or null when no usable quote (closed-market quotes are
+// frozen — the caller treats null as "no crossing").
 export async function fetchCapitalMidPrice(symbol: string): Promise<number | null> {
   try {
     const resolved = await resolveCapitalEpicRuntime(symbol);
     const row = await loadMarketOverview(resolved.epic);
-    const bid = safeNumber(row?.bid, NaN);
-    const offer = safeNumber(row?.offer, NaN);
-    if (Number.isFinite(bid) && bid > 0 && Number.isFinite(offer) && offer > 0) return (bid + offer) / 2;
-    if (Number.isFinite(bid) && bid > 0) return bid;
-    if (Number.isFinite(offer) && offer > 0) return offer;
-    return null;
+    return capitalMidPriceFromMarketRow(row);
   } catch (err) {
     console.warn(`[capital] mid-price read failed for ${symbol}:`, err);
     return null;
@@ -2423,8 +2442,10 @@ async function loadMarketOverview(
     return null;
   }
   const targetEpic = normalizeTicker(epic);
+  // ?epics= rows carry the epic under instrument, searchTerm rows at the top.
   const exact = rows.find(
-    (row) => normalizeTicker(String(row?.epic || "")) === targetEpic,
+    (row) =>
+      normalizeTicker(String(row?.epic || (row as any)?.instrument?.epic || "")) === targetEpic,
   );
   return exact || rows[0] || null;
 }
