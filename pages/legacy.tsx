@@ -8150,10 +8150,8 @@ export default function Home() {
                             >
                               {aiDecisionRecent || pendingLimit ? (
                                 <span
-                                  className={`pill-decision-dot shrink-0 ${
-                                    holdCooldown
-                                      ? "timeline-dot-clock h-3 w-3"
-                                      : "h-2 w-2"
+                                  className={`pill-decision-dot h-2 w-2 shrink-0 ${
+                                    holdCooldown ? "timeline-dot-clock" : ""
                                   } ${decisionDotClass} ${
                                     pendingLimit ? "pill-dot-hollow" : ""
                                   }`}
