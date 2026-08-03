@@ -231,6 +231,10 @@ async function ensureSwingSchema(): Promise<void> {
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_started_ms BIGINT`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_extreme NUMERIC`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_sweeps JSONB`);
+        // wake_atr: primary ATR captured when the band was set — lets the
+        // watcher confirm a sustained band EARLY when the break extends
+        // ≥ SWING_WAKE_BREAK_CONFIRM_ATR beyond the level (force beats clock).
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_atr NUMERIC`);
 
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
@@ -720,6 +724,8 @@ export type SwingAiCooldown = {
     touchSide: 'above' | 'below' | null;
     touchStartedMs: number | null;
     touchExtreme: number | null;
+    // Primary ATR at band-set time — anchor for the extension confirm.
+    atr: number | null;
     sweeps: SwingWakeSweep[];
 };
 
@@ -733,11 +739,12 @@ type CooldownDbRow = {
     wake_touch_side: unknown;
     wake_touch_started_ms: unknown;
     wake_touch_extreme: unknown;
+    wake_atr: unknown;
     wake_sweeps: unknown;
 };
 
 const COOLDOWN_SELECT_COLUMNS = sql`until_ms, wake_above, wake_below, wake_note, set_at_ms,
-        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_sweeps`;
+        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps`;
 
 function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
     // Driver-dependent: jsonb may arrive parsed or as text.
@@ -778,6 +785,7 @@ function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
         touchSide,
         touchStartedMs: touchSide && Number.isFinite(touchStartedMs) && touchStartedMs > 0 ? touchStartedMs : null,
         touchExtreme: finitePos(row.wake_touch_extreme),
+        atr: finitePos(row.wake_atr),
         sweeps: parseWakeSweeps(row.wake_sweeps),
     };
 }
@@ -808,6 +816,9 @@ export async function upsertSwingAiCooldown(params: {
     // the new bands encode a NEW plan, and the model was just shown the old
     // sweeps on the look that produced this decision.
     wakeSustainMinutes?: number | null;
+    // Primary ATR at set time (code-provided, not AI-provided) — anchor for
+    // the watcher's extension confirm on sustained bands.
+    wakeAtr?: number | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     if (!Number.isFinite(params.untilMs) || params.untilMs <= Date.now()) return;
@@ -817,7 +828,7 @@ export async function upsertSwingAiCooldown(params: {
     const sustainRaw = Number(params.wakeSustainMinutes);
     const sustainMinutes = Number.isFinite(sustainRaw) && sustainRaw > 0 ? Math.floor(sustainRaw) : null;
     await db.$executeRaw(sql`
-        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms, wake_sustain_minutes)
+        INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms, wake_sustain_minutes, wake_atr)
         VALUES (
             ${normalizePlatform(params.platform)},
             ${String(params.symbol || '').toUpperCase()},
@@ -827,7 +838,8 @@ export async function upsertSwingAiCooldown(params: {
             ${wakeNote},
             ${Date.now()},
             NULL,
-            ${sustainMinutes}
+            ${sustainMinutes},
+            ${finitePos(params.wakeAtr)}
         )
         ON CONFLICT (platform, symbol) DO UPDATE SET
             until_ms = EXCLUDED.until_ms,
@@ -837,6 +849,7 @@ export async function upsertSwingAiCooldown(params: {
             set_at_ms = EXCLUDED.set_at_ms,
             claimed_until_ms = NULL,
             wake_sustain_minutes = EXCLUDED.wake_sustain_minutes,
+            wake_atr = EXCLUDED.wake_atr,
             wake_touch_side = NULL,
             wake_touch_started_ms = NULL,
             wake_touch_extreme = NULL,

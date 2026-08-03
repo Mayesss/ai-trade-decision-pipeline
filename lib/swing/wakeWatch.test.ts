@@ -200,7 +200,41 @@ test('sustainedWakeStep: window elapsed while still beyond → fire with held mi
         touchStartedMs: NOW - 31 * 60_000,
         touchExtreme: 108,
     });
-    assert.deepEqual(step, { kind: 'fire', side: 'above', heldMinutes: 31 });
+    assert.deepEqual(step, { kind: 'fire', side: 'above', heldMinutes: 31, via: 'time', extensionAtr: null });
+});
+
+test('sustainedWakeStep: extension ≥0.5 ATR confirms by force — even on the first minute', () => {
+    // No touch state at all: a violent first-minute break fires immediately.
+    const step = sustainedWakeStep({ ...sustainedBase, price: 106.5, atr: 3 });
+    assert.deepEqual(step, { kind: 'fire', side: 'above', heldMinutes: 0, via: 'extension', extensionAtr: 0.5 });
+    // Below-side mirror mid-touch: extension beats the clock.
+    const below = sustainedWakeStep({
+        ...sustainedBase,
+        price: 93,
+        atr: 4,
+        touchSide: 'below',
+        touchStartedMs: NOW - 4 * 60_000,
+    });
+    assert.deepEqual(below, { kind: 'fire', side: 'below', heldMinutes: 4, via: 'extension', extensionAtr: 0.5 });
+});
+
+test('sustainedWakeStep: extension uses CURRENT price, not the stored extreme; sub-threshold arms/extends', () => {
+    // Spiked to 0.9 ATR earlier (extreme) but sits at 0.13 ATR now → not force.
+    const step = sustainedWakeStep({
+        ...sustainedBase,
+        price: 105.4,
+        atr: 3,
+        touchSide: 'above',
+        touchStartedMs: NOW - 4 * 60_000,
+        touchExtreme: 107.7,
+    });
+    assert.deepEqual(step, { kind: 'hold' });
+    // First minute, sub-threshold excursion, no ATR → plain arm.
+    assert.deepEqual(sustainedWakeStep({ ...sustainedBase, price: 105.4, atr: 3 }), {
+        kind: 'arm',
+        side: 'above',
+        sweep: null,
+    });
 });
 
 test('sustainedWakeStep: reclaimed before the window → sweep with touch evidence', () => {
@@ -242,7 +276,7 @@ test('sustainedWakeStep: below-side mirror — arm, fire, sweep', () => {
             touchStartedMs: NOW - 45 * 60_000,
             touchExtreme: 93,
         }),
-        { kind: 'fire', side: 'below', heldMinutes: 45 },
+        { kind: 'fire', side: 'below', heldMinutes: 45, via: 'time', extensionAtr: null },
     );
     const sweep = sustainedWakeStep({
         ...sustainedBase,

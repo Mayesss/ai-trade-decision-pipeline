@@ -83,6 +83,7 @@ import {
     lastClosedBar,
     timeframeToMs,
     wakeBandCrossed,
+    wakeBreakConfirmAtr,
     wakeWatchRefKey,
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
@@ -1588,6 +1589,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             expired: boolean;
             // Sustained band only: minutes the cross had held when it woke.
             sustainedMinutes?: number | null;
+            // Set when the wake confirmed by EXTENSION (≥ wakeBreakConfirmAtr
+            // primary-ATRs beyond the level) rather than by holding the window.
+            breakExtensionAtr?: number | null;
         } | null = null;
         // True when THIS run holds the claim lease on a triggered wake row.
         // The row is deleted only after the wake's decision is durably
@@ -1596,9 +1600,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 2026-07-23: 2h blind spot through the exact move the band watched).
         let cooldownRowClaimed = false;
         // Sustained-confirmation extras: how long the crossing has held when a
-        // sustained band wakes (→ market.cooldown_wake.sustained_minutes), and
-        // the row's failed-touch history (→ market.wake_band_sweeps).
+        // sustained band wakes (→ market.cooldown_wake.sustained_minutes), how
+        // far it extended when confirmed by force instead of time (→
+        // market.cooldown_wake.break_extension_atr), and the row's
+        // failed-touch history (→ market.wake_band_sweeps).
         let cooldownWakeSustainedMinutes: number | null = null;
+        let cooldownWakeExtensionAtr: number | null = null;
         let wakeBandSweeps: SwingWakeSweep[] | null = null;
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
@@ -1611,23 +1618,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     // — surfaced as market.wake_band_sweeps on whichever look
                     // consumes or fires the row.
                     if (cooldown.sweeps.length > 0) wakeBandSweeps = cooldown.sweeps;
-                    // Sustained band: a raw crossing only WAKES once price has
-                    // held beyond the band for the model's confirmation window
-                    // (wake_touch_* is stamped by the 1-min watcher). An
+                    // Sustained band: a raw crossing only WAKES once confirmed
+                    // — by TIME (held beyond the band for the model's window;
+                    // wake_touch_* is stamped by the 1-min watcher) or by
+                    // EXTENSION (price ≥ wakeBreakConfirmAtr primary-ATRs past
+                    // the level: force proves the break before the clock). An
                     // unconfirmed crossing stays a quiet cooldown tick — but
-                    // arm the touch state as a backstop so confirmation still
-                    // accrues on cron ticks alone if the watcher is down.
+                    // arm the touch state as a backstop so time confirmation
+                    // still accrues on cron ticks alone if the watcher is down.
                     if (cooldown.sustainMinutes && (wokenAbove || wokenBelow)) {
                         const side: 'above' | 'below' = wokenAbove ? 'above' : 'below';
+                        const level = wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow;
                         const heldMs =
                             cooldown.touchSide === side && cooldown.touchStartedMs
                                 ? Date.now() - cooldown.touchStartedMs
                                 : null;
-                        if (heldMs !== null && heldMs >= cooldown.sustainMinutes * 60_000) {
-                            cooldownWakeSustainedMinutes = Math.max(
-                                cooldown.sustainMinutes,
-                                Math.round(heldMs / 60_000),
-                            );
+                        const extensionAtr =
+                            level !== null && cooldown.atr !== null && cooldown.atr > 0
+                                ? ((effectivePrice - level) * (side === 'above' ? 1 : -1)) / cooldown.atr
+                                : null;
+                        const confirmedByTime = heldMs !== null && heldMs >= cooldown.sustainMinutes * 60_000;
+                        const confirmedByExtension =
+                            extensionAtr !== null && extensionAtr >= wakeBreakConfirmAtr();
+                        if (confirmedByTime || confirmedByExtension) {
+                            if (heldMs !== null) {
+                                cooldownWakeSustainedMinutes = Math.max(1, Math.round(heldMs / 60_000));
+                            }
+                            if (confirmedByExtension) cooldownWakeExtensionAtr = extensionAtr;
                         } else {
                             wokenAbove = false;
                             wokenBelow = false;
@@ -1760,8 +1777,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             note: cooldown.wakeNote,
                             expired: false,
                             // Non-null only when this wake carried a sustained-
-                            // confirmation window: how long the cross has held.
+                            // confirmation window: how long the cross has held,
+                            // and how far it extended if force confirmed it.
                             sustainedMinutes: cooldownWakeSustainedMinutes,
+                            breakExtensionAtr: cooldownWakeExtensionAtr,
                         };
                         emitGateDebug('flat_cooldown_woken', {
                             gate: 'AI_COOLDOWN',
@@ -3059,6 +3078,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     wakeBelow: holdCooldown.wakeBelow,
                     wakeNote: holdCooldown.wakeNote,
                     wakeSustainMinutes: holdCooldown.sustainMinutes,
+                    // Primary ATR at set time — anchors the extension confirm.
+                    wakeAtr: primaryAtrSane,
                 });
             } catch (err) {
                 console.warn(`AI cooldown arm failed for ${symbol}:`, err);

@@ -266,13 +266,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             touchStartedMs: row.touchStartedMs,
             touchExtreme: row.touchExtreme,
             nowMs: Date.now(),
+            atr: row.atr,
         });
         // Persistence is best-effort: a failed write means this minute's state
         // transition is retried next minute from the re-read row (arm re-arms
         // one minute later, a lost sweep costs evidence, never a wake).
         try {
             if (step.kind === 'fire') {
-                await maybeFire(row.platform, row.symbol, `wake_band_${step.side}_sustained_${step.heldMinutes}m`);
+                const reason =
+                    step.via === 'extension'
+                        ? `wake_band_${step.side}_break_${(step.extensionAtr ?? 0).toFixed(1)}atr`
+                        : `wake_band_${step.side}_sustained_${step.heldMinutes}m`;
+                await maybeFire(row.platform, row.symbol, reason);
             } else if (step.kind === 'arm') {
                 if (step.sweep) {
                     await replaceSwingWakeSweeps(row.platform, row.symbol, [...row.sweeps, step.sweep]);

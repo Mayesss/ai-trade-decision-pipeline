@@ -92,6 +92,18 @@ export function wakeBandCrossed(
 export const WAKE_SUSTAIN_MIN_MINUTES = 5;
 export const WAKE_SUSTAIN_MAX_MINUTES = 60;
 
+// Distance-based early confirmation: a stop-run sweep by definition does not
+// TRAVEL far beyond the level (observed sweep depths ≤ ~0.3%), so a break that
+// extends this many primary-ATRs beyond the band has proven itself by force —
+// fire immediately instead of letting a vertical runner drift away for the
+// rest of the time window (SOL 2026-08-03 ran +2.46% during a 20m wait).
+export const WAKE_BREAK_CONFIRM_ATR_DEFAULT = 0.5;
+
+export function wakeBreakConfirmAtr(): number {
+    const raw = Number(process.env.SWING_WAKE_BREAK_CONFIRM_ATR ?? WAKE_BREAK_CONFIRM_ATR_DEFAULT);
+    return Number.isFinite(raw) && raw > 0 ? raw : WAKE_BREAK_CONFIRM_ATR_DEFAULT;
+}
+
 export function clampWakeSustainMinutes(raw: unknown): number | null {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return null;
@@ -108,8 +120,10 @@ export type WakeSweepEvent = {
 
 // One watcher-minute of a sustained band, as a pure state transition.
 // The caller persists what the step tells it to and nothing else:
-//   fire   — confirmation window held: fire the wake (touch state is consumed
-//            with the row by the analyze run).
+//   fire   — confirmed: either the time window held (`via: 'time'`) or the
+//            CURRENT price extends ≥ wakeBreakConfirmAtr() primary-ATRs beyond
+//            the band (`via: 'extension'` — force proves the break before the
+//            clock does; fires even on the first minute of a touch).
 //   arm    — first minute beyond the band (or beyond the OTHER band after a
 //            side flip): start/restart the touch. On a flip the failed old
 //            touch rides along as `sweep`.
@@ -119,7 +133,7 @@ export type WakeSweepEvent = {
 //            the failed touch, clear the touch state.
 //   idle   — no cross, no touch.
 export type SustainedWakeStep =
-    | { kind: 'fire'; side: 'above' | 'below'; heldMinutes: number }
+    | { kind: 'fire'; side: 'above' | 'below'; heldMinutes: number; via: 'time' | 'extension'; extensionAtr: number | null }
     | { kind: 'arm'; side: 'above' | 'below'; sweep: WakeSweepEvent | null }
     | { kind: 'extend'; side: 'above' | 'below'; extreme: number }
     | { kind: 'hold' }
@@ -139,8 +153,11 @@ export function sustainedWakeStep(params: {
     touchStartedMs: number | null;
     touchExtreme: number | null;
     nowMs: number;
+    // Primary ATR captured when the band was set (swing.ai_cooldowns.wake_atr)
+    // — enables the extension confirm. Null/absent = time-only confirmation.
+    atr?: number | null;
 }): SustainedWakeStep {
-    const { price, wakeAbove, wakeBelow, sustainMinutes, touchSide, touchStartedMs, touchExtreme, nowMs } = params;
+    const { price, wakeAbove, wakeBelow, sustainMinutes, touchSide, touchStartedMs, touchExtreme, nowMs, atr } = params;
     const touching = touchSide !== null && Number.isFinite(Number(touchStartedMs)) && Number(touchStartedMs) > 0;
     // Unusable price = the market is UNOBSERVABLE this minute, not "back
     // inside the bands" — a failed ticker fetch must never record a false
@@ -171,6 +188,28 @@ export function sustainedWakeStep(params: {
         return sweep ? { kind: 'sweep', sweep } : { kind: 'idle' };
     }
 
+    // Extension confirm — checked BEFORE touch bookkeeping so a violent break
+    // fires on its very first observed minute (no touch state needed). Uses
+    // the CURRENT excursion, not the stored extreme: a spike that already fell
+    // back toward the level is sweep-shaped, not force.
+    const p = Number(price);
+    const level = bandLevel(crossed, wakeAbove, wakeBelow);
+    const atrNum = Number(atr);
+    const extensionAtr =
+        level !== null && Number.isFinite(atrNum) && atrNum > 0
+            ? ((p - level) * (crossed === 'above' ? 1 : -1)) / atrNum
+            : null;
+    const heldMsSoFar = touching && touchSide === crossed ? nowMs - Number(touchStartedMs) : 0;
+    if (extensionAtr !== null && extensionAtr >= wakeBreakConfirmAtr()) {
+        return {
+            kind: 'fire',
+            side: crossed,
+            heldMinutes: Math.max(0, Math.round(heldMsSoFar / 60_000)),
+            via: 'extension',
+            extensionAtr,
+        };
+    }
+
     if (!touching || touchSide !== crossed) {
         // First minute beyond this band. If a touch on the OTHER side was
         // live, price traversed the whole range — that touch failed.
@@ -180,10 +219,15 @@ export function sustainedWakeStep(params: {
 
     const heldMs = nowMs - Number(touchStartedMs);
     if (heldMs >= sustainMinutes * 60_000) {
-        return { kind: 'fire', side: crossed, heldMinutes: Math.max(0, Math.round(heldMs / 60_000)) };
+        return {
+            kind: 'fire',
+            side: crossed,
+            heldMinutes: Math.max(0, Math.round(heldMs / 60_000)),
+            via: 'time',
+            extensionAtr,
+        };
     }
 
-    const p = Number(price);
     const storedExtreme = Number(touchExtreme);
     const beyondStored =
         !Number.isFinite(storedExtreme) || (crossed === 'above' ? p > storedExtreme : p < storedExtreme);
