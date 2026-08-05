@@ -790,6 +790,9 @@ type PostmortemUi = {
     // Refusal post-mortems (trigger 'refusal') — loss reports leave these unset.
     counterfactual_outcome?: string;
     skip_reason_quality?: string;
+    // Win evaluations (winning closes) — loss/refusal reports leave these unset.
+    what_worked?: string[];
+    exit_quality?: string;
   } | null;
   dossier: Record<string, any> | null;
   model: string | null;
@@ -9268,7 +9271,17 @@ export default function Home() {
                       <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
                         <span>
                           {selectedTick?.kind === "postmortem"
-                            ? "Post-mortem"
+                            ? // Analyst family by verdict: wins are evaluations
+                              // (nothing died), refusals judge a declined wake.
+                              ["earned_win", "lucky_win", "exit_flaw"].includes(
+                                selectedPostmortem?.verdict ?? "",
+                              )
+                              ? "Win evaluation"
+                              : ["wrong_to_skip", "right_to_skip", "unclear"].includes(
+                                    selectedPostmortem?.verdict ?? "",
+                                  )
+                                ? "Refusal evaluation"
+                                : "Post-mortem"
                             : selectedTick
                               ? "Decision"
                               : "Latest Decision"}
@@ -9376,6 +9389,34 @@ export default function Home() {
                                         {
                                           selectedPostmortem.report
                                             .timeline_analysis
+                                        }
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.what_worked
+                                    ?.length ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        What worked
+                                      </div>
+                                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                                        {selectedPostmortem.report.what_worked.map(
+                                          (item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ),
+                                        )}
+                                      </ul>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report.exit_quality ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Exit quality
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {
+                                          selectedPostmortem.report
+                                            .exit_quality
                                         }
                                       </p>
                                     </div>

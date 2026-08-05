@@ -38,7 +38,10 @@ export function resolveSwingPostmortemMode(): SwingPostmortemMode {
         .trim()
         .toLowerCase();
     if (raw === 'all' || raw === 'off' || raw === 'loss') return raw;
-    return 'loss';
+    // 'all' since win evaluations (docs/win-evaluation.md): losses get the
+    // loss analyst, wins the win-evaluation analyst — the runner branches by
+    // PnL sign. 'loss' restores the old losses-only behavior.
+    return 'all';
 }
 
 // Sign is all that matters; prefer net over gross, absolute over pct only in
@@ -53,11 +56,14 @@ export function postmortemPnl(w: Pick<PositionWindow, 'pnlNet' | 'pnlPct' | 'pnl
 export function shouldEnqueuePostmortem(w: PositionWindow, mode: SwingPostmortemMode): boolean {
     if (mode === 'off') return false;
     if (!w?.symbol || !w.exitTimestamp) return false;
-    if (mode === 'all') return true;
     const pnl = postmortemPnl(w);
-    // Unknown PnL ≠ loss: Bitget closes can land before realized ROI does —
-    // the next re-sync carries the PnL and re-calls this (idempotent insert).
-    return pnl != null && pnl < 0;
+    // Unknown PnL is never enqueued (in ANY mode): Bitget closes can land
+    // before realized ROI does — the next re-sync carries the PnL and
+    // re-calls this (idempotent insert). The runner picks the analyst by the
+    // stored PnL's sign, so a row must not be born before the sign is known.
+    if (pnl == null) return false;
+    if (mode === 'all') return true;
+    return pnl < 0;
 }
 
 // Best-effort enqueue + worker kick, called from every close-persistence path
@@ -107,7 +113,7 @@ export async function maybeEnqueueSwingPostmortem(
     }
 }
 
-// Refusal post-mortems: a flat HOLD on a wake evaluation is a refusal with a
+// Refusal evaluations: a flat HOLD on a wake evaluation is a refusal with a
 // well-defined counterfactual (the model itself chose the level and wrote the
 // plan). Enqueue it into the SAME pipeline as loss post-mortems — one row,
 // matured by the drain after the standard delay (12h), never kicked
@@ -115,7 +121,7 @@ export async function maybeEnqueueSwingPostmortem(
 // what the declined trade would have done. The dossier is rebuilt from
 // swing.decisions at run time (the refused evaluation's full prompt carries
 // the band level, side, note and reason), so nothing extra is stored here.
-export async function maybeEnqueueSwingRefusalPostmortem(params: {
+export async function maybeEnqueueSwingRefusalEvaluation(params: {
     platform: string;
     symbol: string;
     decidedAtMs: number;
@@ -143,7 +149,7 @@ export async function maybeEnqueueSwingRefusalPostmortem(params: {
         }
         return id;
     } catch (err) {
-        console.warn(`refusal postmortem enqueue failed for ${params?.symbol}:`, err);
+        console.warn(`refusal evaluation enqueue failed for ${params?.symbol}:`, err);
         return null;
     }
 }
@@ -479,7 +485,7 @@ export function buildPostmortemDossier(input: {
     // Post-exit price summary (buildPostExitMarketSummary) — optional, omitted
     // when candles were unavailable.
     postExitMarket?: Record<string, unknown> | null;
-    // Refusal post-mortems: force the decision at this timestamp (±2 min) to
+    // Refusal evaluations: force the decision at this timestamp (±2 min) to
     // the FRONT of the pivotal ranking — the refused evaluation is the subject
     // and its full prompt must reach the analyst, but as a HOLD it would rank
     // last under the action-based scoring.
@@ -653,12 +659,12 @@ export const POSTMORTEM_SCHEMA = {
     },
 } as const;
 
-// Refusal post-mortems: the mirror analyst. Judges a DECLINED wake entry
+// Refusal evaluations: the mirror analyst. Judges a DECLINED wake entry
 // against what the market actually did afterwards. Unlike loss post-mortems,
 // the counterfactual outcome is ADMISSIBLE evidence here — measuring it is the
 // entire point of the 12h delay.
-export const REFUSAL_POSTMORTEM_SCHEMA = {
-    name: 'swing_refusal_postmortem',
+export const REFUSAL_EVALUATION_SCHEMA = {
+    name: 'swing_refusal_evaluation',
     schema: {
         type: 'object',
         additionalProperties: false,
@@ -695,6 +701,63 @@ export const REFUSAL_POSTMORTEM_SCHEMA = {
     },
 } as const;
 
+// Win evaluations (docs/win-evaluation.md): the positive-polarity analyst.
+// Same forensic discipline, flipped question — and the mirror hazard: a win
+// must not retroactively validate a bad process (lucky_win = bad_luck's twin).
+export const WIN_EVALUATION_SCHEMA = {
+    name: 'swing_win_evaluation',
+    schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'verdict',
+            'confidence',
+            'timeline_analysis',
+            'what_worked',
+            'exit_quality',
+            'lesson_adherence',
+            'lesson_action',
+            'reinforce_lesson_id',
+            'lesson',
+            'lesson_scope',
+        ],
+        properties: {
+            verdict: { type: 'string', enum: ['earned_win', 'lucky_win', 'exit_flaw'] },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            timeline_analysis: { type: 'string' },
+            // The measurable conditions that made the trade work — each one
+            // sentence, anchored to dossier timestamps/values.
+            what_worked: { type: 'array', items: { type: 'string' } },
+            // Judged against the post-exit price path: premature / well-timed /
+            // late, with the numbers that say so.
+            exit_quality: { type: 'string' },
+            lesson_adherence: { type: ['string', 'null'] },
+            lesson_action: { type: 'string', enum: ['new', 'reinforce', 'revise', 'retire', 'none'] },
+            reinforce_lesson_id: { type: ['integer', 'null'] },
+            lesson: { type: ['string', 'null'] },
+            lesson_scope: { type: ['string', 'null'] },
+        },
+    },
+} as const;
+
+const WIN_EVALUATION_SYSTEM_PROMPT = `You are a forensic trade analyst for an automated swing-trading pipeline, running a WIN EVALUATION: the position under review CLOSED IN PROFIT. You receive its complete recorded lifecycle — the position outcome, every AI decision call, every skipped tick with gate measurements, the trading AI's system prompt, the exact prompts at pivotal ticks, and the price path recorded AFTER the exit.
+
+Your job: decide whether this win was EARNED or LUCKY, judge the exit against what price did next, and feed what is repeatable back into the lesson library.
+
+Rules:
+- NO survivor bias — the mirror of hindsight bias: a profitable outcome does not retroactively validate the process. Only credit a decision if the information AVAILABLE AT ITS TIMESTAMP supported it. A trade that violated the library or its own plan and got paid anyway is 'lucky_win' — the most dangerous outcome in the dataset, because it teaches overconfidence if mishandled.
+- verdict: 'earned_win' when entry, management and exit were each defensible on their own timestamps. 'lucky_win' when the profit arrived DESPITE a process flaw (violated an applicable lesson, chased an extended entry, overrode its own written plan without cause, or was rescued by news/variance). 'exit_flaw' when the win was real but the exit demonstrably leaked money — use the POST-EXIT MARKET section: continuation well past the exit price toward the original target = premature exit; most of the recorded in-trade MFE given back before the close = late exit; reversal shortly after the close = well-timed (that alone is not exit_flaw).
+- what_worked: the repeatable, MEASURABLE conditions behind the win (each one sentence, anchored to dossier values). exit_quality: the exit judgment with its numbers.
+- Anchor every claim to a timestamp or measured value from the dossier. Do not invent data.
+- ACTIVE LESSON LIBRARY handling:
+  1. Adherence: if a library lesson applied, state in lesson_adherence whether it was FOLLOWED or VIOLATED (cite the tick).
+  2. lesson_action gates (code-enforced): on 'lucky_win' you MUST use 'none' — a lesson violated by a winning trade is NOT weakened by one lucky outcome, and "the violation worked" must never become doctrine; record the violation in lesson_adherence only. On 'earned_win': 'reinforce' the lesson whose condition shaped the win (reinforce_lesson_id — positive evidence counts like negative), or 'revise' a shown lesson whose bound ALMOST blocked this good trade (the win is evidence the bound is a notch too wide — corrected text with the adjusted number), or 'new' ONLY when the win hinged on a repeatable measurable condition the library does not cover. On 'exit_flaw': 'new'/'reinforce'/'revise' for exit-mechanics lessons. Never 'retire' from a win.
+  3. Do not invent a lesson to have something to say — most earned wins are the process working and teach nothing new ('none').
+- lesson (when writing/rewriting): 1-2 sentences, ≤220 chars, imperative, generalizable (ATR-relative/structural, no absolute price levels), and it MUST carry a numeric applicability bound. Positive-playbook lessons are allowed ("Prefer X when Y is within Z primary-ATR") but never platitudes.
+- lesson_scope is ADVISORY on 'new' (code starts every lesson at this symbol and promotes on cross-symbol evidence); on 'revise' it moves the corrected lesson's scope, null keeps it.
+
+Respond with strict JSON per the provided schema.`;
+
 const POSTMORTEM_SYSTEM_PROMPT = `You are a forensic trade post-mortem analyst for an automated swing-trading pipeline. You receive the complete recorded lifecycle of ONE closed position: the position outcome, a chronological digest of every AI decision call, every SKIPPED tick (where a pre-AI gate blocked the model from even looking, with the gate's measurements), the trading AI's system prompt, and the exact user prompts it saw at the pivotal ticks.
 
 Your job: determine what actually went wrong and how to avoid it — measurements over narratives.
@@ -717,7 +780,7 @@ Rules:
 
 Respond with strict JSON per the provided schema.`;
 
-const REFUSAL_POSTMORTEM_SYSTEM_PROMPT = `You are a forensic analyst for an automated swing-trading pipeline, reviewing ONE REFUSED ENTRY: the trading AI was woken at a price level it had itself chosen to watch (a wake band with an attached plan note), evaluated the setup, and declined (HOLD). You receive the refused evaluation's EXACT prompt (market state, the plan note, active lessons), the AI's stated refusal reason, the surrounding tick timeline, and the price path recorded AFTER the refusal.
+const REFUSAL_EVALUATION_SYSTEM_PROMPT = `You are a forensic analyst for an automated swing-trading pipeline, reviewing ONE REFUSED ENTRY: the trading AI was woken at a price level it had itself chosen to watch (a wake band with an attached plan note), evaluated the setup, and declined (HOLD). You receive the refused evaluation's EXACT prompt (market state, the plan note, active lessons), the AI's stated refusal reason, the surrounding tick timeline, and the price path recorded AFTER the refusal.
 
 Your job: decide whether declining was right — and correct the rulebook when it was not.
 
@@ -762,6 +825,11 @@ export async function runSwingPostmortem(
 ): Promise<PostmortemRunResult> {
     try {
         const isRefusal = row.trigger === 'refusal';
+        // Analyst selection by PnL sign (docs/win-evaluation.md): profitable
+        // closes get the win-evaluation analyst. Enqueue guarantees the sign
+        // is known before a row is born (unknown PnL is never enqueued).
+        const rowPnl = [row.pnlNet, row.pnlPct].find((v) => typeof v === 'number' && Number.isFinite(v)) ?? null;
+        const isWin = !isRefusal && rowPnl !== null && rowPnl > 0;
         const exitMs = row.exitTsMs ?? Date.now();
         const entryMs = row.entryTsMs ?? exitMs - POSTMORTEM_MAX_LIFETIME_MS;
         const fromMs = entryMs - POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS;
@@ -844,13 +912,23 @@ export async function runSwingPostmortem(
             // the pivotal set (a HOLD would otherwise rank last).
             focusTsMs: isRefusal ? exitMs : null,
             subjectLabel: isRefusal
-                ? 'REFUSED ENTRY EVALUATION (the declined wake — subject of this post-mortem; the POST-EXIT MARKET section shows the price path AFTER this refusal)'
-                : undefined,
+                ? 'REFUSED ENTRY EVALUATION (the declined wake — subject of this evaluation; the POST-EXIT MARKET section shows the price path AFTER this refusal)'
+                : isWin
+                  ? 'POSITION (closed IN PROFIT — subject of this WIN EVALUATION)'
+                  : undefined,
         });
         const { json: report, model, usage } = await callSwingDecision({
-            system: isRefusal ? REFUSAL_POSTMORTEM_SYSTEM_PROMPT : POSTMORTEM_SYSTEM_PROMPT,
+            system: isRefusal
+                ? REFUSAL_EVALUATION_SYSTEM_PROMPT
+                : isWin
+                  ? WIN_EVALUATION_SYSTEM_PROMPT
+                  : POSTMORTEM_SYSTEM_PROMPT,
             user: aiUserMessage,
-            schema: (isRefusal ? REFUSAL_POSTMORTEM_SCHEMA : POSTMORTEM_SCHEMA) as unknown as {
+            schema: (isRefusal
+                ? REFUSAL_EVALUATION_SCHEMA
+                : isWin
+                  ? WIN_EVALUATION_SCHEMA
+                  : POSTMORTEM_SCHEMA) as unknown as {
                 name: string;
                 schema: Record<string, unknown>;
             },
@@ -859,9 +937,11 @@ export async function runSwingPostmortem(
         if (!verdict) throw new Error('postmortem report missing verdict');
         // The analyst is library-aware: resolve its lesson_action (new /
         // reinforce / revise / retire / none) against the slice it was actually
-        // shown. 'none' is a legitimate outcome — bad luck, a correct skip, or
-        // an already-covered failure teaches nothing new.
-        const decision = resolveLessonDecision(report, library, { kind: isRefusal ? 'refusal' : 'loss' });
+        // shown. 'none' is a legitimate outcome — bad luck, a lucky win, a
+        // correct skip, or an already-covered failure teaches nothing new.
+        const decision = resolveLessonDecision(report, library, {
+            kind: isRefusal ? 'refusal' : isWin ? 'win' : 'loss',
+        });
         // Row keeps the per-trade record: the (re)formulated text on new or
         // reinforce; null when there was nothing to teach.
         const lesson = decision.kind === 'none' || decision.kind === 'retire' ? null : decision.text;

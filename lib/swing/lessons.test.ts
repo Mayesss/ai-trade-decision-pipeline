@@ -256,3 +256,50 @@ test('resolveLessonDecision: none / missing text / bad scope defaults', () => {
     const badScope = resolveLessonDecision({ lesson_action: 'new', lesson: 'Do Z.', lesson_scope: 'universe' }, []);
     assert.deepEqual(badScope, { kind: 'add', scope: 'symbol', text: 'Do Z.', confidence: 0.5 });
 });
+
+test('resolveLessonDecision: win gates — lucky_win teaches nothing, wins never retire', () => {
+    const shown = [row({ id: 5, lesson: 'A lesson.', confidence: 0.8 })];
+    // lucky_win: hard none, whatever the analyst tried.
+    for (const action of ['new', 'reinforce', 'revise', 'retire']) {
+        const d = resolveLessonDecision(
+            { verdict: 'lucky_win', lesson_action: action, reinforce_lesson_id: 5, lesson: 'X within 0.5 ATR.' },
+            shown,
+            { kind: 'win' },
+        );
+        assert.equal(d.kind, 'none', `lucky_win must block ${action}`);
+    }
+    // earned_win: reinforce/revise/new flow through...
+    assert.equal(
+        resolveLessonDecision(
+            { verdict: 'earned_win', lesson_action: 'reinforce', reinforce_lesson_id: 5, confidence: 0.7 },
+            shown,
+            { kind: 'win' },
+        ).kind,
+        'merge',
+    );
+    assert.equal(
+        resolveLessonDecision(
+            { verdict: 'earned_win', lesson_action: 'revise', reinforce_lesson_id: 5, lesson: 'Loosened bound.', confidence: 0.6 },
+            shown,
+            { kind: 'win' },
+        ).kind,
+        'revise',
+    );
+    assert.equal(
+        resolveLessonDecision(
+            { verdict: 'exit_flaw', lesson_action: 'new', lesson: 'Trail after +1.5R within 0.5 ATR of target.', confidence: 0.6 },
+            shown,
+            { kind: 'win' },
+        ).kind,
+        'add',
+    );
+    // ...but retire is blocked for every win verdict.
+    assert.equal(
+        resolveLessonDecision(
+            { verdict: 'earned_win', lesson_action: 'retire', reinforce_lesson_id: 5 },
+            shown,
+            { kind: 'win' },
+        ).kind,
+        'none',
+    );
+});

@@ -158,9 +158,13 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
     tick.kind === 'action'
       ? ` · ${tick.action}`
       : tick.kind === 'postmortem'
-        ? ` · post-mortem${
-            tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''
-          }`
+        ? ` · ${
+            ['earned_win', 'lucky_win', 'exit_flaw'].includes(tick.verdict || '')
+              ? 'win evaluation'
+              : ['wrong_to_skip', 'right_to_skip', 'unclear'].includes(tick.verdict || '')
+                ? 'refusal evaluation'
+                : 'post-mortem'
+          }${tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''}`
         : tick.kind === 'ai_call'
           ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
           : tick.stage

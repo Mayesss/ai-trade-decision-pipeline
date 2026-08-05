@@ -133,7 +133,7 @@ export function resolveLessonDecision(
         confidence?: number | null;
     },
     shownLessons: SwingLessonRow[],
-    opts: { kind?: 'loss' | 'refusal' } = {},
+    opts: { kind?: 'loss' | 'refusal' | 'win' } = {},
 ): LessonDecision {
     const verdict = String(report?.verdict || '').toLowerCase();
     // Hard gates, not just prompt guidance:
@@ -143,6 +143,11 @@ export function resolveLessonDecision(
     //   library effect is reinforcing the lesson that earned it ('none'
     //   otherwise). New restrictions must never be born from skips that worked.
     // - refusal + unclear: teaches nothing either way.
+    // - win + lucky_win: bad_luck's mirror — profit despite a process flaw is
+    //   variance, never doctrine (must not weaken the violated lesson, must
+    //   not mint "the violation worked").
+    // - wins never retire: removing a rule takes negative evidence about the
+    //   rule, not one profitable trade.
     if (verdict === 'bad_luck') {
         return { kind: 'none', reason: 'bad_luck_no_lesson' };
     }
@@ -152,6 +157,10 @@ export function resolveLessonDecision(
         if (verdict === 'right_to_skip' && action !== 'reinforce' && action !== 'none') {
             return { kind: 'none', reason: 'right_to_skip_only_reinforces' };
         }
+    }
+    if (opts.kind === 'win') {
+        if (verdict === 'lucky_win') return { kind: 'none', reason: 'lucky_win_no_lesson' };
+        if (action === 'retire') return { kind: 'none', reason: 'wins_never_retire' };
     }
     const text = typeof report?.lesson === 'string' && report.lesson.trim() ? report.lesson.trim().slice(0, 300) : null;
     const confidence = Number.isFinite(Number(report?.confidence))
