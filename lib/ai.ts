@@ -969,7 +969,7 @@ export function computeSwingState(
         // this symbol / its asset class / globally (max 5, confidence-sorted —
         // see lib/swing/lessons.ts). Rendered in the USER turn so the cached
         // system prefix stays byte-stable; [] / null omits the block.
-        lessons: Array<{ scope: string; lesson: string }> | null = null,
+        lessons: Array<{ scope: string; lesson: string; originLabel?: string | null }> | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1398,7 +1398,7 @@ INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 - market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — entry_limit = the pullback limit that entry rested at; reissued_count = consecutive re-issues of the same limit collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the limit was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested.
-- LESSONS (user turn, when present): 1-2 line lessons distilled from forensic post-mortems of your own past LOSING trades on this symbol, its asset class, or any instrument ([scope] tag). These are failure modes you have actually exhibited, not generic advice — before entering, check the setup against them and note in your reason when one applies. They are cautionary evidence like recent_actions outcomes, never hard rules: current structure and measurements win on conflict. When a lesson states a numeric bound (an ATR distance, a time window, a count), apply the bound EXACTLY as written: a setup OUTSIDE the bound is not blocked by that lesson, and citing a lesson as a reason to skip requires quoting the measured value that puts THIS setup inside its bound — "per lesson" without the number is not a valid refusal. Lessons name the mistake to avoid, not a mandate to never trade the pattern: a setup that satisfies a lesson's stated conditions is CLEARED by it, not merely tolerated.
+- LESSONS (user turn, when present): 1-2 line lessons distilled from forensic evaluations of your OWN past trading — losses, wins, and MISSED ENTRIES (setups you declined that then worked) — on this symbol, its asset class, or any instrument. Each carries a [scope | learned from ...] tag showing what taught it: a lesson from losses warns you off a mistake; a lesson from missed entries exists because WAITING cost money — it is there to push you toward action, not away from it; a lesson backed from several sides (losses AND wins or missed entries) is a boundary tested from both directions — trust its bound most. These are patterns from your actual record, not generic advice — before deciding, check the setup against them and note in your reason when one applies. They are cautionary evidence like recent_actions outcomes, never hard rules: current structure and measurements win on conflict. When a lesson states a numeric bound (an ATR distance, a time window, a count), apply the bound EXACTLY as written: a setup OUTSIDE the bound is not blocked by that lesson, and citing a lesson as a reason to skip requires quoting the measured value that puts THIS setup inside its bound — "per lesson" without the number is not a valid refusal. Lessons name the mistake to avoid, not a mandate to never trade the pattern: a setup that satisfies a lesson's stated conditions is CLEARED by it, not merely tolerated.
 
 DECISION OWNERSHIP
 - You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Position size is computed in code from a fixed dollar risk and your stop distance — your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.'}
@@ -1459,8 +1459,8 @@ MARKET (raw inputs):
 ${JSON.stringify(market)}
 ${
     Array.isArray(lessons) && lessons.length
-        ? `\nLESSONS (from post-mortems of your past losing trades — see INPUTS):\n${lessons
-              .map((l) => `- [${l.scope}] ${l.lesson}`)
+        ? `\nLESSONS (from forensic evaluations of your past trading — see INPUTS):\n${lessons
+              .map((l) => `- [${l.scope}${l.originLabel ? ` | learned from ${l.originLabel}` : ''}] ${l.lesson}`)
               .join('\n')}\n`
         : ''
 }

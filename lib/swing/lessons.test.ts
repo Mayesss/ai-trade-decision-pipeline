@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import type { SwingLessonRow } from './pg';
 import {
+    lessonOriginLabel,
     PROMPT_LESSON_SCOPE_CAPS,
     promotedScopeOnReinforce,
     resolveLessonDecision,
@@ -18,6 +19,7 @@ const row = (extra: Partial<SwingLessonRow>): SwingLessonRow => ({
     confidence: 0.5,
     supportCount: 1,
     sourcePostmortemIds: [1],
+    originCounts: {},
     status: 'active',
     updatedAtMs: 0,
     ...extra,
@@ -77,11 +79,11 @@ test('selectPromptLessons: scope buckets are independent and ordered symbol-firs
     assert.ok(picked.slice(symCap + 1).every((p) => p.scope === 'global'));
 });
 
-test('selectPromptLessons: carries scope for the [scope] prompt tag', () => {
+test('selectPromptLessons: carries scope + origin label for the prompt tag', () => {
     const picked = selectPromptLessons([
         row({ id: 1, scope: 'symbol', symbol: 'ETHUSDT', lesson: 'Symbol quirk.' }),
     ]);
-    assert.deepEqual(picked, [{ scope: 'symbol', lesson: 'Symbol quirk.' }]);
+    assert.deepEqual(picked, [{ scope: 'symbol', lesson: 'Symbol quirk.', originLabel: null }]);
 });
 
 test('resolveLessonDecision: bad_luck verdict never yields a lesson, even if the analyst emits one', () => {
@@ -302,4 +304,17 @@ test('resolveLessonDecision: win gates — lucky_win teaches nothing, wins never
         ).kind,
         'none',
     );
+});
+
+test('lessonOriginLabel + selectPromptLessons: provenance renders as counts, empty stays null', () => {
+    assert.equal(lessonOriginLabel({ loss: 2, refusal: 1 }), '2 losses, 1 missed entry');
+    assert.equal(lessonOriginLabel({ win: 1 }), '1 win');
+    assert.equal(lessonOriginLabel({ loss: 1, win: 2, refusal: 3 }), '1 loss, 2 wins, 3 missed entries');
+    assert.equal(lessonOriginLabel({}), null);
+    const picked = selectPromptLessons([
+        row({ id: 1, scope: 'symbol', symbol: 'ETHUSDT', lesson: 'Tagged.', originCounts: { loss: 1, win: 1 } }),
+        row({ id: 2, scope: 'symbol', symbol: 'ETHUSDT', lesson: 'Legacy.', originCounts: {} }),
+    ]);
+    assert.equal(picked.find((p) => p.lesson === 'Tagged.')?.originLabel, '1 loss, 1 win');
+    assert.equal(picked.find((p) => p.lesson === 'Legacy.')?.originLabel, null);
 });

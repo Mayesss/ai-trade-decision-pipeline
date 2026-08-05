@@ -372,6 +372,10 @@ async function ensureSwingSchema(): Promise<void> {
               CONSTRAINT lessons_scope_check CHECK (scope IN ('symbol', 'asset_class', 'global')),
               CONSTRAINT lessons_status_check CHECK (status IN ('active', 'retired'))
             )`);
+        // origin_counts: how many losses / wins / missed-entry (refusal)
+        // evaluations back this lesson — provenance shown to the trading AI
+        // ("tested from both sides" beats "one loss said so").
+        await db.$executeRaw(sql`ALTER TABLE swing.lessons ADD COLUMN IF NOT EXISTS origin_counts JSONB NOT NULL DEFAULT '{}'::jsonb`);
         await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS lessons_symbol_idx ON swing.lessons (status, scope, symbol)`);
         await db.$executeRaw(sql`CREATE INDEX IF NOT EXISTS lessons_class_idx ON swing.lessons (status, scope, asset_class)`);
         await db.$executeRaw(sql`
@@ -1453,6 +1457,9 @@ export async function loadSwingPostmortemById(id: number): Promise<SwingPostmort
 // --------------------------------------------------------------------------
 export type SwingLessonScope = 'symbol' | 'asset_class' | 'global';
 
+export type SwingLessonOriginKind = 'loss' | 'win' | 'refusal';
+export type SwingLessonOriginCounts = Partial<Record<SwingLessonOriginKind, number>>;
+
 export type SwingLessonRow = {
     id: number;
     scope: SwingLessonScope;
@@ -1462,9 +1469,22 @@ export type SwingLessonRow = {
     confidence: number;
     supportCount: number;
     sourcePostmortemIds: number[];
+    // Which evaluation kinds produced/reinforced this lesson (provenance for
+    // the prompt tag). Empty for rows predating the column.
+    originCounts: SwingLessonOriginCounts;
     status: 'active' | 'retired';
     updatedAtMs: number;
 };
+
+function parseOriginCounts(raw: unknown): SwingLessonOriginCounts {
+    const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    const out: SwingLessonOriginCounts = {};
+    for (const kind of ['loss', 'win', 'refusal'] as const) {
+        const n = Number(obj[kind]);
+        if (Number.isFinite(n) && n > 0) out[kind] = Math.floor(n);
+    }
+    return out;
+}
 
 function mapLessonRow(r: any): SwingLessonRow {
     return {
@@ -1478,6 +1498,7 @@ function mapLessonRow(r: any): SwingLessonRow {
         sourcePostmortemIds: Array.isArray(r.source_postmortem_ids)
             ? r.source_postmortem_ids.map((v: unknown) => Number(v)).filter((v: number) => Number.isFinite(v))
             : [],
+        originCounts: parseOriginCounts(r.origin_counts),
         status: r.status === 'retired' ? 'retired' : 'active',
         updatedAtMs: r.updated_at ? new Date(r.updated_at).getTime() : 0,
     };
@@ -1490,6 +1511,8 @@ export async function insertSwingLesson(input: {
     lesson: string;
     confidence: number;
     sourcePostmortemId: number;
+    // Which evaluation kind is writing this lesson (provenance tag).
+    originKind?: SwingLessonOriginKind | null;
 }): Promise<number | null> {
     if (!isSwingPgConfigured()) return null;
     await ensureSwingSchema();
@@ -1500,7 +1523,7 @@ export async function insertSwingLesson(input: {
     // matching in loadActiveSwingLessons keys on the scope column, so the
     // extra provenance never widens who sees the lesson.
     const rows = await db.$queryRaw<Array<{ id: number | string }>>(sql`
-        INSERT INTO swing.lessons (scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids)
+        INSERT INTO swing.lessons (scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts)
         VALUES (
             ${input.scope},
             ${String(input.symbol || '').toUpperCase() || null},
@@ -1508,7 +1531,8 @@ export async function insertSwingLesson(input: {
             ${input.lesson},
             ${Math.max(0, Math.min(1, input.confidence))},
             1,
-            ${JSON.stringify([input.sourcePostmortemId])}::jsonb
+            ${JSON.stringify([input.sourcePostmortemId])}::jsonb,
+            ${JSON.stringify(input.originKind ? { [input.originKind]: 1 } : {})}::jsonb
         )
         RETURNING id;
     `);
@@ -1528,6 +1552,9 @@ export async function mergeSwingLesson(input: {
     // Scope-ladder promotion earned by cross-symbol/cross-class reinforcement
     // (promotedScopeOnReinforce). null/absent = scope unchanged.
     promoteTo?: { scope: SwingLessonScope; assetClass: string | null } | null;
+    // Which evaluation kind is reinforcing (provenance counter; incremented
+    // only when the source post-mortem is new, same guard as support_count).
+    originKind?: SwingLessonOriginKind | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     await ensureSwingSchema();
@@ -1541,6 +1568,15 @@ export async function mergeSwingLesson(input: {
             asset_class = COALESCE(${input.promoteTo?.assetClass ?? null}::text, asset_class),
             support_count = support_count
                 + CASE WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN 0 ELSE 1 END,
+            origin_counts = CASE
+                WHEN ${input.originKind ?? null}::text IS NULL OR source_postmortem_ids @> ${sourceJson}::jsonb
+                    THEN coalesce(origin_counts, '{}'::jsonb)
+                ELSE jsonb_set(
+                    coalesce(origin_counts, '{}'::jsonb),
+                    ARRAY[${input.originKind ?? null}::text],
+                    to_jsonb(coalesce((origin_counts ->> ${input.originKind ?? null}::text)::int, 0) + 1)
+                )
+            END,
             source_postmortem_ids = CASE
                 WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN source_postmortem_ids
                 ELSE source_postmortem_ids || ${sourceJson}::jsonb
@@ -1602,7 +1638,7 @@ export async function loadActiveSwingLessons(opts: {
     const db = swingPg();
     const rows = await db.$queryRaw<Array<any>>(sql`
         SELECT id, scope, symbol, asset_class, lesson, confidence, support_count,
-               source_postmortem_ids, status, updated_at
+               source_postmortem_ids, origin_counts, status, updated_at
         FROM swing.lessons
         WHERE status = 'active'
           AND (

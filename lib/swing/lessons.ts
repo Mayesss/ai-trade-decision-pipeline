@@ -48,7 +48,21 @@ export function resolveSwingLessonsMode(): SwingLessonsMode {
     return raw === 'off' ? 'off' : 'on';
 }
 
-export type PromptLesson = { scope: SwingLessonScope; lesson: string };
+// originLabel: compact human provenance ("2 losses, 1 missed entry") rendered
+// in the prompt tag so the trading AI can weigh HOW a lesson was learned —
+// null for rows predating origin tracking (renders without the tag).
+export type PromptLesson = { scope: SwingLessonScope; lesson: string; originLabel: string | null };
+
+export function lessonOriginLabel(counts: SwingLessonRow['originCounts']): string | null {
+    const parts: string[] = [];
+    const loss = counts.loss ?? 0;
+    const win = counts.win ?? 0;
+    const refusal = counts.refusal ?? 0;
+    if (loss > 0) parts.push(`${loss} loss${loss > 1 ? 'es' : ''}`);
+    if (win > 0) parts.push(`${win} win${win > 1 ? 's' : ''}`);
+    if (refusal > 0) parts.push(`${refusal} missed entr${refusal > 1 ? 'ies' : 'y'}`);
+    return parts.length ? parts.join(', ') : null;
+}
 
 // Pure selection half (tested): within each scope bucket, confidence first,
 // then how many post-mortems back the lesson, then recency; each bucket capped
@@ -69,7 +83,7 @@ export function selectPromptLessons(
         sorted
             .filter((r) => r.scope === scope)
             .slice(0, Math.max(0, caps[scope] ?? 0))
-            .map((r) => ({ scope: r.scope, lesson: r.lesson.trim() })),
+            .map((r) => ({ scope: r.scope, lesson: r.lesson.trim(), originLabel: lessonOriginLabel(r.originCounts) })),
     );
 }
 
@@ -241,7 +255,13 @@ export function promotedScopeOnReinforce(
 // DB half — best-effort; a library write failure never fails the post-mortem.
 export async function applyLessonDecision(
     decision: LessonDecision,
-    ctx: { postmortemId: number; symbol: string; assetClass: string | null },
+    ctx: {
+        postmortemId: number;
+        symbol: string;
+        assetClass: string | null;
+        // Which evaluation kind is writing (provenance counter on the lesson).
+        originKind?: 'loss' | 'win' | 'refusal' | null;
+    },
 ): Promise<{ applied: LessonDecision['kind']; lessonId?: number | null; promotedTo?: string | null }> {
     try {
         if (decision.kind === 'add') {
@@ -252,6 +272,7 @@ export async function applyLessonDecision(
                 lesson: decision.text,
                 confidence: decision.confidence,
                 sourcePostmortemId: ctx.postmortemId,
+                originKind: ctx.originKind ?? null,
             });
             return { applied: 'add', lessonId: id };
         }
@@ -267,6 +288,7 @@ export async function applyLessonDecision(
                 confidence: decision.confidence,
                 sourcePostmortemId: ctx.postmortemId,
                 promoteTo: promotion,
+                originKind: ctx.originKind ?? null,
             });
             return { applied: 'merge', lessonId: decision.targetId, promotedTo: promotion?.scope ?? null };
         }

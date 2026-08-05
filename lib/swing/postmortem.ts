@@ -955,6 +955,7 @@ export async function runSwingPostmortem(
             postmortemId: row.id,
             symbol: row.symbol,
             assetClass,
+            originKind: isRefusal ? 'refusal' : isWin ? 'win' : 'loss',
         });
         console.log(
             `[postmortem] #${row.id} lesson decision: ${JSON.stringify({ kind: decision.kind, ...applied })}`,
