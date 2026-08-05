@@ -787,6 +787,9 @@ type PostmortemUi = {
     suggestions?: string[];
     lesson_adherence?: string | null;
     lesson_action?: string;
+    // Refusal post-mortems (trigger 'refusal') — loss reports leave these unset.
+    counterfactual_outcome?: string;
+    skip_reason_quality?: string;
   } | null;
   dossier: Record<string, any> | null;
   model: string | null;
@@ -9373,6 +9376,35 @@ export default function Home() {
                                         {
                                           selectedPostmortem.report
                                             .timeline_analysis
+                                        }
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report
+                                    .counterfactual_outcome ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Counterfactual (what the declined trade
+                                        did)
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {
+                                          selectedPostmortem.report
+                                            .counterfactual_outcome
+                                        }
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {selectedPostmortem.report
+                                    .skip_reason_quality ? (
+                                    <div>
+                                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Skip-reason quality
+                                      </div>
+                                      <p className="mt-1 whitespace-pre-wrap">
+                                        {
+                                          selectedPostmortem.report
+                                            .skip_reason_quality
                                         }
                                       </p>
                                     </div>

@@ -19,6 +19,8 @@ import {
     insertSwingLesson,
     loadActiveSwingLessons,
     mergeSwingLesson,
+    retireSwingLesson,
+    reviseSwingLesson,
     type SwingLessonRow,
     type SwingLessonScope,
 } from './pg';
@@ -90,16 +92,37 @@ export async function loadPromptLessons(symbol: string, assetClass: string | nul
 // ---------------------------------------------------------------------------
 // Applying the analyst's lesson decision (report.lesson_action)
 // ---------------------------------------------------------------------------
+// Scope is CODE-owned, not analyst opinion (the analyst's lesson_scope field
+// is advisory at best): every new lesson enters at SYMBOL scope and earns
+// promotion mechanically — reinforced from a different symbol in the same
+// class → asset_class; from a different class → global. This is the ladder
+// that keeps a two-loss BTC pattern from becoming a universal veto again.
 export type LessonDecision =
-    | { kind: 'add'; scope: SwingLessonScope; text: string; confidence: number }
-    | { kind: 'merge'; targetId: number; text: string; confidence: number }
+    | { kind: 'add'; scope: 'symbol'; text: string; confidence: number }
+    | {
+          kind: 'merge';
+          targetId: number;
+          text: string;
+          confidence: number;
+          // Target row facts the ladder needs at apply time (from the SHOWN slice).
+          targetScope: SwingLessonScope;
+          targetSymbol: string | null;
+          targetAssetClass: string | null;
+      }
+    // Revise: reword a shown lesson, tighten/loosen its bound, or move its
+    // scope (both directions) — the analyst's tool for contradictions and
+    // over-restrictive rules. Confidence is taken as given (a revise may
+    // deliberately weaken).
+    | { kind: 'revise'; targetId: number; text: string; confidence: number; scope: SwingLessonScope | null }
+    | { kind: 'retire'; targetId: number }
     | { kind: 'none'; reason: string };
 
 // Pure resolution of the post-mortem report's lesson fields against the
 // library slice that was SHOWN to the analyst (tested). Defensive on model
 // output: a reinforce pointing at an id that was never shown degrades to add
-// (losing the lesson entirely is worse than a rare near-duplicate); a
-// reinforce without any usable text keeps the existing row's wording.
+// (losing the lesson entirely is worse than a rare near-duplicate); revise/
+// retire pointing at an unshown id degrade to none (mutating an unseen lesson
+// is never safe); a reinforce without usable text keeps the existing wording.
 export function resolveLessonDecision(
     report: {
         verdict?: string | null;
@@ -110,29 +133,50 @@ export function resolveLessonDecision(
         confidence?: number | null;
     },
     shownLessons: SwingLessonRow[],
+    opts: { kind?: 'loss' | 'refusal' } = {},
 ): LessonDecision {
-    // Hard gate, not just prompt guidance: a bad_luck verdict means the process
-    // was sound and the loss was variance — there is no failure mode to teach,
-    // so nothing may enter the library (the same setup can win next time; a
-    // "lesson" from it would just bias the trading AI against sound setups).
-    // This also blocks reinforce: variance proves nothing about a lesson.
-    if (String(report?.verdict || '').toLowerCase() === 'bad_luck') {
+    const verdict = String(report?.verdict || '').toLowerCase();
+    // Hard gates, not just prompt guidance:
+    // - loss + bad_luck: the process was sound, the loss was variance — nothing
+    //   may enter or reinforce (variance proves nothing about a lesson).
+    // - refusal + right_to_skip: the skip was CORRECT — the only permitted
+    //   library effect is reinforcing the lesson that earned it ('none'
+    //   otherwise). New restrictions must never be born from skips that worked.
+    // - refusal + unclear: teaches nothing either way.
+    if (verdict === 'bad_luck') {
         return { kind: 'none', reason: 'bad_luck_no_lesson' };
     }
     const action = String(report?.lesson_action || '').toLowerCase();
+    if (opts.kind === 'refusal') {
+        if (verdict === 'unclear') return { kind: 'none', reason: 'unclear_no_lesson' };
+        if (verdict === 'right_to_skip' && action !== 'reinforce' && action !== 'none') {
+            return { kind: 'none', reason: 'right_to_skip_only_reinforces' };
+        }
+    }
     const text = typeof report?.lesson === 'string' && report.lesson.trim() ? report.lesson.trim().slice(0, 300) : null;
-    const scope: SwingLessonScope = ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope as string)
-        ? (report!.lesson_scope as SwingLessonScope)
-        : 'symbol';
     const confidence = Number.isFinite(Number(report?.confidence))
         ? Math.max(0, Math.min(1, Number(report?.confidence)))
         : 0.5;
+    const target = shownLessons.find((l) => l.id === Number(report?.reinforce_lesson_id));
 
+    if (action === 'retire') {
+        if (!target) return { kind: 'none', reason: 'retire_target_not_shown' };
+        return { kind: 'retire', targetId: target.id };
+    }
+    if (action === 'revise') {
+        if (!target) return { kind: 'none', reason: 'revise_target_not_shown' };
+        if (!text) return { kind: 'none', reason: 'revise_without_text' };
+        const scope: SwingLessonScope | null = ['symbol', 'asset_class', 'global'].includes(
+            report?.lesson_scope as string,
+        )
+            ? (report!.lesson_scope as SwingLessonScope)
+            : null;
+        return { kind: 'revise', targetId: target.id, text, confidence, scope };
+    }
     if (action === 'none' || (!text && action !== 'reinforce')) {
         return { kind: 'none', reason: action === 'none' ? 'analyst_none' : 'no_lesson_text' };
     }
     if (action === 'reinforce') {
-        const target = shownLessons.find((l) => l.id === Number(report?.reinforce_lesson_id));
         if (target) {
             return {
                 kind: 'merge',
@@ -140,26 +184,60 @@ export function resolveLessonDecision(
                 text: text ?? target.lesson,
                 // Reinforcement never weakens a lesson that just proved itself.
                 confidence: Math.max(confidence, target.confidence),
+                targetScope: target.scope,
+                targetSymbol: target.symbol ?? null,
+                targetAssetClass: target.assetClass ?? null,
             };
         }
-        if (text) return { kind: 'add', scope, text, confidence };
+        if (text) return { kind: 'add', scope: 'symbol', text, confidence };
         return { kind: 'none', reason: 'reinforce_unresolvable' };
     }
     if (action === 'new' && text) {
-        return { kind: 'add', scope, text, confidence };
+        // Ladder rule: new lessons ALWAYS enter at symbol scope, whatever the
+        // analyst suggested — promotion is earned by cross-symbol evidence.
+        return { kind: 'add', scope: 'symbol', text, confidence };
     }
     return { kind: 'none', reason: `unusable_action_${action || 'empty'}` };
+}
+
+// The ladder's promotion half (pure, tested): a reinforce coming from a
+// different symbol than the lesson's origin promotes symbol → asset_class; a
+// reinforce from a different asset class promotes asset_class → global.
+// Same-origin reinforcement never moves scope.
+export function promotedScopeOnReinforce(
+    target: { scope: SwingLessonScope; symbol: string | null; assetClass: string | null },
+    ctx: { symbol: string; assetClass: string | null },
+): { scope: SwingLessonScope; assetClass: string | null } | null {
+    const ctxSymbol = String(ctx.symbol || '').toUpperCase();
+    if (target.scope === 'symbol') {
+        const originSymbol = String(target.symbol || '').toUpperCase();
+        if (originSymbol && ctxSymbol && originSymbol !== ctxSymbol) {
+            const sameClass =
+                target.assetClass && ctx.assetClass && target.assetClass === ctx.assetClass;
+            return sameClass
+                ? { scope: 'asset_class', assetClass: target.assetClass }
+                : { scope: 'global', assetClass: null };
+        }
+        return null;
+    }
+    if (target.scope === 'asset_class') {
+        if (target.assetClass && ctx.assetClass && target.assetClass !== ctx.assetClass) {
+            return { scope: 'global', assetClass: null };
+        }
+        return null;
+    }
+    return null;
 }
 
 // DB half — best-effort; a library write failure never fails the post-mortem.
 export async function applyLessonDecision(
     decision: LessonDecision,
     ctx: { postmortemId: number; symbol: string; assetClass: string | null },
-): Promise<{ applied: LessonDecision['kind']; lessonId?: number | null }> {
+): Promise<{ applied: LessonDecision['kind']; lessonId?: number | null; promotedTo?: string | null }> {
     try {
         if (decision.kind === 'add') {
             const id = await insertSwingLesson({
-                scope: decision.scope,
+                scope: 'symbol',
                 symbol: ctx.symbol,
                 assetClass: ctx.assetClass,
                 lesson: decision.text,
@@ -169,13 +247,33 @@ export async function applyLessonDecision(
             return { applied: 'add', lessonId: id };
         }
         if (decision.kind === 'merge') {
+            // The ladder's promotion half: cross-symbol evidence widens scope.
+            const promotion = promotedScopeOnReinforce(
+                { scope: decision.targetScope, symbol: decision.targetSymbol, assetClass: decision.targetAssetClass },
+                { symbol: ctx.symbol, assetClass: ctx.assetClass },
+            );
             await mergeSwingLesson({
                 id: decision.targetId,
                 lesson: decision.text,
                 confidence: decision.confidence,
                 sourcePostmortemId: ctx.postmortemId,
+                promoteTo: promotion,
             });
-            return { applied: 'merge', lessonId: decision.targetId };
+            return { applied: 'merge', lessonId: decision.targetId, promotedTo: promotion?.scope ?? null };
+        }
+        if (decision.kind === 'revise') {
+            await reviseSwingLesson({
+                id: decision.targetId,
+                lesson: decision.text,
+                confidence: decision.confidence,
+                scope: decision.scope,
+                sourcePostmortemId: ctx.postmortemId,
+            });
+            return { applied: 'revise', lessonId: decision.targetId };
+        }
+        if (decision.kind === 'retire') {
+            await retireSwingLesson(decision.targetId);
+            return { applied: 'retire', lessonId: decision.targetId };
         }
         return { applied: 'none' };
     } catch (err) {

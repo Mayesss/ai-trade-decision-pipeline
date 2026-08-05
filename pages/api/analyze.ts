@@ -88,7 +88,7 @@ import {
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
 import { kvSetJson } from '../../lib/kv';
-import { maybeEnqueueSwingPostmortem } from '../../lib/swing/postmortem';
+import { maybeEnqueueSwingPostmortem, maybeEnqueueSwingRefusalPostmortem } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
     claimSwingAiCooldown,
@@ -3227,6 +3227,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesOut.metrics,
             kvMarker: false,
         });
+        // Refusal post-mortem: a flat HOLD on a wake evaluation is a DECLINED
+        // entry with a measurable counterfactual (the model chose the level
+        // and wrote the plan itself). Enqueue it into the same post-mortem
+        // pipeline as losses (trigger 'refusal'); the drain runs it after the
+        // standard 12h delay so the analyst judges the skip against what price
+        // actually did — and corrects the lesson library when the skip was
+        // wrong. Best-effort (enqueue catches internally), never fails a tick.
+        if (
+            cooldownWake &&
+            !positionOpen &&
+            !dryRun &&
+            String(decision.action || '').toUpperCase() === 'HOLD'
+        ) {
+            await maybeEnqueueSwingRefusalPostmortem({
+                platform,
+                symbol,
+                decidedAtMs: Date.now(),
+                priceAtEval: effectivePrice,
+            });
+        }
         // Consume the claimed wake row only NOW — the wake's decision is
         // durably recorded above, so a crash anywhere earlier leaves the row
         // (lease expires, watcher re-fires) instead of losing the wake. When

@@ -1182,7 +1182,7 @@ export async function getSwingDecisionPrompt(
 // Post-mortems (per-closed-position forensic reports)
 // --------------------------------------------------------------------------
 export type SwingPostmortemStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
-export type SwingPostmortemTrigger = 'close' | 'manual' | 'backfill';
+export type SwingPostmortemTrigger = 'close' | 'manual' | 'backfill' | 'refusal';
 
 export type SwingPostmortemEnqueueInput = {
     platform: string;
@@ -1494,12 +1494,17 @@ export async function insertSwingLesson(input: {
     if (!isSwingPgConfigured()) return null;
     await ensureSwingSchema();
     const db = swingPg();
+    // symbol AND asset_class are always stored as PROVENANCE (where the lesson
+    // was born) regardless of scope — the scope ladder's promotion logic needs
+    // the origin to detect cross-symbol / cross-class reinforcement. Scope
+    // matching in loadActiveSwingLessons keys on the scope column, so the
+    // extra provenance never widens who sees the lesson.
     const rows = await db.$queryRaw<Array<{ id: number | string }>>(sql`
         INSERT INTO swing.lessons (scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids)
         VALUES (
             ${input.scope},
-            ${input.scope === 'symbol' ? String(input.symbol || '').toUpperCase() || null : null},
-            ${input.scope === 'asset_class' ? input.assetClass ?? null : null},
+            ${String(input.symbol || '').toUpperCase() || null},
+            ${input.assetClass ?? null},
             ${input.lesson},
             ${Math.max(0, Math.min(1, input.confidence))},
             1,
@@ -1520,6 +1525,9 @@ export async function mergeSwingLesson(input: {
     lesson: string;
     confidence: number;
     sourcePostmortemId: number;
+    // Scope-ladder promotion earned by cross-symbol/cross-class reinforcement
+    // (promotedScopeOnReinforce). null/absent = scope unchanged.
+    promoteTo?: { scope: SwingLessonScope; assetClass: string | null } | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     await ensureSwingSchema();
@@ -1529,8 +1537,40 @@ export async function mergeSwingLesson(input: {
         UPDATE swing.lessons
         SET lesson = ${input.lesson},
             confidence = ${Math.max(0, Math.min(1, input.confidence))},
+            scope = COALESCE(${input.promoteTo?.scope ?? null}::text, scope),
+            asset_class = COALESCE(${input.promoteTo?.assetClass ?? null}::text, asset_class),
             support_count = support_count
                 + CASE WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN 0 ELSE 1 END,
+            source_postmortem_ids = CASE
+                WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN source_postmortem_ids
+                ELSE source_postmortem_ids || ${sourceJson}::jsonb
+            END
+        WHERE id = ${Math.floor(input.id)} AND status = 'active';
+    `);
+}
+
+// Revise: the analyst's contradiction/over-restriction tool — replaces the
+// wording (typically loosening or tightening a numeric bound), may move scope
+// in EITHER direction (a demotion re-anchors an over-generalized rule), and
+// takes confidence as given (unlike reinforce, a revise may weaken). The
+// source post-mortem is appended for provenance but support_count is NOT
+// incremented — a revision is a correction, not corroboration.
+export async function reviseSwingLesson(input: {
+    id: number;
+    lesson: string;
+    confidence: number;
+    scope?: SwingLessonScope | null;
+    sourcePostmortemId: number;
+}): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const sourceJson = JSON.stringify([Math.floor(input.sourcePostmortemId)]);
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.lessons
+        SET lesson = ${input.lesson},
+            confidence = ${Math.max(0, Math.min(1, input.confidence))},
+            scope = COALESCE(${input.scope ?? null}::text, scope),
             source_postmortem_ids = CASE
                 WHEN source_postmortem_ids @> ${sourceJson}::jsonb THEN source_postmortem_ids
                 ELSE source_postmortem_ids || ${sourceJson}::jsonb

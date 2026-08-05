@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { SwingLessonRow } from './pg';
-import { PROMPT_LESSON_SCOPE_CAPS, resolveLessonDecision, selectPromptLessons } from './lessons';
+import {
+    PROMPT_LESSON_SCOPE_CAPS,
+    promotedScopeOnReinforce,
+    resolveLessonDecision,
+    selectPromptLessons,
+} from './lessons';
 
 const row = (extra: Partial<SwingLessonRow>): SwingLessonRow => ({
     id: 1,
@@ -93,26 +98,143 @@ test('resolveLessonDecision: bad_luck verdict never yields a lesson, even if the
     assert.deepEqual(asReinforce, { kind: 'none', reason: 'bad_luck_no_lesson' });
 });
 
-test('resolveLessonDecision: new lesson with text → add with scope/confidence', () => {
-    const d = resolveLessonDecision(
-        { lesson_action: 'new', lesson: 'Do X.', lesson_scope: 'asset_class', confidence: 0.7 },
-        [],
-    );
-    assert.deepEqual(d, { kind: 'add', scope: 'asset_class', text: 'Do X.', confidence: 0.7 });
+test('resolveLessonDecision: new lessons ALWAYS enter at symbol scope (analyst scope is advisory)', () => {
+    for (const advisory of ['asset_class', 'global', 'symbol']) {
+        const d = resolveLessonDecision(
+            { lesson_action: 'new', lesson: 'Do X.', lesson_scope: advisory, confidence: 0.7 },
+            [],
+        );
+        assert.deepEqual(d, { kind: 'add', scope: 'symbol', text: 'Do X.', confidence: 0.7 });
+    }
 });
 
-test('resolveLessonDecision: reinforce with valid id merges; confidence never drops', () => {
-    const shown = [row({ id: 7, lesson: 'Existing wording.', confidence: 0.8 })];
+test('resolveLessonDecision: reinforce with valid id merges; confidence never drops; target facts carried', () => {
+    const shown = [
+        row({ id: 7, scope: 'symbol', symbol: 'ETHUSDT', assetClass: 'crypto', lesson: 'Existing wording.', confidence: 0.8 }),
+    ];
     const withText = resolveLessonDecision(
         { lesson_action: 'reinforce', reinforce_lesson_id: 7, lesson: 'Reworded.', confidence: 0.6 },
         shown,
     );
-    assert.deepEqual(withText, { kind: 'merge', targetId: 7, text: 'Reworded.', confidence: 0.8 });
+    assert.deepEqual(withText, {
+        kind: 'merge',
+        targetId: 7,
+        text: 'Reworded.',
+        confidence: 0.8,
+        targetScope: 'symbol',
+        targetSymbol: 'ETHUSDT',
+        targetAssetClass: 'crypto',
+    });
     const withoutText = resolveLessonDecision(
         { lesson_action: 'reinforce', reinforce_lesson_id: 7, lesson: null, confidence: 0.9 },
         shown,
     );
-    assert.deepEqual(withoutText, { kind: 'merge', targetId: 7, text: 'Existing wording.', confidence: 0.9 });
+    assert.equal(withoutText.kind, 'merge');
+    assert.equal((withoutText as any).text, 'Existing wording.');
+    assert.equal((withoutText as any).confidence, 0.9);
+});
+
+test('resolveLessonDecision: revise rewrites a SHOWN lesson (scope move optional); unshown target → none', () => {
+    const shown = [row({ id: 5, scope: 'global', lesson: 'Old universal veto.', confidence: 0.9 })];
+    const revised = resolveLessonDecision(
+        { lesson_action: 'revise', reinforce_lesson_id: 5, lesson: 'Bounded version.', lesson_scope: 'symbol', confidence: 0.5 },
+        shown,
+    );
+    assert.deepEqual(revised, { kind: 'revise', targetId: 5, text: 'Bounded version.', confidence: 0.5, scope: 'symbol' });
+    const noScope = resolveLessonDecision(
+        { lesson_action: 'revise', reinforce_lesson_id: 5, lesson: 'Bounded version.', confidence: 0.5 },
+        shown,
+    );
+    assert.equal((noScope as any).scope, null);
+    assert.equal(
+        resolveLessonDecision({ lesson_action: 'revise', reinforce_lesson_id: 99, lesson: 'X.' }, shown).kind,
+        'none',
+    );
+    assert.equal(
+        resolveLessonDecision({ lesson_action: 'revise', reinforce_lesson_id: 5, lesson: null }, shown).kind,
+        'none',
+    );
+});
+
+test('resolveLessonDecision: retire a shown lesson; unshown target → none', () => {
+    const shown = [row({ id: 5 })];
+    assert.deepEqual(resolveLessonDecision({ lesson_action: 'retire', reinforce_lesson_id: 5 }, shown), {
+        kind: 'retire',
+        targetId: 5,
+    });
+    assert.equal(resolveLessonDecision({ lesson_action: 'retire', reinforce_lesson_id: 6 }, shown).kind, 'none');
+});
+
+test('resolveLessonDecision: refusal gates — right_to_skip only reinforces, unclear teaches nothing', () => {
+    const shown = [row({ id: 5, lesson: 'Blocking lesson.', confidence: 0.8 })];
+    // right_to_skip may reinforce the lesson that earned the skip...
+    const reinforce = resolveLessonDecision(
+        { verdict: 'right_to_skip', lesson_action: 'reinforce', reinforce_lesson_id: 5, confidence: 0.7 },
+        shown,
+        { kind: 'refusal' },
+    );
+    assert.equal(reinforce.kind, 'merge');
+    // ...but may NEVER create or revise (no new restrictions from skips that worked).
+    for (const action of ['new', 'revise', 'retire']) {
+        const d = resolveLessonDecision(
+            { verdict: 'right_to_skip', lesson_action: action, reinforce_lesson_id: 5, lesson: 'X bound 0.5 ATR.' },
+            shown,
+            { kind: 'refusal' },
+        );
+        assert.equal(d.kind, 'none', `right_to_skip must block ${action}`);
+    }
+    assert.equal(
+        resolveLessonDecision(
+            { verdict: 'unclear', lesson_action: 'revise', reinforce_lesson_id: 5, lesson: 'X.' },
+            shown,
+            { kind: 'refusal' },
+        ).kind,
+        'none',
+    );
+    // wrong_to_skip unlocks the corrective actions.
+    const revise = resolveLessonDecision(
+        { verdict: 'wrong_to_skip', lesson_action: 'revise', reinforce_lesson_id: 5, lesson: 'Bounded.', confidence: 0.6 },
+        shown,
+        { kind: 'refusal' },
+    );
+    assert.equal(revise.kind, 'revise');
+});
+
+test('promotedScopeOnReinforce: the ladder — cross-symbol promotes, cross-class globalizes, same origin holds', () => {
+    const ethLesson = { scope: 'symbol' as const, symbol: 'ETHUSDT', assetClass: 'crypto' };
+    // Same symbol: no move.
+    assert.equal(promotedScopeOnReinforce(ethLesson, { symbol: 'ETHUSDT', assetClass: 'crypto' }), null);
+    // Different symbol, same class: → asset_class.
+    assert.deepEqual(promotedScopeOnReinforce(ethLesson, { symbol: 'SOLUSDT', assetClass: 'crypto' }), {
+        scope: 'asset_class',
+        assetClass: 'crypto',
+    });
+    // Different class straight from symbol scope: → global.
+    assert.deepEqual(promotedScopeOnReinforce(ethLesson, { symbol: 'GOLD', assetClass: 'commodity' }), {
+        scope: 'global',
+        assetClass: null,
+    });
+    // asset_class lesson reinforced from another class: → global.
+    assert.deepEqual(
+        promotedScopeOnReinforce(
+            { scope: 'asset_class', symbol: 'ETHUSDT', assetClass: 'crypto' },
+            { symbol: 'US100', assetClass: 'index' },
+        ),
+        { scope: 'global', assetClass: null },
+    );
+    // Same class: holds.
+    assert.equal(
+        promotedScopeOnReinforce(
+            { scope: 'asset_class', symbol: 'ETHUSDT', assetClass: 'crypto' },
+            { symbol: 'SOLUSDT', assetClass: 'crypto' },
+        ),
+        null,
+    );
+    // Global never moves.
+    assert.equal(
+        promotedScopeOnReinforce({ scope: 'global', symbol: null, assetClass: null }, { symbol: 'GOLD', assetClass: 'commodity' }),
+        null,
+    );
 });
 
 test('resolveLessonDecision: reinforce with hallucinated id degrades to add (text) or none (no text)', () => {

@@ -107,6 +107,47 @@ export async function maybeEnqueueSwingPostmortem(
     }
 }
 
+// Refusal post-mortems: a flat HOLD on a wake evaluation is a refusal with a
+// well-defined counterfactual (the model itself chose the level and wrote the
+// plan). Enqueue it into the SAME pipeline as loss post-mortems — one row,
+// matured by the drain after the standard delay (12h), never kicked
+// immediately: the whole point is judging the refusal AFTER the market showed
+// what the declined trade would have done. The dossier is rebuilt from
+// swing.decisions at run time (the refused evaluation's full prompt carries
+// the band level, side, note and reason), so nothing extra is stored here.
+export async function maybeEnqueueSwingRefusalPostmortem(params: {
+    platform: string;
+    symbol: string;
+    decidedAtMs: number;
+    priceAtEval?: number | null;
+}): Promise<number | null> {
+    try {
+        if (resolveSwingPostmortemMode() === 'off') return null;
+        const id = await enqueueSwingPostmortem({
+            platform: params.platform,
+            symbol: params.symbol,
+            positionKey: `refusal:${String(params.symbol).toUpperCase()}:${Math.floor(params.decidedAtMs)}`,
+            trigger: 'refusal',
+            // exitTsMs is the drain's maturity anchor (runs at exit + delay);
+            // for a refusal both ends of the "trade" are the refusal moment.
+            entryTsMs: Math.floor(params.decidedAtMs),
+            exitTsMs: Math.floor(params.decidedAtMs),
+            entryPrice: params.priceAtEval ?? null,
+        });
+        if (id != null) {
+            console.log(
+                `[postmortem] refusal #${id} queued for ${params.symbol}; drain runs it after the ${Math.round(
+                    resolveSwingPostmortemDelayMs() / 3_600_000,
+                )}h counterfactual window`,
+            );
+        }
+        return id;
+    } catch (err) {
+        console.warn(`refusal postmortem enqueue failed for ${params?.symbol}:`, err);
+        return null;
+    }
+}
+
 function postmortemBaseUrl(): string | null {
     const explicit = String(process.env.SWING_POSTMORTEM_BASE_URL || '').trim();
     if (explicit) return explicit.replace(/\/+$/, '');
@@ -155,7 +196,10 @@ export const POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS = 24 * 60 * 60 * 1000;
 // window so it is fully recorded by the time the row runs.
 export function resolveSwingPostmortemDelayMs(): number {
     const raw = Number(process.env.SWING_POSTMORTEM_DELAY_MINUTES);
-    const minutes = Number.isFinite(raw) && raw >= 0 ? raw : 240;
+    // 12h: long enough that both a close's aftermath AND a refusal's
+    // counterfactual (winners historically resolve in 12-30h) carry real
+    // signal by analysis time.
+    const minutes = Number.isFinite(raw) && raw >= 0 ? raw : 720;
     return Math.floor(minutes * 60 * 1000);
 }
 
@@ -435,6 +479,13 @@ export function buildPostmortemDossier(input: {
     // Post-exit price summary (buildPostExitMarketSummary) — optional, omitted
     // when candles were unavailable.
     postExitMarket?: Record<string, unknown> | null;
+    // Refusal post-mortems: force the decision at this timestamp (±2 min) to
+    // the FRONT of the pivotal ranking — the refused evaluation is the subject
+    // and its full prompt must reach the analyst, but as a HOLD it would rank
+    // last under the action-based scoring.
+    focusTsMs?: number | null;
+    // Section label for the subject block ("POSITION (closed …)" by default).
+    subjectLabel?: string;
 }): { dossier: PostmortemDossier; aiUserMessage: string } {
     const calls = input.decisions.filter((d) => !isSkipDecision(d) && !d.dryRun);
     const decisionSkips = input.decisions.filter((d) => isSkipDecision(d) && !d.dryRun).map(digestDecisionSkip);
@@ -445,7 +496,11 @@ export function buildPostmortemDossier(input: {
     const { rows: callDigests, dropped: droppedCalls } = truncateMiddle(callDigestsAll, MAX_CALL_ROWS);
     const { rows: skips, dropped: droppedSkips } = truncateMiddle(skipsAll, MAX_SKIP_ROWS);
 
-    const pivotalRanked = pickPivotalDecisions(calls);
+    let pivotalRanked = pickPivotalDecisions(calls);
+    if (input.focusTsMs) {
+        const isFocus = (d: SwingDecisionFullRow) => Math.abs(d.decidedAtMs - Number(input.focusTsMs)) <= 120_000;
+        pivotalRanked = [...calls.filter(isFocus), ...pivotalRanked.filter((d) => !isFocus(d))];
+    }
     const systemPrompt =
         pivotalRanked.find((d) => typeof d.prompt?.system === 'string' && d.prompt.system)?.prompt?.system ??
         calls.find((d) => typeof d.prompt?.system === 'string' && d.prompt.system)?.prompt?.system ??
@@ -472,7 +527,12 @@ export function buildPostmortemDossier(input: {
             ...(lessonsShown.length ? { lessons_shown: lessonsShown } : {}),
             ...(input.postExitMarket ? { post_exit_market: input.postExitMarket } : {}),
         };
-        const aiUserMessage = renderPostmortemUserMessage(dossier, pivotal, systemPrompt);
+        const aiUserMessage = renderPostmortemUserMessage(
+            dossier,
+            pivotal,
+            systemPrompt,
+            input.subjectLabel ?? 'POSITION (closed — subject of this post-mortem)',
+        );
         if (aiUserMessage.length <= MAX_AI_USER_CHARS || maxFull === 0) {
             return { dossier, aiUserMessage };
         }
@@ -484,9 +544,10 @@ function renderPostmortemUserMessage(
     dossier: PostmortemDossier,
     pivotal: SwingDecisionFullRow[],
     systemPrompt: string | null,
+    subjectLabel: string,
 ): string {
     const parts: string[] = [];
-    parts.push('## POSITION (closed — subject of this post-mortem)');
+    parts.push(`## ${subjectLabel}`);
     parts.push(JSON.stringify(dossier.position, null, 1));
     parts.push(`## ANALYSIS WINDOW\n${dossier.window.from_utc} → ${dossier.window.to_utc}`);
     if (dossier.post_exit_market) {
@@ -580,9 +641,53 @@ export const POSTMORTEM_SCHEMA = {
             lesson_adherence: { type: ['string', 'null'] },
             // 'new' = the library lacks this failure mode; 'reinforce' = an
             // existing lesson applied (reinforce_lesson_id, optional reformulated
-            // text in `lesson`); 'none' = nothing to teach (bad luck / already
-            // covered with nothing to add).
-            lesson_action: { type: 'string', enum: ['new', 'reinforce', 'none'] },
+            // text in `lesson`); 'revise' = correct a shown lesson (rewrite its
+            // text/bound, optionally move its scope) — the contradiction tool;
+            // 'retire' = a shown lesson is wrong, remove it; 'none' = nothing to
+            // teach. revise/retire also target via reinforce_lesson_id.
+            lesson_action: { type: 'string', enum: ['new', 'reinforce', 'revise', 'retire', 'none'] },
+            reinforce_lesson_id: { type: ['integer', 'null'] },
+            lesson: { type: ['string', 'null'] },
+            lesson_scope: { type: ['string', 'null'] },
+        },
+    },
+} as const;
+
+// Refusal post-mortems: the mirror analyst. Judges a DECLINED wake entry
+// against what the market actually did afterwards. Unlike loss post-mortems,
+// the counterfactual outcome is ADMISSIBLE evidence here — measuring it is the
+// entire point of the 12h delay.
+export const REFUSAL_POSTMORTEM_SCHEMA = {
+    name: 'swing_refusal_postmortem',
+    schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'verdict',
+            'confidence',
+            'timeline_analysis',
+            'counterfactual_outcome',
+            'skip_reason_quality',
+            'lesson_adherence',
+            'lesson_action',
+            'reinforce_lesson_id',
+            'lesson',
+            'lesson_scope',
+        ],
+        properties: {
+            verdict: { type: 'string', enum: ['wrong_to_skip', 'right_to_skip', 'unclear'] },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            timeline_analysis: { type: 'string' },
+            // What the declined trade would have done (levels, excursions, in
+            // ATR terms where possible) — grounded in the post-refusal market
+            // section, never invented.
+            counterfactual_outcome: { type: 'string' },
+            // Was the trading AI's stated refusal reason valid ON ITS OWN
+            // TERMS (bounds quoted correctly, plan honored/overridden with
+            // cause), independent of outcome?
+            skip_reason_quality: { type: 'string' },
+            lesson_adherence: { type: ['string', 'null'] },
+            lesson_action: { type: 'string', enum: ['new', 'reinforce', 'revise', 'retire', 'none'] },
             reinforce_lesson_id: { type: ['integer', 'null'] },
             lesson: { type: ['string', 'null'] },
             lesson_scope: { type: ['string', 'null'] },
@@ -605,10 +710,30 @@ Rules:
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
 - ACTIVE LESSON LIBRARY (section in the dossier, when present): lessons distilled from PREVIOUS post-mortems that are already injected into the trading AI's prompts for this instrument. Handle it in three steps:
   1. Adherence: if a library lesson applied to this trade, state in lesson_adherence whether the trading AI FOLLOWED it or VIOLATED it (cite the tick). A violated lesson is an adherence failure, not a missing lesson. No applicable lesson → lesson_adherence null.
-  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'.
+  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'revise' when a SHOWN lesson is wrong as written — too broad, missing its numeric bound, or CONTRADICTING another shown lesson: set reinforce_lesson_id to the lesson being corrected and put the full corrected text in lesson (you may also move its scope via lesson_scope, up or down). 'retire' when a shown lesson is simply wrong and unfixable — set reinforce_lesson_id. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'.
   3. Losing while following the process and the library is often just variance — do not invent a lesson to have something to say. A library bloated with near-duplicates and noise dilutes the trading AI's attention.
-- lesson (when lesson_action='new' or a reformulation on 'reinforce'): 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It is shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary. Every lesson MUST carry a numeric applicability bound (an ATR distance, a time window, a count) that makes it checkable against measurements — an unbounded "do not X near Y" reads as a universal veto and WILL be applied far beyond your intent (a bound like "within 0.5 primary-ATR" both blocks the failure and clears the setups it never meant to touch).
-- lesson_scope (with a lesson; null otherwise): the audience — 'symbol' (a behavioral quirk of this one instrument), 'asset_class' (applies to this whole class, e.g. all crypto or all commodities), 'global' (sound for any instrument). Entry-mechanics and structure lessons usually generalize; pick 'symbol' only when the failure genuinely hinged on this instrument's specific behavior.
+- lesson (when lesson_action='new', or the reformulated/corrected text on 'reinforce'/'revise'): 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It is shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary. Every lesson MUST carry a numeric applicability bound (an ATR distance, a time window, a count) that makes it checkable against measurements — an unbounded "do not X near Y" reads as a universal veto and WILL be applied far beyond your intent (a bound like "within 0.5 primary-ATR" both blocks the failure and clears the setups it never meant to touch).
+- lesson_scope: ADVISORY on 'new' — code assigns every new lesson to this symbol and promotes it mechanically when later post-mortems reinforce it from other symbols or asset classes, so do not agonize over the audience. On 'revise' it moves the corrected lesson's scope (e.g. demote an over-generalized global back to its origin symbol); null keeps the current scope.
+
+Respond with strict JSON per the provided schema.`;
+
+const REFUSAL_POSTMORTEM_SYSTEM_PROMPT = `You are a forensic analyst for an automated swing-trading pipeline, reviewing ONE REFUSED ENTRY: the trading AI was woken at a price level it had itself chosen to watch (a wake band with an attached plan note), evaluated the setup, and declined (HOLD). You receive the refused evaluation's EXACT prompt (market state, the plan note, active lessons), the AI's stated refusal reason, the surrounding tick timeline, and the price path recorded AFTER the refusal.
+
+Your job: decide whether declining was right — and correct the rulebook when it was not.
+
+Rules:
+- Unlike a loss post-mortem, the OUTCOME IS ADMISSIBLE EVIDENCE here: the run is delayed ~12h precisely so the counterfactual is measurable. Describe it in counterfactual_outcome with numbers (how far past the level in primary-ATR terms, whether a stop just beyond the level would have been hit first, how long the move took) — read them from the POST-EXIT MARKET section (here: the post-REFUSAL path); never invent bars.
+- verdict:
+  - wrong_to_skip: the declined trade worked (roughly ≥1R before any sweep back through the level) AND the refusal reason does not hold up — it misapplied a lesson outside its stated numeric bound, re-demanded confirmation the wake had already established, or overrode the AI's own written plan without naming a genuine structural change.
+  - right_to_skip: the declined trade failed or went nowhere, OR the refusal reasoning was sound on the evidence at the time even though the move later worked (a good decision can miss).
+  - unclear: the counterfactual is genuinely unresolved at analysis time.
+- skip_reason_quality: judge the refusal reason ON ITS OWN TERMS, outcome aside — were lesson bounds quoted with real measured values, was the plan note honored or overridden with a named cause?
+- Library handling (the lever this analysis exists for):
+  - right_to_skip: the only permitted library actions are 'reinforce' (credit the exact lesson whose bound correctly blocked this — reinforce_lesson_id) or 'none'. NEVER write a new restriction from a skip that worked; code enforces this.
+  - wrong_to_skip: identify WHAT blocked the entry. If a shown lesson was misapplied or is too broad, 'revise' it — corrected text with a tighter/looser numeric bound, or a scope demotion (lesson_scope) back toward its origin; 'retire' it if it is simply wrong. If two shown lessons contradict each other, revise the one that is wrong. 'new' is rare here and reserved for a repeatable missed-entry failure mode (e.g. "re-demanding acceptance a confirmed wake already established") — same ≤220-char, imperative, numerically-bounded format as loss lessons.
+  - Only lessons in the ACTIVE LESSON LIBRARY section may be reinforced/revised/retired; code drops actions on unlisted ids.
+- lesson_scope is ADVISORY on 'new' (code starts every lesson at this symbol and promotes on cross-symbol evidence); on 'revise' it moves the corrected lesson's scope, null keeps it.
+- Anchor every claim to a timestamp or measured value from the dossier. Do not judge trades or symbols other than this refusal.
 
 Respond with strict JSON per the provided schema.`;
 
@@ -636,6 +761,7 @@ export async function runSwingPostmortem(
     opts: { force?: boolean } = {},
 ): Promise<PostmortemRunResult> {
     try {
+        const isRefusal = row.trigger === 'refusal';
         const exitMs = row.exitTsMs ?? Date.now();
         const entryMs = row.entryTsMs ?? exitMs - POSTMORTEM_MAX_LIFETIME_MS;
         const fromMs = entryMs - POSTMORTEM_LOOKBACK_BEFORE_ENTRY_MS;
@@ -650,11 +776,13 @@ export async function runSwingPostmortem(
             // Library slice shown to the analyst: adherence check + dedup —
             // fails open to [] (the analyst then simply can't reinforce).
             loadActiveSwingLessons({ symbol: row.symbol, assetClass }).catch(() => [] as SwingLessonRow[]),
-            // What price did after the close — the reason the run is delayed.
+            // What price did after the close (for refusals: after the refusal
+            // moment, anchored at the price the model declined at) — the
+            // reason the run is delayed.
             buildPostExitMarketSummary({
                 platform: row.platform,
                 symbol: row.symbol,
-                exitPrice: row.exitPrice,
+                exitPrice: isRefusal ? row.entryPrice : row.exitPrice,
                 exitMs,
                 toMs,
             }),
@@ -667,8 +795,9 @@ export async function runSwingPostmortem(
         // trade. A post-mortem would judge a counterfactual — with the AI
         // present it might have closed the loser sooner — so skip it for good
         // instead of distilling misleading lessons. Only real (non-dryRun)
-        // ticks inside the position's actual lifetime count.
-        if (!opts.force) {
+        // ticks inside the position's actual lifetime count. (Refusals are a
+        // single evaluated moment — the gap concept does not apply.)
+        if (!opts.force && !isRefusal) {
             const gapTicks = ticks.filter(
                 (t) =>
                     t.stage === 'ai_unavailable' &&
@@ -683,18 +812,26 @@ export async function runSwingPostmortem(
                 return { id: row.id, status: 'skipped', error: note };
             }
         }
-        const position = {
-            platform: row.platform,
-            symbol: row.symbol,
-            position_key: row.positionKey,
-            side: row.side,
-            entry_utc: row.entryTsMs ? new Date(row.entryTsMs).toISOString() : null,
-            exit_utc: row.exitTsMs ? new Date(row.exitTsMs).toISOString() : null,
-            entry_price: row.entryPrice,
-            exit_price: row.exitPrice,
-            pnl_pct: row.pnlPct,
-            pnl_net: row.pnlNet,
-        };
+        const position = isRefusal
+            ? {
+                  platform: row.platform,
+                  symbol: row.symbol,
+                  refusal_key: row.positionKey,
+                  refused_at_utc: row.exitTsMs ? new Date(row.exitTsMs).toISOString() : null,
+                  price_at_refusal: row.entryPrice,
+              }
+            : {
+                  platform: row.platform,
+                  symbol: row.symbol,
+                  position_key: row.positionKey,
+                  side: row.side,
+                  entry_utc: row.entryTsMs ? new Date(row.entryTsMs).toISOString() : null,
+                  exit_utc: row.exitTsMs ? new Date(row.exitTsMs).toISOString() : null,
+                  entry_price: row.entryPrice,
+                  exit_price: row.exitPrice,
+                  pnl_pct: row.pnlPct,
+                  pnl_net: row.pnlNet,
+              };
         const { dossier, aiUserMessage } = buildPostmortemDossier({
             position,
             fromMs,
@@ -703,22 +840,31 @@ export async function runSwingPostmortem(
             ticks,
             library,
             postExitMarket,
+            // The refused evaluation is the subject: its full prompt must lead
+            // the pivotal set (a HOLD would otherwise rank last).
+            focusTsMs: isRefusal ? exitMs : null,
+            subjectLabel: isRefusal
+                ? 'REFUSED ENTRY EVALUATION (the declined wake — subject of this post-mortem; the POST-EXIT MARKET section shows the price path AFTER this refusal)'
+                : undefined,
         });
         const { json: report, model, usage } = await callSwingDecision({
-            system: POSTMORTEM_SYSTEM_PROMPT,
+            system: isRefusal ? REFUSAL_POSTMORTEM_SYSTEM_PROMPT : POSTMORTEM_SYSTEM_PROMPT,
             user: aiUserMessage,
-            schema: POSTMORTEM_SCHEMA as unknown as { name: string; schema: Record<string, unknown> },
+            schema: (isRefusal ? REFUSAL_POSTMORTEM_SCHEMA : POSTMORTEM_SCHEMA) as unknown as {
+                name: string;
+                schema: Record<string, unknown>;
+            },
         });
         const verdict = typeof report?.verdict === 'string' ? report.verdict : null;
         if (!verdict) throw new Error('postmortem report missing verdict');
         // The analyst is library-aware: resolve its lesson_action (new /
-        // reinforce / none) against the slice it was actually shown. 'none'
-        // is a legitimate outcome — bad luck or an already-covered failure
-        // teaches nothing new.
-        const decision = resolveLessonDecision(report, library);
+        // reinforce / revise / retire / none) against the slice it was actually
+        // shown. 'none' is a legitimate outcome — bad luck, a correct skip, or
+        // an already-covered failure teaches nothing new.
+        const decision = resolveLessonDecision(report, library, { kind: isRefusal ? 'refusal' : 'loss' });
         // Row keeps the per-trade record: the (re)formulated text on new or
         // reinforce; null when there was nothing to teach.
-        const lesson = decision.kind === 'none' ? null : decision.text;
+        const lesson = decision.kind === 'none' || decision.kind === 'retire' ? null : decision.text;
         const lessonScope =
             lesson && ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope)
                 ? String(report.lesson_scope)
