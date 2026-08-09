@@ -38,14 +38,6 @@ type PositionOverlay = {
   // Inferred close cause for CLOSED positions: exchange-side bracket hit
   // ('tp'/'sl') vs. AI-driven close (null). Server-side inference.
   closeReason?: 'tp' | 'sl' | null;
-  // AI post-mortem of this CLOSED position (losses by default) — verdict +
-  // distilled lesson for the tooltip, violet exit accent on the overlay.
-  postmortem?: {
-    id: number;
-    status: string;
-    verdict?: string | null;
-    lesson?: string | null;
-  } | null;
 };
 
 
@@ -95,9 +87,12 @@ export type ChartTimelineTick = {
   stage?: string;
   reason?: string;
   // Post-mortem ticks (violet, at the position's exit time): status + the
-  // verdict/lesson once the analysis succeeded.
+  // verdict/lesson once the analysis succeeded. `analysisKind` is the analyst
+  // family (loss post-mortem / refusal investigation / win evaluation),
+  // resolved server-side so pending rows already know their icon.
   postmortemId?: number;
   postmortemStatus?: string;
+  analysisKind?: 'postmortem' | 'investigation' | 'win_evaluation';
   verdict?: string;
   lesson?: string;
   // AI-requested flat cooldown armed by this decision (flat HOLD only) —
@@ -126,6 +121,41 @@ const timelineDotFillClass = (tick: ChartTimelineTick): string =>
       : tick.kind === 'ai_call'
         ? 'timeline-dot-ai'
         : 'timeline-dot-skip';
+
+// Analyst family of a post-mortem tick. `analysisKind` travels on the tick;
+// verdict lists are the fallback for payloads cached before the field existed.
+type AnalysisFamily = 'postmortem' | 'investigation' | 'win_evaluation';
+const analysisFamily = (tick: ChartTimelineTick): AnalysisFamily =>
+  tick.analysisKind ??
+  (['earned_win', 'lucky_win', 'exit_flaw'].includes(tick.verdict || '')
+    ? 'win_evaluation'
+    : ['wrong_to_skip', 'right_to_skip', 'unclear'].includes(tick.verdict || '')
+      ? 'investigation'
+      : 'postmortem');
+
+const ANALYSIS_FAMILY_LABEL: Record<AnalysisFamily, string> = {
+  postmortem: 'post-mortem',
+  investigation: 'investigation',
+  win_evaluation: 'win evaluation',
+};
+
+// 16-grid glyphs drawn inside the violet analysis dot (fill = currentColor,
+// even-odd so the dot color shows through the cut-outs): skull = loss
+// post-mortem, magnifier = refusal investigation, trophy = win evaluation.
+const ANALYSIS_ICON_PATHS: Record<AnalysisFamily, string> = {
+  postmortem:
+    'M8 1.5a5.3 5.3 0 0 0-5.3 5.3c0 1.7.83 3.15 2.1 4.1v1.6c0 .55.45 1 1 1h4.4c.55 0 1-.45 1-1v-1.6c1.27-.95 2.1-2.4 2.1-4.1A5.3 5.3 0 0 0 8 1.5zM6.1 5.9a1.15 1.15 0 1 1 0 2.3 1.15 1.15 0 0 1 0-2.3zm3.8 0a1.15 1.15 0 1 1 0 2.3 1.15 1.15 0 0 1 0-2.3zM8 9.2l.85 1.7h-1.7z',
+  investigation:
+    'M7 1.5a5.5 5.5 0 1 0 3.43 9.8l2.63 2.62a1 1 0 0 0 1.41-1.41L11.85 9.9A5.5 5.5 0 0 0 7 1.5zM3.6 7a3.4 3.4 0 1 1 6.8 0 3.4 3.4 0 0 1-6.8 0z',
+  win_evaluation:
+    'M4 1.5h8v3.2a4 4 0 0 1-8 0V1.5zM7.4 7.9h1.2v3.6H7.4zM5 11.5h6v1.6H5zM4 2.8H1.5v1.1c0 1.6 1.05 2.95 2.5 3.4V5.9a2 2 0 0 1-1.1-1.8V4H4V2.8zm8 0h2.5v1.1c0 1.6-1.05 2.95-2.5 3.4V5.9a2 2 0 0 0 1.1-1.8V4H12V2.8z',
+};
+
+const AnalysisIcon = ({ family }: { family: AnalysisFamily }) => (
+  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
+    <path fillRule="evenodd" d={ANALYSIS_ICON_PATHS[family]} />
+  </svg>
+);
 
 // "HOLD + CD 2h (↑51,200 ↓49,700)" suffix for ticks that armed a flat cooldown.
 const timelineTickCooldownSuffix = (tick: ChartTimelineTick): string => {
@@ -158,13 +188,9 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
     tick.kind === 'action'
       ? ` · ${tick.action}`
       : tick.kind === 'postmortem'
-        ? ` · ${
-            ['earned_win', 'lucky_win', 'exit_flaw'].includes(tick.verdict || '')
-              ? 'win evaluation'
-              : ['wrong_to_skip', 'right_to_skip', 'unclear'].includes(tick.verdict || '')
-                ? 'investigation'
-                : 'post-mortem'
-          }${tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''}`
+        ? ` · ${ANALYSIS_FAMILY_LABEL[analysisFamily(tick)]}${
+            tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''
+          }`
         : tick.kind === 'ai_call'
           ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
           : tick.stage
@@ -229,6 +255,32 @@ type ChartPanelProps = {
   selectedTimelineTs?: number | null;
   // Click on a timeline dot (ms epoch of that tick).
   onTimelineTickSelect?: (tsMs: number) => void;
+};
+
+// Fetched analysis report — the subset of a swing.postmortems row the chart
+// overlay renders (fetched on dot click via /api/swing/dashboard/postmortem).
+type AnalysisReportRow = {
+  id: number;
+  status: string;
+  trigger?: string | null;
+  verdict?: string | null;
+  lesson?: string | null;
+  pnlPct?: number | null;
+  error?: string | null;
+  report?: {
+    confidence?: number;
+    timeline_analysis?: string;
+    what_worked?: string[];
+    exit_quality?: string;
+    counterfactual_outcome?: string;
+    skip_reason_quality?: string;
+    lesson_adherence?: string | null;
+    lesson_action?: string;
+    what_went_wrong?: string[];
+    missed_signals?: Array<{ ts_utc?: string; description?: string; visible_in?: string }>;
+    gate_impact?: string | null;
+    suggestions?: string[];
+  } | null;
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
@@ -460,7 +512,6 @@ type OverlayPrimitiveDatum = {
   showEntryWall: boolean;
   closed: boolean;
   closeReason: 'tp' | 'sl' | null;
-  hasPostmortem: boolean;
   side: 'long' | 'short' | null;
   tone: OverlayTone;
   leverageLabel: string | null;
@@ -649,14 +700,8 @@ class PositionOverlayRenderer {
           ctx.fillStyle = datum.closed ? stroke : this.theme.openWall;
           ctx.fillRect(right - 1, top, 1, height);
         }
-        if (datum.hasPostmortem) {
-          // Analyzed close: a violet dot at the foot of the exit wall — "this
-          // loss has been autopsied", without recoloring the TP/SL-hit wall.
-          ctx.fillStyle = this.theme.postmortem;
-          ctx.beginPath();
-          ctx.arc(right - 1, top + height - 5, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        // Analyzed closes are marked by the DOM analysis dot (skull/magnifier/
+        // trophy) riding along the chart's bottom edge — no canvas accent here.
         drawOverlayBadge(ctx, right, top, datum, this.theme);
       }
     });
@@ -845,7 +890,6 @@ const buildOverlayPrimitiveData = (
       showEntryWall: pos.entryTime !== null && pos.entryTime >= minTime,
       closed: pos.status === 'closed',
       closeReason: pos.status === 'closed' ? pos.closeReason ?? null : null,
-      hasPostmortem: pos.status === 'closed' && pos.postmortem?.status === 'succeeded',
       side: pos.side ?? null,
       tone,
       leverageLabel: typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null,
@@ -968,6 +1012,17 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [timelineDots, setTimelineDots] = useState<
     Array<{ x: number; tick: ChartTimelineTick }>
   >([]);
+  // Analysis dots (post-mortem / investigation / win evaluation) — projected
+  // separately from decision dots, so reports never cull decisions.
+  const [analysisDots, setAnalysisDots] = useState<
+    Array<{ x: number; tick: ChartTimelineTick }>
+  >([]);
+  // Analysis overlay: dot click fetches the report row and opens a floating
+  // card above the dot — entirely chart-local, the decision card never sees it.
+  const [selectedAnalysisTs, setSelectedAnalysisTs] = useState<number | null>(null);
+  const [analysisRow, setAnalysisRow] = useState<AnalysisReportRow | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [showAnalysisDetails, setShowAnalysisDetails] = useState(false);
   // Full-contrast connector segments linking the decisions of one AI
   // conversation (context calls) — px ranges over the timeline strip.
   const [threadSegments, setThreadSegments] = useState<
@@ -994,6 +1049,60 @@ export default function ChartPanel(props: ChartPanelProps) {
   const onTimeSelectRef = useRef<typeof onTimeSelect>(onTimeSelect);
   onTimeSelectRef.current = onTimeSelect;
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
+  // Fetched report rows by postmortem id — clicking back and forth on the
+  // analysis dots shouldn't refetch.
+  const analysisCacheRef = useRef<Map<number, AnalysisReportRow>>(new Map());
+  // Latest analysis the user asked for; a slower earlier fetch must not
+  // overwrite a newer selection.
+  const analysisSeqRef = useRef(0);
+
+  const closeAnalysisOverlay = () => {
+    setSelectedAnalysisTs(null);
+    setAnalysisRow(null);
+    setAnalysisLoading(false);
+  };
+
+  const handleAnalysisDotClick = async (tick: ChartTimelineTick) => {
+    if (!tick.postmortemId) return;
+    const seq = ++analysisSeqRef.current;
+    // Re-clicking the selected dot closes the overlay.
+    if (selectedAnalysisTs === tick.ts) {
+      closeAnalysisOverlay();
+      return;
+    }
+    setSelectedAnalysisTs(tick.ts);
+    setAnalysisRow(null);
+    // Details reset so each report opens compact.
+    setShowAnalysisDetails(false);
+    const cached = analysisCacheRef.current.get(tick.postmortemId);
+    if (cached) {
+      setAnalysisLoading(false);
+      setAnalysisRow(cached);
+      return;
+    }
+    setAnalysisLoading(true);
+    try {
+      const res = await fetch(`/api/swing/dashboard/postmortem?id=${tick.postmortemId}`, {
+        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const row = (json?.postmortem ?? null) as AnalysisReportRow | null;
+      if (row) analysisCacheRef.current.set(tick.postmortemId, row);
+      if (analysisSeqRef.current === seq) setAnalysisRow(row);
+    } catch {
+      // dot stays selected; the overlay shows the unavailable note
+    } finally {
+      if (analysisSeqRef.current === seq) setAnalysisLoading(false);
+    }
+  };
+
+  // Symbol switch closes any open report overlay.
+  useEffect(() => {
+    closeAnalysisOverlay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
   const timeframeSeconds = timeframeToSeconds(timeframe);
@@ -1611,15 +1720,18 @@ export default function ChartPanel(props: ChartPanelProps) {
         typeof timeScaleNow.timeToCoordinate !== 'function'
       ) {
         setTimelineDots([]);
+        setAnalysisDots([]);
         setThreadSegments([]);
         return;
       }
       const paneWidth = overlayLayerRef.current?.clientWidth ?? 0;
       const projected: Array<{ x: number; tick: ChartTimelineTick }> = [];
+      const projectedAnalysis: Array<{ x: number; tick: ChartTimelineTick }> = [];
       for (const tick of timelineTicks) {
         const x = Number(timeScaleNow.timeToCoordinate(nearestBarTime(tick.ts)));
         if (!Number.isFinite(x) || x < 0 || (paneWidth > 0 && x > paneWidth)) continue;
-        projected.push({ x, tick });
+        // Analysis reports live on their own lane under the decision strip.
+        (tick.kind === 'postmortem' ? projectedAnalysis : projected).push({ x, tick });
       }
 
       // Full-contrast segments linking context AI calls: each tick that chained
@@ -1674,9 +1786,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       setThreadSegments(segments);
       const kindPriority = (tick: ChartTimelineTick): number =>
-        // Post-mortems rank with actions: one dot per analyzed trade, and it
-        // must survive culling next to the exit-adjacent decision dots.
-        tick.kind === 'action' || tick.kind === 'postmortem'
+        tick.kind === 'action'
           ? 0
           : tick.kind === 'ai_call'
             ? 1
@@ -1703,6 +1813,20 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       kept.sort((a, b) => a.x - b.x);
       setTimelineDots(kept);
+      // Analysis lane: same overlap culling, selection floats first, then
+      // newest-wins — no decision dots to compete with here.
+      projectedAnalysis.sort(
+        (a, b) =>
+          Number(b.tick.ts === selectedAnalysisTs) - Number(a.tick.ts === selectedAnalysisTs) ||
+          b.tick.ts - a.tick.ts,
+      );
+      const keptAnalysis: Array<{ x: number; tick: ChartTimelineTick }> = [];
+      for (const candidate of projectedAnalysis) {
+        if (keptAnalysis.some((k) => Math.abs(k.x - candidate.x) < TIMELINE_MIN_GAP_PX)) continue;
+        keptAnalysis.push(candidate);
+      }
+      keptAnalysis.sort((a, b) => a.x - b.x);
+      setAnalysisDots(keptAnalysis);
     };
 
     // Same rAF-batched + observer approach as the position overlays so the
@@ -1742,6 +1866,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     highlightTimeMs,
     timelineTicks,
     selectedTimelineTs,
+    selectedAnalysisTs,
     positionOverlays,
   ]);
 
@@ -1870,6 +1995,39 @@ export default function ChartPanel(props: ChartPanelProps) {
                   }}
                 />
               ) : null}
+              {/* Analysis dots (post-mortem skull / investigation magnifier /
+                  win-evaluation trophy): pinned just above the time axis at
+                  their tick's time — they replace the old canvas exit accent,
+                  and the timeline area stays one lane tall. Clicking opens the
+                  report OVERLAY above the dot; the decision-timeline selection
+                  and the Latest Decision card stay put. */}
+              {analysisDots.map(({ x, tick }) => {
+                const isSelected = tick.ts === selectedAnalysisTs;
+                const family = analysisFamily(tick);
+                const pending =
+                  tick.postmortemStatus != null && tick.postmortemStatus !== 'succeeded';
+                const label = timelineTickLabel(tick);
+                return (
+                  <button
+                    key={`analysis-${tick.postmortemId ?? tick.ts}`}
+                    type="button"
+                    onClick={() => void handleAnalysisDotClick(tick)}
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={isSelected}
+                    className="timeline-tick pointer-events-auto absolute bottom-6 z-30 flex h-7 w-7 -translate-x-1/2 items-center justify-center"
+                    style={{ left: x }}
+                  >
+                    <span
+                      className={`timeline-dot timeline-dot-postmortem timeline-analysis-icon flex h-5 w-5 items-center justify-center rounded-full ${
+                        isSelected ? 'timeline-dot-selected' : ''
+                      } ${pending ? 'opacity-60' : ''}`}
+                    >
+                      <AnalysisIcon family={family} />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             {hoveredOverlay && hoverX !== null && (
               <div
@@ -1937,28 +2095,6 @@ export default function ChartPanel(props: ChartPanelProps) {
                         {hoveredOverlay.closeReason === 'tp' ? 'Take-profit hit' : 'Stop-loss hit'}
                       </span>
                       <span className="text-slate-500"> · closed by exchange-side bracket</span>
-                    </div>
-                  ) : null}
-
-                  {hoveredOverlay.status === 'closed' && hoveredOverlay.postmortem?.status === 'succeeded' ? (
-                    <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                        {['earned_win', 'lucky_win', 'exit_flaw'].includes(
-                          hoveredOverlay.postmortem.verdict || '',
-                        )
-                          ? 'Win evaluation'
-                          : 'Post-mortem'}
-                        {hoveredOverlay.postmortem.verdict ? (
-                          <span className="postmortem-chip ml-1.5 inline-flex rounded border px-1.5 py-0.5 normal-case">
-                            {hoveredOverlay.postmortem.verdict.replace(/_/g, ' ')}
-                          </span>
-                        ) : null}
-                      </div>
-                      {hoveredOverlay.postmortem.lesson ? (
-                        <div className="text-[11px] italic text-slate-700">
-                          {hoveredOverlay.postmortem.lesson}
-                        </div>
-                      ) : null}
                     </div>
                   ) : null}
 
@@ -2037,6 +2173,168 @@ export default function ChartPanel(props: ChartPanelProps) {
                 </div>
               </div>
             )}
+            {/* Analysis report overlay: opened by the violet dots along the
+                time axis — floats above its dot, scrolls internally, and never
+                touches the Latest Decision card below the chart. */}
+            {selectedAnalysisTs !== null
+              ? (() => {
+                  const dot = analysisDots.find((d) => d.tick.ts === selectedAnalysisTs);
+                  if (!dot) return null;
+                  const paneWidth = overlayLayerRef.current?.clientWidth || 320;
+                  const family = analysisFamily(dot.tick);
+                  return (
+                    <div
+                      className="absolute z-50"
+                      style={{
+                        left: Math.min(Math.max(dot.x - 150, 8), paneWidth - 308),
+                        bottom: 48,
+                      }}
+                    >
+                      <div className="max-h-[min(70vh,380px)] w-[300px] overflow-y-auto overscroll-contain rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            {ANALYSIS_FAMILY_LABEL[family]}
+                            {analysisRow?.verdict ? (
+                              <span className="postmortem-chip ml-1.5 inline-flex rounded border px-1.5 py-0.5 normal-case">
+                                {analysisRow.verdict.replace(/_/g, ' ')}
+                              </span>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={closeAnalysisOverlay}
+                            aria-label="Close report"
+                            className="-mr-1 -mt-0.5 rounded px-1 text-sm leading-none text-slate-400 transition hover:text-slate-700"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+                          <span>{formatOverlayDecisionTs(selectedAnalysisTs)}</span>
+                          {typeof analysisRow?.pnlPct === 'number' ? (
+                            <span
+                              className={`font-semibold normal-case ${
+                                analysisRow.pnlPct >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                              }`}
+                            >
+                              {analysisRow.pnlPct >= 0 ? '+' : ''}
+                              {analysisRow.pnlPct.toFixed(2)}%
+                            </span>
+                          ) : null}
+                          {typeof analysisRow?.report?.confidence === 'number' ? (
+                            <span className="normal-case">
+                              confidence {Math.round(analysisRow.report.confidence * 100)}%
+                            </span>
+                          ) : null}
+                        </div>
+                        {analysisLoading ? (
+                          <div className="mt-2 text-slate-500">Loading report…</div>
+                        ) : !analysisRow ? (
+                          <div className="mt-2 text-slate-500">Report unavailable.</div>
+                        ) : (
+                          <>
+                            {analysisRow.status === 'succeeded' && analysisRow.lesson ? (
+                              <p className="mt-2 rounded-lg bg-slate-50/80 p-2 italic text-slate-800">
+                                {analysisRow.lesson}
+                              </p>
+                            ) : analysisRow.status === 'succeeded' ? (
+                              <p className="mt-2 text-slate-500">
+                                No new lesson —{' '}
+                                {analysisRow.report?.lesson_action === 'reinforce'
+                                  ? 'an existing library lesson covers this case (reinforced).'
+                                  : 'nothing generalizable to teach.'}
+                              </p>
+                            ) : analysisRow.status === 'failed' ? (
+                              <p className="mt-2 text-rose-600">
+                                Analysis failed: {analysisRow.error || 'unknown error'}
+                              </p>
+                            ) : (
+                              <p className="mt-2 text-slate-500">Analysis {analysisRow.status}…</p>
+                            )}
+                            {analysisRow.status === 'succeeded' && analysisRow.report ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowAnalysisDetails((prev) => !prev)}
+                                  className="mt-2 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[10px] font-semibold text-slate-700 transition hover:border-slate-300"
+                                >
+                                  {showAnalysisDetails ? 'Hide analysis' : 'Show analysis'}
+                                </button>
+                                {showAnalysisDetails ? (
+                                  <div className="mt-2 space-y-2">
+                                    {(
+                                      [
+                                        ['Timeline', analysisRow.report.timeline_analysis],
+                                        [
+                                          'Counterfactual (what the declined trade did)',
+                                          analysisRow.report.counterfactual_outcome,
+                                        ],
+                                        ['Skip-reason quality', analysisRow.report.skip_reason_quality],
+                                        ['Exit quality', analysisRow.report.exit_quality],
+                                        ['Lesson adherence', analysisRow.report.lesson_adherence],
+                                        ['Gate impact (skipped ticks)', analysisRow.report.gate_impact],
+                                      ] as Array<[string, string | null | undefined]>
+                                    ).map(([title, text]) =>
+                                      text ? (
+                                        <div key={title}>
+                                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                            {title}
+                                          </div>
+                                          <p className="mt-0.5 whitespace-pre-wrap">{text}</p>
+                                        </div>
+                                      ) : null,
+                                    )}
+                                    {(
+                                      [
+                                        ['What worked', analysisRow.report.what_worked],
+                                        ['What went wrong', analysisRow.report.what_went_wrong],
+                                        ['Suggestions', analysisRow.report.suggestions],
+                                      ] as Array<[string, string[] | undefined]>
+                                    ).map(([title, items]) =>
+                                      items?.length ? (
+                                        <div key={title}>
+                                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                            {title}
+                                          </div>
+                                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                                            {items.map((item, idx) => (
+                                              <li key={idx}>{item}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      ) : null,
+                                    )}
+                                    {analysisRow.report.missed_signals?.length ? (
+                                      <div>
+                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                          Missed signals
+                                        </div>
+                                        <ul className="mt-0.5 space-y-1">
+                                          {analysisRow.report.missed_signals.map((signal, idx) => (
+                                            <li key={idx} className="rounded-lg bg-slate-50/80 p-1.5">
+                                              <div className="text-[10px] text-slate-500">
+                                                {signal.ts_utc || ''}
+                                                {signal.visible_in
+                                                  ? ` · ${signal.visible_in.replace(/_/g, ' ')}`
+                                                  : ''}
+                                              </div>
+                                              <div>{signal.description}</div>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
+              : null}
           </>
         )}
       </div>

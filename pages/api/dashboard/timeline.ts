@@ -25,6 +25,9 @@ export type TimelineTick = {
   // worker status, and — once succeeded — the verdict + distilled lesson.
   postmortemId?: number;
   postmortemStatus?: string;
+  // Analyst family, resolved the same way the worker picks its analyst
+  // (trigger first, then PnL sign) — so pending rows already know their kind.
+  analysisKind?: 'postmortem' | 'investigation' | 'win_evaluation';
   verdict?: string;
   lesson?: string;
   // AI-requested flat cooldown armed by this decision (flat HOLD only) — lets
@@ -165,6 +168,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   for (const pm of postmortems) {
     const ts = Number(pm.exitTsMs ?? pm.createdAtMs);
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
+    const pnl = [pm.pnlNet, pm.pnlPct].find((v) => typeof v === 'number' && Number.isFinite(v)) ?? null;
     ticks.push({
       ts,
       source: 'postmortem',
@@ -172,6 +176,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       kind: 'postmortem',
       postmortemId: pm.id,
       postmortemStatus: pm.status,
+      analysisKind:
+        pm.trigger === 'refusal' ? 'investigation' : pnl !== null && pnl > 0 ? 'win_evaluation' : 'postmortem',
       ...(pm.verdict ? { verdict: pm.verdict } : {}),
       ...(pm.lesson ? { lesson: pm.lesson } : {}),
       hasDetails: false,

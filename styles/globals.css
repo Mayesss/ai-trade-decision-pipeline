@@ -599,6 +599,17 @@ body {
   outline-color: rgb(167 139 250 / 1);
 }
 
+/* Glyph inside the analysis-lane dot (skull / magnifier / trophy): the same
+   opposite-contrast convention as the clock hands — white on the light-mode
+   violet-600 dot, near-black on the brighter dark-mode violet-400. */
+.timeline-analysis-icon {
+  color: rgb(255 255 255 / 1);
+}
+
+.theme-dark .timeline-analysis-icon {
+  color: rgb(15 23 42 / 1);
+}
+
 /* Post-mortem verdict chip (tooltip + decision card): violet pair per theme. */
 .postmortem-chip {
   border-color: rgb(221 214 254 / 1); /* violet-200 */
