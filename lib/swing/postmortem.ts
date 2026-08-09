@@ -113,7 +113,7 @@ export async function maybeEnqueueSwingPostmortem(
     }
 }
 
-// Refusal evaluations: a flat HOLD on a wake evaluation is a refusal with a
+// Refusal investigations: a flat HOLD on a wake evaluation is a refusal with a
 // well-defined counterfactual (the model itself chose the level and wrote the
 // plan). Enqueue it into the SAME pipeline as loss post-mortems — one row,
 // matured by the drain after the standard delay (12h), never kicked
@@ -121,7 +121,7 @@ export async function maybeEnqueueSwingPostmortem(
 // what the declined trade would have done. The dossier is rebuilt from
 // swing.decisions at run time (the refused evaluation's full prompt carries
 // the band level, side, note and reason), so nothing extra is stored here.
-export async function maybeEnqueueSwingRefusalEvaluation(params: {
+export async function maybeEnqueueSwingRefusalInvestigation(params: {
     platform: string;
     symbol: string;
     decidedAtMs: number;
@@ -142,14 +142,14 @@ export async function maybeEnqueueSwingRefusalEvaluation(params: {
         });
         if (id != null) {
             console.log(
-                `[postmortem] refusal #${id} queued for ${params.symbol}; drain runs it after the ${Math.round(
+                `[postmortem] refusal investigation #${id} queued for ${params.symbol}; drain runs it after the ${Math.round(
                     resolveSwingPostmortemDelayMs() / 3_600_000,
                 )}h counterfactual window`,
             );
         }
         return id;
     } catch (err) {
-        console.warn(`refusal evaluation enqueue failed for ${params?.symbol}:`, err);
+        console.warn(`refusal investigation enqueue failed for ${params?.symbol}:`, err);
         return null;
     }
 }
@@ -485,7 +485,7 @@ export function buildPostmortemDossier(input: {
     // Post-exit price summary (buildPostExitMarketSummary) — optional, omitted
     // when candles were unavailable.
     postExitMarket?: Record<string, unknown> | null;
-    // Refusal evaluations: force the decision at this timestamp (±2 min) to
+    // Refusal investigations: force the decision at this timestamp (±2 min) to
     // the FRONT of the pivotal ranking — the refused evaluation is the subject
     // and its full prompt must reach the analyst, but as a HOLD it would rank
     // last under the action-based scoring.
@@ -659,12 +659,12 @@ export const POSTMORTEM_SCHEMA = {
     },
 } as const;
 
-// Refusal evaluations: the mirror analyst. Judges a DECLINED wake entry
+// Refusal investigations: the mirror analyst. Judges a DECLINED wake entry
 // against what the market actually did afterwards. Unlike loss post-mortems,
 // the counterfactual outcome is ADMISSIBLE evidence here — measuring it is the
 // entire point of the 12h delay.
-export const REFUSAL_EVALUATION_SCHEMA = {
-    name: 'swing_refusal_evaluation',
+export const REFUSAL_INVESTIGATION_SCHEMA = {
+    name: 'swing_refusal_investigation',
     schema: {
         type: 'object',
         additionalProperties: false,
@@ -780,7 +780,7 @@ Rules:
 
 Respond with strict JSON per the provided schema.`;
 
-const REFUSAL_EVALUATION_SYSTEM_PROMPT = `You are a forensic analyst for an automated swing-trading pipeline, reviewing ONE REFUSED ENTRY: the trading AI was woken at a price level it had itself chosen to watch (a wake band with an attached plan note), evaluated the setup, and declined (HOLD). You receive the refused evaluation's EXACT prompt (market state, the plan note, active lessons), the AI's stated refusal reason, the surrounding tick timeline, and the price path recorded AFTER the refusal.
+const REFUSAL_INVESTIGATION_SYSTEM_PROMPT = `You are a forensic analyst for an automated swing-trading pipeline, conducting an INVESTIGATION of ONE REFUSED ENTRY: the trading AI was woken at a price level it had itself chosen to watch (a wake band with an attached plan note), evaluated the setup, and declined (HOLD). You receive the refused evaluation's EXACT prompt (market state, the plan note, active lessons), the AI's stated refusal reason, the surrounding tick timeline, and the price path recorded AFTER the refusal.
 
 Your job: decide whether declining was right — and correct the rulebook when it was not.
 
@@ -912,20 +912,20 @@ export async function runSwingPostmortem(
             // the pivotal set (a HOLD would otherwise rank last).
             focusTsMs: isRefusal ? exitMs : null,
             subjectLabel: isRefusal
-                ? 'REFUSED ENTRY EVALUATION (the declined wake — subject of this evaluation; the POST-EXIT MARKET section shows the price path AFTER this refusal)'
+                ? 'REFUSED ENTRY INVESTIGATION (the declined wake — subject of this investigation; the POST-EXIT MARKET section shows the price path AFTER this refusal)'
                 : isWin
                   ? 'POSITION (closed IN PROFIT — subject of this WIN EVALUATION)'
                   : undefined,
         });
         const { json: report, model, usage } = await callSwingDecision({
             system: isRefusal
-                ? REFUSAL_EVALUATION_SYSTEM_PROMPT
+                ? REFUSAL_INVESTIGATION_SYSTEM_PROMPT
                 : isWin
                   ? WIN_EVALUATION_SYSTEM_PROMPT
                   : POSTMORTEM_SYSTEM_PROMPT,
             user: aiUserMessage,
             schema: (isRefusal
-                ? REFUSAL_EVALUATION_SCHEMA
+                ? REFUSAL_INVESTIGATION_SCHEMA
                 : isWin
                   ? WIN_EVALUATION_SCHEMA
                   : POSTMORTEM_SCHEMA) as unknown as {

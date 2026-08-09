@@ -787,7 +787,7 @@ type PostmortemUi = {
     suggestions?: string[];
     lesson_adherence?: string | null;
     lesson_action?: string;
-    // Refusal post-mortems (trigger 'refusal') — loss reports leave these unset.
+    // Refusal investigations (trigger 'refusal') — loss reports leave these unset.
     counterfactual_outcome?: string;
     skip_reason_quality?: string;
     // Win evaluations (winning closes) — loss/refusal reports leave these unset.
@@ -9280,7 +9280,7 @@ export default function Home() {
                               : ["wrong_to_skip", "right_to_skip", "unclear"].includes(
                                     selectedPostmortem?.verdict ?? "",
                                   )
-                                ? "Refusal evaluation"
+                                ? "Investigation"
                                 : "Post-mortem"
                             : selectedTick
                               ? "Decision"

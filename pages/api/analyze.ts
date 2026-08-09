@@ -88,7 +88,7 @@ import {
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
 import { kvSetJson } from '../../lib/kv';
-import { maybeEnqueueSwingPostmortem, maybeEnqueueSwingRefusalEvaluation } from '../../lib/swing/postmortem';
+import { maybeEnqueueSwingPostmortem, maybeEnqueueSwingRefusalInvestigation } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
     claimSwingAiCooldown,
@@ -3227,7 +3227,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesOut.metrics,
             kvMarker: false,
         });
-        // Refusal evaluation: a flat HOLD on a wake evaluation is a DECLINED
+        // Refusal investigation: a flat HOLD on a wake evaluation is a DECLINED
         // entry with a measurable counterfactual (the model chose the level
         // and wrote the plan itself). Enqueue it into the same post-mortem
         // pipeline as losses (trigger 'refusal'); the drain runs it after the
@@ -3240,7 +3240,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             !dryRun &&
             String(decision.action || '').toUpperCase() === 'HOLD'
         ) {
-            await maybeEnqueueSwingRefusalEvaluation({
+            await maybeEnqueueSwingRefusalInvestigation({
                 platform,
                 symbol,
                 decidedAtMs: Date.now(),

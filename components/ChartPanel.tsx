@@ -162,7 +162,7 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
             ['earned_win', 'lucky_win', 'exit_flaw'].includes(tick.verdict || '')
               ? 'win evaluation'
               : ['wrong_to_skip', 'right_to_skip', 'unclear'].includes(tick.verdict || '')
-                ? 'refusal evaluation'
+                ? 'investigation'
                 : 'post-mortem'
           }${tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''}`
         : tick.kind === 'ai_call'
@@ -1943,7 +1943,11 @@ export default function ChartPanel(props: ChartPanelProps) {
                   {hoveredOverlay.status === 'closed' && hoveredOverlay.postmortem?.status === 'succeeded' ? (
                     <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
                       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                        Post-mortem
+                        {['earned_win', 'lucky_win', 'exit_flaw'].includes(
+                          hoveredOverlay.postmortem.verdict || '',
+                        )
+                          ? 'Win evaluation'
+                          : 'Post-mortem'}
                         {hoveredOverlay.postmortem.verdict ? (
                           <span className="postmortem-chip ml-1.5 inline-flex rounded border px-1.5 py-0.5 normal-case">
                             {hoveredOverlay.postmortem.verdict.replace(/_/g, ' ')}
