@@ -1,0 +1,88 @@
+POST https://ai-gateway.vercel.sh/v1/messages
+  anthropic-version: 2023-06-01
+  content-type: application/json
+  x-api-key: test-gateway-key
+  {
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "prior tick state",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "ttl": "1h",
+              "type": "ephemeral"
+            },
+            "text": "{\"action\":\"HOLD\"}",
+            "type": "text"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "text": "STATE: flat. MARKET: rangebound chop around VWAP.",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "anthropic/claude-opus-4.8",
+    "output_config": {
+      "effort": "medium",
+      "format": {
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "confidence"
+          ],
+          "type": "object"
+        },
+        "type": "json_schema"
+      }
+    },
+    "system": [
+      {
+        "cache_control": {
+          "ttl": "1h",
+          "type": "ephemeral"
+        },
+        "text": "You are the swing trading desk.",
+        "type": "text"
+      }
+    ],
+    "thinking": {
+      "type": "adaptive"
+    }
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:ai:health:v1"
+  ]

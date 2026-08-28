@@ -1,0 +1,60 @@
+POST https://ai-gateway.vercel.sh/v1/responses
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  {
+    "input": [
+      {
+        "content": "prior tick state",
+        "role": "user"
+      },
+      {
+        "content": "{\"action\":\"HOLD\"}",
+        "role": "assistant"
+      },
+      {
+        "content": "STATE: flat. MARKET: rangebound chop around VWAP.",
+        "role": "user"
+      }
+    ],
+    "instructions": "You are the swing trading desk.",
+    "model": "openai/gpt-5.6-sol",
+    "reasoning": {
+      "effort": "medium"
+    },
+    "text": {
+      "format": {
+        "name": "swing_decision",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "confidence"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "json_schema"
+      }
+    },
+    "truncation": "auto"
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:ai:health:v1"
+  ]

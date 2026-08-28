@@ -1,0 +1,11 @@
+POST https://kv.boundary.test/GET/news%3Acoindesk%3ABTC
+  authorization: Bearer <TOKEN>
+
+GET https://data-api.coindesk.com/news/v1/article/list?categories=BTC&limit=25&lang=EN
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/SETEX/news%3Acoindesk%3ABTC/21600/%7B%22timestamp%22%3A1786528800000%2C%22sentiment%22%3A%22POSITIVE%22%2C%22headlines%22%3A%5B%22Bitcoin%20holds%20above%2060k%22%2C%22Miners%20rotate%20treasuries%22%5D%7D
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/GET/news%3Acoindesk%3ABTC
+  authorization: Bearer <TOKEN>

@@ -1,0 +1,19 @@
+POST https://api-capital.backend-capital.com/api/v1/session
+  content-type: application/json
+  x-cap-api-key: test-capital-key
+  {
+    "identifier": "test-capital-user",
+    "password": "test-capital-pass"
+  }
+
+GET https://api-capital.backend-capital.com/api/v1/markets/EURUSD
+  content-type: application/json
+  cst: test-cst
+  x-cap-api-key: test-capital-key
+  x-security-token: test-security-token
+
+GET https://api-capital.backend-capital.com/api/v1/markets?epics=EURUSD
+  content-type: application/json
+  cst: test-cst
+  x-cap-api-key: test-capital-key
+  x-security-token: test-security-token

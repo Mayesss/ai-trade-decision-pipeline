@@ -1,0 +1,22 @@
+GET https://api.bitget.com/api/v2/mix/market/ticker?productType=USDT-FUTURES&symbol=BTCUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://api.bitget.com/api/v2/mix/order/place-order
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+  {
+    "orderType": "market",
+    "productType": "USDT-FUTURES",
+    "side": "buy",
+    "size": "0.01",
+    "symbol": "BTCUSDT"
+  }

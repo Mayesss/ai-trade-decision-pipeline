@@ -1,0 +1,21 @@
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.ai_threads (platform, symbol, status, last_response_id, provider, transcript) VALUES ($1, $2, $3, $4, $5, $6::jsonb) ON CONFLICT (platform, symbol) DO UPDATE SET status = EXCLUDED.status, last_response_id = EXCLUDED.last_response_id, provider = EXCLUDED.provider, transcript = EXCLUDED.transcript, turns = swing.ai_threads.turns + 1, updated_at = NOW()",
+    "values": [
+      "capital",
+      "EURUSD",
+      "in_position",
+      "resp_test-1",
+      "openai",
+      "[{\"role\":\"user\",\"content\":\"this tick state\"}]"
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "SELECT status, last_response_id, turns, provider, transcript, wake_above, wake_below, wake_note, wake_set_at_ms FROM swing.ai_threads WHERE platform = $1 AND symbol = $2",
+    "values": [
+      "capital",
+      "EURUSD"
+    ]
+  }

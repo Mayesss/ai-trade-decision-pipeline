@@ -119,9 +119,17 @@ npm run start
 Tests and DB health:
 
 ```bash
-npm run test:ts        # root lib + swing test suites
-npm run db:pg:health   # counts the swing.* tables via the shared Neon client
+npm test                # both Vitest projects: unit + boundary contracts
+npm run test:unit       # pure-kernel tests (test/unit/, mirrors lib/)
+npm run test:contract   # msw boundary-contract tests with conversation snapshots (test/contract/)
+npm run db:pg:health    # counts the swing.* tables via the shared Neon client
 ```
+
+Contract tests assert only what crosses the process boundary — the ordered
+outgoing conversation (HTTP requests incl. full AI prompts, SQL) recorded by
+`test/harness/` and snapshotted under `test/contract/__snapshots__/`. No test
+ever reaches the real network: msw runs with `onUnhandledRequest: 'error'` and
+Postgres is a fake client planted on `global.__pgClient`.
 
 ## API Routes (current behavior)
 

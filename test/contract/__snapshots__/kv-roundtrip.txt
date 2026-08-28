@@ -1,0 +1,61 @@
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:test:blob",
+    3600,
+    "{\"a\":1,\"b\":\"x\"}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:test:blob"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:test:counter"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:test:counter"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "LPUSH",
+    "swing:test:list",
+    "{\"id\":1}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "LPUSH",
+    "swing:test:list",
+    "{\"id\":2}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "LRANGE",
+    "swing:test:list",
+    0,
+    9
+  ]

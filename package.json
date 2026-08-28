@@ -24,12 +24,17 @@
     "build": "next build",
     "start": "next start",
     "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/pg-healthcheck.ts",
-    "test:ts": "node --import tsx --test lib/*.test.ts lib/swing/*.test.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run --project unit",
+    "test:contract": "vitest run --project contract"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
     "baseline-browser-mapping": "^2.9.19",
-    "tsx": "^4.21.0"
+    "msw": "^2.15.0",
+    "tsx": "^4.21.0",
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "pg-cloudflare": "file:stubs/pg-cloudflare"

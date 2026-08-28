@@ -1,0 +1,63 @@
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:snapshot:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:meta:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:meta:v1",
+    1209600,
+    "{\"lastFetchAttemptAtMs\":<NOW_MS>,\"lastSuccessAtMs\":null,\"lastFailureAtMs\":null,\"lastError\":null}"
+  ]
+
+GET https://nfs.faireconomy.media/ff_calendar_thisweek.json
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:snapshot:v1",
+    1209600,
+    "{\"source\":\"forexfactory\",\"fetchedAtMs\":<NOW_MS>,\"fromDate\":\"2026-08-11\",\"toDate\":\"2026-08-19\",\"events\":[{\"id\":\"596203913aac1c538187\",\"timestamp_utc\":\"<TIMESTAMP>\",\"currency\":\"USD\",\"impact\":\"HIGH\",\"event_name\":\"Non-Farm Employment Change\",\"actual\":null,\"forecast\":\"185K\",\"previous\":\"187K\",\"source\":\"forexfactory\"}]}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:meta:v1",
+    1209600,
+    "{\"lastFetchAttemptAtMs\":<NOW_MS>,\"lastSuccessAtMs\":<NOW_MS>,\"lastFailureAtMs\":null,\"lastError\":null}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:snapshot:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:meta:v1"
+  ]
