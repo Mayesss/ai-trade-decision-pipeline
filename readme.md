@@ -133,10 +133,16 @@ Postgres is a fake client planted on `global.__pgClient`.
 
 The `test/contract/analyze/` scenarios replay a full `/api/swing/analyze` tick
 against real market data recorded in `test/contract/fixtures/`, with the test
-clock frozen at the fixture's capture time. Bitget scenarios: flat-HOLD,
-entry-SELL, in-position-manage, gated. Capital scenarios: flat-gated,
+clock frozen at the fixture's capture time. Bitget: flat-HOLD, entry-SELL,
+in-position-manage, gated — plus LIVE (dryRun=false) scenarios pinning the
+actual order bodies (set-leverage / place-order with preset bracket,
+modify-tpsl-order with transcript replay). Capital: flat-gated,
 in-position-manage (the full capital prompt + marketaux path — capital's
-flat-only gates don't apply in-position), market-closed.
+flat-only gates don't apply in-position), market-closed, and the live PUT
+bracket amendment (whole-bracket replacement). Cross-cutting: event-blackout
+and a production-shaped quarter cron tick (kill switch, last-scan, warm
+latch). `test/contract/postmortem.contract.test.ts` and
+`evaluate.contract.test.ts` net the other two AI prompt surfaces.
 
 `npm run test:fixtures:capture -- SYMBOL [capital [category]]` re-records a
 fixture from one live dryRun tick. Bitget needs no credentials (public market

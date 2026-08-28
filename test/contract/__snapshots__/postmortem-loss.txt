@@ -1,0 +1,369 @@
+SQL neon-postgres
+  CREATE SCHEMA IF NOT EXISTS swing
+
+SQL neon-postgres
+  CREATE OR REPLACE FUNCTION swing.set_updated_at() RETURNS trigger AS $$ BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$ LANGUAGE plpgsql
+
+SQL neon-postgres
+  CREATE OR REPLACE FUNCTION swing.lev_rank(src TEXT) RETURNS INT AS $$ SELECT CASE lower(COALESCE(src, '')) WHEN 'captured' THEN 3 WHEN 'derived' THEN 2 WHEN 'broker' THEN 1 ELSE 0 END; $$ LANGUAGE sql IMMUTABLE
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.decisions ( id BIGSERIAL PRIMARY KEY, decided_at_ms BIGINT NOT NULL, decided_at TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(decided_at_ms / 1000.0)) STORED, symbol TEXT NOT NULL, platform TEXT NOT NULL DEFAULT 'bitget', category TEXT, instrument_id TEXT, news_source TEXT, time_frame TEXT NOT NULL DEFAULT '', dry_run BOOLEAN NOT NULL DEFAULT FALSE, action TEXT, applied_leverage NUMERIC, target_leverage NUMERIC, prompt_json JSONB, ai_decision_json JSONB NOT NULL DEFAULT '{}'::jsonb, exec_result_json JSONB NOT NULL DEFAULT '{}'::jsonb, snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb, bias_timeframes_json JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT decisions_natural_key UNIQUE (decided_at_ms, platform, symbol) )
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS decisions_symbol_platform_time_idx ON swing.decisions (symbol, platform, decided_at DESC)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS decisions_time_idx ON swing.decisions (decided_at DESC)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS decisions_platform_time_idx ON swing.decisions (platform, decided_at DESC)
+
+SQL neon-postgres
+  DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'decisions_set_updated_at') THEN CREATE TRIGGER decisions_set_updated_at BEFORE UPDATE ON swing.decisions FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at(); END IF; END $$
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.positions ( id BIGSERIAL PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bitget', symbol TEXT NOT NULL, position_key TEXT NOT NULL, broker_position_id TEXT, side TEXT, status TEXT NOT NULL DEFAULT 'closed', entry_ts_ms BIGINT, entry_ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(entry_ts_ms / 1000.0)) STORED, exit_ts_ms BIGINT, exit_ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(exit_ts_ms / 1000.0)) STORED, entry_price NUMERIC, exit_price NUMERIC, notional NUMERIC, entry_leverage NUMERIC, entry_margin NUMERIC, leverage_source TEXT, pnl_net NUMERIC, pnl_gross NUMERIC, pnl_pct NUMERIC, pnl_gross_pct NUMERIC, decision_id BIGINT REFERENCES swing.decisions(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT positions_key UNIQUE (platform, position_key) )
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS positions_symbol_platform_time_idx ON swing.positions (symbol, platform, entry_ts DESC)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS positions_status_idx ON swing.positions (status, platform)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS positions_decision_idx ON swing.positions (decision_id) WHERE decision_id IS NOT NULL
+
+SQL neon-postgres
+  DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'positions_set_updated_at') THEN CREATE TRIGGER positions_set_updated_at BEFORE UPDATE ON swing.positions FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at(); END IF; END $$
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.ai_threads ( platform TEXT NOT NULL, symbol TEXT NOT NULL, status TEXT NOT NULL, last_response_id TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'openai', transcript JSONB, turns INT NOT NULL DEFAULT 1, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT ai_threads_status_check CHECK (status IN ('pending_entry', 'in_position')), CONSTRAINT ai_threads_key PRIMARY KEY (platform, symbol) )
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai'
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS transcript JSONB
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_above NUMERIC
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_below NUMERIC
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_note TEXT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_set_at_ms BIGINT
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.ai_cooldowns ( platform TEXT NOT NULL, symbol TEXT NOT NULL, until_ms BIGINT NOT NULL, wake_above NUMERIC, wake_below NUMERIC, set_at_ms BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT ai_cooldowns_key PRIMARY KEY (platform, symbol) )
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_note TEXT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS claimed_until_ms BIGINT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_sustain_minutes INT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_side TEXT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_started_ms BIGINT
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_touch_extreme NUMERIC
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_sweeps JSONB
+
+SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_atr NUMERIC
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.break_triggers ( platform TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, trigger_price NUMERIC NOT NULL, time_frame TEXT NOT NULL, entry_at_ms BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT break_triggers_key PRIMARY KEY (platform, symbol), CONSTRAINT break_triggers_side_check CHECK (side IN ('long', 'short')) )
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.tick_log ( id BIGSERIAL PRIMARY KEY, ts_ms BIGINT NOT NULL, ts TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(ts_ms / 1000.0)) STORED, symbol TEXT NOT NULL, platform TEXT NOT NULL DEFAULT 'bitget', kind TEXT NOT NULL, stage TEXT NOT NULL, reason TEXT, cadence TEXT, dry_run BOOLEAN NOT NULL DEFAULT FALSE, gates_json JSONB, metrics_json JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT tick_log_kind_check CHECK (kind IN ('skip', 'ai_call')) )
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS tick_log_symbol_platform_time_idx ON swing.tick_log (symbol, platform, ts_ms DESC)
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.postmortems ( id BIGSERIAL PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bitget', symbol TEXT NOT NULL, position_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', trigger_source TEXT NOT NULL DEFAULT 'close', side TEXT, entry_ts_ms BIGINT, exit_ts_ms BIGINT, entry_price NUMERIC, exit_price NUMERIC, pnl_pct NUMERIC, pnl_net NUMERIC, verdict TEXT, lesson TEXT, report_json JSONB, dossier_json JSONB, model TEXT, usage_json JSONB, error TEXT, attempts INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT postmortems_status_check CHECK (status IN ('queued', 'running', 'succeeded', 'failed')), CONSTRAINT postmortems_position UNIQUE (platform, position_key) )
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS postmortems_symbol_time_idx ON swing.postmortems (symbol, platform, created_at DESC)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS postmortems_status_idx ON swing.postmortems (status)
+
+SQL neon-postgres
+  DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'postmortems_set_updated_at') THEN CREATE TRIGGER postmortems_set_updated_at BEFORE UPDATE ON swing.postmortems FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at(); END IF; END $$
+
+SQL neon-postgres
+  ALTER TABLE swing.postmortems ADD COLUMN IF NOT EXISTS lesson_scope TEXT
+
+SQL neon-postgres
+  DO $$ BEGIN IF EXISTS ( SELECT 1 FROM pg_constraint WHERE conname = 'postmortems_status_check' AND conrelid = 'swing.postmortems'::regclass AND pg_get_constraintdef(oid) NOT LIKE '%skipped%' ) THEN ALTER TABLE swing.postmortems DROP CONSTRAINT postmortems_status_check; ALTER TABLE swing.postmortems ADD CONSTRAINT postmortems_status_check CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'skipped')); END IF; END $$
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.lessons ( id BIGSERIAL PRIMARY KEY, scope TEXT NOT NULL, symbol TEXT, asset_class TEXT, lesson TEXT NOT NULL, confidence NUMERIC NOT NULL DEFAULT 0.5, support_count INT NOT NULL DEFAULT 1, source_postmortem_ids JSONB NOT NULL DEFAULT '[]'::jsonb, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT lessons_scope_check CHECK (scope IN ('symbol', 'asset_class', 'global')), CONSTRAINT lessons_status_check CHECK (status IN ('active', 'retired')) )
+
+SQL neon-postgres
+  ALTER TABLE swing.lessons ADD COLUMN IF NOT EXISTS origin_counts JSONB NOT NULL DEFAULT '{}'::jsonb
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS lessons_symbol_idx ON swing.lessons (status, scope, symbol)
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS lessons_class_idx ON swing.lessons (status, scope, asset_class)
+
+SQL neon-postgres
+  DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'lessons_set_updated_at') THEN CREATE TRIGGER lessons_set_updated_at BEFORE UPDATE ON swing.lessons FOR EACH ROW EXECUTE FUNCTION swing.set_updated_at(); END IF; END $$
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.account_snapshots ( id BIGSERIAL PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bitget', symbol TEXT, captured_at_ms BIGINT NOT NULL, captured_at TIMESTAMPTZ GENERATED ALWAYS AS (to_timestamp(captured_at_ms / 1000.0)) STORED, leverage NUMERIC, equity NUMERIC, available NUMERIC, margin_used NUMERIC, open_position_json JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW() )
+
+SQL neon-postgres
+  CREATE INDEX IF NOT EXISTS account_snapshots_lookup_idx ON swing.account_snapshots (platform, symbol, captured_at DESC)
+
+SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.weekly_digests ( id BIGSERIAL PRIMARY KEY, window_from_ms BIGINT NOT NULL, window_to_ms BIGINT NOT NULL, digest_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT weekly_digests_window UNIQUE (window_from_ms, window_to_ms) )
+
+SQL neon-postgres
+  {
+    "text": "UPDATE swing.postmortems SET status = 'running', attempts = attempts + 1, error = NULL WHERE id = $1 AND ( $2 = TRUE OR status IN ('queued', 'failed') OR (status = 'running' AND updated_at < $3) ) RETURNING *;",
+    "values": [
+      42,
+      false,
+      {}
+    ]
+  }
+
+GET https://api.bitget.com/api/v2/mix/market/candles?endTime=1786485600000&granularity=15m&limit=200&productType=usdt-futures&startTime=1786442400000&symbol=BTCUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "SELECT id, decided_at_ms, symbol, platform, action, dry_run, prompt_json, ai_decision_json, exec_result_json, snapshot_json FROM swing.decisions WHERE symbol = $1 AND ($2::text IS NULL OR platform = $3) AND decided_at_ms >= $4 AND decided_at_ms <= $5 ORDER BY decided_at_ms ASC LIMIT $6;",
+    "values": [
+      "BTCUSDT",
+      "bitget",
+      "bitget",
+      1786327200000,
+      1786485600000,
+      500
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "SELECT id, ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json FROM swing.tick_log WHERE symbol = $1 AND ($2::text IS NULL OR platform = $3) AND ts_ms >= $4 AND ts_ms <= $5 ORDER BY ts_ms ASC LIMIT $6;",
+    "values": [
+      "BTCUSDT",
+      "bitget",
+      "bitget",
+      1786327200000,
+      1786485600000,
+      3000
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "SELECT id, scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts, status, updated_at FROM swing.lessons WHERE status = 'active' AND ( scope = 'global' OR (scope = 'symbol' AND $1::text IS NOT NULL AND symbol = $2) OR (scope = 'asset_class' AND $3::text IS NOT NULL AND asset_class = $4) ) ORDER BY confidence DESC, support_count DESC, updated_at DESC LIMIT $5;",
+    "values": [
+      "BTCUSDT",
+      "BTCUSDT",
+      "crypto",
+      "crypto",
+      50
+    ]
+  }
+
+POST https://ai-gateway.vercel.sh/v1/responses
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  {
+    "input": "## POSITION (closed — subject of this post-mortem)\n\n{\n \"platform\": \"bitget\",\n \"symbol\": \"BTCUSDT\",\n \"position_key\": \"BTCUSDT-1786413600000\",\n \"side\": \"long\",\n \"entry_utc\": \"<TIMESTAMP>\",\n \"exit_utc\": \"<TIMESTAMP>\",\n \"entry_price\": 62000,\n \"exit_price\": 60760,\n \"pnl_pct\": -2,\n \"pnl_net\": -124\n}\n\n## ANALYSIS WINDOW\n<TIMESTAMP> → <TIMESTAMP>\n\n## POST-EXIT MARKET (price path recorded AFTER the close — exit-quality evidence only)\n\n{\n \"timeframe\": \"15m\",\n \"from_utc\": \"<TIMESTAMP>\",\n \"to_utc\": \"<TIMESTAMP>\",\n \"bars\": 1,\n \"exit_price\": 60760,\n \"high\": 60900,\n \"low\": 60700,\n \"last_close\": 60850,\n \"max_up_from_exit_pct\": 0.23,\n \"max_down_from_exit_pct\": -0.099,\n \"last_from_exit_pct\": 0.148\n}\n\n## COUNTS\n{\"ai_calls\":2,\"skipped_ticks\":0,\"dropped_ai_calls\":0,\"dropped_skips\":0,\"full_prompts\":2}\n\n## AI CALL TIMELINE (chronological digests; tokens/model per call)\n\n[\n {\n  \"ts\": 1786413600000,\n  \"iso\": \"<TIMESTAMP>\",\n  \"action\": \"BUY\",\n  \"summary\": \"trend continuation\",\n  \"reason\": \"HTF up, pullback held\",\n  \"take_profit_price\": 64000,\n  \"stop_loss_price\": 61000,\n  \"entry_limit_price\": null,\n  \"exit_size_pct\": null,\n  \"cooldown_minutes\": null,\n  \"exec\": {\n   \"placed\": true,\n   \"orderId\": \"ord-1\",\n   \"leverage\": 5\n  },\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"tokens\": null,\n  \"decision_id\": 900\n },\n {\n  \"ts\": 1786442400000,\n  \"iso\": \"<TIMESTAMP>\",\n  \"action\": \"CLOSE\",\n  \"summary\": \"thesis invalidated\",\n  \"reason\": \"lost the level\",\n  \"take_profit_price\": null,\n  \"stop_loss_price\": null,\n  \"entry_limit_price\": null,\n  \"exit_size_pct\": 100,\n  \"cooldown_minutes\": null,\n  \"exec\": {\n   \"closed\": true\n  },\n  \"model\": null,\n  \"tokens\": null,\n  \"decision_id\": 901\n }\n]\n\n## SKIPPED TICKS (gates blocked the AI; stage/reason + gate measurements)\n\n[]\n\n## TRADING-AI SYSTEM PROMPT (shared by all calls above)\n\nSWING SYSTEM PROMPT v1\n\n## FULL USER PROMPTS AT PIVOTAL TICKS (exact market state the trading AI saw)\n\n--- decision_id=900 <TIMESTAMP> action=BUY ---\nSTATE: entry tick user prompt\n\n--- decision_id=901 <TIMESTAMP> action=CLOSE ---\nSTATE: close tick user prompt",
+    "instructions": "You are a forensic trade post-mortem analyst for an automated swing-trading pipeline. You receive the complete recorded lifecycle of ONE closed position: the position outcome, a chronological digest of every AI decision call, every SKIPPED tick (where a pre-AI gate blocked the model from even looking, with the gate's measurements), the trading AI's system prompt, and the exact user prompts it saw at the pivotal ticks.\n\nYour job: determine what actually went wrong and how to avoid it — measurements over narratives.\n\nRules:\n- NO hindsight bias. Only fault a decision if information AVAILABLE AT THAT TIMESTAMP (in its prompt, the gate metrics, or earlier ticks) contradicted it. Price going the wrong way afterwards is not by itself an error — that verdict is 'bad_luck'.\n- Anchor every claim to a timestamp from the dossier. Do not invent data that is not present.\n- Explicitly examine the SKIPPED ticks: did a gate (cooldown, dedupe, off-boundary bar-close cadence, quiet-position threshold) hide actionable information while the position was moving against its thesis? Remember the pipeline BY DESIGN only consults the model on primary bar closes and fences positions with the exchange bracket in between — a skip is only a defect if an ON-CADENCE look or a wider/different bracket could have acted on what the skip hid. If yes, describe it in gate_impact; if no, set gate_impact to null.\n- Judge the bracket geometry: was the stop at a level the recorded volatility (ATR fields in the prompts/metrics) made likely to be swept? Was the TP realistic for the holding window?\n- POST-EXIT MARKET (section, when present): the run is deliberately delayed past the close so you can see the price path AFTER the exit. Use it to judge EXIT quality only: a stop swept immediately before a reversal well past the stop level points to misplaced SL geometry; continuation through the original target after an AI CLOSE points to a premature exit; continued adverse movement CONFIRMS the exit was right. It must never retroactively fault the ENTRY or any in-trade decision — the no-hindsight rule above still governs those; this section exists solely so exit-mechanics verdicts rest on measurements instead of guesses.\n- Judge entry mechanics: market vs pullback limit (resting limits only exist on trades from when that tool was enabled), and whether a resting limit filled into momentum against the position (adverse selection).\n- what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.\n- verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.\n- ACTIVE LESSON LIBRARY (section in the dossier, when present): lessons distilled from PREVIOUS post-mortems that are already injected into the trading AI's prompts for this instrument. Handle it in three steps:\n  1. Adherence: if a library lesson applied to this trade, state in lesson_adherence whether the trading AI FOLLOWED it or VIOLATED it (cite the tick). A violated lesson is an adherence failure, not a missing lesson. No applicable lesson → lesson_adherence null.\n  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'revise' when a SHOWN lesson is wrong as written — too broad, missing its numeric bound, or CONTRADICTING another shown lesson: set reinforce_lesson_id to the lesson being corrected and put the full corrected text in lesson (you may also move its scope via lesson_scope, up or down). 'retire' when a shown lesson is simply wrong and unfixable — set reinforce_lesson_id. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'. Before emitting 'new', check the candidate against EVERY shown lesson: if it would contradict one (opposite prescription for overlapping measured conditions), do not add it — 'revise' the existing lesson instead so the two reconcile into one rule with partitioned bounds.\n  3. Losing while following the process and the library is often just variance — do not invent a lesson to have something to say. A library bloated with near-duplicates and noise dilutes the trading AI's attention.\n- lesson (when lesson_action='new', or the reformulated/corrected text on 'reinforce'/'revise'): 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It is shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary. Every lesson MUST carry a numeric applicability bound (an ATR distance, a time window, a count) that makes it checkable against measurements — an unbounded \"do not X near Y\" reads as a universal veto and WILL be applied far beyond your intent (a bound like \"within 0.5 primary-ATR\" both blocks the failure and clears the setups it never meant to touch).\n- lesson_scope: ADVISORY on 'new' — code assigns every new lesson to this symbol and promotes it mechanically when later post-mortems reinforce it from other symbols or asset classes, so do not agonize over the audience. On 'revise' it moves the corrected lesson's scope (e.g. demote an over-generalized global back to its origin symbol); null keeps the current scope.\n\nRespond with strict JSON per the provided schema.",
+    "model": "openai/gpt-5.6-sol",
+    "reasoning": {
+      "effort": "medium"
+    },
+    "text": {
+      "format": {
+        "name": "swing_postmortem",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "confidence": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "gate_impact": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lesson": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lesson_action": {
+              "enum": [
+                "new",
+                "reinforce",
+                "revise",
+                "retire",
+                "none"
+              ],
+              "type": "string"
+            },
+            "lesson_adherence": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lesson_scope": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "missed_signals": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "ts_utc": {
+                    "type": "string"
+                  },
+                  "visible_in": {
+                    "enum": [
+                      "ai_call",
+                      "skipped_tick",
+                      "post_exit"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ts_utc",
+                  "description",
+                  "visible_in"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "reinforce_lesson_id": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suggestions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "timeline_analysis": {
+              "type": "string"
+            },
+            "verdict": {
+              "enum": [
+                "entry_flaw",
+                "management_flaw",
+                "stop_placement",
+                "exit_timing",
+                "bad_luck",
+                "process_gap"
+              ],
+              "type": "string"
+            },
+            "what_went_wrong": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "verdict",
+            "confidence",
+            "timeline_analysis",
+            "what_went_wrong",
+            "missed_signals",
+            "gate_impact",
+            "suggestions",
+            "lesson_adherence",
+            "lesson_action",
+            "reinforce_lesson_id",
+            "lesson",
+            "lesson_scope"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "json_schema"
+      }
+    },
+    "truncation": "auto"
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:ai:health:v1"
+  ]
+
+SQL neon-postgres
+  {
+    "text": "UPDATE swing.postmortems SET status = 'succeeded', verdict = $1, lesson = $2, lesson_scope = $3, report_json = $4::jsonb, dossier_json = $5::jsonb, model = $6, usage_json = $7::jsonb, error = NULL WHERE id = $8;",
+    "values": [
+      "stop_placement",
+      "Place BTC continuation stops at least 1.2 primary-ATR beyond the swing low.",
+      "symbol",
+      "{\"verdict\":\"stop_placement\",\"confidence\":0.72,\"timeline_analysis\":\"Stop sat inside ordinary 4H noise; the level itself held.\",\"what_went_wrong\":[\"stop placed 0.6 ATR from entry on a 2 ATR structure\"],\"missed_signals\":[],\"gate_impact\":null,\"suggestions\":[\"anchor stops beyond the swing low, not a fixed distance\"],\"lesson_adherence\":null,\"lesson_action\":\"new\",\"reinforce_lesson_id\":null,\"lesson\":\"Place BTC continuation stops at least 1.2 primary-ATR beyond the swing low.\",\"lesson_scope\":\"symbol\"}",
+      "{\"position\":{\"platform\":\"bitget\",\"symbol\":\"BTCUSDT\",\"position_key\":\"BTCUSDT-1786413600000\",\"side\":\"long\",\"entry_utc\":\"<TIMESTAMP>\",\"exit_utc\":\"<TIMESTAMP>\",\"entry_price\":62000,\"exit_price\":60760,\"pnl_pct\":-2,\"pnl_net\":-124},\"window\":{\"from_utc\":\"<TIMESTAMP>\",\"to_utc\":\"<TIMESTAMP>\"},\"counts\":{\"ai_calls\":2,\"skipped_ticks\":0,\"dropped_ai_calls\":0,\"dropped_skips\":0,\"full_prompts\":2},\"ai_calls\":[{\"ts\":1786413600000,\"iso\":\"<TIMESTAMP>\",\"action\":\"BUY\",\"summary\":\"trend continuation\",\"reason\":\"HTF up, pullback held\",\"take_profit_price\":64000,\"stop_loss_price\":61000,\"entry_limit_price\":null,\"exit_size_pct\":null,\"cooldown_minutes\":null,\"exec\":{\"placed\":true,\"orderId\":\"ord-1\",\"leverage\":5},\"model\":\"openai/gpt-5.6-sol\",\"tokens\":null,\"decision_id\":900},{\"ts\":1786442400000,\"iso\":\"<TIMESTAMP>\",\"action\":\"CLOSE\",\"summary\":\"thesis invalidated\",\"reason\":\"lost the level\",\"take_profit_price\":null,\"stop_loss_price\":null,\"entry_limit_price\":null,\"exit_size_pct\":100,\"cooldown_minutes\":null,\"exec\":{\"closed\":true},\"model\":null,\"tokens\":null,\"decision_id\":901}],\"skipped_ticks\":[],\"pivotal_decision_ids\":[900,901],\"post_exit_market\":{\"timeframe\":\"15m\",\"from_utc\":\"<TIMESTAMP>\",\"to_utc\":\"<TIMESTAMP>\",\"bars\":1,\"exit_price\":60760,\"high\":60900,\"low\":60700,\"last_close\":60850,\"max_up_from_exit_pct\":0.23,\"max_down_from_exit_pct\":-0.099,\"last_from_exit_pct\":0.148}}",
+      "openai/gpt-5.6-sol",
+      "{\"input_tokens\":1000,\"output_tokens\":200,\"cache_creation_input_tokens\":null,\"cache_read_input_tokens\":0}",
+      42
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.lessons (scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts) VALUES ( $1, $2, $3, $4, $5, 1, $6::jsonb, $7::jsonb ) RETURNING id;",
+    "values": [
+      "symbol",
+      "BTCUSDT",
+      "crypto",
+      "Place BTC continuation stops at least 1.2 primary-ATR beyond the swing low.",
+      0.72,
+      "[42]",
+      "{\"loss\":1}"
+    ]
+  }

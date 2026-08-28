@@ -133,7 +133,7 @@ export function capitalInPositionPrivateWorld(params: {
 
 // --- swing Postgres ---------------------------------------------------------------
 
-/** Answers the queries a dryRun tick issues; anything unexpected throws named. */
+/** Answers the queries a tick issues; anything unexpected throws named. */
 export const analyzePg: PgResponder = (text) => {
     const kind = text.split(' ')[0].toUpperCase();
     if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'].includes(kind)) return 0; // schema bootstrap DDL
@@ -142,9 +142,20 @@ export const analyzePg: PgResponder = (text) => {
     if (text.includes('FROM swing.positions')) return [];
     if (text.includes('FROM swing.lessons')) return [];
     if (text.includes('FROM swing.ai_threads')) return [];
+    if (text.includes('FROM swing.ai_cooldowns')) return [];
     if (text.includes('FROM swing.break_triggers')) return [];
     throw new Error(`analyze pg world: unexpected query: ${text}`);
 };
+
+/**
+ * analyzePg with per-scenario answers layered on top: `override` may answer a
+ * query (rows or count) or return undefined to fall through to the base.
+ */
+export function analyzePgWith(
+    override: (text: string, values: unknown[]) => Record<string, unknown>[] | number | undefined,
+): PgResponder {
+    return (text, values) => override(text, values) ?? analyzePg(text, values);
+}
 
 // --- canned decisions --------------------------------------------------------------
 
@@ -180,11 +191,14 @@ export function decisionBase(action: string, summary: string, reason: string): R
  * bootstrap; that is warmed (and the recorder reset) BEFORE the tick so the
  * snapshot holds only the tick's own conversation.
  */
-export async function runAnalyzeTick(query: Record<string, string>): Promise<ApiResponseState> {
+export async function runAnalyzeTick(
+    query: Record<string, string>,
+    headers: Record<string, string> = {},
+): Promise<ApiResponseState> {
     await getSwingAiThread('bitget', 'SCHEMA-WARMUP');
     resetEntries();
 
-    const req = createApiRequest({ path: '/api/swing/analyze', query });
+    const req = createApiRequest({ path: '/api/swing/analyze', query, headers });
     const { res, state } = createApiResponse();
     await handler(req as never, res as never);
     return state;

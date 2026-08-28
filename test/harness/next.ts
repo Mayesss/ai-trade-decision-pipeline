@@ -4,6 +4,7 @@
 export interface ApiResponseState {
     statusCode: number | null;
     body: unknown;
+    headers: Record<string, string>;
 }
 
 export function createApiRequest(params: {
@@ -23,7 +24,7 @@ export function createApiRequest(params: {
 }
 
 export function createApiResponse(): { res: unknown; state: ApiResponseState } {
-    const state: ApiResponseState = { statusCode: null, body: null };
+    const state: ApiResponseState = { statusCode: null, body: null, headers: {} };
     const res = {
         status(code: number) {
             state.statusCode = code;
@@ -31,6 +32,10 @@ export function createApiResponse(): { res: unknown; state: ApiResponseState } {
         },
         json(body: unknown) {
             state.body = body;
+            return res;
+        },
+        setHeader(name: string, value: string) {
+            state.headers[name.toLowerCase()] = value;
             return res;
         },
     };
