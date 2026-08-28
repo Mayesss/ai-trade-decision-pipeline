@@ -530,11 +530,11 @@ export function buildTimeframeMetrics(
     const ema50 = computeEMA(closes, 50);
     const sma200 = computeSMA(closes, 200);
 
-    const e9 = ema9.at(-1)! ?? closes.at(-1)!;
-    const e21 = ema21.at(-1)! ?? closes.at(-1)!;
-    const e20 = ema20.at(-1)! ?? closes.at(-1)!;
-    const e50 = ema50.at(-1)! ?? closes.at(-1)!;
-    const s200 = sma200.at(-1)! ?? closes.at(-1)!;
+    const e9 = ema9.at(-1) ?? closes.at(-1)!;
+    const e21 = ema21.at(-1) ?? closes.at(-1)!;
+    const e20 = ema20.at(-1) ?? closes.at(-1)!;
+    const e50 = ema50.at(-1) ?? closes.at(-1)!;
+    const s200 = sma200.at(-1) ?? closes.at(-1)!;
 
     const trend = e20 > e50 ? 'up' : 'down';
 

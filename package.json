@@ -24,6 +24,8 @@
     "build": "next build",
     "start": "next start",
     "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/pg-healthcheck.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run --project unit",
@@ -31,10 +33,15 @@
     "test:fixtures:capture": "node --import tsx scripts/capture-analyze-fixtures.ts"
   },
   "devDependencies": {
+    "@eslint/compat": "^2.1.0",
     "@types/pg": "^8.20.0",
+    "@vitest/eslint-plugin": "^1.6.27",
     "baseline-browser-mapping": "^2.9.19",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
     "msw": "^2.15.0",
     "tsx": "^4.21.0",
+    "typescript-eslint": "^8.68.0",
     "vitest": "^4.1.11"
   },
   "overrides": {

@@ -331,17 +331,6 @@ const toUnixSeconds = (time: any): number => {
   return Number.isFinite(seconds) ? seconds : NaN;
 };
 
-const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
-  const seconds = toUnixSeconds(time);
-  if (!Number.isFinite(seconds)) return '';
-  const date = new Date(seconds * 1000);
-  return new Intl.DateTimeFormat('de-DE', {
-    timeZone: BERLIN_TZ,
-    hour: '2-digit',
-    minute: '2-digit',
-    ...opts,
-  }).format(date);
-};
 
 const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
   const seconds = toUnixSeconds(time);
@@ -1101,7 +1090,7 @@ export default function ChartPanel(props: ChartPanelProps) {
   // Symbol switch closes any open report overlay.
   useEffect(() => {
     closeAnalysisOverlay();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [symbol]);
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;

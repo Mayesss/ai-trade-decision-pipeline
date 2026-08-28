@@ -1075,7 +1075,7 @@ export function resolveCapitalOrderSizing(params: {
     };
   }
 
-  let cappedNotionalUsd =
+  const cappedNotionalUsd =
     maxNotionalUsd !== null
       ? Math.min(requestedNotionalUsd, maxNotionalUsd)
       : requestedNotionalUsd;
@@ -1186,7 +1186,7 @@ function adjustStopAndSizeForCapitalConstraint(params: {
   const bound = Number(params.constraint.value);
   if (!(Number.isFinite(bound) && bound > 0)) return null;
 
-  let adjustedStop =
+  const adjustedStop =
     params.constraint.kind === "minvalue"
       ? Math.max(params.stopLevel, bound)
       : Math.min(params.stopLevel, bound);

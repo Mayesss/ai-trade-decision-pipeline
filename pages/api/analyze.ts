@@ -1878,31 +1878,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // 5) CLOSE conditions (PnL bands + regime)
+        // 5) PnL for downstream context
         let pnlPct = 0;
-        let close_conditions:
-            | {
-                  pnl_gt_pos?: boolean;
-                  pnl_lt_neg?: boolean;
-                  opposite_regime?: boolean;
-                  // time_stop?: boolean; // add if you track bars-in-trade
-              }
-            | undefined;
 
         if (positionOpen) {
             pnlPct = parsePnlPct(positionInfo.currentPnl);
-            const side = positionInfo.holdSide as 'long' | 'short';
-
-            const regimeUp = indicators.macro.includes('trend=up');
-            const regimeDown = indicators.macro.includes('trend=down');
-            const opposite_regime = (side === 'long' && regimeDown) || (side === 'short' && regimeUp);
-
-            close_conditions = {
-                pnl_gt_pos: pnlPct >= 1.0, // take profit ≥ +1%
-                pnl_lt_neg: pnlPct <= -1.0, // stop loss ≤ -1%
-                opposite_regime, // macro regime flipped vs side
-                // time_stop: false,
-            };
         }
 
         const positionExtrema = positionOpen
@@ -2145,7 +2125,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        // 6) Build prompt with allowed_actions, gates, and close_conditions
+        // 6) Build prompt with allowed_actions and gates
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
         // Venue market context for the prompt (Capital only). Session timing is

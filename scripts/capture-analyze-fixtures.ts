@@ -67,7 +67,7 @@ for (const name of [
     'SWING_POSTMORTEM_BASE_URL',
     'SWING_AI_PROVIDER',
 ]) {
-    delete process.env[name];
+    Reflect.deleteProperty(process.env, name);
 }
 
 // --- recording fetch wrapper --------------------------------------------------

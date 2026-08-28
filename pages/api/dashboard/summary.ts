@@ -125,11 +125,6 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function positiveNumber(value: unknown): number | null {
-  const n = finiteNumber(value);
-  return n !== null && n > 0 ? n : null;
-}
-
 // mergeCapitalPositionWindows / withDerivedPnlPct / enrichCapitalWindowFromHistory /
 // capitalTransactionToWindow / normalizeCapitalSymbolKey now live in
 // lib/swing/capitalWindows.ts, shared with the chart overlay endpoint and the

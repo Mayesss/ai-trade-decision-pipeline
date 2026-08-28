@@ -121,10 +121,6 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
     return data.result;
 }
 
-async function kvSet(key: string, value: string) {
-    return kvCommand('SET', key, value);
-}
-
 // Set with TTL (seconds)
 async function kvSetEx(key: string, ttlSeconds: number, value: string) {
     return kvCommand('SETEX', key, ttlSeconds, value);

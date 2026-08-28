@@ -5,34 +5,14 @@ import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
 import { NANO_TIMEFRAME } from "../lib/constants";
 import WeeklyDigestPanel from "../components/WeeklyDigestPanel";
 import {
-  Activity,
-  BarChart3,
-  Bot,
-  BookOpen,
-  CandlestickChart,
-  ShieldPlus,
-  Wand2,
   Circle,
-  Cpu,
-  Database,
-  Globe2,
-  ListChecks,
-  Braces,
-  Layers3,
-  PauseCircle,
-  PenTool,
-  Radar,
-  Repeat,
   ShieldCheck,
   Moon,
   Sun,
-  Zap,
-  Star,
   ArrowUpRight,
   ArrowDownRight,
   AlertTriangle,
   X,
-  type LucideIcon,
 } from "lucide-react";
 
 type AspectEvaluation = {
@@ -222,15 +202,6 @@ type DashboardTimelineResponse = {
   ticks?: TimelineTickUi[];
 };
 
-type EvaluateJobStatus = "queued" | "running" | "succeeded" | "failed";
-
-type EvaluateJobRecord = {
-  id: string;
-  status: EvaluateJobStatus;
-  updatedAt?: number;
-  error?: string;
-};
-
 type DashboardRangeKey = "1D" | "7D" | "30D" | "6M";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
@@ -335,12 +306,6 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [showRawResponse, setShowRawResponse] = useState(false);
   const [cronConfirmOpen, setCronConfirmOpen] = useState(false);
-  const [evaluateJobs, setEvaluateJobs] = useState<
-    Record<string, EvaluateJobRecord>
-  >({});
-  const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<
-    string | null
-  >(null);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("1D");
   // Trailing-7-day per-day closed nets for the header week-calendar strip,
   // folded across symbols. Kept in both venue currencies (Bitget USDT ≈ $,
@@ -405,7 +370,6 @@ export default function Home() {
   const [themePreference, setThemePreference] =
     useState<ThemePreference>("dark");
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
-  const evaluatePollTimersRef = useRef<Record<string, number>>({});
   const readStoredAdminSecret = () => {
     if (typeof window === "undefined") return null;
     const stored = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
@@ -572,63 +536,6 @@ export default function Home() {
     setAdminSubmitting(false);
   };
 
-  const aspectMeta: Record<
-    string,
-    { Icon: LucideIcon; color: string; bg: string }
-  > = {
-    data_quality: { Icon: Database, color: "text-sky-700", bg: "bg-sky-100" },
-    data_quantity: { Icon: Layers3, color: "text-cyan-700", bg: "bg-cyan-100" },
-    ai_performance: {
-      Icon: Cpu,
-      color: "text-indigo-700",
-      bg: "bg-indigo-100",
-    },
-    strategy_performance: {
-      Icon: BarChart3,
-      color: "text-emerald-700",
-      bg: "bg-emerald-100",
-    },
-    signal_strength_clarity: {
-      Icon: Activity,
-      color: "text-amber-700",
-      bg: "bg-amber-100",
-    },
-    risk_management: {
-      Icon: ShieldCheck,
-      color: "text-rose-700",
-      bg: "bg-rose-100",
-    },
-    consistency: { Icon: Repeat, color: "text-blue-700", bg: "bg-blue-100" },
-    explainability: {
-      Icon: BookOpen,
-      color: "text-purple-700",
-      bg: "bg-purple-100",
-    },
-    responsiveness: { Icon: Zap, color: "text-teal-700", bg: "bg-teal-100" },
-    prompt_engineering: {
-      Icon: PenTool,
-      color: "text-fuchsia-700",
-      bg: "bg-fuchsia-100",
-    },
-    prompt_consistency: {
-      Icon: ListChecks,
-      color: "text-lime-700",
-      bg: "bg-lime-100",
-    },
-    action_logic: {
-      Icon: Braces,
-      color: "text-orange-700",
-      bg: "bg-orange-100",
-    },
-    ai_freedom: { Icon: Wand2, color: "text-indigo-700", bg: "bg-indigo-100" },
-    guardrail_coverage: {
-      Icon: ShieldPlus,
-      color: "text-rose-700",
-      bg: "bg-rose-100",
-    },
-  };
-
-  const formatLabel = (key: string) => key.replace(/_/g, " ");
   const mergeTabPatch = (symbol: string, patch: Partial<EvaluationEntry>) => {
     setTabData((prev) => {
       const current = prev[symbol] || { symbol, evaluation: {} };
@@ -1055,105 +962,6 @@ export default function Home() {
     }
   };
 
-  const clearEvaluatePollTimer = (symbol: string) => {
-    const timerId = evaluatePollTimersRef.current[symbol];
-    if (timerId) {
-      window.clearInterval(timerId);
-      delete evaluatePollTimersRef.current[symbol];
-    }
-  };
-  const pollEvaluationJob = async (symbol: string, jobId: string) => {
-    try {
-      const params = new URLSearchParams({
-        jobId,
-        t: String(Date.now()),
-      });
-      const res = await fetch(`/api/swing/evaluate?${params.toString()}`, {
-        headers: buildAdminHeaders(),
-        cache: "no-store",
-      });
-      if (res.status === 401) {
-        clearEvaluatePollTimer(symbol);
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        setError(
-          "Evaluation polling unauthorized (401). Re-enter admin access secret.",
-        );
-        return;
-      }
-      if (res.status === 304) return;
-      if (!res.ok) return;
-      const json = await res.json();
-      const status = String(json?.status || "") as EvaluateJobStatus;
-      if (!status) return;
-      setEvaluateJobs((prev) => ({
-        ...prev,
-        [symbol]: {
-          id: jobId,
-          status,
-          updatedAt: Number(json?.updatedAt) || Date.now(),
-          error: typeof json?.error === "string" ? json.error : undefined,
-        },
-      }));
-
-      if (status === "succeeded" || status === "failed") {
-        clearEvaluatePollTimer(symbol);
-        if (status === "succeeded") {
-          try {
-            await loadSymbolEvaluation(symbol);
-          } catch {}
-        }
-      }
-    } catch {
-      // keep polling on transient fetch issues
-    }
-  };
-  const triggerEvaluation = async (symbol: string) => {
-    if (!symbol || evaluateSubmittingSymbol) return;
-    setEvaluateSubmittingSymbol(symbol);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        symbol,
-        async: "true",
-      });
-      const res = await fetch(`/api/swing/evaluate?${params.toString()}`, {
-        headers: buildAdminHeaders(),
-        cache: "no-store",
-      });
-      if (!res.ok) {
-        if (res.status === 401) {
-          handleAuthExpired(
-            "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-          );
-        }
-        let msg = `Failed to queue evaluation (${res.status})`;
-        try {
-          const body = await res.json();
-          msg = body?.error ? `${msg}: ${String(body.error)}` : msg;
-        } catch {}
-        throw new Error(msg);
-      }
-      const json = await res.json();
-      const jobId = String(json?.jobId || "");
-      if (!jobId) throw new Error("Missing evaluation job ID");
-      setEvaluateJobs((prev) => ({
-        ...prev,
-        [symbol]: { id: jobId, status: "queued", updatedAt: Date.now() },
-      }));
-      clearEvaluatePollTimer(symbol);
-      void pollEvaluationJob(symbol, jobId);
-      evaluatePollTimersRef.current[symbol] = window.setInterval(() => {
-        void pollEvaluationJob(symbol, jobId);
-      }, 5000);
-    } catch (err: any) {
-      setError(err?.message || "Failed to queue evaluation");
-    } finally {
-      setEvaluateSubmittingSymbol(null);
-    }
-  };
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     const stored = readStoredAdminSecret();
@@ -1324,14 +1132,6 @@ export default function Home() {
   }, [adminGranted]);
 
   useEffect(() => {
-    return () => {
-      Object.keys(evaluatePollTimersRef.current).forEach((symbol) => {
-        clearEvaluatePollTimer(symbol);
-      });
-    };
-  }, []);
-
-  useEffect(() => {
     setShowPrompt(false);
     setShowRawResponse(false);
   }, [active, symbols]);
@@ -1454,12 +1254,6 @@ export default function Home() {
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
   const activeSymbol = symbols[active] || null;
-  const activePlatform =
-    current?.lastPlatform?.toLowerCase() === "capital" ? "capital" : "bitget";
-  const activePlatformLogo =
-    activePlatform === "capital" ? "/capital.svg" : "/bitget.svg";
-  const dashboardRangeText =
-    dashboardRange === "6M" ? "6m" : dashboardRange.toLowerCase();
   const swingSummaryMatchesRange = swingSummaryRange === dashboardRange;
   const liveOpenPnl =
     current &&
@@ -1824,18 +1618,8 @@ export default function Home() {
       };
     });
   };
-  const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
-  const evaluateRunning = Boolean(
-    activeSymbol &&
-    currentEvalJob &&
-    (currentEvalJob.status === "queued" || currentEvalJob.status === "running"),
-  );
   const swingCronControlLoaded = swingCronControl !== null;
   const swingCronHardDeactivated = swingCronControl?.hardDeactivated === true;
-  const swingCronReason =
-    typeof swingCronControl?.reason === "string"
-      ? swingCronControl.reason.trim()
-      : "";
   const hasLastDecision = !!(
     current &&
     ("lastDecision" in current ||
@@ -1885,11 +1669,6 @@ export default function Home() {
     );
     return Number.isFinite(pct) && pct > 0 && pct < 100;
   })();
-  const hasDetails = !!(
-    current?.evaluation?.what_went_well?.length ||
-    current?.evaluation?.issues?.length ||
-    current?.evaluation?.improvements?.length
-  );
   const biasOrder = [
     { key: "context_bias", label: "Context" },
     { key: "macro_bias", label: "Macro" },
@@ -2094,14 +1873,6 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {currentEvalJob ? (
-                    <span className="text-[11px] text-slate-500">
-                      eval:{" "}
-                      <span className="font-semibold text-slate-700">
-                        {currentEvalJob.status}
-                      </span>
-                    </span>
-                  ) : null}
                   {!swingWeekCalendar &&
                   loading &&
                   !error ? (

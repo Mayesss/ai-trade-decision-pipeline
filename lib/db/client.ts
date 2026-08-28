@@ -43,7 +43,7 @@ type PgQueryConfig = {
 type PgQueryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
 
 declare global {
-    // eslint-disable-next-line no-var
+     
     var __pgClient: PgClient | undefined;
 }
 

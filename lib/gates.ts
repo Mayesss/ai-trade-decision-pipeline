@@ -10,8 +10,8 @@ import type { MultiTFIndicators } from './indicators';
 
 export type Tier = 'BTC' | 'ETH' | 'MAJOR' | 'MID' | 'SMALL';
 
-export interface OrderbookSideLevelArr extends Array<[number, number]> {} // [price, size]
-export interface OrderbookSideObjArr extends Array<{ price: number; size: number }> {}
+export type OrderbookSideLevelArr = Array<[number, number]>; // [price, size]
+export type OrderbookSideObjArr = Array<{ price: number; size: number }>;
 
 export interface GatesInput {
   symbol: string; // e.g. "BTCUSDT"
@@ -304,7 +304,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
     symbol, last, orderbook, notionalUSDT, atrAbsMacro, macroTimeframeMinutes,
     spreadBpsHistory, top5BidUsdHistory, atrPctHistory, slippageBpsHistory,
-    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions, atrFloorScale, marketCategory,
+    vol24hUSD, medianSpreadBps24h, positionOpen, disableSymbolExclusions, atrFloorScale, marketCategory,
   } = input;
 
   const bids = toPriceSizeArrays(orderbook.bids);

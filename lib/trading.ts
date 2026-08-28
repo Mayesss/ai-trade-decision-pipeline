@@ -604,7 +604,6 @@ export async function maybeManagePosition(args: {
     const meta = await fetchSymbolMeta(symbol, productType);
     const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 2;
     const symbolMax = Number(meta.maxLever);
-    const marginCoin = pos.marginCoin ?? 'USDT';
 
     // Breakeven trigger offset past entry by the fee buffer, so the locked exit is
     // net non-negative after round-trip venue fees.

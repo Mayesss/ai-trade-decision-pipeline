@@ -8,7 +8,6 @@ import {
     MICRO_TIMEFRAME,
     NANO_TIMEFRAME,
     PRIMARY_TIMEFRAME,
-    TRADE_WINDOW_MINUTES,
 } from './constants';
 import { AiCallError } from './aiError';
 import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
@@ -183,7 +182,6 @@ export function computeMomentumSignals(params: {
     primaryTimeframe: string;
 }): MomentumSignals {
     const { price, indicators, gates, primaryTimeframe } = params;
-    const macroSummary = indicators.macro || '';
     const microSummary = indicators.micro || '';
     const primarySummary = indicators.primary?.summary || '';
     const primaryTf = String(primaryTimeframe || '').trim();
@@ -191,7 +189,6 @@ export function computeMomentumSignals(params: {
     const primaryMetrics = primaryTf ? indicators.metrics?.[primaryTf] : undefined;
     const microMetrics = microTf ? indicators.metrics?.[microTf] : undefined;
 
-    const ema50Macro = readIndicator('EMA50', macroSummary);
     const ema50Primary = readIndicator('EMA50', primarySummary);
     const ema20Primary = readIndicator('EMA20', primarySummary);
     const ema20Micro = readIndicator('EMA20', microSummary);
@@ -1946,8 +1943,8 @@ export function sanitizeHoldCooldown(params: {
 
     const price = Number(params.price);
     const priceKnown = Number.isFinite(price) && price > 0;
-    let wakeAbove = Number(params.wakeAbove);
-    let wakeBelow = Number(params.wakeBelow);
+    const wakeAbove = Number(params.wakeAbove);
+    const wakeBelow = Number(params.wakeBelow);
     let above: number | null = Number.isFinite(wakeAbove) && wakeAbove > 0 ? wakeAbove : null;
     let below: number | null = Number.isFinite(wakeBelow) && wakeBelow > 0 ? wakeBelow : null;
     if (!priceKnown) {
