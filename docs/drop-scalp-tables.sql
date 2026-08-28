@@ -13,6 +13,20 @@
 --   dropped below and can be promoted/queried if anything is missed.
 -- =============================================================================
 
+-- Verified inventory (run read-only against main on 2026-08-28, project
+-- holy-resonance-21485949 / branch br-super-hill-agtd7n6l):
+--   26 scalp_* tables in `public`, ~4.95 GB of the DB's ~5.3 GB total (~93%).
+--   Largest: scalp_v2_candidates 2.3 GB, scalp_candle_history_weeks 1.3 GB,
+--   scalp_v2_worker_stage_weekly_cache 603 MB, scalp_v2_deployments 328 MB,
+--   scalp_v2_execution_events 223 MB, scalp_v2_jobs 132 MB.
+--   swing schema: 10 tables (~90 MB) — untouched by this script.
+--   Only other object: public._prisma_migrations (32 kB, legacy Prisma
+--   bookkeeping; NOT dropped by this script — review separately).
+--
+-- Deploy-order note: run the drops only AFTER the scalp-free code (commits
+-- 235cee9..481cd9d) is deployed to Vercel — the previously deployed build
+-- still contains scalp routes that reference these tables.
+
 -- STEP 1 — inventory: review what will be dropped (nothing is modified).
 -- Everything outside the `swing` schema is a candidate; scalp tables live in
 -- `public` and start with `scalp_`.
