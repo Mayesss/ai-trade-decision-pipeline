@@ -1,11 +1,14 @@
 # Cleanup plan: retire forex & scalp, keep lib/swing as the only actor
 
-Status: EXECUTED through Phase 4 (2026-08-28). Code, routes, scripts, data files,
-and docs are cleaned; the shared kernel lives in `lib/db`, `lib/market`, and
-`lib/cronChaining.ts`. Identifiers were renamed (`pgClient`, `AssetCategory`, …)
-but env var names were intentionally kept (`SCALP_PG_*`, `SCALP_CAPITAL_*`, …).
-Phase 5 (database drops) is pending — SQL is prepared for manual execution on
-Neon after a soak period; see the phase 5 section below.
+Status: COMPLETE (2026-08-28). All five phases executed. Code, routes, scripts,
+data files, and docs are cleaned; the shared kernel lives in `lib/db`,
+`lib/market`, and `lib/cronChaining.ts`. Identifiers were renamed (`pgClient`,
+`AssetCategory`, …) but env var names were intentionally kept (`SCALP_PG_*`,
+`SCALP_CAPITAL_*`, …). Phase 5 database drops were run manually on Neon via
+`docs/drop-scalp-tables.sql` after the scalp-free build deployed: 26 scalp_*
+tables (~4.95 GB) dropped, database now ~98 MB, swing schema intact (10 tables,
+17,100 decisions). Recovery snapshot: Neon branch `pre-scalp-drop-2026-08-28`
+(`br-winter-voice-ag37c56z`) — delete it once confident.
 Date: 2026-08-28
 
 ## Dependency map (verified by import analysis)
