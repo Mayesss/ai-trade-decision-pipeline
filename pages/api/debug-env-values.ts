@@ -17,7 +17,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             BITGET_API_PASSPHRASE: process.env.BITGET_API_PASSPHRASE
                 ? process.env.BITGET_API_PASSPHRASE.slice(0, 2) + '...'
                 : '❌ missing',
-            OPENAI_API_KEY: process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0, 6) + '...' : '❌ missing',
+            AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY ? process.env.AI_GATEWAY_API_KEY.slice(0, 6) + '...' : '(unset — OIDC fallback)',
+            VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN ? '✅ present' : '❌ missing',
             COINDESK_API_KEY: process.env.COINDESK_API_KEY
                 ? process.env.COINDESK_API_KEY.slice(0, 6) + '...'
                 : '❌ missing',
@@ -40,7 +41,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             BITGET_API_KEY: process.env.BITGET_API_KEY ? '✅ set' : '❌ missing',
             BITGET_API_SECRET: process.env.BITGET_API_SECRET ? '✅ set' : '❌ missing',
             BITGET_API_PASSPHRASE: process.env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
-            OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '✅ set' : '❌ missing',
+            AI_GATEWAY_API_KEY: process.env.AI_GATEWAY_API_KEY ? '✅ set' : '(unset — OIDC fallback)',
+            VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN ? '✅ present' : '❌ missing',
             COINDESK_API_KEY: process.env.COINDESK_API_KEY ? '✅ set' : '❌ missing',
             MARKETAUX_API_KEY: process.env.MARKETAUX_API_KEY ? '✅ set' : '❌ missing',
             FOREX_FACTORY_CALENDAR_URL:

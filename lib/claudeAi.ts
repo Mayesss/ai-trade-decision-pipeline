@@ -20,7 +20,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { AiCallError } from './aiError';
-import { aiModelForProvider } from './aiModel';
+import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
+import { AI_GATEWAY_ANTHROPIC_BASE_URL } from './constants';
 
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
@@ -37,12 +38,16 @@ function resolveClaudeEffort(): ClaudeEffort {
     return (CLAUDE_EFFORTS as readonly string[]).includes(raw) ? (raw as ClaudeEffort) : 'medium';
 }
 
+// Routed through the Vercel AI Gateway's Anthropic-compatible endpoint: the
+// official SDK with only baseURL + auth swapped. Cached per auth key — the
+// OIDC token rotates, so a stale cached client must not outlive its token.
 let cachedClient: Anthropic | null = null;
+let cachedClientKey: string | null = null;
 function claudeClient(): Anthropic {
-    if (cachedClient) return cachedClient;
-    if (!process.env.ANTHROPIC_API_KEY)
-        throw new AiCallError({ message: 'Missing ANTHROPIC_API_KEY', provider: 'claude', kind: 'config' });
-    cachedClient = new Anthropic();
+    const apiKey = resolveAiGatewayKey('claude');
+    if (cachedClient && cachedClientKey === apiKey) return cachedClient;
+    cachedClient = new Anthropic({ apiKey, baseURL: AI_GATEWAY_ANTHROPIC_BASE_URL });
+    cachedClientKey = apiKey;
     return cachedClient;
 }
 

@@ -22,7 +22,7 @@ Next.js app that runs an AI-driven swing-trading loop for multiple platforms (Bi
 - Node.js 18+ (matches Next 16)
 - Bitget API key (futures) with trading permissions
 - Capital.com Open API credentials (for `platform=capital`)
-- OpenAI-compatible API key (used by `callAI`)
+- Vercel AI Gateway access (automatic via OIDC on Vercel; optional `AI_GATEWAY_API_KEY` for non-Vercel environments). Provider keys (OpenAI/Anthropic) live in the gateway's BYOK settings, not in env vars
 - CoinDesk API key (required for `newsSource=coindesk`)
 - Marketaux API key (required for `newsSource=marketaux`)
 - ForexFactory public calendar feed (used for the swing economic-event context; no API key required)
@@ -53,8 +53,12 @@ CAPITAL_PASSWORD=...
 # Optional custom ticker->epic map override (JSON string)
 # CAPITAL_TICKER_EPIC_MAP={"QQQUSDT":"QQQ","XAUUSDT":"XAUUSD"}
 
-# AI
-OPENAI_API_KEY=...
+# AI — all calls route through the Vercel AI Gateway.
+# Auth: AI_GATEWAY_API_KEY if set, otherwise the VERCEL_OIDC_TOKEN that Vercel
+# provisions automatically (locally: refreshed by `vercel env pull`).
+# Provider billing (BYOK vs Vercel credits) is configured in the AI Gateway
+# dashboard, not via env vars.
+# AI_GATEWAY_API_KEY=...
 
 # News
 COINDESK_API_KEY=...
@@ -94,7 +98,8 @@ TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
 # DEFAULT_AI_MODEL, FALLBACK_AI_MODEL and AI_BASE_URL are set in lib/constants.ts; the provider
 # is inferred from the model id ('claude' → Anthropic, 'gpt' → OpenAI). Current pair:
-# default gpt-5.6-sol, fallback claude-opus-4-8. SWING_AI_PROVIDER (env) still forces a provider.
+# default openai/gpt-5.6-sol, fallback anthropic/claude-opus-4.8 (AI Gateway slugs).
+# SWING_AI_PROVIDER (env) still forces a provider.
 ```
 
 3. Run the app:

@@ -42,9 +42,11 @@ export class AiCallError extends Error {
 // Maps a provider error's (status, code, message) onto a kind. Codes/messages
 // covered: OpenAI `insufficient_quota` / `billing_hard_limit_reached` ("You
 // exceeded your current quota, please check your plan and billing details"),
-// Anthropic's out-of-credit 400 ("Your credit balance is too low..."), and
-// both providers' auth failures. Anything unrecognized is 'transient' — the
-// safe default, since a persistent kind latches the health flag.
+// Anthropic's out-of-credit 400 ("Your credit balance is too low..."), the
+// AI Gateway's 402 Payment Required (credits/budget exhausted — surfaces the
+// underlying provider quota error too when a BYOK key runs dry), and auth
+// failures. Anything unrecognized is 'transient' — the safe default, since a
+// persistent kind latches the health flag.
 export function classifyAiFailure(params: {
     status: number | null;
     code: string | null;
@@ -53,11 +55,13 @@ export function classifyAiFailure(params: {
     const code = String(params.code || '').toLowerCase();
     const msg = String(params.message || '').toLowerCase();
     if (
+        params.status === 402 ||
         code.includes('insufficient_quota') ||
         code.includes('billing') ||
         msg.includes('exceeded your current quota') ||
         msg.includes('billing') ||
-        msg.includes('credit balance')
+        msg.includes('credit balance') ||
+        msg.includes('insufficient credit')
     ) {
         return 'billing';
     }

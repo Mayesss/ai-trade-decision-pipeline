@@ -1,7 +1,12 @@
 export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
-export const DEFAULT_AI_MODEL = 'gpt-5.6-sol';
-export const FALLBACK_AI_MODEL = 'claude-opus-4-8';
-export const AI_BASE_URL = 'https://api.openai.com/v1';
+// All AI traffic routes through the Vercel AI Gateway (BYOK provider keys are
+// configured in the gateway dashboard, not here). Model ids use the gateway's
+// `provider/model` slug format — version numbers with dots, not hyphens.
+export const DEFAULT_AI_MODEL = 'openai/gpt-5.6-sol';
+export const FALLBACK_AI_MODEL = 'anthropic/claude-opus-4.8';
+export const AI_BASE_URL = 'https://ai-gateway.vercel.sh/v1';
+// Anthropic-compatible endpoint of the same gateway (the SDK appends /v1).
+export const AI_GATEWAY_ANTHROPIC_BASE_URL = 'https://ai-gateway.vercel.sh';
 export const COINDESK_API_BASE = 'https://data-api.coindesk.com';
 export const COINDESK_NEWS_LIST_PATH = '/news/v1/article/list';
 export const MARKETAUX_API_BASE = 'https://api.marketaux.com/v1';

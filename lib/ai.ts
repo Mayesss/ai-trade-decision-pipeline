@@ -11,7 +11,7 @@ import {
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import { AiCallError } from './aiError';
-import { aiModelForProvider } from './aiModel';
+import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
 import type { MultiTFIndicators } from './indicators';
 import {
     clampWakeSustainMinutes,
@@ -2545,8 +2545,10 @@ export async function callAIThread(
     schema?: { name: string; schema: Record<string, unknown> },
     opts?: { previousResponseId?: string | null },
 ): Promise<AiThreadCallResult> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new AiCallError({ message: 'Missing OPENAI_API_KEY', provider: 'openai', kind: 'config' });
+    // Routed through the Vercel AI Gateway (AI_BASE_URL): same Responses API
+    // wire format, gateway auth instead of a provider key. The gateway forwards
+    // store/previous_response_id to OpenAI, so thread chaining works unchanged.
+    const apiKey = resolveAiGatewayKey('openai');
 
     // Whichever of the default/fallback model pair is the gpt-flavored one
     // (lib/constants.ts) — this client always speaks to OpenAI.
