@@ -1,6 +1,5 @@
 // Characterization tests for the market-metadata kernel that lib/capital.ts
-// depends on (leverage split, market-hours gating). Written before extracting
-// these modules out of lib/scalp so the move is behavior-checked.
+// depends on (leverage split, market-hours gating).
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -8,12 +7,12 @@ import {
   inferScalpAssetCategory,
   isPreciousMetalFamilySymbol,
   isWeekendClosedScalpSymbol,
-} from "./scalp/symbolInfo";
+} from "./market/symbolInfo";
 import {
   buildScalpOpeningHoursSchedule,
   scalpAssetCategoryFromInstrumentType,
-} from "./scalp/symbolMarketMetadata";
-import { resolveOpeningHoursState } from "./scalp/marketHours";
+} from "./market/symbolMarketMetadata";
+import { resolveOpeningHoursState } from "./market/marketHours";
 
 test("precious-metal family split (drives Capital leverage floor)", () => {
   for (const sym of ["GOLD", "SILVER", "XAUUSD", "XAGUSD", "xauusd", "XPTUSD"]) {

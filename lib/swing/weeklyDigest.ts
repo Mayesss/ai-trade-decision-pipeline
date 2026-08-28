@@ -6,8 +6,8 @@
 // with this digest as evidence. Numbers are segmented per capability where the
 // data allows (side, platform, entry action) so "should we keep X" questions
 // are answered by a number, not a vibe.
-import { isScalpPgConfigured, scalpPrisma } from '../scalp/pg/client';
-import { sql } from '../scalp/pg/sql';
+import { isScalpPgConfigured, scalpPrisma } from '../db/client';
+import { sql } from '../db/sql';
 import { ensureSwingSchema } from './pg';
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -20,10 +20,10 @@ import {
   scalpAssetCategoryFromInstrumentType,
   type ScalpOpeningHoursSchedule,
   type ScalpSymbolMarketMetadata,
-} from "./scalp/symbolMarketMetadata";
-import { isPreciousMetalFamilySymbol } from "./scalp/symbolInfo";
-import { resolveOpeningHoursState } from "./scalp/marketHours";
-import type { ScalpAssetCategory } from "./scalp/symbolInfo";
+} from "./market/symbolMarketMetadata";
+import { isPreciousMetalFamilySymbol } from "./market/symbolInfo";
+import { resolveOpeningHoursState } from "./market/marketHours";
+import type { ScalpAssetCategory } from "./market/symbolInfo";
 import type { TradeDecision } from "./trading";
 
 import defaultTickerEpicMap from "../data/capitalTickerMap.json";

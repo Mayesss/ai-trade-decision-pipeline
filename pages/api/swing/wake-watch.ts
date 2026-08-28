@@ -52,7 +52,7 @@ import {
     resolveCapitalEpic,
 } from '../../../lib/capital';
 import { kvGetJson, kvSetJson } from '../../../lib/kv';
-import { invokeCronEndpoint } from '../../../lib/scalp/cronChaining';
+import { invokeCronEndpoint } from '../../../lib/cronChaining';
 import {
     clearSwingBreakTrigger,
     listSwingAiCooldownsWithWakeBands,

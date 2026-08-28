@@ -3,8 +3,8 @@
 // scalp subsystem already configures (same DB, same pool — no second pool).
 // Reads project away bulky columns (e.g. prompt_json) to keep egress low; KV
 // stays in front of these as a cache (step 3).
-import { isScalpPgConfigured, scalpPrisma } from '../scalp/pg/client';
-import { sql } from '../scalp/pg/sql';
+import { isScalpPgConfigured, scalpPrisma } from '../db/client';
+import { sql } from '../db/sql';
 import type { DecisionHistoryEntry } from '../history';
 import type { PositionWindow } from '../analytics';
 
