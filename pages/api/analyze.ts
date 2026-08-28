@@ -2630,14 +2630,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // ticks re-evaluating a resting pullback limit remember why they placed
         // it ("market moved — is this entry still valid?"). Fresh flat scans
         // carry no thread and stay stateless.
-        // Conversation context is provider-scoped: an OpenAI resp_... head means
-        // nothing to Claude and vice-versa. A thread row written by the OTHER
-        // provider (mid-position cutover/rollback) degrades this tick to
+        // Conversation context is provider-scoped: both providers chain through
+        // the stored transcript, but the formats differ (Claude MessageParam
+        // turns vs OpenAI plain text turns), so a thread row written by the
+        // OTHER provider (mid-position cutover/rollback) degrades this tick to
         // stateless — the prompt's "position adopted mid-life" branch covers it —
         // and this tick's persist below re-anchors the thread on the active
         // provider.
-        const chainedPreviousResponseId = aiThreadProvider === 'claude' ? null : aiThreadResponseId;
-        const chainedTranscript = aiThreadProvider === 'claude' ? aiThreadTranscript : null;
+        const activeChainProvider = resolveSwingAiProvider();
+        const chainedTranscript = aiThreadProvider === activeChainProvider ? aiThreadTranscript : null;
         const {
             json: decisionRaw,
             responseId: aiResponseId,
@@ -2649,7 +2650,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             system,
             user,
             schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-            thread: { previousResponseId: chainedPreviousResponseId, transcript: chainedTranscript },
+            thread: { transcript: chainedTranscript },
         });
         const decision = postprocessDecision({
             decision: decisionRaw,
@@ -2672,15 +2673,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Nano (15m) bias measured at decision time — persisted on the decision
         // so the dashboard can render a Nano chip next to the other TF biases.
         (decision as any).nano_bias = nanoContext?.bias ?? null;
-        // Provider message id of this call (OpenAI resp_..., Claude msg_...) —
+        // Provider message id of this call (gateway gen_..., Claude msg_...) —
         // persisted in ai_decision_json so every decision row maps to its turn
         // in the conversation. The previous id (null on stateless calls) lets
-        // the dashboard link chained decisions on the timeline; on the Claude
-        // path chaining runs through the stored transcript, so the prior msg id
-        // fills the same linkage slot.
+        // the dashboard link chained decisions on the timeline; chaining itself
+        // runs through the stored transcript, the id only fills the linkage slot
+        // and is meaningful only when this tick actually chained.
         (decision as any).response_id = aiResponseId;
         (decision as any).previous_response_id =
-            aiThreadProvider === 'claude' ? aiThreadResponseId : chainedPreviousResponseId;
+            aiThreadProvider === activeChainProvider ? aiThreadResponseId : null;
         // Which provider/model served this call and what it cost (cache activity
         // included) — rides in ai_decision_json next to response_id, so every
         // decision row is self-describing for post-mortems and token audits.
@@ -3024,12 +3025,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     decision.action === 'CLOSE' &&
                     execRes?.placed === true &&
                     Number((decision as any).exit_size_pct ?? 100) >= 100;
-                // Claude path: the conversation is OURS to store — append this
-                // tick's turns (sent user turn + assistant response verbatim) to
-                // the transcript the tick chained onto, capped so a long-lived
-                // position can't grow the row unboundedly. OpenAI path:
-                // appendTurns is null and the transcript stays empty (the chain
-                // lives server-side behind lastResponseId).
+                // The conversation is OURS to store on both providers (the AI
+                // Gateway is stateless) — append this tick's turns (sent user
+                // turn + assistant response) to the transcript the tick chained
+                // onto, capped so a long-lived position can't grow the row
+                // unboundedly.
                 const activeProvider = resolveSwingAiProvider();
                 const nextTranscript =
                     Array.isArray(aiAppendTurns) && aiAppendTurns.length

@@ -26,14 +26,13 @@ export function resolveSwingAiProvider(): SwingAiProvider {
     return providerForAiModel(DEFAULT_AI_MODEL);
 }
 
-// Conversation context for a threaded (per-order) decision call. The two
-// providers keep state in different places:
-// - OpenAI Responses API is stateful server-side: the chain head id
-//   (`resp_...`) is all we store; the server replays the conversation.
-// - Claude Messages API is stateless: we store the full transcript ourselves
-//   (swing.ai_threads.transcript, phase 3) and resend it every tick.
+// Conversation context for a threaded (per-order) decision call. Both
+// providers are stateless through the AI Gateway, so both chain through the
+// stored transcript (swing.ai_threads.transcript) resent every tick — Claude
+// stores full MessageParam turns (thinking blocks included), OpenAI plain
+// {role, content} text turns. Formats differ per provider, so a transcript
+// written by the other model family must not be passed here.
 export type SwingThreadContext = {
-    previousResponseId?: string | null;
     transcript?: unknown[] | null;
 };
 
@@ -53,10 +52,9 @@ export type SwingDecisionCallResult = {
         cache_creation_input_tokens: number | null;
         cache_read_input_tokens: number | null;
     } | null;
-    // Claude only (phase 3): the turns this call appends to the stored
-    // transcript — the sent user turn plus the full assistant response content
-    // (thinking blocks included, echoed back verbatim on the next tick).
-    // null/undefined on the OpenAI path (server keeps the conversation).
+    // The turns this call appends to the stored transcript — the sent user
+    // turn plus the assistant response (Claude: full content with thinking
+    // blocks, echoed back verbatim next tick; OpenAI: plain text turns).
     appendTurns?: unknown[] | null;
 };
 
@@ -75,9 +73,6 @@ export async function callSwingDecision(params: {
     try {
         let result: SwingDecisionCallResult;
         if (provider === 'claude') {
-            // Stateless Messages API: conversation context is the stored transcript
-            // (phase 3 persists it; until then in-position ticks run stateless —
-            // the prompt's "position adopted mid-life" branch covers that).
             const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
                 params.system,
                 params.user,
@@ -86,10 +81,13 @@ export async function callSwingDecision(params: {
             );
             result = { json, responseId, provider, model, usage, appendTurns };
         } else {
-            const { json, responseId, model, usage } = await callAIThread(params.system, params.user, params.schema, {
-                previousResponseId: params.thread?.previousResponseId ?? null,
-            });
-            result = { json, responseId, provider, model, usage };
+            const { json, responseId, model, usage, appendTurns } = await callAIThread(
+                params.system,
+                params.user,
+                params.schema,
+                { transcript: params.thread?.transcript ?? null },
+            );
+            result = { json, responseId, provider, model, usage, appendTurns };
         }
         await reportSwingAiSuccess();
         return result;

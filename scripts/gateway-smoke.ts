@@ -1,7 +1,8 @@
 // Live smoke test for the OpenAI path (lib/ai.ts callAIThread) through the
 // Vercel AI Gateway. Makes 2 small real calls. Verifies: structured outputs
-// (json_schema strict), JSON validity, and Responses-API thread chaining
-// (previous_response_id) surviving the gateway hop.
+// (json_schema strict), JSON validity, and client-side transcript chaining
+// (the gateway's Responses endpoint is stateless, so memory rides on the
+// replayed transcript).
 // Run: node scripts/with-db-env.mjs node --import tsx scripts/gateway-smoke.ts
 import { callAIThread } from '../lib/ai';
 
@@ -27,13 +28,14 @@ async function main() {
         SCHEMA,
     );
     console.log('turn1:', JSON.stringify({ json: turn1.json, responseId: turn1.responseId, model: turn1.model, usage: turn1.usage }));
-    if (!turn1.responseId) throw new Error('no responseId returned — store:true not honored?');
+    if (!turn1.responseId) throw new Error('no responseId returned');
+    if (!turn1.appendTurns?.length) throw new Error('no appendTurns returned — transcript chaining broken');
 
     const turn2 = await callAIThread(
         SYSTEM,
         'Same instrument, price now 50300. In your reason, restate the resistance level you were given last turn.',
         SCHEMA,
-        { previousResponseId: turn1.responseId },
+        { transcript: turn1.appendTurns },
     );
     console.log('turn2:', JSON.stringify({ json: turn2.json, responseId: turn2.responseId, model: turn2.model }));
     const remembered = /51[,.]?200/.test(String(turn2.json?.reason || ''));

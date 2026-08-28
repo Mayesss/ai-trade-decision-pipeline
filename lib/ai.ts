@@ -2483,8 +2483,10 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
 
 export type AiThreadCallResult = {
     json: any;
-    // Responses API id of THIS call (`resp_...`) — persist it and pass it back as
-    // `previousResponseId` on the next tick to continue the conversation.
+    // Gateway id of THIS call (`gen_...`) — persisted on the decision row so
+    // the dashboard can link chained decisions. Conversation state does NOT
+    // hang off this id: the AI Gateway's Responses endpoint is stateless, so
+    // chaining runs through the stored transcript (appendTurns below).
     responseId: string | null;
     // Model that actually served the call (from the API response, not the
     // request) — persisted on the decision row for post-mortems.
@@ -2498,6 +2500,10 @@ export type AiThreadCallResult = {
         cache_creation_input_tokens: number | null;
         cache_read_input_tokens: number | null;
     } | null;
+    // The turns this call appends to the stored transcript (sent user turn +
+    // assistant text) — same contract as the Claude client, so the analyze
+    // persist path is provider-uniform.
+    appendTurns: Array<{ role: 'user' | 'assistant'; content: string }>;
 };
 
 // Parses the error body once and keeps BOTH halves: the human message (for
@@ -2532,22 +2538,21 @@ function openAiCallError(res: Response, details: string, code: string | null): A
     });
 }
 
-// OpenAI Responses API (stateful). When `previousResponseId` is passed the server
-// replays the whole stored conversation — the entry decision and every in-position
-// management tick — as context, so the model manages a position with memory of its
-// own thesis instead of a stateless snapshot each tick. Responses are stored
-// server-side (`store: true`, ~30-day retention); a lost/expired chain head
-// degrades to a stateless call instead of failing the trading tick, and the caller
-// re-anchors the chain on the returned responseId.
+// OpenAI Responses API through the Vercel AI Gateway. The gateway endpoint is
+// STATELESS (it accepts store/previous_response_id but never replays a prior
+// conversation — verified 2026-08-28), so conversation memory is OURS to keep,
+// exactly like the Claude path: the caller passes the stored transcript
+// (plain {role, content} turns from swing.ai_threads.transcript) and this call
+// replays it in `input` ahead of the new user turn. The model manages a
+// position with memory of its own thesis; a missing/foreign transcript
+// degrades to a stateless call (the prompt's "position adopted mid-life"
+// branch covers it), never fails the trading tick.
 export async function callAIThread(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
-    opts?: { previousResponseId?: string | null },
+    opts?: { transcript?: unknown[] | null },
 ): Promise<AiThreadCallResult> {
-    // Routed through the Vercel AI Gateway (AI_BASE_URL): same Responses API
-    // wire format, gateway auth instead of a provider key. The gateway forwards
-    // store/previous_response_id to OpenAI, so thread chaining works unchanged.
     const apiKey = resolveAiGatewayKey('openai');
 
     // Whichever of the default/fallback model pair is the gpt-flavored one
@@ -2561,44 +2566,38 @@ export async function callAIThread(
         ? { type: 'json_schema', name: schema.name, schema: schema.schema, strict: true }
         : { type: 'json_object' };
 
-    const request = (previousResponseId: string | null) =>
-        fetch(`${AI_BASE_URL}/responses`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-                model: openAiModel,
-                // `instructions` is per-call (NOT inherited via previous_response_id),
-                // so the system prompt rides along on every turn of a chain.
-                instructions: system,
-                input: user,
-                // gpt-5.x reasoning models only accept the default temperature (1);
-                // determinism comes from reasoning effort + the post-processing gates.
-                reasoning: { effort: 'medium' },
-                text: { format },
-                store: true,
-                // Long position threads grow the stored context each tick; drop
-                // middle turns server-side instead of erroring the tick when the
-                // chain outgrows the model's context window.
-                truncation: 'auto',
-                ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
-            }),
-        });
+    // Stored transcripts round-trip through JSONB — replay only well-formed
+    // plain-text turns; anything else is dropped rather than erroring the tick.
+    const transcript = (Array.isArray(opts?.transcript) ? opts!.transcript! : []).filter(
+        (turn: any): turn is { role: 'user' | 'assistant'; content: string } =>
+            !!turn &&
+            (turn.role === 'user' || turn.role === 'assistant') &&
+            typeof turn.content === 'string' &&
+            turn.content.length > 0,
+    );
 
-    let usedPreviousResponseId = opts?.previousResponseId ?? null;
-    let res = await request(usedPreviousResponseId);
-    if (!res.ok && usedPreviousResponseId && (res.status === 400 || res.status === 404)) {
-        const { details, code } = await readAiErrorDetails(res);
-        if (/previous[_ ]?response/i.test(details)) {
-            console.warn(`AI thread head ${usedPreviousResponseId} rejected (${res.status}${details}); retrying stateless`);
-            usedPreviousResponseId = null;
-            res = await request(null);
-        } else {
-            throw openAiCallError(res, details, code);
-        }
-    }
+    const res = await fetch(`${AI_BASE_URL}/responses`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model: openAiModel,
+            // System prompt rides along on every turn (it is not part of the
+            // stored transcript, so provider cutovers never replay a stale one).
+            instructions: system,
+            input: transcript.length ? [...transcript, { role: 'user', content: user }] : user,
+            // gpt-5.x reasoning models only accept the default temperature (1);
+            // determinism comes from reasoning effort + the post-processing gates.
+            reasoning: { effort: 'medium' },
+            text: { format },
+            // Oversized replayed transcripts drop middle turns server-side
+            // instead of erroring the tick (the stored transcript is also
+            // capped at persist time, same as the Claude path).
+            truncation: 'auto',
+        }),
+    });
 
     if (!res.ok) {
         const { details, code } = await readAiErrorDetails(res);
@@ -2628,7 +2627,16 @@ export async function callAIThread(
               }
             : null;
     try {
-        return { json: JSON.parse(text), responseId, model, usage };
+        return {
+            json: JSON.parse(text),
+            responseId,
+            model,
+            usage,
+            appendTurns: [
+                { role: 'user', content: user },
+                { role: 'assistant', content: text },
+            ],
+        };
     } catch {
         throw new Error(`AI returned non-JSON content: ${String(text).slice(0, 600)}`);
     }
