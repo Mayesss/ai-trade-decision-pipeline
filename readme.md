@@ -142,7 +142,10 @@ flat-only gates don't apply in-position), market-closed, and the live PUT
 bracket amendment (whole-bracket replacement). Cross-cutting: event-blackout
 and a production-shaped quarter cron tick (kill switch, last-scan, warm
 latch). `test/contract/postmortem.contract.test.ts` and
-`evaluate.contract.test.ts` net the other two AI prompt surfaces.
+`evaluate.contract.test.ts` net the other two AI prompt surfaces, and
+`wake-watch*.contract.test.ts` cover the 1-minute watcher (band/emergency/
+failed-break/close detection and the analyze self-fire, which msw intercepts
+via the request's own host header).
 
 `npm run test:fixtures:capture -- SYMBOL [capital [category]]` re-records a
 fixture from one live dryRun tick. Bitget needs no credentials (public market
