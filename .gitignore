@@ -176,3 +176,6 @@ data/candles-history/*
 test-results/
 backtest-results/
 replay-results/
+
+.vercel
+.env*
