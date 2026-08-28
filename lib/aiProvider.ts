@@ -104,6 +104,6 @@ export async function callStatelessAI(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
-): Promise<any> {
+): Promise<unknown> {
     return (await callSwingDecision({ system, user, schema })).json;
 }

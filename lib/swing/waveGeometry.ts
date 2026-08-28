@@ -51,10 +51,11 @@ const roundPrice = (x: number): number => Number(x.toPrecision(7));
 
 function normalizeOhlc(raw: unknown): Ohlc[] {
     return (Array.isArray(raw) ? raw : [])
-        .map((c: any): Ohlc | null => {
-            const high = Number(Array.isArray(c) ? c[2] : c?.high);
-            const low = Number(Array.isArray(c) ? c[3] : c?.low);
-            const close = Number(Array.isArray(c) ? c[4] : c?.close);
+        .map((c: unknown): Ohlc | null => {
+            const row = c && typeof c === 'object' ? (c as Record<string, unknown>) : null;
+            const high = Number(Array.isArray(c) ? c[2] : row?.high);
+            const low = Number(Array.isArray(c) ? c[3] : row?.low);
+            const close = Number(Array.isArray(c) ? c[4] : row?.close);
             if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return null;
             return { high, low, close };
         })

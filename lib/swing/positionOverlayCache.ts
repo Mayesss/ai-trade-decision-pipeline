@@ -1,6 +1,6 @@
 import { kvDel, kvGetJson, kvSetJson } from '../kv';
-import { extractCapturedLeverages, loadSymbolMarkerHistory } from '../history';
-import { fetchRecentPositionWindows } from '../analytics';
+import { extractCapturedLeverages, loadSymbolMarkerHistory, type DecisionHistoryEntry } from '../history';
+import { fetchRecentPositionWindows, type PositionWindow } from '../analytics';
 import type { AnalysisPlatform } from '../platform';
 import { loadClosedSwingPositions } from './pg';
 import { syncSwingClosedPositions, mergePositionWindows } from './sync';
@@ -50,6 +50,25 @@ const CHART_OVERLAY_WARM_PRESETS: Array<{ timeframe: string; limit: number }> = 
   { timeframe: '4H', limit: 180 },
   { timeframe: '1D', limit: 183 },
 ];
+
+// Minimal structural view of a position row as the overlay math reads it —
+// closed windows (PositionWindow, optionally carrying folded trim chunks) and
+// the live open-position overlay both satisfy it.
+type OverlaySourceRow = {
+  id?: string | number | null;
+  symbol?: string | null;
+  side?: string | null;
+  entryTimestamp?: number | null;
+  exitTimestamp?: number | null;
+  entryPrice?: number | string | null;
+  exitPrice?: number | string | null;
+  pnlPct?: number | string | null;
+  pnlNet?: number | string | null;
+  leverage?: number | null;
+  takeProfitPrice?: number | null;
+  stopLossPrice?: number | null;
+  chunks?: CapitalWindowChunk[] | null;
+};
 
 type OpenPositionInfo = {
   status?: string | null;
@@ -141,9 +160,9 @@ function parsePnl(value: unknown): number | null {
   return finiteNumber(raw);
 }
 
-function findNearestDecision(history: any[], tsMs?: number | null) {
+function findNearestDecision(history: DecisionHistoryEntry[], tsMs?: number | null) {
   if (!tsMs || !history?.length) return null;
-  let best: any = null;
+  let best: DecisionHistoryEntry | null = null;
   let bestDiff = Number.POSITIVE_INFINITY;
   for (const h of history) {
     if (!h.timestamp) continue;
@@ -165,7 +184,7 @@ function findNearestDecision(history: any[], tsMs?: number | null) {
   };
 }
 
-function getPartialClosePct(entry: any): number | null {
+function getPartialClosePct(entry: DecisionHistoryEntry | null | undefined): number | null {
   const pct =
     finiteNumber(entry?.execResult?.partialClosePct) ??
     finiteNumber(entry?.aiDecision?.exit_size_pct) ??
@@ -175,7 +194,7 @@ function getPartialClosePct(entry: any): number | null {
 }
 
 function buildPartialCloses(params: {
-  history: any[];
+  history: DecisionHistoryEntry[];
   entryTsMs?: number | null;
   exitTsMs?: number | null;
   fromMs: number;
@@ -207,7 +226,7 @@ function buildPartialCloses(params: {
 function normalizeOverlayPositions(params: {
   symbol: string;
   platform: AnalysisPlatform;
-  closed: any[];
+  closed: OverlaySourceRow[];
   openPositionInfo?: OpenPositionInfo | null;
   // Standing exchange-side TP/SL for the open position; overrides any values on
   // openPositionInfo when provided (Bitget reads them from plan orders, so the
@@ -217,7 +236,7 @@ function normalizeOverlayPositions(params: {
   // Realized trim chunks of the still-open Capital position (peeled off by
   // foldCapitalTrimChunks) — their cash lands on the open overlay's markers.
   openTrimChunks?: CapitalWindowChunk[];
-  history: any[];
+  history: DecisionHistoryEntry[];
   leverageFromHistory: number | null;
   fromMs: number;
   nowMs: number;
@@ -243,7 +262,7 @@ function normalizeOverlayPositions(params: {
         })
       : params.closed;
 
-  let openOverlay: any = null;
+  let openOverlay: OverlaySourceRow | null = null;
   const open = params.openPositionInfo;
   if (open?.status === 'open') {
     openOverlay = {
@@ -316,7 +335,7 @@ function normalizeOverlayPositions(params: {
   });
 }
 
-function isWindowPosition(row: any, fromMs: number, toMs: number): boolean {
+function isWindowPosition(row: OverlaySourceRow, fromMs: number, toMs: number): boolean {
   const exitMs = finiteNumber(row?.exitTimestamp);
   const entryMs = finiteNumber(row?.entryTimestamp);
   if (exitMs !== null) return exitMs >= fromMs && exitMs <= toMs;
@@ -349,8 +368,8 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
     200,
     Math.min(1_200, Math.ceil((params.nowMs - earliestFromMs) / (60 * 60 * 1000)) * 8),
   );
-  let allHistory: any[] = [];
-  let allClosed: any[] = [];
+  let allHistory: DecisionHistoryEntry[] = [];
+  let allClosed: PositionWindow[] = [];
   try {
     [allHistory, allClosed] = await Promise.all([
       loadSymbolMarkerHistory(symbol, params.platform, {

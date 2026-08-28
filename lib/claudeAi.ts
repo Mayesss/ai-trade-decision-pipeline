@@ -98,8 +98,9 @@ function sanitizeTranscript(input: unknown[] | null | undefined): Anthropic.Mess
     if (!Array.isArray(input)) return [];
     const turns: Anthropic.MessageParam[] = [];
     for (const item of input) {
-        const role = (item as any)?.role;
-        const content = (item as any)?.content;
+        const turn = item && typeof item === 'object' ? (item as { role?: unknown; content?: unknown }) : null;
+        const role = turn?.role;
+        const content = turn?.content;
         if (role !== 'user' && role !== 'assistant') continue;
         if (typeof content === 'string') {
             turns.push({ role, content });
@@ -108,7 +109,7 @@ function sanitizeTranscript(input: unknown[] | null | undefined): Anthropic.Mess
         if (!Array.isArray(content) || content.length === 0) continue;
         turns.push({
             role,
-            content: content.map((block: any) => {
+            content: content.map((block) => {
                 if (block && typeof block === 'object' && 'cache_control' in block) {
                     const { cache_control: _dropped, ...rest } = block;
                     return rest;
@@ -127,9 +128,10 @@ function sanitizeTranscript(input: unknown[] | null | undefined): Anthropic.Mess
 function withConversationBreakpoint(turns: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
     if (!turns.length) return turns;
     const last = turns[turns.length - 1];
-    const blocks = typeof last.content === 'string' ? [{ type: 'text' as const, text: last.content }] : [...last.content];
+    const blocks: Anthropic.ContentBlockParam[] =
+        typeof last.content === 'string' ? [{ type: 'text' as const, text: last.content }] : [...last.content];
     for (let i = blocks.length - 1; i >= 0; i--) {
-        const block = blocks[i] as any;
+        const block = blocks[i];
         // thinking blocks can't carry cache_control — anchor on the last text block
         if (block?.type === 'text') {
             blocks[i] = { ...block, cache_control: { type: 'ephemeral', ttl: '1h' } };
@@ -140,7 +142,7 @@ function withConversationBreakpoint(turns: Anthropic.MessageParam[]): Anthropic.
 }
 
 export type ClaudeSwingCallResult = {
-    json: any;
+    json: Record<string, unknown>;
     // Message id of THIS call (`msg_...`) — persisted on the decision row, same
     // slot the OpenAI path uses for `resp_...`.
     responseId: string | null;
@@ -209,7 +211,7 @@ export async function callClaudeSwingDecision(
                 message: `Claude AI error: ${err.status ?? '?'} - ${err.message}`,
                 provider: 'claude',
                 status: typeof err.status === 'number' ? err.status : null,
-                code: (err.error as any)?.error?.type ?? null,
+                code: (err.error as { error?: { type?: string | null } } | null | undefined)?.error?.type ?? null,
             });
         }
         throw err;
@@ -243,7 +245,7 @@ export async function callClaudeSwingDecision(
 // With a schema the API guarantees valid JSON; without one (forex advisor,
 // evaluations — prompts demand strict JSON but don't ship a schema) the model
 // may wrap the object in a markdown fence — tolerate that.
-function parseDecisionJson(text: string, schemaEnforced: boolean): any {
+function parseDecisionJson(text: string, schemaEnforced: boolean): Record<string, unknown> {
     const raw = text.trim();
     try {
         return JSON.parse(raw);

@@ -192,7 +192,7 @@ export function resolveLessonDecision(
         const scope: SwingLessonScope | null = ['symbol', 'asset_class', 'global'].includes(
             report?.lesson_scope as string,
         )
-            ? (report!.lesson_scope as SwingLessonScope)
+            ? (report.lesson_scope as SwingLessonScope)
             : null;
         return { kind: 'revise', targetId: target.id, text, confidence, scope };
     }

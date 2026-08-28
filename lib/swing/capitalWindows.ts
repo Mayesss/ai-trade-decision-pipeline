@@ -71,17 +71,39 @@ export function capitalTransactionToWindow(row: CapitalTradeTransactionRow): Pos
     };
 }
 
+// The decision-history fields the enrichment below actually reads. History
+// rows arrive as loosely-typed JSON (lib/history.ts), so every leaf stays
+// unknown and the existing Number()/String() coercions do the narrowing.
+type CapitalHistoryEntry = {
+    timestamp?: unknown;
+    aiDecision?: { action?: unknown; leverage?: unknown } | null;
+    execResult?: {
+        placed?: unknown;
+        size?: unknown;
+        notionalUsd?: unknown;
+        notionalUSDT?: unknown;
+        orderNotionalUsd?: unknown;
+        leverage?: unknown;
+    } | null;
+    snapshot?: {
+        price?: unknown;
+        positionContext?: { entry_price?: unknown } | null;
+        gates?: { notionalUSDT?: unknown; notionalUsd?: unknown } | null;
+    } | null;
+};
+
 // Fill a cash-only transaction window with entry data (and/or a missing
 // notional, needed for the derived percent) from the most recent placed
 // BUY/SELL decision before its exit. Window-provided fields always win —
 // history only fills the gaps. No-op when nothing is missing.
-export function enrichCapitalWindowFromHistory(window: PositionWindow, history: any[]): PositionWindow {
+export function enrichCapitalWindowFromHistory(window: PositionWindow, history: unknown[]): PositionWindow {
     const needsEntry = !window.entryTimestamp;
     const needsNotional = positiveNumber(window.notional) === null;
     if (!needsEntry && !needsNotional) return window;
     const exitTs = Number(window.exitTimestamp);
     if (!Number.isFinite(exitTs) || exitTs <= 0) return window;
     const priorEntries = (history || [])
+        .map((row) => row as CapitalHistoryEntry)
         .filter((entry) => {
             const ts = Number(entry?.timestamp);
             if (!Number.isFinite(ts) || ts <= 0 || ts > exitTs) return false;
@@ -361,7 +383,7 @@ export function attachTrimChunkPnl<T extends { timestamp?: number | null }>(
 // percents. Pure — pass the already-loaded rows and history.
 export function assembleCapitalPositionWindows(
     persisted: PositionWindow[],
-    history: any[] = [],
+    history: unknown[] = [],
 ): PositionWindow[] {
     const enriched = persisted.map((window) => enrichCapitalWindowFromHistory(window, history));
     return mergeCapitalPositionWindows(enriched).map(withDerivedPnlPct);
@@ -387,7 +409,7 @@ export async function reconcileCapitalClosedPositions(symbol: string): Promise<n
             .filter((row): row is PositionWindow => row !== null)
             .filter((row) => normalizeCapitalSymbolKey(row.symbol) === symbolKey);
         if (!windows.length) return 0;
-        const history = await loadDecisionHistory(symbol, 60, 'capital').catch(() => [] as any[]);
+        const history = await loadDecisionHistory(symbol, 60, 'capital').catch(() => []);
         let persistedCount = 0;
         await Promise.all(
             windows

@@ -20,7 +20,7 @@ async function main() {
     if (!isPgConfigured()) throw new Error('PG not configured (source .env.local)');
     const db = pgClient();
 
-    const lessons = await db.$queryRaw<Array<any>>(sql`
+    const lessons = await db.$queryRaw<Array<{ id: number; scope: string; lesson: string; source_postmortem_ids: unknown }>>(sql`
         SELECT id, scope, lesson, source_postmortem_ids
         FROM swing.lessons
         WHERE status = 'active'

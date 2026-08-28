@@ -90,7 +90,7 @@ export interface GatesHistories {
 
 function toPriceSizeArrays(side: OrderbookSideLevelArr | OrderbookSideObjArr): [number, number][] {
   if (!Array.isArray(side) || side.length === 0) return [];
-  const first = side[0] as any;
+  const first = side[0];
   if (Array.isArray(first)) return side as [number, number][];
   return (side as OrderbookSideObjArr).map(l => [Number(l.price), Number(l.size)]);
 }
@@ -418,8 +418,11 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
 // Convenience wrappers for analyze.ts
 ///////////////////////////////
 
-export function extractLastPrice(bundle: any, fallback?: number): number {
-  const t = Array.isArray(bundle?.ticker) ? bundle.ticker[0] : bundle?.ticker;
+export function extractLastPrice(bundle: unknown, fallback?: number): number {
+  const record = bundle && typeof bundle === 'object' ? (bundle as Record<string, unknown>) : null;
+  const tickerRaw = record?.ticker;
+  const tickerItem = Array.isArray(tickerRaw) ? tickerRaw[0] : tickerRaw;
+  const t = tickerItem && typeof tickerItem === 'object' ? (tickerItem as Record<string, unknown>) : null;
   const last = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price ?? fallback ?? NaN);
   return Number.isFinite(last) ? last : 0;
 }
@@ -445,8 +448,8 @@ export function parseAtr1hAbs(indicators: Pick<MultiTFIndicators, 'macro' | 'mac
 
 export function getGates(args: {
   symbol: string;
-  bundle: any;
-  analytics: any;
+  bundle: unknown;
+  analytics: unknown;
   indicators: MultiTFIndicators;
   notionalUSDT: number;
   positionOpen: boolean;
@@ -476,13 +479,21 @@ export function getGates(args: {
 } {
   const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions, atrFloorScale, marketCategory } = args;
 
-  const last = analytics?.last || extractLastPrice(bundle, NaN);
+  const analyticsRecord = analytics && typeof analytics === 'object' ? (analytics as Record<string, unknown>) : null;
+  const lastRaw = analyticsRecord?.last;
+  const last = typeof lastRaw === 'number' && lastRaw ? lastRaw : extractLastPrice(bundle, NaN);
   const atrAbsMacro = parseAtr1hAbs(indicators);
   const macroMinutes = timeframeToMinutes(indicators.macroTimeFrame);
   const regime = parseRegimeFromIndicators(indicators);
 
-  const bids = bundle?.orderbook?.bids ?? [];
-  const asks = bundle?.orderbook?.asks ?? [];
+  const bundleRecord = bundle && typeof bundle === 'object' ? (bundle as Record<string, unknown>) : null;
+  const orderbookRaw = bundleRecord?.orderbook;
+  const orderbook =
+    orderbookRaw && typeof orderbookRaw === 'object'
+      ? (orderbookRaw as { bids?: OrderbookSideLevelArr | OrderbookSideObjArr; asks?: OrderbookSideLevelArr | OrderbookSideObjArr })
+      : null;
+  const bids = orderbook?.bids ?? [];
+  const asks = orderbook?.asks ?? [];
   
 
   const out = computeAdaptiveGates({

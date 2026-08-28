@@ -234,7 +234,7 @@ function scoreToSentiment(score: number): Sentiment {
     return 'NEUTRAL';
 }
 
-function sentimentLabelToScore(label: string | undefined): number {
+function sentimentLabelToScore(label: unknown): number {
     const normalized = String(label || '').trim().toLowerCase();
     if (!normalized) return 0;
     if (normalized.includes('positive') || normalized === 'bullish') return 1;
@@ -251,10 +251,10 @@ function tsFromAny(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function scoreFromMarketauxArticle(article: any): number {
+function scoreFromMarketauxArticle(article: Record<string, unknown>): number {
     const entityScores = Array.isArray(article?.entities)
         ? article.entities
-              .map((entity: any) => {
+              .map((entity: Record<string, unknown>) => {
                   const score = Number(entity?.sentiment_score);
                   if (Number.isFinite(score)) return score;
                   return sentimentLabelToScore(entity?.sentiment);
@@ -303,14 +303,14 @@ async function fetchMarketauxNews(base: string, opts?: { category?: string | nul
         filter_entities: 'true',
     });
 
-    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    const rows: Record<string, unknown>[] = Array.isArray(payload?.data) ? payload.data : [];
     const sorted = rows
         .slice()
-        .sort((a: any, b: any) => tsFromAny(b?.published_at ?? b?.published_on) - tsFromAny(a?.published_at ?? a?.published_on));
+        .sort((a, b) => tsFromAny(b?.published_at ?? b?.published_on) - tsFromAny(a?.published_at ?? a?.published_on));
 
     let weightedSum = 0;
     let totalWeight = 0;
-    sorted.forEach((row: any, index: number) => {
+    sorted.forEach((row, index) => {
         const weight = Math.max(1 - index * 0.1, 0.1);
         const score = scoreFromMarketauxArticle(row);
         weightedSum += score * weight;
@@ -321,7 +321,7 @@ async function fetchMarketauxNews(base: string, opts?: { category?: string | nul
     const sentiment = scoreToSentiment(avgScore);
     const headlines = sorted
         .slice(0, 5)
-        .map((row: any) => String(row?.title || '').trim())
+        .map((row) => String(row?.title || '').trim())
         .filter((title: string) => title.length > 0);
     return { sentiment, headlines };
 }

@@ -1,6 +1,6 @@
 // Evaluation persistence (KV only).
 
-export type EvaluationRecord = Record<string, any>;
+export type EvaluationRecord = Record<string, unknown>;
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
@@ -86,7 +86,7 @@ async function kvMGet(keys: string[]): Promise<(string | null)[]> {
 }
 
 // Save or overwrite the latest evaluation for a symbol.
-export async function setEvaluation(symbol: string, evaluation: any) {
+export async function setEvaluation(symbol: string, evaluation: unknown) {
   if (!symbol) return;
   const key = evalKey(symbol);
   await Promise.all([

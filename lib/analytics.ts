@@ -93,42 +93,48 @@ export function pickCapturedLeverage(
 
 type OBLevel = { price: number; size: number };
 
+// Loose JSON row from a broker API payload; fields are read defensively via
+// num()/Number()/String().
+type ApiRow = Record<string, unknown>;
+// Positional JSON row (candle `[ts, o, h, l, c, v]`, orderbook `[price, size]`);
+// object forms carry named fields instead.
+type IndexedRow = { [index: number]: unknown; price?: unknown; size?: unknown };
+
 // ------------------------------
 // Helpers
 // ------------------------------
-function num(x: any, def = 0): number {
+function num(x: unknown, def = 0): number {
     const n = Number(x);
     return Number.isFinite(n) ? n : def;
 }
-function normalizeTimestamp(tsLike: any): number | undefined {
+function normalizeTimestamp(tsLike: unknown): number | undefined {
     const ts = Number(tsLike);
     if (!Number.isFinite(ts) || ts <= 0) return undefined;
     return ts > 1e12 ? ts : ts * 1000;
 }
-function ensureAscendingCandles(cs: any[]) {
+function ensureAscendingCandles(cs: IndexedRow[]) {
     if (!Array.isArray(cs)) return [];
-    return cs.slice().sort((a: any, b: any) => Number(a[0]) - Number(b[0]));
+    return cs.slice().sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 export function roundToDecimals(value: number, decimals: number): number {
     const factor = Math.pow(10, decimals);
     return Math.floor(value * factor) / factor;
 }
 
-function extractPositionHistoryItems(res: any): any[] {
-    return Array.isArray(res?.list)
-        ? res.list
-        : Array.isArray(res?.data?.list)
-        ? res.data.list
-        : Array.isArray(res)
-        ? res
-        : Array.isArray(res?.data)
-        ? res.data
-        : Array.isArray(res?.items)
-        ? res.items
-        : [];
+function extractPositionHistoryItems(res: unknown): ApiRow[] {
+    if (Array.isArray(res)) return res;
+    if (!res || typeof res !== 'object') return [];
+    const { list, data, items } = res as { list?: unknown; data?: unknown; items?: unknown };
+    if (Array.isArray(list)) return list;
+    const nestedList =
+        data && typeof data === 'object' && !Array.isArray(data) ? (data as { list?: unknown }).list : undefined;
+    if (Array.isArray(nestedList)) return nestedList;
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(items)) return items;
+    return [];
 }
 
-async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number, endTime: number): Promise<any[]> {
+async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number, endTime: number): Promise<ApiRow[]> {
     const productType = resolveProductType();
     const requestedStart = Math.max(0, Math.floor(startTime));
     const end = Math.max(requestedStart, Math.floor(endTime));
@@ -137,7 +143,7 @@ async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number
     // complements this live window with the local swing.positions mirror.
     const liveStartFloor = Math.max(0, end - BITGET_POSITION_HISTORY_MAX_INTERVAL_MS + 1);
     const start = Math.max(liveStartFloor, requestedStart);
-    const items: any[] = [];
+    const items: ApiRow[] = [];
 
     for (
         let chunkStart = start;
@@ -145,7 +151,7 @@ async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number
         chunkStart = Math.min(end + 1, chunkStart + BITGET_POSITION_HISTORY_MAX_INTERVAL_MS)
     ) {
         const chunkEnd = Math.min(end, chunkStart + BITGET_POSITION_HISTORY_MAX_INTERVAL_MS - 1);
-        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
+        const res = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
             productType,
             symbol,
             startTime: chunkStart,
@@ -164,7 +170,7 @@ async function fetchBitgetPositionHistoryItems(symbol: string, startTime: number
 export async function fetchSymbolMeta(symbol: string, productType: ProductType): Promise<SymbolMeta> {
     const pt = (productType as string).toUpperCase();
     const all = await bitgetFetch('GET', '/api/v2/mix/market/contracts', { productType: pt });
-    const meta = (all || []).find((x: any) => x.symbol === symbol);
+    const meta = (all || []).find((x: { symbol?: string }) => x.symbol === symbol);
     if (!meta) throw new Error(`No contract metadata for ${symbol}`);
     return meta;
 }
@@ -179,7 +185,7 @@ export async function computeOrderSize(
 ): Promise<number> {
     const pt = (productType as string).toUpperCase();
     const all = await bitgetFetch('GET', '/api/v2/mix/market/contracts', { productType: pt });
-    const meta = (all || []).find((x: any) => x.symbol === symbol);
+    const meta = (all || []).find((x: { symbol?: string }) => x.symbol === symbol);
     if (!meta) throw new Error(`No contract metadata for ${symbol}`);
 
     const ticker = await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType: pt });
@@ -259,7 +265,7 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
 export async function fetchBitgetAccountEquityUsd(): Promise<number | null> {
     try {
         const productType = resolveProductType();
-        const accounts: any[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
+        const accounts: ApiRow[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
         const row =
             (accounts || []).find((a) => String(a?.marginCoin || '').toUpperCase() === 'USDT') ?? accounts?.[0];
         const n = Number(row?.accountEquity ?? row?.usdtEquity ?? row?.equity ?? row?.available);
@@ -276,7 +282,7 @@ export async function fetchBitgetAccountEquityUsd(): Promise<number | null> {
 export async function fetchBitgetAccountAvailableMarginUsd(): Promise<number | null> {
     try {
         const productType = resolveProductType();
-        const accounts: any[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
+        const accounts: ApiRow[] = await bitgetFetch('GET', '/api/v2/mix/account/accounts', { productType });
         const row =
             (accounts || []).find((a) => String(a?.marginCoin || '').toUpperCase() === 'USDT') ?? accounts?.[0];
         const n = Number(row?.isolatedMaxAvailable ?? row?.crossedMaxAvailable ?? row?.available);
@@ -345,7 +351,7 @@ export async function fetchRecentPositionWindows(
         const items = await fetchBitgetPositionHistoryItems(symbol, startTime, now);
 
         const windows: PositionWindow[] = items
-            .map((it: any, idx: number): PositionWindow => {
+            .map((it, idx): PositionWindow => {
                 const entryTimestamp = normalizeTimestamp(
                     it.ctime ?? it.createTime ?? it.openTime ?? it.uTime ?? it.entryTime,
                 );
@@ -358,7 +364,7 @@ export async function fetchRecentPositionWindows(
                 const notional = size * (exitPrice || entryPrice || 0);
                 const pnlGross = num(it.pnl, NaN);
                 const pnlNet = num(it.netProfit ?? it.pnl, NaN);
-                const sideRaw = (it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
+                const sideRaw = String(it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
                 const side = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
                 const marginVal = num(
                     it.margin ?? it.marginAmount ?? it.marginValue ?? it.fixedMargin ?? it.cMargin,
@@ -372,8 +378,8 @@ export async function fetchRecentPositionWindows(
                 //      setting, so stale for past positions — last resort)
                 const capturedLev = pickCapturedLeverage(entryTimestamp, capturedLeverages);
                 const derivedLev =
-                    Number.isFinite(notional) && notional! > 0 && Number.isFinite(marginVal) && marginVal > 0
-                        ? notional! / marginVal
+                    Number.isFinite(notional) && notional > 0 && Number.isFinite(marginVal) && marginVal > 0
+                        ? notional / marginVal
                         : null;
                 const levRaw = Number(it.leverage ?? it.marginLeverage ?? it.lever);
                 const reportedLev = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
@@ -381,8 +387,8 @@ export async function fetchRecentPositionWindows(
                 const marginBasisRaw =
                     Number.isFinite(marginVal) && marginVal > 0
                         ? marginVal
-                        : Number.isFinite(notional) && notional > 0 && Number.isFinite(leverage) && leverage! > 0
-                        ? notional / leverage!
+                        : Number.isFinite(notional) && notional > 0 && leverage !== null && Number.isFinite(leverage) && leverage > 0
+                        ? notional / leverage
                         : Number.isFinite(notional) && notional > 0
                         ? notional
                         : null;
@@ -463,7 +469,7 @@ export async function fetchRealizedRoi(
         let lastSide: 'long' | 'short' | null = null;
         const sorted = items
             .slice()
-            .sort((a: any, b: any) => Number(b.utime || b.ctime || 0) - Number(a.utime || a.ctime || 0));
+            .sort((a, b) => Number(b.utime || b.ctime || 0) - Number(a.utime || a.ctime || 0));
         for (const it of items) {
             const net = Number(it.netProfit);
             const pnl = Number(it.pnl);
@@ -475,8 +481,8 @@ export async function fetchRealizedRoi(
             const size = Number(it.closeTotalPos ?? it.openTotalPos);
             const px = Number(it.closeAvgPrice ?? it.openAvgPrice);
             const notional = Number.isFinite(size) && Number.isFinite(px) ? size * px : null;
-            if (Number.isFinite(notional) && notional! > 0 && Number.isFinite(net)) {
-                sumPct += (net / notional!) * 100;
+            if (notional !== null && Number.isFinite(notional) && notional > 0 && Number.isFinite(net)) {
+                sumPct += (net / notional) * 100;
                 pctCount += 1;
             }
         }
@@ -486,13 +492,13 @@ export async function fetchRealizedRoi(
             const lastNetVal = Number(latest?.netProfit);
             last = Number.isFinite(lastPnl) ? lastPnl : null;
             lastNet = Number.isFinite(lastNetVal) ? lastNetVal : null;
-            const sideRaw = (latest?.holdSide || latest?.side || '').toLowerCase();
+            const sideRaw = String(latest?.holdSide || latest?.side || '').toLowerCase();
             lastSide = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
             const size = Number(latest?.openTotalPos ?? latest?.closeTotalPos);
             const px = Number(latest?.openAvgPrice ?? latest?.closeAvgPrice);
             const notional = Number.isFinite(size) && Number.isFinite(px) ? size * px : null;
-            if (Number.isFinite(notional) && Number.isFinite(lastNetVal) && notional! > 0) {
-                lastNetPct = (lastNetVal / notional!) * 100;
+            if (notional !== null && Number.isFinite(notional) && Number.isFinite(lastNetVal) && notional > 0) {
+                lastNetPct = (lastNetVal / notional) * 100;
             } else {
                 lastNetPct = null;
             }
@@ -521,19 +527,19 @@ type FillsOpts = {
     maxPages?: number; // cap pagination loops
     maxMs?: number; // time budget
 };
-export async function fetchTradesForMinutes(symbol: string, productType: ProductType, minutes: number): Promise<any[]> {
+export async function fetchTradesForMinutes(symbol: string, productType: ProductType, minutes: number): Promise<ApiRow[]> {
     return fetchTradesBudgeted(symbol, productType, { minutes });
 }
-export async function fetchTradesBudgeted(symbol: string, productType: ProductType, opts: FillsOpts): Promise<any[]> {
+export async function fetchTradesBudgeted(symbol: string, productType: ProductType, opts: FillsOpts): Promise<ApiRow[]> {
     const { minutes, maxTrades = 1500, maxPages = 8, maxMs = 3000 } = opts;
-    const trades: any[] = [];
+    const trades: ApiRow[] = [];
     const cutoff = Date.now() - minutes * 60_000;
     let lastId: string | undefined;
     let pages = 0;
     const t0 = Date.now();
 
     while (true) {
-        const params: any = { symbol, productType };
+        const params: Record<string, string | undefined> = { symbol, productType };
         if (lastId) params.after = lastId;
 
         const batch = await bitgetFetch('GET', '/api/v2/mix/market/fills', params);
@@ -626,7 +632,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
 
     const ticker = Array.isArray(tickerRaw) ? tickerRaw[0] : tickerRaw;
     const candles = ensureAscendingCandles(candlesRaw);
-    let trades: any[] = [];
+    let trades: ApiRow[] = [];
 
     if (includeTrades) {
         trades = await fetchTradesBudgeted(symbol, productType, {
@@ -653,14 +659,18 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
 // ------------------------------
 // Analytics: volume profile, liquidity
 // ------------------------------
-export function computeAnalytics(bundle: any) {
+export function computeAnalytics(bundle: {
+    trades?: ApiRow[] | null;
+    orderbook?: { bids?: IndexedRow[] | null; asks?: IndexedRow[] | null } | null;
+    ticker?: ApiRow | ApiRow[] | null;
+}) {
     const normTrades = (bundle.trades || [])
-        .map((t: any) => ({
+        .map((t) => ({
             price: num(t.price ?? t.fillPrice ?? t.p ?? t[1] ?? NaN),
             size: num(t.size ?? t.fillQuantity ?? t.q ?? t[2] ?? NaN),
             ts: Number(t.ts ?? t.tradeTime ?? t[0] ?? Date.now()),
         }))
-        .filter((t: any) => Number.isFinite(t.price) && Number.isFinite(t.size) && t.size > 0);
+        .filter((t) => Number.isFinite(t.price) && Number.isFinite(t.size) && t.size > 0);
 
     const bestBid = num(bundle.orderbook?.bids?.[0]?.[0] ?? bundle.orderbook?.bids?.[0]?.price);
     const bestAsk = num(bundle.orderbook?.asks?.[0]?.[0] ?? bundle.orderbook?.asks?.[0]?.price);
@@ -685,13 +695,13 @@ export function computeAnalytics(bundle: any) {
         }));
 
     const bids: OBLevel[] = (bundle.orderbook?.bids || []).map(
-        (l: any): OBLevel => ({
+        (l): OBLevel => ({
             price: num(l[0] ?? l.price),
             size: num(l[1] ?? l.size),
         }),
     );
     const asks: OBLevel[] = (bundle.orderbook?.asks || []).map(
-        (l: any): OBLevel => ({
+        (l): OBLevel => ({
             price: num(l[0] ?? l.price),
             size: num(l[1] ?? l.size),
         }),

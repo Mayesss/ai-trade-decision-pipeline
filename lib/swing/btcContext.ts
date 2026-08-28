@@ -41,9 +41,10 @@ type CloseRow = { ts: number; close: number };
 
 function normalizeCloses(raw: unknown): CloseRow[] {
   return (Array.isArray(raw) ? raw : [])
-    .map((c: any): CloseRow | null => {
-      const tsRaw = Number(Array.isArray(c) ? c[0] : (c?.ts ?? c?.timestamp ?? c?.time));
-      const close = Number(Array.isArray(c) ? c[4] : c?.close);
+    .map((c: unknown): CloseRow | null => {
+      const row = c && typeof c === 'object' ? (c as Record<string, unknown>) : null;
+      const tsRaw = Number(Array.isArray(c) ? c[0] : (row?.ts ?? row?.timestamp ?? row?.time));
+      const close = Number(Array.isArray(c) ? c[4] : row?.close);
       if (![tsRaw, close].every(Number.isFinite) || close <= 0) return null;
       const ts = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
       return { ts, close };

@@ -29,10 +29,11 @@ function isRetryableHttpStatus(status: number): boolean {
 }
 
 function isRetryableError(err: unknown): boolean {
-    const text = String((err as any)?.message || err || '')
+    const record = err && typeof err === 'object' ? (err as { message?: unknown; name?: unknown }) : null;
+    const text = String(record?.message || err || '')
         .trim()
         .toLowerCase();
-    const name = String((err as any)?.name || '')
+    const name = String(record?.name || '')
         .trim()
         .toLowerCase();
     if (!text && !name) return false;
@@ -75,29 +76,31 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
                 continue;
             }
 
-            let data: any = null;
+            let data: unknown = null;
             if (rawText) {
                 try {
                     data = JSON.parse(rawText);
-                } catch (err: any) {
+                } catch (err) {
                     if (!res.ok) {
                         throw new Error(`KV command failed (${command}) HTTP ${res.status}: ${rawText.slice(0, 240)}`);
                     }
-                    console.warn(`KV ${command} response parse warning: ${err?.message || String(err)}`);
+                    console.warn(`KV ${command} response parse warning: ${(err instanceof Error && err.message) || String(err)}`);
                     return null;
                 }
             }
 
+            const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+
             if (!res.ok) {
                 const message =
-                    (data && typeof data === 'object' && (data.error || data.message)) ||
+                    (record && (record.error || record.message)) ||
                     rawText ||
                     `KV command failed: ${command}`;
                 throw new Error(String(message));
             }
 
-            if (data && typeof data === 'object' && data.error) {
-                const errText = String(data.error || data.message || `KV command failed: ${command}`);
+            if (record && record.error) {
+                const errText = String(record.error || record.message || `KV command failed: ${command}`);
                 if (attempt < KV_MAX_RETRIES && errText.toLowerCase().includes('rate limit')) {
                     await sleep(retryDelayMs(attempt));
                     continue;
@@ -105,8 +108,8 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
                 throw new Error(errText);
             }
 
-            if (data && typeof data === 'object' && 'result' in data) {
-                return data.result;
+            if (record && 'result' in record) {
+                return record.result;
             }
             return null;
         } catch (err) {
@@ -123,7 +126,7 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
 }
 
 async function kvGet(key: string): Promise<string | null> {
-    return kvCommand('GET', key);
+    return kvCommand('GET', key) as Promise<string | null>;
 }
 
 async function kvSet(key: string, value: string) {

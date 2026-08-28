@@ -89,11 +89,12 @@ export async function invokeCronEndpoint(
             error: response.ok ? null : `http_${response.status}`,
             url,
         };
-    } catch (err: any) {
+    } catch (err) {
+        const record = err && typeof err === 'object' ? (err as { message?: unknown }) : null;
         return {
             invoked: false,
             status: null,
-            error: String(err?.message || err || 'invoke_failed'),
+            error: String(record?.message || err || 'invoke_failed'),
             url,
         };
     } finally {

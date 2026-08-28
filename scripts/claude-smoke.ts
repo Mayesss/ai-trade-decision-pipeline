@@ -38,17 +38,17 @@ const REQUIRED_KEYS = [
 async function main() {
     console.log(
         'stripped leverage schema (bounds removed):',
-        JSON.stringify((toClaudeSchema(SWING_DECISION_SCHEMA.schema) as any).properties.leverage),
+        JSON.stringify((toClaudeSchema(SWING_DECISION_SCHEMA.schema) as { properties: Record<string, unknown> }).properties.leverage),
     );
 
     const first = await callClaudeSwingDecision(SYSTEM, USER_1, SWING_DECISION_SCHEMA);
     console.log('--- call 1 (stateless, schema-enforced) ---');
     console.log('responseId:', `${first.responseId?.slice(0, 8)}…`);
     console.log('decision:', JSON.stringify(first.json));
-    const assistantContent = (first.appendTurns[1] as any).content;
+    const assistantContent = first.appendTurns[1].content;
     console.log(
         'assistant turn blocks:',
-        Array.isArray(assistantContent) ? assistantContent.map((b: any) => b.type).join(',') : typeof assistantContent,
+        Array.isArray(assistantContent) ? assistantContent.map((b) => b.type).join(',') : typeof assistantContent,
     );
     console.log('usage:', JSON.stringify(first.usage));
 

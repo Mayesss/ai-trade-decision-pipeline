@@ -45,8 +45,8 @@ async function main() {
     info(`symbol=${symbol} base=${process.env.CAPITAL_API_BASE}`);
 
     // ---- Phase A: session + market data + empty order book ----
-    const live = await capital.fetchCapitalLivePrice(symbol);
-    const price = Number((live as any)?.mid ?? (live as any)?.last ?? (live as any)?.bid);
+    const live: Record<string, unknown> = await capital.fetchCapitalLivePrice(symbol);
+    const price = Number(live.mid ?? live.last ?? live.bid);
     if (!(price > 0)) throw new Error(`no demo price for ${symbol}: ${JSON.stringify(live)}`);
     info(`demo price = ${price}`);
     const initialOrders = await capital.listCapitalPendingEntryOrders(symbol);
@@ -55,16 +55,16 @@ async function main() {
     try {
         // ---- Phase B: pullback working order via the real decision path ----
         const limit = price * 0.985;
-        const resB = await capital.executeCapitalDecision(
+        const resB: { placed?: boolean; pendingEntry?: boolean } = await capital.executeCapitalDecision(
             symbol,
             20,
-            { action: 'BUY', summary: '', reason: '', entry_limit_price: limit } as any,
+            { action: 'BUY', summary: '', reason: '', entry_limit_price: limit },
             false,
             limit * 0.985, // catastrophe stop anchored at the limit
             true,
             limit * 1.02, // TP anchored at the limit
         );
-        check('B1 pullback order placed with pendingEntry flag', (resB as any)?.placed === true && (resB as any)?.pendingEntry === true, resB);
+        check('B1 pullback order placed with pendingEntry flag', resB.placed === true && resB.pendingEntry === true, resB);
         await sleep(2500);
         const pending = await capital.listCapitalPendingEntryOrders(symbol);
         check('B2 resting working order visible', pending.length === 1 && pending[0].level != null, pending);
@@ -75,16 +75,16 @@ async function main() {
         check('B4 nothing resting after sweep', after.length === 0, after);
 
         // ---- Phase C: bracket-merge on position amend ----
-        const resC = await capital.executeCapitalDecision(
+        const resC: { placed?: boolean } = await capital.executeCapitalDecision(
             symbol,
             20,
-            { action: 'BUY', summary: '', reason: '' } as any,
+            { action: 'BUY', summary: '', reason: '' },
             false,
             price * 0.97,
             true,
             price * 1.03,
         );
-        check('C1 market position opened with bracket', (resC as any)?.placed === true, resC);
+        check('C1 market position opened with bracket', resC.placed === true, resC);
         await sleep(3000);
         const pos1 = await capital.fetchCapitalPositionInfo(symbol);
         check(
@@ -120,7 +120,7 @@ async function main() {
             await capital.cancelCapitalPendingEntryOrders(symbol);
             const open = await capital.fetchCapitalPositionInfo(symbol);
             if (open.status === 'open') {
-                await capital.executeCapitalDecision(symbol, 20, { action: 'CLOSE', summary: '', reason: '' } as any, false, null, true);
+                await capital.executeCapitalDecision(symbol, 20, { action: 'CLOSE', summary: '', reason: '' }, false, null, true);
                 info('cleanup: closed demo position');
             } else {
                 info('cleanup: flat');

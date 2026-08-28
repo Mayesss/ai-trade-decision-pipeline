@@ -8,6 +8,14 @@ export interface IndicatorSummary {
     summary: string;
 }
 
+// Broker candle row: `[tsMs, open, high, low, close, volume, ...]`. Bitget sends
+// numeric strings, Capital sends numbers, and some upstream shapes carry the
+// volume as a named field instead — so fields are read defensively.
+export interface CandleRow {
+    [index: number]: string | number | undefined;
+    volume?: string | number;
+}
+
 export interface MultiTFIndicators {
     micro: string;
     macro: string;
@@ -23,7 +31,7 @@ export interface MultiTFIndicators {
     // timeframe, exposed so callers (e.g. the analyze chart-cache warm step) can
     // reuse candles already fetched for indicators instead of re-fetching. Optional
     // — nothing in the decision path reads it.
-    rawCandles?: Record<string, any[]>;
+    rawCandles?: Record<string, CandleRow[]>;
 }
 
 export interface IndicatorTimeframeOptions {
@@ -73,14 +81,14 @@ export interface TimeframeMetrics {
 // Indicator Calculations
 // ------------------------------
 
-export function computeVWAP(candles: any[]): number {
+export function computeVWAP(candles: CandleRow[]): number {
     let cumPV = 0,
         cumVol = 0;
     for (const c of candles) {
-        const high = parseFloat(c[2]);
-        const low = parseFloat(c[3]);
-        const close = parseFloat(c[4]);
-        const volume = parseFloat(c[5]);
+        const high = parseFloat(String(c[2]));
+        const low = parseFloat(String(c[3]));
+        const close = parseFloat(String(c[4]));
+        const volume = parseFloat(String(c[5]));
         const typical = (high + low + close) / 3;
         cumPV += typical * volume;
         cumVol += volume;
@@ -94,7 +102,7 @@ export function computeRSI_Wilder(closes: number[], period = 14): number {
     let gains = 0,
         losses = 0;
     for (let i = 1; i <= period; i++) {
-        const diff = closes[i]! - closes[i - 1]!;
+        const diff = closes[i] - closes[i - 1];
         if (diff > 0) gains += diff;
         else losses -= diff;
     }
@@ -102,7 +110,7 @@ export function computeRSI_Wilder(closes: number[], period = 14): number {
     let avgLoss = losses / period;
 
     for (let i = period + 1; i < closes.length; i++) {
-        const diff = closes[i]! - closes[i - 1]!;
+        const diff = closes[i] - closes[i - 1];
         avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
         avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
     }
@@ -117,7 +125,7 @@ export function computeEMA(closes: number[], period: number): number[] {
     if (closes.length === 0) return ema;
     if (closes.length < period) {
         // seed with first close if too short
-        ema[0] = closes[0]!;
+        ema[0] = closes[0];
     } else {
         const sma = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
         ema[period - 1] = sma;
@@ -125,13 +133,13 @@ export function computeEMA(closes: number[], period: number): number[] {
     const k = 2 / (period + 1);
     for (let i = ema[0] !== undefined ? 1 : period; i < closes.length; i++) {
         const prev = ema[i - 1] ?? closes[i - 1];
-        ema[i] = closes[i]! * k + prev * (1 - k);
+        ema[i] = closes[i] * k + prev * (1 - k);
     }
     return ema;
 }
 
 // ATR (simple version)
-export function computeATR(candles: any[], period = 14): number {
+export function computeATR(candles: CandleRow[], period = 14): number {
     if (!candles || candles.length < 2) return 0;
     const trs: number[] = [];
     for (let i = 1; i < candles.length; i++) {
@@ -146,7 +154,7 @@ export function computeATR(candles: any[], period = 14): number {
     return trs.slice(-effectivePeriod).reduce((a, b) => a + b, 0) / effectivePeriod;
 }
 
-function computeAtrSeries(candles: any[], period = 14): number[] {
+function computeAtrSeries(candles: CandleRow[], period = 14): number[] {
     if (!candles || candles.length < 2) return [];
     const trs: number[] = [];
     for (let i = 1; i < candles.length; i++) {
@@ -161,8 +169,8 @@ function computeAtrSeries(candles: any[], period = 14): number[] {
     const atrs: number[] = [];
     let sum = 0;
     for (let i = 0; i < trs.length; i++) {
-        sum += trs[i]!;
-        if (i >= effectivePeriod) sum -= trs[i - effectivePeriod]!;
+        sum += trs[i];
+        if (i >= effectivePeriod) sum -= trs[i - effectivePeriod];
         if (i >= effectivePeriod - 1) atrs.push(sum / effectivePeriod);
     }
     return atrs.filter((v) => Number.isFinite(v));
@@ -176,18 +184,18 @@ function percentileRank(values: number[], current: number): number | undefined {
     return (count / sorted.length) * 100;
 }
 
-function computeRvol(candles: any[], lookback = 20): number | undefined {
+function computeRvol(candles: CandleRow[], lookback = 20): number | undefined {
     if (!Array.isArray(candles) || candles.length <= lookback) return undefined;
     const vols = candles.map((c) => Number(c?.[5] ?? c?.volume)).filter((v) => Number.isFinite(v));
     if (vols.length <= lookback) return undefined;
-    const current = vols[vols.length - 1]!;
+    const current = vols[vols.length - 1];
     const window = vols.slice(vols.length - 1 - lookback, vols.length - 1);
     const avg = window.reduce((a, b) => a + b, 0) / window.length;
     if (!Number.isFinite(avg) || avg <= 0) return undefined;
     return current / avg;
 }
 
-function computeValueArea(candles: any[], binsCount = 24, valuePct = 0.7) {
+function computeValueArea(candles: CandleRow[], binsCount = 24, valuePct = 0.7) {
     if (!Array.isArray(candles) || candles.length < 20) return undefined;
     const points = candles
         .map((c) => {
@@ -239,7 +247,7 @@ function computeValueArea(candles: any[], binsCount = 24, valuePct = 0.7) {
     return { val, vah };
 }
 
-function computeStructureMetrics(candles: any[]): TimeframeMetrics {
+function computeStructureMetrics(candles: CandleRow[]): TimeframeMetrics {
     if (!Array.isArray(candles) || candles.length < 20) {
         return { structure: 'range', bos: false, choch: false, breakoutRetestOk: false };
     }
@@ -250,10 +258,10 @@ function computeStructureMetrics(candles: any[]): TimeframeMetrics {
         return { structure: 'range', bos: false, choch: false, breakoutRetestOk: false };
     }
 
-    const lastHigh = highs[highs.length - 1]!;
-    const prevHigh = highs[highs.length - 2]!;
-    const lastLow = lows[lows.length - 1]!;
-    const prevLow = lows[lows.length - 2]!;
+    const lastHigh = highs[highs.length - 1];
+    const prevHigh = highs[highs.length - 2];
+    const lastLow = lows[lows.length - 1];
+    const prevLow = lows[lows.length - 2];
 
     const atrLocal = computeATR(candles, 14);
     const highDelta = Math.abs(lastHigh.price - prevHigh.price);
@@ -341,16 +349,16 @@ function computeStructureMetrics(candles: any[]): TimeframeMetrics {
     return { structure: state, bos, bosDir, structureBreakState, choch, breakoutRetestOk, breakoutRetestDir };
 }
 
-function ensureAscending(cs: any[]) {
-    return cs.slice().sort((a: any, b: any) => Number(a[0]) - Number(b[0]));
+function ensureAscending(cs: CandleRow[]) {
+    return cs.slice().sort((a, b) => Number(a[0]) - Number(b[0]));
 }
 
 export function computeSMA(closes: number[], period: number): number[] {
     const out: number[] = [];
     let sum = 0;
     for (let i = 0; i < closes.length; i++) {
-        sum += closes[i]!;
-        if (i >= period) sum -= closes[i - period]!;
+        sum += closes[i];
+        if (i >= period) sum -= closes[i - period];
         const window = Math.min(period, i + 1);
         out[i] = window > 0 ? sum / window : NaN;
     }
@@ -361,7 +369,7 @@ function clamp(val: number, min: number, max: number) {
     return Math.min(Math.max(val, min), max);
 }
 
-function computeSwingLevels(candles: any[], lookback = 150) {
+function computeSwingLevels(candles: CandleRow[], lookback = 150) {
     const swings: { type: 'high' | 'low'; price: number; index: number }[] = [];
     const start = Math.max(2, candles.length - lookback);
     const end = candles.length - 2;
@@ -406,7 +414,7 @@ function deriveLevelState(price: number, levelPrice: number, atr: number, side: 
     return 'rejected';
 }
 
-function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLevels | undefined {
+function computeSRLevels(candles: CandleRow[], atr: number, timeframe: string): SRLevels | undefined {
     if (!Array.isArray(candles) || candles.length < 2) return undefined;
     const tf = String(timeframe || '').trim().toUpperCase();
     // Weekly candles are sparse on Bitget for newer listings; allow earlier S/R generation there.
@@ -479,8 +487,8 @@ export function slopePct(series: number[], lookback: number): number {
     const filtered = series.filter((v) => Number.isFinite(v));
     const n = filtered.length;
     if (n <= lookback) return 0;
-    const last = filtered[n - 1]!;
-    const prev = filtered[n - 1 - lookback]!;
+    const last = filtered[n - 1];
+    const prev = filtered[n - 1 - lookback];
     if (!isFinite(last) || !isFinite(prev) || last === 0) return 0;
     return ((last - prev) / last) * (100 / lookback); // % per bar
 }
@@ -499,7 +507,7 @@ const EMPTY_TF_SUMMARY =
 // produce identical inputs (structure, valueState, atrPctile, rvol, S/R) — this
 // is the single source of truth for timeframe metrics. Candles are [ts,o,h,l,c,v].
 export function buildTimeframeMetrics(
-    candles: any[],
+    candles: CandleRow[],
     tf: string,
 ): { summary: string; atr: number; candleCount: number; sr?: SRLevels; metrics: TimeframeMetrics } {
     if (!Array.isArray(candles) || candles.length < 2) {
@@ -520,7 +528,7 @@ export function buildTimeframeMetrics(
             },
         };
     }
-    const closes = candles.map((c) => parseFloat(c[4]));
+    const closes = candles.map((c) => parseFloat(String(c[4])));
     const vwap = computeVWAP(candles);
     const rsi = computeRSI_Wilder(closes, 14);
 
@@ -530,11 +538,12 @@ export function buildTimeframeMetrics(
     const ema50 = computeEMA(closes, 50);
     const sma200 = computeSMA(closes, 200);
 
-    const e9 = ema9.at(-1) ?? closes.at(-1)!;
-    const e21 = ema21.at(-1) ?? closes.at(-1)!;
-    const e20 = ema20.at(-1) ?? closes.at(-1)!;
-    const e50 = ema50.at(-1) ?? closes.at(-1)!;
-    const s200 = sma200.at(-1) ?? closes.at(-1)!;
+    const lastCloseValue = closes[closes.length - 1];
+    const e9 = ema9.at(-1) ?? lastCloseValue;
+    const e21 = ema21.at(-1) ?? lastCloseValue;
+    const e20 = ema20.at(-1) ?? lastCloseValue;
+    const e50 = ema50.at(-1) ?? lastCloseValue;
+    const s200 = sma200.at(-1) ?? lastCloseValue;
 
     const trend = e20 > e50 ? 'up' : 'down';
 
@@ -607,7 +616,7 @@ export async function calculateMultiTFIndicators(
         return ensureAscending(cs);
     }
 
-    const requests = new Map<string, Promise<any[]>>();
+    const requests = new Map<string, Promise<CandleRow[]>>();
     const addRequest = (tf: string) => {
         if (!requests.has(tf)) requests.set(tf, fetchCandles(tf));
     };
@@ -623,7 +632,7 @@ export async function calculateMultiTFIndicators(
     >();
 
     const build = buildTimeframeMetrics;
-    const rawByTf = new Map<string, any[]>();
+    const rawByTf = new Map<string, CandleRow[]>();
 
     await Promise.all(
         entries.map(async ([tf, promise]) => {
@@ -633,21 +642,25 @@ export async function calculateMultiTFIndicators(
         }),
     );
 
+    const candleDepth: Record<string, number | undefined> = {};
+    const sr: Record<string, SRLevels | undefined> = {};
+    const metrics: Record<string, TimeframeMetrics | undefined> = {};
+
     const out: MultiTFIndicators = {
         micro: summaries.get(microTF)?.summary ?? '',
         macro: summaries.get(macroTF)?.summary ?? '',
         microTimeFrame: microTF,
         macroTimeFrame: macroTF,
         contextTimeFrame: contextTF,
-        candleDepth: {},
-        sr: {},
-        metrics: {},
+        candleDepth,
+        sr,
+        metrics,
     };
 
-    out.candleDepth![microTF] = summaries.get(microTF)?.candleCount;
-    out.candleDepth![macroTF] = summaries.get(macroTF)?.candleCount;
-    out.candleDepth![contextTF] = summaries.get(contextTF)?.candleCount;
-    out.candleDepth![primaryTF] = summaries.get(primaryTF)?.candleCount;
+    candleDepth[microTF] = summaries.get(microTF)?.candleCount;
+    candleDepth[macroTF] = summaries.get(macroTF)?.candleCount;
+    candleDepth[contextTF] = summaries.get(contextTF)?.candleCount;
+    candleDepth[primaryTF] = summaries.get(primaryTF)?.candleCount;
 
     out.rawCandles = {
         [microTF]: rawByTf.get(microTF) ?? [],
@@ -656,19 +669,19 @@ export async function calculateMultiTFIndicators(
         [primaryTF]: rawByTf.get(primaryTF) ?? [],
     };
 
-    out.sr![microTF] = summaries.get(microTF)?.sr;
-    out.sr![macroTF] = summaries.get(macroTF)?.sr;
-    out.sr![contextTF] = summaries.get(contextTF)?.sr;
-    out.metrics![microTF] = summaries.get(microTF)?.metrics;
-    out.metrics![macroTF] = summaries.get(macroTF)?.metrics;
-    out.metrics![contextTF] = summaries.get(contextTF)?.metrics;
+    sr[microTF] = summaries.get(microTF)?.sr;
+    sr[macroTF] = summaries.get(macroTF)?.sr;
+    sr[contextTF] = summaries.get(contextTF)?.sr;
+    metrics[microTF] = summaries.get(microTF)?.metrics;
+    metrics[macroTF] = summaries.get(macroTF)?.metrics;
+    metrics[contextTF] = summaries.get(contextTF)?.metrics;
 
     out.primary = {
         timeframe: primaryTF,
         summary: summaries.get(primaryTF)?.summary ?? summaries.get(microTF)?.summary ?? '',
     };
-    out.sr![primaryTF] = summaries.get(primaryTF)?.sr;
-    out.metrics![primaryTF] = summaries.get(primaryTF)?.metrics;
+    sr[primaryTF] = summaries.get(primaryTF)?.sr;
+    metrics[primaryTF] = summaries.get(primaryTF)?.metrics;
 
     out.context = {
         timeframe: contextTF,

@@ -14,8 +14,8 @@ async function countTable(table: string): Promise<number | null> {
         const db = pgClient();
         const rows = await db.$queryRawUnsafe<CountRow[]>(`SELECT COUNT(*)::bigint AS count FROM ${table}`);
         return toNumber(rows?.[0]?.count);
-    } catch (err: any) {
-        const message = String(err?.message || '').toLowerCase();
+    } catch (err) {
+        const message = String((err as { message?: unknown } | null | undefined)?.message || '').toLowerCase();
         if (message.includes('does not exist') || message.includes('undefined_table')) {
             return null;
         }

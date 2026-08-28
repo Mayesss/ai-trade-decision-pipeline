@@ -136,7 +136,8 @@ function shouldRetryBitgetFetch(
     return false;
   }
   if (!retry.retryOnNetworkError) return false;
-  const message = String((err as any)?.message || err || '').toLowerCase();
+  const record = err && typeof err === 'object' ? (err as { message?: unknown }) : null;
+  const message = String(record?.message || err || '').toLowerCase();
   return (
     message.includes('fetch failed') ||
     message.includes('network') ||
@@ -268,7 +269,7 @@ export async function bitgetFetch(
           clearTimeout(timeoutHandle);
         });
       const text = await res.text();
-      let parsed: any = null;
+      let parsed = null;
       if (text) {
         try {
           parsed = JSON.parse(text);

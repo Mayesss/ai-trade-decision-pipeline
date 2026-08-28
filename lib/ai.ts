@@ -11,7 +11,7 @@ import {
 } from './constants';
 import { AiCallError } from './aiError';
 import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
-import type { MultiTFIndicators } from './indicators';
+import type { LevelDescriptor, MultiTFIndicators } from './indicators';
 import {
     clampWakeSustainMinutes,
     wakePlanGraceMinutes,
@@ -22,6 +22,7 @@ import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import type { RecentActionEntry } from './swing/recentActions';
+import type { TradeDecision } from './trading';
 import { computeWaveGeometry } from './swing/waveGeometry';
 import type { NanoContext } from './swing/waveGeometry';
 import { setEvaluation, getEvaluation } from './utils';
@@ -60,7 +61,59 @@ export type MomentumSignals = {
     microRSI?: number | null;
     primaryAtr?: number | null;
     microExtensionInAtr?: number | null;
-    info?: Record<string, any>;
+    info?: Record<string, unknown>;
+};
+
+// Structural views of the loosely-typed market bundle / analytics objects
+// built in lib/analytics.ts — only the fields this module actually reads.
+type SwingTickerRow = {
+    lastPr?: number | string | null;
+    last?: number | string | null;
+    close?: number | string | null;
+    price?: number | string | null;
+    change24h?: number | string | null;
+    changeUtc24h?: number | string | null;
+    chgPct?: number | string | null;
+};
+
+// Broker candle row (`[tsMs, open, high, low, close, volume, ...]`).
+type SwingCandleRow = {
+    [index: number]: unknown;
+    volume?: number | string | null;
+};
+
+type SwingFundingRow = { fundingRate?: number | string | null };
+
+type SwingFundingTimeRow = {
+    nextFundingTime?: number | string | null;
+    ratePeriod?: number | string | null;
+};
+
+export type SwingMarketBundle = {
+    ticker?: SwingTickerRow | SwingTickerRow[] | null;
+    candles?: SwingCandleRow[] | null;
+    funding?: SwingFundingRow | SwingFundingRow[] | null;
+    fundingTime?: SwingFundingTimeRow | SwingFundingTimeRow[] | null;
+};
+
+export type SwingAnalytics = {
+    spread?: number | string | null;
+    spreadAbs?: number | string | null;
+    spreadBps?: number | string | null;
+    bestBid?: number | string | null;
+    bestAsk?: number | string | null;
+    topWalls?: { bid?: unknown; ask?: unknown } | null;
+    volume_profile?: Array<{ price?: number | null; volume?: unknown }> | null;
+};
+
+// Gate booleans as consumed here (getGates output shape; tests pass partials).
+export type SwingGatesInput = {
+    regime_trend_up?: boolean | null;
+    regime_trend_down?: boolean | null;
+    spread_ok?: boolean | null;
+    liquidity_ok?: boolean | null;
+    atr_ok?: boolean | null;
+    slippage_ok?: boolean | null;
 };
 
 export type DecisionPolicy = 'strict' | 'balanced';
@@ -124,6 +177,71 @@ export type CapitalMarketContextForPrompt = {
     overnight_fee_pct_per_day: { long: number | null; short: number | null } | null;
 };
 
+// MARKET half of the prompt payload (raw inputs). The optional blocks are
+// attached conditionally below; shapes mirror exactly what gets stringified.
+type MarketPayload = {
+    price: { last: number | null; change_24h_pct: number | null };
+    recent_candles: Array<{
+        ts: string;
+        open: number | null;
+        high: number | null;
+        low: number | null;
+        close: number | null;
+        volume: number | null;
+    } | null>;
+    liquidity: {
+        spread_bps: number | null;
+        best_bid: number | null;
+        best_ask: number | null;
+        bid_walls: unknown;
+        ask_walls: unknown;
+    };
+    volume_profile: Array<{ price: number | null; volume: unknown }>;
+    news: { sentiment: string | null; headlines: string[] };
+    recent_actions: Array<Record<string, unknown>>;
+    forex_events?: ForexEventContextForPrompt;
+    forex_session?: ForexSessionLevelsContext;
+    event_reaction?: EventReactionMeasurement[];
+    btc_context?: BtcContext;
+    cooldown_wake?: {
+        crossed: 'above' | 'below';
+        level: number;
+        set_minutes_ago: number | null;
+        expired?: boolean;
+        sustained_minutes?: number;
+        break_extension_atr?: number;
+        note?: string;
+    };
+    wake_band_sweeps?: Array<{
+        side: 'above' | 'below';
+        level: number;
+        touched_minutes_ago: number;
+        held_minutes: number;
+        extreme?: number;
+    }>;
+    failed_break?: {
+        side: 'long' | 'short';
+        trigger_price: number;
+        bar_close: number;
+        bar_closed_minutes_ago: number | null;
+    };
+    position_wake?: {
+        crossed: 'above' | 'below';
+        level: number;
+        set_minutes_ago: number | null;
+        expired?: boolean;
+        note?: string;
+    };
+    position_wake_armed?: {
+        above: number | null;
+        below: number | null;
+        set_minutes_ago: number | null;
+        note?: string;
+    };
+    venue_session?: CapitalMarketContextForPrompt['venue_session'];
+    venue_events?: CapitalMarketContextForPrompt['venue_events'];
+};
+
 export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
     const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'strict')
         .trim()
@@ -153,10 +271,11 @@ const indicatorRegexCache = new Map<string, RegExp>();
 
 function readIndicator(name: string, src: string): number | null {
     if (!src) return null;
-    if (!indicatorRegexCache.has(name)) {
-        indicatorRegexCache.set(name, new RegExp(`${name}=([+-]?[0-9]*\.?[0-9]+)`));
+    let regex = indicatorRegexCache.get(name);
+    if (!regex) {
+        regex = new RegExp(`${name}=([+-]?[0-9]*\.?[0-9]+)`);
+        indicatorRegexCache.set(name, regex);
     }
-    const regex = indicatorRegexCache.get(name)!;
     const match = src.match(regex);
     if (!match) return null;
     const val = Number(match[1]);
@@ -178,7 +297,7 @@ function microDistanceOk(price: number, target: number | null, atr: number | nul
 export function computeMomentumSignals(params: {
     price: number;
     indicators: MultiTFIndicators;
-    gates: { regime_trend_up: boolean; regime_trend_down: boolean };
+    gates: SwingGatesInput;
     primaryTimeframe: string;
 }): MomentumSignals {
     const { price, indicators, gates, primaryTimeframe } = params;
@@ -250,7 +369,7 @@ export function computeMomentumSignals(params: {
 }
 
 // Persist the last evaluation for a symbol
-export async function persistEvaluation(symbol: string, evaluation: any) {
+export async function persistEvaluation(symbol: string, evaluation: unknown) {
     await setEvaluation(symbol, evaluation);
 }
 
@@ -474,13 +593,13 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
 export function computeSwingState(
     symbol: string,
     timeframe: string,
-    bundle: any,
-    analytics: any,
+    bundle: SwingMarketBundle,
+    analytics: SwingAnalytics,
     position_status: string = 'none',
     forex_event_context: ForexEventContextForPrompt | null = null,
     forex_session_context: ForexSessionLevelsContext | null = null,
     indicators: MultiTFIndicators,
-    gates: any, // <--- Retain the gates object for the base gate checks
+    gates: SwingGatesInput, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
     recentActions: RecentActionEntry[] = [],
@@ -577,10 +696,10 @@ export function computeSwingState(
     const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
     const priceTrendPoints = candles
         .slice(-5)
-        .map((c: any) => {
+        .map((c) => {
             const tsRaw = Number(c?.[0]);
             if (!Number.isFinite(tsRaw)) return null;
-            const toNum = (v: any) => {
+            const toNum = (v: unknown) => {
                 const n = Number(v);
                 return Number.isFinite(n) ? Number(n.toFixed(6)) : null;
             };
@@ -599,7 +718,7 @@ export function computeSwingState(
                 volume,
             };
         })
-        .filter((p: any) => p !== null);
+        .filter((p) => p !== null);
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
     const actionsToShow = recentActionsExists ? Math.min(recentActions.length, 5) : 5;
@@ -973,7 +1092,7 @@ export function computeSwingState(
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
     const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
 
-    const srLevel = (lvl: any) =>
+    const srLevel = (lvl: LevelDescriptor | null | undefined) =>
         lvl
             ? {
                   price: lvl.price,
@@ -1129,7 +1248,7 @@ export function computeSwingState(
         closing_guardrails: position_context ? closingGuidance : null,
     };
 
-    const market: Record<string, any> = {
+    const market: MarketPayload = {
         price: {
             last: Number.isFinite(price) ? price : null,
             change_24h_pct: Number.isFinite(change) ? change : null,
@@ -1144,7 +1263,7 @@ export function computeSwingState(
         },
         volume_profile: (analytics.volume_profile || [])
             .slice(0, 10)
-            .map((v: any) => ({ price: clampNumber(v.price, 2), volume: v.volume })),
+            .map((v) => ({ price: clampNumber(v.price, 2), volume: v.volume })),
         news: { sentiment: normalizedNewsSentiment, headlines: normalizedHeadlines },
         recent_actions: recentActionsExists
             ? recentActions.slice(-1 * actionsToShow).map((a) => {
@@ -1152,7 +1271,7 @@ export function computeSwingState(
                   // trim from a full exit; a 100%/absent pct stays a bare "CLOSE".
                   const partial =
                       a.action === 'CLOSE' && a.closePct != null && a.closePct > 0 && a.closePct < 100;
-                  const row: any = {
+                  const row: Record<string, unknown> = {
                       action: partial ? `CLOSE ${Math.round(a.closePct as number)}%` : a.action,
                       ts: new Date(a.timestamp).toISOString(),
                   };
@@ -1538,15 +1657,15 @@ Respond with strict JSON only:
 export async function buildPrompt(
     symbol: string,
     timeframe: string,
-    bundle: any,
-    analytics: any,
+    bundle: SwingMarketBundle,
+    analytics: SwingAnalytics,
     position_status: string = 'none',
     news_sentiment: string | null = null,
     news_headlines: string[] = [],
     forex_event_context: ForexEventContextForPrompt | null = null,
     forex_session_context: ForexSessionLevelsContext | null = null,
     indicators: MultiTFIndicators,
-    gates: any,
+    gates: SwingGatesInput,
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
     recentActions: RecentActionEntry[] = [],
@@ -1639,7 +1758,7 @@ export function computeSignalStrength(context: PromptDecisionContext): 'LOW' | '
 }
 
 export function postprocessDecision(params: {
-    decision: any;
+    decision: Record<string, unknown> | null | undefined;
     context: PromptDecisionContext;
     gates: { spread_ok: boolean; liquidity_ok: boolean; atr_ok: boolean; slippage_ok: boolean };
     positionOpen: boolean;
@@ -1757,13 +1876,13 @@ export function postprocessDecision(params: {
     const leverage =
         action === 'BUY' || action === 'SELL' || action === 'REVERSE'
             ? Number.isFinite(decision?.leverage as number)
-                ? Number(decision.leverage)
+                ? Number(decision?.leverage)
                 : null
             : null;
     const exit_size_pct =
         action === 'CLOSE' || action === 'REVERSE'
             ? Number.isFinite(decision?.exit_size_pct as number)
-                ? Number(decision.exit_size_pct)
+                ? Number(decision?.exit_size_pct)
                 : null
             : null;
 
@@ -1777,8 +1896,8 @@ export function postprocessDecision(params: {
     const raise_leverage_to =
         manageEligible &&
         Number.isFinite(Number(decision?.raise_leverage_to)) &&
-        Number(decision.raise_leverage_to) > 0
-            ? Math.round(Number(decision.raise_leverage_to))
+        Number(decision?.raise_leverage_to) > 0
+            ? Math.round(Number(decision?.raise_leverage_to))
             : null;
     const move_stop_to_be = manageEligible ? decision?.move_stop_to_be === true : false;
 
@@ -1815,8 +1934,8 @@ export function postprocessDecision(params: {
     // side validation happen in sanitizeHoldCooldown in the API route (live price).
     const cooldownEligible = !positionOpen && action === 'HOLD';
     const cooldown_minutes =
-        cooldownEligible && Number.isFinite(Number(decision?.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
-            ? Math.round(Number(decision.cooldown_minutes))
+        cooldownEligible && Number.isFinite(Number(decision?.cooldown_minutes)) && Number(decision?.cooldown_minutes) > 0
+            ? Math.round(Number(decision?.cooldown_minutes))
             : null;
     // In-position wake bands ride the same cooldown_wake_* fields, routed by
     // position state: eligible on in-position HOLD / partial CLOSE (same gate
@@ -1850,7 +1969,7 @@ export function postprocessDecision(params: {
             ? Math.round(rawSustain)
             : null;
 
-    return {
+    const normalized: Record<string, unknown> = {
         ...decision,
         action,
         leverage,
@@ -1872,6 +1991,9 @@ export function postprocessDecision(params: {
         macro_bias: macroBias,
         context_bias: contextBias,
     };
+    // Raw-AI-JSON boundary: action is coerced into the allowed set above and
+    // summary/reason are schema-required, so the normalized shape is a decision.
+    return normalized as TradeDecision & Record<string, unknown>;
 }
 
 // ------------------------------
@@ -2479,7 +2601,7 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
 } as const;
 
 export type AiThreadCallResult = {
-    json: any;
+    json: Record<string, unknown>;
     // Gateway id of THIS call (`gen_...`) — persisted on the decision row so
     // the dashboard can link chained decisions. Conversation state does NOT
     // hang off this id: the AI Gateway's Responses endpoint is stateless, so
@@ -2509,12 +2631,16 @@ export type AiThreadCallResult = {
 // the code was parsed here and thrown away.
 async function readAiErrorDetails(res: Response): Promise<{ details: string; code: string | null }> {
     try {
-        const errJson = await res.json();
+        const errJson: unknown = await res.json();
+        const body =
+            errJson && typeof errJson === 'object'
+                ? (errJson as { error?: { message?: unknown; code?: unknown; type?: unknown } | null; message?: unknown })
+                : null;
         const msg =
-            (errJson as any)?.error?.message ||
-            (errJson as any)?.message ||
+            body?.error?.message ||
+            body?.message ||
             (typeof errJson === 'string' ? errJson : JSON.stringify(errJson));
-        const code = (errJson as any)?.error?.code || (errJson as any)?.error?.type || null;
+        const code = body?.error?.code || body?.error?.type || null;
         return { details: msg ? ` - ${msg}` : '', code: typeof code === 'string' && code ? code : null };
     } catch {
         try {
@@ -2565,9 +2691,13 @@ export async function callAIThread(
 
     // Stored transcripts round-trip through JSONB — replay only well-formed
     // plain-text turns; anything else is dropped rather than erroring the tick.
-    const transcript = (Array.isArray(opts?.transcript) ? opts!.transcript! : []).filter(
-        (turn: any): turn is { role: 'user' | 'assistant'; content: string } =>
+    const rawTranscript = opts?.transcript;
+    const transcript = (Array.isArray(rawTranscript) ? rawTranscript : []).filter(
+        (turn): turn is { role: 'user' | 'assistant'; content: string } =>
             !!turn &&
+            typeof turn === 'object' &&
+            'role' in turn &&
+            'content' in turn &&
             (turn.role === 'user' || turn.role === 'assistant') &&
             typeof turn.content === 'string' &&
             turn.content.length > 0,
@@ -2601,12 +2731,23 @@ export async function callAIThread(
         throw openAiCallError(res, details, code);
     }
 
-    const data = await res.json();
-    // Raw REST shape: output is an array of items (reasoning, message, ...);
-    // the assistant text lives on the message item's output_text content part.
-    const message = Array.isArray(data?.output) ? data.output.find((item: any) => item?.type === 'message') : null;
+    // Raw REST shape (structural view of the fields read below): output is an
+    // array of items (reasoning, message, ...); the assistant text lives on
+    // the message item's output_text content part.
+    const data: {
+        output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> | null } | null> | null;
+        output_text?: unknown;
+        id?: unknown;
+        model?: unknown;
+        usage?: {
+            input_tokens?: unknown;
+            output_tokens?: unknown;
+            input_tokens_details?: { cached_tokens?: unknown } | null;
+        } | null;
+    } | null = await res.json();
+    const message = Array.isArray(data?.output) ? data.output.find((item) => item?.type === 'message') : null;
     const text =
-        message?.content?.find?.((c: any) => c?.type === 'output_text')?.text ||
+        message?.content?.find?.((c) => c?.type === 'output_text')?.text ||
         (typeof data?.output_text === 'string' ? data.output_text : '') ||
         '{}';
     const responseId = typeof data?.id === 'string' && data.id ? data.id : null;
@@ -2619,7 +2760,7 @@ export async function callAIThread(
                   output_tokens: Number(rawUsage.output_tokens) || 0,
                   cache_creation_input_tokens: null,
                   cache_read_input_tokens: Number.isFinite(Number(rawUsage.input_tokens_details?.cached_tokens))
-                      ? Number(rawUsage.input_tokens_details.cached_tokens)
+                      ? Number(rawUsage.input_tokens_details?.cached_tokens)
                       : null,
               }
             : null;

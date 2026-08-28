@@ -269,7 +269,7 @@ export function lastClosedBar(
 ): { closeTs: number; close: number } | null {
     if (!Array.isArray(candles) || !(Number.isFinite(tfMs) && tfMs > 0)) return null;
     for (let i = candles.length - 1; i >= 0; i--) {
-        const row = candles[i] as any[];
+        const row = candles[i] as ArrayLike<unknown> | null | undefined;
         const ts = Number(row?.[0]);
         const close = Number(row?.[4]);
         if (!(Number.isFinite(ts) && ts > 0 && Number.isFinite(close) && close > 0)) continue;

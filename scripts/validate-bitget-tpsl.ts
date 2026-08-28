@@ -46,9 +46,12 @@ import type { ProductType } from '../lib/bitget';
 import { fetchSymbolMeta } from '../lib/analytics';
 import type { PositionInfo } from '../lib/analytics';
 import { fetchPositionTpsl, updatePositionTpsl, postSetLeverage, maybeManagePosition, pickTighterStop } from '../lib/trading';
+import type { TradeDecision } from '../lib/trading';
 
 const DEMO_PT = 'USDT-FUTURES' as unknown as ProductType;
 const MARGIN_COIN = 'USDT';
+
+type OpenPositionInfo = Extract<PositionInfo, { status: 'open' }>;
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown) {
@@ -75,8 +78,8 @@ async function getOpenPosition(symbol: string): Promise<PositionInfo> {
         productType: DEMO_PT as string,
         marginCoin: MARGIN_COIN,
     });
-    const rows = Array.isArray(data) ? data : [];
-    const row = rows.find((r: any) => Number(r?.total) > 0);
+    const rows: Array<Record<string, unknown>> = Array.isArray(data) ? data : [];
+    const row = rows.find((r) => Number(r?.total) > 0);
     if (!row) return { status: 'none' };
     const levRaw = Number(row.leverage ?? row.marginLeverage ?? row.lever);
     const markRaw = Number(row.markPrice);
@@ -95,6 +98,8 @@ async function getOpenPosition(symbol: string): Promise<PositionInfo> {
     };
 }
 
+async function waitForPosition(symbol: string, want: 'open', timeoutMs?: number): Promise<OpenPositionInfo>;
+async function waitForPosition(symbol: string, want: 'none', timeoutMs?: number): Promise<PositionInfo>;
 async function waitForPosition(symbol: string, want: 'open' | 'none', timeoutMs = 15_000): Promise<PositionInfo> {
     const startedAt = Date.now();
     for (;;) {
@@ -111,7 +116,7 @@ async function openDemoPosition(symbol: string, presets: { sl?: number; tp?: num
     const meta = await fetchSymbolMeta(symbol, DEMO_PT);
     const pricePlace = Number.isFinite(Number(meta.pricePlace)) ? Number(meta.pricePlace) : 1;
     const minTradeNum = String(meta.minTradeNum ?? '0.001');
-    const body: any = {
+    const body: Record<string, unknown> = {
         symbol,
         productType: DEMO_PT,
         marginCoin: MARGIN_COIN,
@@ -144,12 +149,12 @@ async function flashClose(symbol: string) {
 
 async function detectPosMode(symbol: string): Promise<string> {
     try {
-        const data = await bitgetFetch('GET', '/api/v2/mix/account/account', {
+        const data: { posMode?: unknown } | null = await bitgetFetch('GET', '/api/v2/mix/account/account', {
             symbol,
             productType: DEMO_PT as string,
             marginCoin: MARGIN_COIN,
         });
-        return String((data as any)?.posMode || 'one_way_mode');
+        return String(data?.posMode || 'one_way_mode');
     } catch {
         return 'one_way_mode';
     }
@@ -196,7 +201,7 @@ async function main() {
         // ---- Phase A: entry presets materialize as position TPSL plans ----
         await openDemoPosition(symbol, { sl: price * 0.9, tp: price * 1.1 }, posMode);
         const posA = await waitForPosition(symbol, 'open');
-        info('position open', { holdSide: (posA as any).holdSide, total: (posA as any).total });
+        info('position open', { holdSide: posA.holdSide, total: posA.total });
         await sleep(2_000);
         const plansA = await fetchPositionTpsl(symbol, DEMO_PT);
         check('A1 entry preset TP appears in orders-plan-pending (fetchPositionTpsl)', plansA.takeProfit != null, plansA.takeProfit);
@@ -274,13 +279,14 @@ async function main() {
         await postSetLeverage(symbol, DEMO_PT, levTargetE, posE0.holdSide);
         await sleep(2_000);
         const posE1 = await getOpenPosition(symbol);
-        check('E1 leverage raised on the open position', Number((posE1 as any).leverage) === levTargetE, {
+        const posE1Open = posE1.status === 'open' ? posE1 : null;
+        check('E1 leverage raised on the open position', Number(posE1Open?.leverage) === levTargetE, {
             before: levBefore,
-            after: (posE1 as any).leverage,
+            after: posE1Open?.leverage,
         });
-        check('E2 position size unchanged by the raise', Number((posE1 as any).total) === sizeBefore, {
+        check('E2 position size unchanged by the raise', Number(posE1Open?.total) === sizeBefore, {
             before: sizeBefore,
-            after: (posE1 as any).total,
+            after: posE1Open?.total,
         });
         const plansE1 = await fetchPositionTpsl(symbol, DEMO_PT);
         check('E3 resting TPSL plans survive the leverage change', plansE1.takeProfit != null && plansE1.stopLoss != null, plansE1);
@@ -289,7 +295,7 @@ async function main() {
         // Double the position first so a 50% trim stays >= minTradeNum.
         const metaF = await fetchSymbolMeta(symbol, DEMO_PT);
         const minTradeNum = String(metaF.minTradeNum ?? '0.001');
-        const addBody: any = {
+        const addBody: Record<string, unknown> = {
             symbol,
             productType: DEMO_PT,
             marginCoin: MARGIN_COIN,
@@ -313,19 +319,26 @@ async function main() {
         //    profit/buffer overrides from the header (guard passes, trigger lands
         //    on the valid side of the mark price).
         const levTargetF = Math.round(Number(posF0.leverage ?? levTargetE) + 5);
-        const mgmtF = await maybeManagePosition({
+        const mgmtF: {
+            managed?: boolean;
+            beStop?: { ok?: boolean; plannedTrigger?: number } | null;
+            beTriggerPrice?: number | null;
+            leverageRaised?: boolean;
+            leverage?: number;
+            leverageError?: string;
+        } | null = await maybeManagePosition({
             symbol,
             productType: DEMO_PT,
-            decision: { action: 'CLOSE', exit_size_pct: 50, raise_leverage_to: levTargetF, move_stop_to_be: true } as any,
+            decision: { action: 'CLOSE', exit_size_pct: 50, raise_leverage_to: levTargetF, move_stop_to_be: true } as TradeDecision,
             dryRun: false,
             pos: posF0,
         });
-        check('F1 maneuver ran and BE stop rested (modify path)', Boolean((mgmtF as any)?.managed && (mgmtF as any)?.beStop?.ok), mgmtF);
-        check('F2 leverage raise applied after the BE stop', (mgmtF as any)?.leverageRaised === true, {
-            leverage: (mgmtF as any)?.leverage,
-            error: (mgmtF as any)?.leverageError,
+        check('F1 maneuver ran and BE stop rested (modify path)', Boolean(mgmtF?.managed && mgmtF?.beStop?.ok), mgmtF);
+        check('F2 leverage raise applied after the BE stop', mgmtF?.leverageRaised === true, {
+            leverage: mgmtF?.leverage,
+            error: mgmtF?.leverageError,
         });
-        const beTriggerF = Number((mgmtF as any)?.beTriggerPrice);
+        const beTriggerF = Number(mgmtF?.beTriggerPrice);
         check('F3 maneuver surfaced its BE trigger for the stop-amend guard', Number.isFinite(beTriggerF) && beTriggerF > 0, {
             beTriggerF,
         });
@@ -334,7 +347,7 @@ async function main() {
         const stepF = parseFloat(String(metaF.sizeMultiplier ?? minTradeNum));
         const rawHalf = sizeF0 / 2;
         const trimSize = Math.max(Math.floor(rawHalf / stepF) * stepF, parseFloat(minTradeNum));
-        const trimBody: any = {
+        const trimBody: Record<string, unknown> = {
             symbol,
             productType: DEMO_PT,
             marginCoin: MARGIN_COIN,
@@ -355,9 +368,9 @@ async function main() {
         await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, trimBody);
         await sleep(2_500);
         const posF1 = await getOpenPosition(symbol);
-        check('F4 reduceOnly trim reduced the position', posF1.status === 'open' && Number((posF1 as any).total) < sizeF0, {
+        check('F4 reduceOnly trim reduced the position', posF1.status === 'open' && Number(posF1.total) < sizeF0, {
             before: sizeF0,
-            after: (posF1 as any).total,
+            after: posF1.status === 'open' ? posF1.total : undefined,
         });
 
         // 3) Post-trim stop amend with the FRESH position (modify must send the

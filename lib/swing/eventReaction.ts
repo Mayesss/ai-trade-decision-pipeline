@@ -52,12 +52,13 @@ export function swingEventReactionEnabled(): boolean {
 
 function normalizeBars(raw: unknown): Bar[] {
   return (Array.isArray(raw) ? raw : [])
-    .map((c: any): Bar | null => {
-      const tsRaw = Number(Array.isArray(c) ? c[0] : (c?.ts ?? c?.timestamp ?? c?.time));
-      const open = Number(Array.isArray(c) ? c[1] : c?.open);
-      const high = Number(Array.isArray(c) ? c[2] : c?.high);
-      const low = Number(Array.isArray(c) ? c[3] : c?.low);
-      const close = Number(Array.isArray(c) ? c[4] : c?.close);
+    .map((c: unknown): Bar | null => {
+      const row = c && typeof c === 'object' ? (c as Record<string, unknown>) : null;
+      const tsRaw = Number(Array.isArray(c) ? c[0] : (row?.ts ?? row?.timestamp ?? row?.time));
+      const open = Number(Array.isArray(c) ? c[1] : row?.open);
+      const high = Number(Array.isArray(c) ? c[2] : row?.high);
+      const low = Number(Array.isArray(c) ? c[3] : row?.low);
+      const close = Number(Array.isArray(c) ? c[4] : row?.close);
       if (![tsRaw, open, high, low, close].every(Number.isFinite)) return null;
       const ts = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
       return { ts, open, high, low, close };

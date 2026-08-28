@@ -42,13 +42,16 @@ export function chartTimeframeToSeconds(tf: string): number {
 // second-resolution timestamps — identical to what the chart endpoint returns.
 export function normalizeChartCandles(raw: unknown): ChartCandle[] {
   return (Array.isArray(raw) ? raw : [])
-    .map((c: any) => ({
-      time: Math.floor(Number(c?.[0]) / 1000),
-      open: Number(c?.[1]),
-      high: Number(c?.[2]),
-      low: Number(c?.[3]),
-      close: Number(c?.[4]),
-    }))
+    .map((c: unknown) => {
+      const row = c as ArrayLike<unknown> | null | undefined;
+      return {
+        time: Math.floor(Number(row?.[0]) / 1000),
+        open: Number(row?.[1]),
+        high: Number(row?.[2]),
+        low: Number(row?.[3]),
+        close: Number(row?.[4]),
+      };
+    })
     .filter(
       (c) =>
         Number.isFinite(c.time) &&
@@ -102,8 +105,8 @@ export async function warmChartCandlesFromAnalyze(params: {
   symbol: string;
   platform: AnalysisPlatform;
   nowMs: number;
-  rawCandlesByTf: Record<string, any[]> | undefined;
-  fetch15m: () => Promise<any[]>;
+  rawCandlesByTf: Record<string, unknown[]> | undefined;
+  fetch15m: () => Promise<unknown[]>;
 }): Promise<void> {
   const writes: Array<Promise<void>> = [];
   for (const preset of CHART_WARM_PRESETS) {

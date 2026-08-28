@@ -40,14 +40,24 @@ type Tick = {
     user: string | null;
 };
 
-function parseStateBlocks(user: string): { state: any; market: any } | null {
+type StateBlock = {
+    position?: { open?: unknown; side?: unknown; unrealized_pnl_pct_on_margin?: unknown; unrealized_pnl_pct?: unknown; hold_minutes?: unknown };
+    biases?: { micro?: unknown; primary?: unknown; macro?: unknown; context?: unknown };
+    structure?: { primary?: { state?: unknown; break_state?: unknown; bos?: unknown; bos_dir?: unknown } };
+    levels?: { primary?: { support?: { dist_atr?: unknown }; resistance?: { dist_atr?: unknown } } };
+    extension_atr?: { micro?: unknown; primary?: unknown };
+};
+
+type MarketBlock = { price?: { last?: unknown } };
+
+function parseStateBlocks(user: string): { state: StateBlock; market: MarketBlock | null } | null {
     const stateMatch = user.match(/STATE \(derived signals[^:]*:\n(\{.*?\})\n\nMARKET/s);
     const marketMatch = user.match(/MARKET \(raw inputs\):\n(\{.*?\})\n\nTASKS/s);
     if (!stateMatch) return null;
     try {
         return {
-            state: JSON.parse(stateMatch[1]!),
-            market: marketMatch ? JSON.parse(marketMatch[1]!) : null,
+            state: JSON.parse(stateMatch[1]),
+            market: marketMatch ? JSON.parse(marketMatch[1]) : null,
         };
     } catch {
         return null;
@@ -64,13 +74,13 @@ function fitChannel(closes: number[], price: number, atr: number, n: number) {
     let sxy = 0;
     for (let i = 0; i < len; i++) {
         sxx += (i - xMean) * (i - xMean);
-        sxy += (i - xMean) * (ys[i]! - yMean);
+        sxy += (i - xMean) * (ys[i] - yMean);
     }
     const slope = sxx > 0 ? sxy / sxx : 0;
     const intercept = yMean - slope * xMean;
     let ssr = 0;
     for (let i = 0; i < len; i++) {
-        const r = ys[i]! - (intercept + slope * i);
+        const r = ys[i] - (intercept + slope * i);
         ssr += r * r;
     }
     const sd = Math.sqrt(ssr / Math.max(1, len - 2));
@@ -95,16 +105,16 @@ function pivotTrendlines(window: number[][], price: number, atr: number) {
         let isH = true;
         let isL = true;
         for (let j = 1; j <= PIVOT_K; j++) {
-            if (window[i]![2]! <= window[i - j]![2]! || window[i]![2]! < window[i + j]![2]!) isH = false;
-            if (window[i]![3]! >= window[i - j]![3]! || window[i]![3]! > window[i + j]![3]!) isL = false;
+            if (window[i][2] <= window[i - j][2] || window[i][2] < window[i + j][2]) isH = false;
+            if (window[i][3] >= window[i - j][3] || window[i][3] > window[i + j][3]) isL = false;
             if (!isH && !isL) break;
         }
-        if (isH) highs.push({ i, v: window[i]![2]! });
-        if (isL) lows.push({ i, v: window[i]![3]! });
+        if (isH) highs.push({ i, v: window[i][2] });
+        if (isL) lows.push({ i, v: window[i][3] });
     }
     const line = (pts: Array<{ i: number; v: number }>) => {
         if (pts.length < 2) return null;
-        const [a, b] = [pts[pts.length - 2]!, pts[pts.length - 1]!];
+        const [a, b] = [pts[pts.length - 2], pts[pts.length - 1]];
         if (b.i === a.i) return null;
         const slope = (b.v - a.v) / (b.i - a.i);
         const atNow = b.v + slope * (n - 1 - b.i);
@@ -113,8 +123,8 @@ function pivotTrendlines(window: number[][], price: number, atr: number) {
     };
     const res = line(highs);
     const sup = line(lows);
-    const lastClose = window[n - 1]![4]!;
-    const prevClose = window[n - 2]![4]!;
+    const lastClose = window[n - 1][4];
+    const prevClose = window[n - 2][4];
     return {
         resDistAtr: res ? (res.atNow - price) / atr : null, // + = line above price
         supDistAtr: sup ? (price - sup.atNow) / atr : null, // + = line below price
@@ -127,7 +137,7 @@ function pivotTrendlines(window: number[][], price: number, atr: number) {
 
 async function fetchBitget4h(symbol: string, needFromMs: number): Promise<number[][]> {
     const productType = resolveProductType();
-    const rows: any[] = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
+    const rows: string[][] = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
         symbol,
         productType,
         granularity: '4H',
@@ -135,25 +145,25 @@ async function fetchBitget4h(symbol: string, needFromMs: number): Promise<number
     });
     let candles = rows
         .map((c) => [Number(c[0]), Number(c[1]), Number(c[2]), Number(c[3]), Number(c[4]), Number(c[5])])
-        .sort((a, b) => a[0]! - b[0]!);
+        .sort((a, b) => a[0] - b[0]);
     let guard = 0;
-    while (candles.length && candles[0]![0]! > needFromMs && guard < 10) {
+    while (candles.length && candles[0][0] > needFromMs && guard < 10) {
         guard += 1;
-        const older: any[] = await bitgetFetch('GET', '/api/v2/mix/market/history-candles', {
+        const older: string[][] = await bitgetFetch('GET', '/api/v2/mix/market/history-candles', {
             symbol,
             productType,
             granularity: '4H',
-            endTime: candles[0]![0]!,
+            endTime: candles[0][0],
             limit: 200,
         });
         const mapped = older
             .map((c) => [Number(c[0]), Number(c[1]), Number(c[2]), Number(c[3]), Number(c[4]), Number(c[5])])
-            .filter((c) => c[0]! < candles[0]![0]!)
-            .sort((a, b) => a[0]! - b[0]!);
+            .filter((c) => c[0] < candles[0][0])
+            .sort((a, b) => a[0] - b[0]);
         if (!mapped.length) break;
         candles = [...mapped, ...candles];
     }
-    return candles as number[][];
+    return candles;
 }
 
 async function main() {
@@ -168,8 +178,9 @@ async function main() {
     const bySymbol = new Map<string, Tick[]>();
     for (const t of ticks) {
         const key = `${t.platform}:${t.symbol}`;
-        if (!bySymbol.has(key)) bySymbol.set(key, []);
-        bySymbol.get(key)!.push(t);
+        const group = bySymbol.get(key);
+        if (group) group.push(t);
+        else bySymbol.set(key, [t]);
     }
 
     const candlesBySymbol = new Map<string, number[][]>();
@@ -181,7 +192,7 @@ async function main() {
             const candles =
                 platform === 'bitget'
                     ? await fetchBitget4h(symbol, needFromMs)
-                    : await fetchCapitalCandlesByEpicDateRange(ds[0]!.epic || symbol, '4H', needFromMs, Date.now());
+                    : await fetchCapitalCandlesByEpicDateRange(ds[0].epic || symbol, '4H', needFromMs, Date.now());
             candlesBySymbol.set(key, candles);
             console.error(`[candles] ${key}: ${candles.length} bars`);
         } catch (err) {
@@ -189,31 +200,31 @@ async function main() {
         }
     }
 
-    const rows: any[] = [];
+    const rows: Array<Record<string, unknown>> = [];
     for (const t of ticks) {
         const candles = candlesBySymbol.get(`${t.platform}:${t.symbol}`);
         if (!candles?.length) continue;
-        const closedBefore = candles.filter((c) => c[0]! + BAR_MS <= t.ts);
+        const closedBefore = candles.filter((c) => c[0] + BAR_MS <= t.ts);
         const window = closedBefore.slice(-SR_WINDOW);
         if (window.length < 60) continue;
 
         const parsed = t.user ? parseStateBlocks(t.user) : null;
-        const price = Number(parsed?.market?.price?.last) || window.at(-1)![4]!;
-        const atr = computeATR(window as any[], 14);
+        const price = Number(parsed?.market?.price?.last) || window[window.length - 1][4];
+        const atr = computeATR(window, 14);
         if (!(atr > 0)) continue;
 
-        const closes = window.map((c) => c[4]!);
+        const closes = window.map((c) => c[4]);
         const ch = fitChannel(closes, price, atr, 50);
         const tl = pivotTrendlines(window, price, atr);
 
-        const fwd = candles.filter((c) => c[0]! >= t.ts);
-        const at = (k: number) => (fwd.length >= k ? (fwd[k - 1]![4]! - price) / atr : null);
+        const fwd = candles.filter((c) => c[0] >= t.ts);
+        const at = (k: number) => (fwd.length >= k ? (fwd[k - 1][4] - price) / atr : null);
         const mfe = (k: number, dir: 'up' | 'down') => {
             const seg = fwd.slice(0, k);
             if (seg.length < Math.min(k, 4)) return null;
             return dir === 'up'
-                ? (Math.max(...seg.map((c) => c[2]!)) - price) / atr
-                : (price - Math.min(...seg.map((c) => c[3]!))) / atr;
+                ? (Math.max(...seg.map((c) => c[2])) - price) / atr
+                : (price - Math.min(...seg.map((c) => c[3]))) / atr;
         };
 
         const st = parsed?.state;

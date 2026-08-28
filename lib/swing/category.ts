@@ -7,8 +7,8 @@ const COMMODITY_HINTS = ['GOLD', 'SILVER', 'XAU', 'XAG', 'WTI', 'BRENT', 'NGAS',
 const EQUITY_HINTS = ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'QQQ', 'SPY'];
 
 const FOREX_UNIVERSE = new Set(
-  Array.isArray((forexUniverse as any)?.pairs)
-    ? (forexUniverse as any).pairs.map((pair: unknown) => String(pair).trim().toUpperCase())
+  Array.isArray(forexUniverse?.pairs)
+    ? forexUniverse.pairs.map((pair: unknown) => String(pair).trim().toUpperCase())
     : [],
 );
 

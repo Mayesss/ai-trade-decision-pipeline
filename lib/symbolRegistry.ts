@@ -58,7 +58,7 @@ function parseCronAnalyzePath(path: string, schedule: string | null): CronSymbol
 }
 
 export function getCronSymbolConfigs(): CronSymbolConfig[] {
-  const crons: VercelCron[] = Array.isArray((vercelConfig as any)?.crons) ? (vercelConfig as any).crons : [];
+  const crons: VercelCron[] = Array.isArray(vercelConfig?.crons) ? vercelConfig.crons : [];
   const out: CronSymbolConfig[] = [];
   const seen = new Set<string>();
 

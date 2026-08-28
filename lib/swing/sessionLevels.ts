@@ -94,7 +94,7 @@ function weekStartMs(ms: number): number {
   return start - daysSinceMonday * 24 * 60 * 60 * 1000;
 }
 
-function normalizeCandle(row: any): CandleRow | null {
+function normalizeCandle(row: unknown): CandleRow | null {
   if (!Array.isArray(row)) return null;
   const tsRaw = Number(row[0]);
   const ts = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
@@ -158,7 +158,7 @@ function pipsBetween(price: number | null | undefined, level: number | null | un
 
 export function buildForexSessionLevelsContext(params: {
   symbol: string;
-  candles: any[];
+  candles: unknown[];
   nowMs?: number;
   sourceTimeframe?: string;
 }): ForexSessionLevelsContext | null {

@@ -29,6 +29,15 @@ const SYMBOL_INDEX_PREFIX = 'decision:symidx';
 const SYMBOL_SEEDED_PREFIX = 'decision:symidx:seeded';
 const MARKER_ACTIONS = new Set(['BUY', 'SELL', 'CLOSE']);
 
+// Decision fields read by the band predicates below — callers pass (possibly
+// extended) decision objects, so only these keys are typed.
+type WakeBandDecisionFields = {
+    action?: unknown;
+    cooldown_minutes?: unknown;
+    cooldown_wake_above?: unknown;
+    cooldown_wake_below?: unknown;
+};
+
 function isMarkerAction(action: unknown): boolean {
     return MARKER_ACTIONS.has(String(action || '').trim().toUpperCase());
 }
@@ -37,7 +46,7 @@ function isMarkerAction(action: unknown): boolean {
 // per-symbol index: the chart draws the bands as gray horizontal segments over
 // the cooldown window. They are NOT marker actions (no chart arrow) — chart-side
 // consumers that mean "entry/exit decisions" must filter by action themselves.
-export function isCooldownBandDecision(aiDecision: any): boolean {
+export function isCooldownBandDecision(aiDecision: WakeBandDecisionFields | null | undefined): boolean {
     if (String(aiDecision?.action || '').trim().toUpperCase() !== 'HOLD') return false;
     const minutes = Number(aiDecision?.cooldown_minutes);
     if (!Number.isFinite(minutes) || minutes <= 0) return false;
@@ -51,8 +60,8 @@ export function isCooldownBandDecision(aiDecision: any): boolean {
 // overlay at the next indexed decision — without this row a band woken into a
 // plain do-nothing HOLD (no marker action, no new band) would keep rendering
 // to its scheduled end. Like cooldown-band rows, these are NOT marker actions.
-export function isCooldownWakeEntry(entry: { snapshot?: any } | null | undefined): boolean {
-    const crossed = (entry as any)?.snapshot?.cooldownWake?.crossed;
+export function isCooldownWakeEntry(entry: { snapshot?: DecisionSnapshot | null } | null | undefined): boolean {
+    const crossed = entry?.snapshot?.cooldownWake?.crossed;
     return crossed === 'above' || crossed === 'below';
 }
 
@@ -62,7 +71,7 @@ export function isCooldownWakeEntry(entry: { snapshot?: any } | null | undefined
 // sanitation without minutes) — so "band present, no minutes" is a sufficient
 // discriminator; the action check just guards the invariant (HOLD or partial
 // CLOSE are the only band-eligible in-position actions).
-export function isPositionWakeBandDecision(aiDecision: any): boolean {
+export function isPositionWakeBandDecision(aiDecision: WakeBandDecisionFields | null | undefined): boolean {
     const action = String(aiDecision?.action || '').trim().toUpperCase();
     if (action !== 'HOLD' && action !== 'CLOSE') return false;
     const minutes = Number(aiDecision?.cooldown_minutes);
@@ -75,8 +84,8 @@ export function isPositionWakeBandDecision(aiDecision: any): boolean {
 // Fired in-position wakes mirror isCooldownWakeEntry: the crossing consumed the
 // band (replace-on-decision), so the row must exist in the index to truncate
 // the band's overlay at the wake instead of at its assumed one-bar end.
-export function isPositionWakeEntry(entry: { snapshot?: any } | null | undefined): boolean {
-    const crossed = (entry as any)?.snapshot?.positionWake?.crossed;
+export function isPositionWakeEntry(entry: { snapshot?: DecisionSnapshot | null } | null | undefined): boolean {
+    const crossed = entry?.snapshot?.positionWake?.crossed;
     return crossed === 'above' || crossed === 'below';
 }
 
@@ -189,8 +198,8 @@ export type DecisionSnapshot = {
     spreadAbs?: number;
     bestBid?: number;
     bestAsk?: number;
-    gates?: any;
-    metrics?: any;
+    gates?: unknown;
+    metrics?: unknown;
     newsSentiment?: string | null;
     newsHeadlines?: string[];
     positionContext?: PositionContext | null;
@@ -201,8 +210,12 @@ export type DecisionSnapshot = {
     platform?: string;
     newsSource?: string;
     instrumentId?: string;
-    forexEventContext?: any;
-    forexSessionContext?: any;
+    forexEventContext?: unknown;
+    forexSessionContext?: unknown;
+    // Wake context persisted on wake-triggered evaluations — only `crossed` is
+    // read here (isCooldownWakeEntry / isPositionWakeEntry above).
+    cooldownWake?: { crossed?: string | null } | null;
+    positionWake?: { crossed?: string | null } | null;
 };
 
 export type DecisionHistoryEntry = {
@@ -215,8 +228,8 @@ export type DecisionHistoryEntry = {
     timeFrame: string;
     dryRun: boolean;
     prompt: { system: string; user: string } | null;
-    aiDecision: TradeDecision & Record<string, any>;
-    execResult: Record<string, any>;
+    aiDecision: TradeDecision & Record<string, unknown>;
+    execResult: Record<string, unknown>;
     snapshot: DecisionSnapshot;
     biasTimeframes?: {
         context?: string;
@@ -505,9 +518,9 @@ export function extractCapturedLeverages(history: DecisionHistoryEntry[] | null 
         const ts = Number(h?.timestamp);
         if (!Number.isFinite(ts) || ts <= 0) continue;
         const lev =
-            Number((h.execResult as any)?.leverage) ||
-            Number((h.execResult as any)?.targetLeverage) ||
-            Number((h.aiDecision as any)?.leverage);
+            Number(h.execResult?.leverage) ||
+            Number(h.execResult?.targetLeverage) ||
+            Number(h.aiDecision?.leverage);
         if (Number.isFinite(lev) && lev > 0) out.push({ timestamp: ts, leverage: lev });
     }
     return out;
