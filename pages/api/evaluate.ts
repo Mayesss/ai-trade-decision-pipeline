@@ -5,7 +5,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { loadDecisionHistory } from '../../lib/history';
 import { loadSwingDecisionWindow } from '../../lib/swing/pg';
 import { callStatelessAI } from '../../lib/aiProvider';
-import { AI_MODEL } from '../../lib/constants';
+import { DEFAULT_AI_MODEL } from '../../lib/constants';
 import { setEvaluation } from '../../lib/utils';
 import { kvGetJson, kvSetJson } from '../../lib/kv';
 
@@ -197,7 +197,7 @@ async function runEvaluation(params: {
         dryRun: item.dryRun,
         snapshot: item.snapshot,
         execResult: item.execResult,
-        AI_MODEL: AI_MODEL,
+        AI_MODEL: DEFAULT_AI_MODEL,
     }));
 
     const stats = {

@@ -128,6 +128,7 @@ import {
     DEFAULT_NOTIONAL_USDT,
     MACRO_TIMEFRAME,
     MICRO_TIMEFRAME,
+    NANO_TIMEFRAME,
     PRIMARY_TIMEFRAME,
 } from '../../lib/constants';
 
@@ -2568,7 +2569,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
-                    const nanoBundle = await fetchMarketBundle(symbol, '15m', {
+                    const nanoBundle = await fetchMarketBundle(symbol, NANO_TIMEFRAME, {
                         includeTrades: false,
                         candleLimit: 110,
                     });
@@ -3213,7 +3214,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 macro: macroTimeFrame,
                 primary: timeFrame,
                 micro: microTimeFrame,
-                ...(nanoContext ? { nano: '15m' } : {}),
+                ...(nanoContext ? { nano: NANO_TIMEFRAME } : {}),
             },
         });
         // Tick-log row for the AI call keeps swing.tick_log a COMPLETE per-tick

@@ -2,15 +2,16 @@
 
 import {
     AI_BASE_URL,
-    AI_MODEL,
     CONTEXT_TIMEFRAME,
     DEFAULT_TAKER_FEE_RATE,
     MACRO_TIMEFRAME,
     MICRO_TIMEFRAME,
+    NANO_TIMEFRAME,
     PRIMARY_TIMEFRAME,
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import { AiCallError } from './aiError';
+import { aiModelForProvider } from './aiModel';
 import type { MultiTFIndicators } from './indicators';
 import {
     clampWakeSustainMinutes,
@@ -1387,7 +1388,7 @@ You are an expert swing-trading market-structure analyst. Decide one action and 
 ${assetNote}${venueSessionNote}${venueEventsNote}
 
 TIMEFRAMES (fixed)
-- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).
+- micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever), nano=${NANO_TIMEFRAME} (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).
 Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
 CADENCE (how often you are actually consulted)
@@ -2547,6 +2548,10 @@ export async function callAIThread(
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new AiCallError({ message: 'Missing OPENAI_API_KEY', provider: 'openai', kind: 'config' });
 
+    // Whichever of the default/fallback model pair is the gpt-flavored one
+    // (lib/constants.ts) — this client always speaks to OpenAI.
+    const openAiModel = aiModelForProvider('openai');
+
     // Structured Outputs (json_schema, strict) guarantees the response shape at the
     // API layer when a caller supplies a schema; otherwise fall back to JSON mode.
     // Responses API uses a flattened text.format (no chat-completions wrapper).
@@ -2562,7 +2567,7 @@ export async function callAIThread(
                 Authorization: `Bearer ${apiKey}`,
             },
             body: JSON.stringify({
-                model: AI_MODEL,
+                model: openAiModel,
                 // `instructions` is per-call (NOT inherited via previous_response_id),
                 // so the system prompt rides along on every turn of a chain.
                 instructions: system,
@@ -2607,7 +2612,7 @@ export async function callAIThread(
         (typeof data?.output_text === 'string' ? data.output_text : '') ||
         '{}';
     const responseId = typeof data?.id === 'string' && data.id ? data.id : null;
-    const model = typeof data?.model === 'string' && data.model ? data.model : AI_MODEL;
+    const model = typeof data?.model === 'string' && data.model ? data.model : openAiModel;
     const rawUsage = data?.usage;
     const usage =
         rawUsage && Number.isFinite(Number(rawUsage.input_tokens))

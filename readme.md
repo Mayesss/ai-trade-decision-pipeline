@@ -240,7 +240,9 @@ TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
 # AI_DECISION_POLICY=strict     # strict (default) | balanced
 # ADMIN_ACCESS_SECRET=...       # enables auth on /api/evaluations and /api/chart
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
-# AI_MODEL and AI_BASE_URL are set in lib/constants.ts (current defaults: gpt-5.2 @ api.openai.com)
+# DEFAULT_AI_MODEL, FALLBACK_AI_MODEL and AI_BASE_URL are set in lib/constants.ts; the provider
+# is inferred from the model id ('claude' → Anthropic, 'gpt' → OpenAI). Current pair:
+# default gpt-5.6-sol, fallback claude-opus-4-8. SWING_AI_PROVIDER (env) still forces a provider.
 ```
 
 3. Run the app:

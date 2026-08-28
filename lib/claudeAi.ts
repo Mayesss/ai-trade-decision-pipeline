@@ -20,13 +20,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { AiCallError } from './aiError';
+import { aiModelForProvider } from './aiModel';
 
-const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-8';
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
 
 function resolveClaudeModel(): string {
-    return String(process.env.SWING_AI_CLAUDE_MODEL || '').trim() || DEFAULT_CLAUDE_MODEL;
+    return String(process.env.SWING_AI_CLAUDE_MODEL || '').trim() || aiModelForProvider('claude');
 }
 
 // GPT ran reasoning effort 'medium'; start there and sweep later (phase 5).

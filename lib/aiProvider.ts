@@ -9,13 +9,11 @@
 import { callAIThread } from './ai';
 import { coerceAiCallError } from './aiError';
 import { callClaudeSwingDecision } from './claudeAi';
+import { providerForAiModel } from './aiModel';
+import { DEFAULT_AI_MODEL } from './constants';
 import { reportSwingAiFailure, reportSwingAiSuccess } from './swing/aiHealth';
 
 export type SwingAiProvider = 'openai' | 'claude';
-
-// Claude is the default since the phase-4 cutover (2026-07-17); set
-// SWING_AI_PROVIDER=openai to roll back to GPT without a code change.
-const DEFAULT_PROVIDER: SwingAiProvider = 'claude';
 
 export function resolveSwingAiProvider(): SwingAiProvider {
     const raw = String(process.env.SWING_AI_PROVIDER || '')
@@ -23,7 +21,9 @@ export function resolveSwingAiProvider(): SwingAiProvider {
         .toLowerCase();
     if (raw === 'claude') return 'claude';
     if (raw === 'openai') return 'openai';
-    return DEFAULT_PROVIDER;
+    // No env override: the provider is whoever owns DEFAULT_AI_MODEL
+    // (inferred from the model id — lib/constants.ts).
+    return providerForAiModel(DEFAULT_AI_MODEL);
 }
 
 // Conversation context for a threaded (per-order) decision call. The two

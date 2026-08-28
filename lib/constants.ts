@@ -1,5 +1,6 @@
 export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
-export const AI_MODEL = 'gpt-5.4';
+export const DEFAULT_AI_MODEL = 'gpt-5.6-sol';
+export const FALLBACK_AI_MODEL = 'claude-opus-4-8';
 export const AI_BASE_URL = 'https://api.openai.com/v1';
 export const COINDESK_API_BASE = 'https://data-api.coindesk.com';
 export const COINDESK_NEWS_LIST_PATH = '/news/v1/article/list';
@@ -12,6 +13,7 @@ export const DEFAULT_NOTIONAL_USDT = 100;
 // OR bounce-with-room predicate derived from the decision history. signal_strength
 // is now used only by postprocessDecision's exception thresholds.
 
+export const NANO_TIMEFRAME = '15m';
 export const MICRO_TIMEFRAME = '1H';
 export const PRIMARY_TIMEFRAME = '4H';
 export const MACRO_TIMEFRAME = '1D';

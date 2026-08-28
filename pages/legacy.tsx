@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
+import { NANO_TIMEFRAME } from "../lib/constants";
 import WeeklyDigestPanel from "../components/WeeklyDigestPanel";
 import {
   AllCommunityModule,
@@ -9276,7 +9277,7 @@ export default function Home() {
                             const tfLabel =
                               displayBiasTimeframes?.[
                                 key.replace("_bias", "")
-                              ] || (key === "nano_bias" ? "15m" : null);
+                              ] || (key === "nano_bias" ? NANO_TIMEFRAME : null);
                             const displayLabel = tfLabel
                               ? `${label} (${tfLabel})`
                               : label;
