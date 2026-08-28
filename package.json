@@ -9,8 +9,6 @@
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
-    "ag-grid-community": "^35.1.0",
-    "ag-grid-react": "^35.1.0",
     "lightweight-charts": "^5.0.9",
     "lucide-react": "^0.561.0",
     "next": "^16.0.7",
@@ -25,15 +23,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-pg-healthcheck.ts",
-    "test:ts": "node --import tsx --test",
-    "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
-    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts lib/scalp/evidence/*.test.ts",
-    "backtest:scalp:profiles": "node --import tsx scripts/scalp-backtest-profiles.ts",
-    "backtest:scalp:deployments": "node --import tsx scripts/scalp-deployment-matrix.ts",
-    "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts",
-    "scalp:composer:pattern-evidence": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-composer-pattern-evidence.ts --backfill --aggregate --bucketMinutes 60",
-    "bulk:research": "node --import tsx scripts/research-local-bulk.ts"
+    "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/pg-healthcheck.ts",
+    "test:ts": "node --import tsx --test lib/*.test.ts lib/swing/*.test.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

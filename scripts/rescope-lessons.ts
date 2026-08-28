@@ -11,8 +11,8 @@
 // all cases so future promotions can compare origins.
 // Also drops the orphaned swing.refusal_outcomes table from the discarded
 // scoreboard design. Run: node --import tsx scripts/rescope-lessons.ts
-import { scalpPrisma, isScalpPgConfigured } from '../lib/scalp/pg/client';
-import { sql } from '../lib/scalp/pg/sql';
+import { scalpPrisma, isScalpPgConfigured } from '../lib/db/client';
+import { sql } from '../lib/db/sql';
 import { resolveSwingCategory } from '../lib/swing/category';
 import type { AnalysisPlatform } from '../lib/platform';
 
