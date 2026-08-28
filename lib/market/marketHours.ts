@@ -1,17 +1,14 @@
 import type {
-  ScalpOpeningHoursSchedule,
-  ScalpSymbolMarketMetadata,
+  OpeningHoursSchedule
 } from "./symbolMarketMetadata";
-import { isWeekendClosedScalpSymbol } from "./symbolInfo";
-
-type ScalpReplayMarketHoursConfig = {
+type MarketHoursConfig = {
   fallbackFridayCloseHourUtc: number;
   fallbackSundayOpenHourUtc: number;
   entryBlockMinutes: number;
   forceCloseMinutes: number;
 };
 
-export type ScalpReplayMarketGate = {
+export type MarketGate = {
   marketClosed: boolean;
   entryBlocked: boolean;
   forceCloseNow: boolean;
@@ -26,10 +23,10 @@ export type ScalpReplayMarketGate = {
     | "SESSION_FORCE_CLOSE";
   reopensAtMs: number | null;
   closesAtMs: number | null;
-  config: ScalpReplayMarketHoursConfig;
+  config: MarketHoursConfig;
 };
 
-export type ScalpReplayWeekendGate = ScalpReplayMarketGate;
+export type WeekendGate = MarketGate;
 
 type ResolvedScheduleWindow = {
   openAtMs: number;
@@ -37,53 +34,6 @@ type ResolvedScheduleWindow = {
 };
 
 const DAY_MS = 24 * 60 * 60_000;
-
-function toHour(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  const rounded = Math.floor(n);
-  if (rounded < 0 || rounded > 23) return fallback;
-  return rounded;
-}
-
-function toNonNegativeInt(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return fallback;
-  return Math.max(0, Math.floor(n));
-}
-
-function nextSundayAtHourUtc(fromMs: number, hourUtc: number): number {
-  const date = new Date(fromMs);
-  const day = date.getUTCDay();
-  const daysUntilSunday = day === 0 ? 0 : 7 - day;
-  const sunday = new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate() + daysUntilSunday,
-      hourUtc,
-      0,
-      0,
-      0,
-    ),
-  );
-  if (sunday.getTime() <= fromMs) {
-    sunday.setUTCDate(sunday.getUTCDate() + 7);
-  }
-  return sunday.getTime();
-}
-
-function fridayCloseForWeekUtc(nowMs: number, hourUtc: number): number {
-  const now = new Date(nowMs);
-  const day = now.getUTCDay();
-  const startOfDayUtc = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-  );
-  const daysUntilFriday = 5 - day;
-  return startOfDayUtc + daysUntilFriday * DAY_MS + hourUtc * 60 * 60_000;
-}
 
 function parseClockMinutes(value: string): number | null {
   const match = String(value || "")
@@ -120,7 +70,7 @@ function dayOffsetFromMonday(day: string): number {
 }
 
 function supportsUtcSchedule(
-  openingHours: ScalpOpeningHoursSchedule | null | undefined,
+  openingHours: OpeningHoursSchedule | null | undefined,
 ): boolean {
   if (!openingHours) return false;
   const zone = String(openingHours.zone || "")
@@ -130,7 +80,7 @@ function supportsUtcSchedule(
 }
 
 function buildScheduleWindows(
-  openingHours: ScalpOpeningHoursSchedule,
+  openingHours: OpeningHoursSchedule,
   nowMs: number,
 ): ResolvedScheduleWindow[] {
   const weekStartMs = weekStartMondayUtcMs(nowMs);
@@ -152,64 +102,6 @@ function buildScheduleWindows(
   return out.sort((lhs, rhs) => lhs.openAtMs - rhs.openAtMs);
 }
 
-function evaluateUtcOpeningHoursGate(params: {
-  openingHours: ScalpOpeningHoursSchedule;
-  nowMs: number;
-  config: ScalpReplayMarketHoursConfig;
-}): ScalpReplayMarketGate {
-  const { openingHours, nowMs, config } = params;
-  if (openingHours.alwaysOpen) {
-    return {
-      marketClosed: false,
-      entryBlocked: false,
-      forceCloseNow: false,
-      reasonCode: "MARKET_OPEN",
-      reopensAtMs: null,
-      closesAtMs: null,
-      config,
-    };
-  }
-
-  const windows = buildScheduleWindows(openingHours, nowMs);
-  const current = windows.find(
-    (row) => row.openAtMs <= nowMs && nowMs < row.closeAtMs,
-  );
-  if (!current) {
-    const nextOpen = windows.find((row) => row.openAtMs > nowMs) || null;
-    return {
-      marketClosed: true,
-      entryBlocked: true,
-      forceCloseNow: false,
-      reasonCode: "MARKET_CLOSED_SESSION",
-      reopensAtMs: nextOpen?.openAtMs ?? null,
-      closesAtMs: nextOpen?.closeAtMs ?? null,
-      config,
-    };
-  }
-
-  const msUntilClose = current.closeAtMs - nowMs;
-  const entryBlocked =
-    config.entryBlockMinutes > 0 &&
-    msUntilClose <= config.entryBlockMinutes * 60_000;
-  const forceCloseNow =
-    config.forceCloseMinutes > 0 &&
-    msUntilClose <= config.forceCloseMinutes * 60_000;
-
-  return {
-    marketClosed: false,
-    entryBlocked,
-    forceCloseNow,
-    reasonCode: forceCloseNow
-      ? "SESSION_FORCE_CLOSE"
-      : entryBlocked
-        ? "SESSION_ENTRY_BLOCK"
-        : "MARKET_OPEN",
-    reopensAtMs: null,
-    closesAtMs: current.closeAtMs,
-    config,
-  };
-}
-
 export type OpeningHoursState = {
   // null = unknown (no schedule, or a non-UTC zone we can't safely interpret).
   // Callers must treat null as "no data", never as "closed".
@@ -228,7 +120,7 @@ export type OpeningHoursState = {
 // next day's "00:00-02:00") are merged into continuous spans so closesAtMs is
 // the real session end, not a midnight day-boundary artifact.
 export function resolveOpeningHoursState(
-  openingHours: ScalpOpeningHoursSchedule | null | undefined,
+  openingHours: OpeningHoursSchedule | null | undefined,
   nowMs: number,
 ): OpeningHoursState {
   if (!openingHours || !supportsUtcSchedule(openingHours)) {
@@ -269,152 +161,4 @@ export function resolveOpeningHoursState(
     closesAtMs: next?.closeAtMs ?? null,
     nextOpenAtMs: next?.openAtMs ?? null,
   };
-}
-
-function evaluateFallbackWeekendGate(
-  symbol: string,
-  nowMs: number,
-  config: ScalpReplayMarketHoursConfig,
-): ScalpReplayMarketGate {
-  if (!isWeekendClosedScalpSymbol(symbol)) {
-    return {
-      marketClosed: false,
-      entryBlocked: false,
-      forceCloseNow: false,
-      reasonCode: "WEEKEND_POLICY_DISABLED",
-      reopensAtMs: null,
-      closesAtMs: null,
-      config,
-    };
-  }
-
-  const now = new Date(nowMs);
-  const day = now.getUTCDay();
-  const hour = now.getUTCHours();
-
-  const fridayClosed = day === 5 && hour >= config.fallbackFridayCloseHourUtc;
-  const saturdayClosed = day === 6;
-  const sundayClosed = day === 0 && hour < config.fallbackSundayOpenHourUtc;
-
-  if (fridayClosed || saturdayClosed || sundayClosed) {
-    let reopensAtMs: number;
-    if (sundayClosed) {
-      reopensAtMs = Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate(),
-        config.fallbackSundayOpenHourUtc,
-        0,
-        0,
-        0,
-      );
-    } else {
-      reopensAtMs = nextSundayAtHourUtc(
-        nowMs,
-        config.fallbackSundayOpenHourUtc,
-      );
-    }
-    return {
-      marketClosed: true,
-      entryBlocked: true,
-      forceCloseNow: false,
-      reasonCode: "MARKET_CLOSED_WEEKEND",
-      reopensAtMs,
-      closesAtMs: fridayCloseForWeekUtc(
-        nowMs,
-        config.fallbackFridayCloseHourUtc,
-      ),
-      config,
-    };
-  }
-
-  const closesAtMs = fridayCloseForWeekUtc(
-    nowMs,
-    config.fallbackFridayCloseHourUtc,
-  );
-  const msUntilClose = closesAtMs - nowMs;
-  const entryBlocked =
-    day === 5 &&
-    config.entryBlockMinutes > 0 &&
-    msUntilClose <= config.entryBlockMinutes * 60_000;
-  const forceCloseNow =
-    day === 5 &&
-    config.forceCloseMinutes > 0 &&
-    msUntilClose <= config.forceCloseMinutes * 60_000;
-
-  return {
-    marketClosed: false,
-    entryBlocked,
-    forceCloseNow,
-    reasonCode: forceCloseNow
-      ? "WEEKEND_FORCE_CLOSE"
-      : entryBlocked
-        ? "WEEKEND_ENTRY_BLOCK"
-        : "MARKET_OPEN",
-    reopensAtMs: nextSundayAtHourUtc(nowMs, config.fallbackSundayOpenHourUtc),
-    closesAtMs,
-    config,
-  };
-}
-
-export function getScalpReplayMarketHoursConfig(): ScalpReplayMarketHoursConfig {
-  return {
-    fallbackFridayCloseHourUtc: toHour(
-      process.env.SCALP_REPLAY_MARKET_CLOSE_FRI_UTC_HOUR,
-      22,
-    ),
-    fallbackSundayOpenHourUtc: toHour(
-      process.env.SCALP_REPLAY_MARKET_OPEN_SUN_UTC_HOUR,
-      22,
-    ),
-    entryBlockMinutes: toNonNegativeInt(
-      process.env.SCALP_REPLAY_SESSION_ENTRY_BLOCK_MINUTES ??
-        process.env.SCALP_REPLAY_WEEKEND_ENTRY_BLOCK_MINUTES,
-      60,
-    ),
-    forceCloseMinutes: toNonNegativeInt(
-      process.env.SCALP_REPLAY_SESSION_FORCE_CLOSE_MINUTES ??
-        process.env.SCALP_REPLAY_WEEKEND_FORCE_CLOSE_MINUTES,
-      15,
-    ),
-  };
-}
-
-export function getScalpReplayWeekendConfig(): ScalpReplayMarketHoursConfig {
-  return getScalpReplayMarketHoursConfig();
-}
-
-export function evaluateScalpReplayMarketGate(params: {
-  symbol: string;
-  nowMs?: number;
-  config?: ScalpReplayMarketHoursConfig;
-  metadata?: ScalpSymbolMarketMetadata | null;
-}): ScalpReplayMarketGate {
-  const nowMs = Number.isFinite(Number(params.nowMs))
-    ? Math.floor(Number(params.nowMs))
-    : Date.now();
-  const config = params.config ?? getScalpReplayMarketHoursConfig();
-  const openingHours = params.metadata?.openingHours || null;
-  if (openingHours && supportsUtcSchedule(openingHours)) {
-    return evaluateUtcOpeningHoursGate({
-      openingHours,
-      nowMs,
-      config,
-    });
-  }
-  return evaluateFallbackWeekendGate(params.symbol, nowMs, config);
-}
-
-export function evaluateScalpReplayWeekendGate(
-  symbol: string,
-  nowMs = Date.now(),
-  config = getScalpReplayMarketHoursConfig(),
-  metadata: ScalpSymbolMarketMetadata | null = null,
-): ScalpReplayWeekendGate {
-  return evaluateScalpReplayMarketGate({
-    symbol,
-    nowMs,
-    config,
-    metadata,
-  });
 }

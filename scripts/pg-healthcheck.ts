@@ -1,5 +1,5 @@
 // Postgres health check for the swing schema. Run via: npm run db:pg:health
-import { scalpPrisma } from '../lib/db/client';
+import { pgClient } from '../lib/db/client';
 
 type CountRow = { count: bigint | number | string };
 
@@ -11,7 +11,7 @@ function toNumber(value: unknown): number {
 
 async function countTable(table: string): Promise<number | null> {
     try {
-        const db = scalpPrisma();
+        const db = pgClient();
         const rows = await db.$queryRawUnsafe<CountRow[]>(`SELECT COUNT(*)::bigint AS count FROM ${table}`);
         return toNumber(rows?.[0]?.count);
     } catch (err: any) {
@@ -37,7 +37,7 @@ const SWING_TABLES = [
 ] as const;
 
 async function main() {
-    const db = scalpPrisma();
+    const db = pgClient();
     const ping = await db.$queryRaw<Array<{ ok: number }>>`SELECT 1::int AS ok`;
 
     const counts: Record<string, number | null> = {};
@@ -65,7 +65,7 @@ main()
     })
     .finally(async () => {
         try {
-            await scalpPrisma().$disconnect();
+            await pgClient().$disconnect();
         } catch {
             // best effort
         }

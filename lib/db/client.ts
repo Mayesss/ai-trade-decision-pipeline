@@ -1,50 +1,50 @@
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { Pool, type PoolClient } from 'pg';
 
-export type ScalpPgSqlObject = {
+export type PgSqlObject = {
     text?: string;
     sql?: string;
     strings?: readonly string[];
     values?: readonly unknown[];
 };
 
-export interface ScalpPgTxClient {
-    $queryRaw<T = unknown>(query: ScalpPgSqlObject | TemplateStringsArray, ...values: unknown[]): Promise<T>;
+export interface PgTxClient {
+    $queryRaw<T = unknown>(query: PgSqlObject | TemplateStringsArray, ...values: unknown[]): Promise<T>;
     $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
-    $executeRaw(query: ScalpPgSqlObject | TemplateStringsArray, ...values: unknown[]): Promise<number>;
+    $executeRaw(query: PgSqlObject | TemplateStringsArray, ...values: unknown[]): Promise<number>;
     $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
 }
 
-export interface ScalpPgTransactionOptions {
+export interface PgTransactionOptions {
     maxWait?: number;
     timeout?: number;
     isolationLevel?: 'ReadUncommitted' | 'ReadCommitted' | 'RepeatableRead' | 'Serializable';
 }
 
-export interface ScalpPgClient extends ScalpPgTxClient {
+export interface PgClient extends PgTxClient {
     $transaction<T>(
-        fn: (tx: ScalpPgTxClient) => Promise<T>,
-        options?: ScalpPgTransactionOptions,
+        fn: (tx: PgTxClient) => Promise<T>,
+        options?: PgTransactionOptions,
     ): Promise<T>;
     $disconnect(): Promise<void>;
 }
 
-type ScalpPgPoolConfig = {
+type PgPoolConfig = {
     envKey: string;
     url: string;
     legacy: boolean;
 };
 
-type ScalpPgQueryConfig = {
+type PgQueryConfig = {
     text: string;
     values: unknown[];
 };
 
-type ScalpPgQueryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
+type PgQueryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
 
 declare global {
     // eslint-disable-next-line no-var
-    var __scalpPgClient: ScalpPgClient | undefined;
+    var __pgClient: PgClient | undefined;
 }
 
 let warnedLegacyPgUrlFallback = false;
@@ -91,7 +91,7 @@ function buildUrlFromPgParts(prefix = ''): string {
     return `postgresql://${auth}@${host}/${encodeURIComponent(database)}?sslmode=require`;
 }
 
-function resolveScalpPgUrl(): ScalpPgPoolConfig | null {
+function resolvePgUrl(): PgPoolConfig | null {
     for (const envKey of PRIMARY_SCALP_PG_URL_ENV_KEYS) {
         const url = readEnv(envKey);
         if (!url) continue;
@@ -156,7 +156,7 @@ function isTemplateStringsArray(value: unknown): value is TemplateStringsArray {
     return Array.isArray(value) && Array.isArray((value as { raw?: unknown }).raw);
 }
 
-function isScalpPgSqlObject(value: unknown): value is ScalpPgSqlObject {
+function isPgSqlObject(value: unknown): value is PgSqlObject {
     if (!value || typeof value !== 'object') return false;
     const row = value as Record<string, unknown>;
     return (
@@ -167,7 +167,7 @@ function isScalpPgSqlObject(value: unknown): value is ScalpPgSqlObject {
     );
 }
 
-function compileTemplateStrings(strings: readonly string[], values: readonly unknown[]): ScalpPgQueryConfig {
+function compileTemplateStrings(strings: readonly string[], values: readonly unknown[]): PgQueryConfig {
     let text = '';
     for (let idx = 0; idx < strings.length; idx += 1) {
         text += strings[idx] || '';
@@ -181,7 +181,7 @@ function compileTemplateStrings(strings: readonly string[], values: readonly unk
     };
 }
 
-function compileQuestionMarkSql(sql: string, values: readonly unknown[]): ScalpPgQueryConfig {
+function compileQuestionMarkSql(sql: string, values: readonly unknown[]): PgQueryConfig {
     let paramIdx = 0;
     const text = String(sql || '').replace(/\?/g, () => {
         paramIdx += 1;
@@ -193,12 +193,12 @@ function compileQuestionMarkSql(sql: string, values: readonly unknown[]): ScalpP
     };
 }
 
-function compileSafeQuery(input: ScalpPgSqlObject | TemplateStringsArray, values: readonly unknown[]): ScalpPgQueryConfig {
+function compileSafeQuery(input: PgSqlObject | TemplateStringsArray, values: readonly unknown[]): PgQueryConfig {
     if (isTemplateStringsArray(input)) {
         return compileTemplateStrings(input, values);
     }
 
-    if (isScalpPgSqlObject(input)) {
+    if (isPgSqlObject(input)) {
         const sqlValues = Array.isArray(input.values) ? input.values : values;
 
         if (typeof input.text === 'string' && input.text.trim().length > 0) {
@@ -220,7 +220,7 @@ function compileSafeQuery(input: ScalpPgSqlObject | TemplateStringsArray, values
     throw new Error('Unsupported SQL input. Use sql`` helper output or a tagged template query.');
 }
 
-function compileUnsafeQuery(input: string | ScalpPgSqlObject, values: readonly unknown[]): ScalpPgQueryConfig {
+function compileUnsafeQuery(input: string | PgSqlObject, values: readonly unknown[]): PgQueryConfig {
     if (typeof input === 'string') {
         return {
             text: input,
@@ -228,14 +228,14 @@ function compileUnsafeQuery(input: string | ScalpPgSqlObject, values: readonly u
         };
     }
 
-    if (isScalpPgSqlObject(input)) {
+    if (isPgSqlObject(input)) {
         return compileSafeQuery(input, values);
     }
 
     throw new Error('Unsupported SQL input. Use a SQL string or sql`` helper output.');
 }
 
-function mapIsolationLevel(level: ScalpPgTransactionOptions['isolationLevel']): string | null {
+function mapIsolationLevel(level: PgTransactionOptions['isolationLevel']): string | null {
     if (!level) return null;
     switch (level) {
         case 'ReadUncommitted':
@@ -284,11 +284,11 @@ async function connectWithOptionalTimeout(pool: Pool, maxWaitMs?: number): Promi
     }
 }
 
-class ScalpPgExecutorImpl implements ScalpPgTxClient {
-    constructor(private readonly db: ScalpPgQueryable) {}
+class PgExecutorImpl implements PgTxClient {
+    constructor(private readonly db: PgQueryable) {}
 
     async $queryRaw<T = unknown>(
-        query: ScalpPgSqlObject | TemplateStringsArray,
+        query: PgSqlObject | TemplateStringsArray,
         ...values: unknown[]
     ): Promise<T> {
         const compiled = compileSafeQuery(query, values);
@@ -303,7 +303,7 @@ class ScalpPgExecutorImpl implements ScalpPgTxClient {
     }
 
     async $executeRaw(
-        query: ScalpPgSqlObject | TemplateStringsArray,
+        query: PgSqlObject | TemplateStringsArray,
         ...values: unknown[]
     ): Promise<number> {
         const compiled = compileSafeQuery(query, values);
@@ -318,17 +318,17 @@ class ScalpPgExecutorImpl implements ScalpPgTxClient {
     }
 }
 
-class ScalpPgClientImpl extends ScalpPgExecutorImpl implements ScalpPgClient {
+class PgClientImpl extends PgExecutorImpl implements PgClient {
     constructor(private readonly pool: Pool) {
         super(pool);
     }
 
     async $transaction<T>(
-        fn: (tx: ScalpPgTxClient) => Promise<T>,
-        options: ScalpPgTransactionOptions = {},
+        fn: (tx: PgTxClient) => Promise<T>,
+        options: PgTransactionOptions = {},
     ): Promise<T> {
         const client = await connectWithOptionalTimeout(this.pool, options.maxWait);
-        const tx = new ScalpPgExecutorImpl(client);
+        const tx = new PgExecutorImpl(client);
 
         try {
             await client.query('BEGIN');
@@ -359,8 +359,8 @@ class ScalpPgClientImpl extends ScalpPgExecutorImpl implements ScalpPgClient {
     }
 
     async $disconnect(): Promise<void> {
-        if (global.__scalpPgClient === this) {
-            global.__scalpPgClient = undefined;
+        if (global.__pgClient === this) {
+            global.__pgClient = undefined;
         }
         await this.pool.end();
     }
@@ -375,11 +375,11 @@ class ScalpPgClientImpl extends ScalpPgExecutorImpl implements ScalpPgClient {
 // Trade-off: ~20–30ms per query (HTTPS round-trip) vs ~5ms for socket. For
 // bulk write batches that fire once per candidate this is irrelevant; for
 // the live trade-entry path keep the socket pool.
-class ScalpPgHttpClientImpl implements ScalpPgClient {
+class PgHttpClientImpl implements PgClient {
     constructor(private readonly sql: NeonQueryFunction<false, true>) {}
 
     async $queryRaw<T = unknown>(
-        query: ScalpPgSqlObject | TemplateStringsArray,
+        query: PgSqlObject | TemplateStringsArray,
         ...values: unknown[]
     ): Promise<T> {
         const compiled = compileSafeQuery(query, values);
@@ -394,7 +394,7 @@ class ScalpPgHttpClientImpl implements ScalpPgClient {
     }
 
     async $executeRaw(
-        query: ScalpPgSqlObject | TemplateStringsArray,
+        query: PgSqlObject | TemplateStringsArray,
         ...values: unknown[]
     ): Promise<number> {
         const compiled = compileSafeQuery(query, values);
@@ -409,18 +409,18 @@ class ScalpPgHttpClientImpl implements ScalpPgClient {
     }
 
     async $transaction<T>(
-        _fn: (tx: ScalpPgTxClient) => Promise<T>,
-        _options: ScalpPgTransactionOptions = {},
+        _fn: (tx: PgTxClient) => Promise<T>,
+        _options: PgTransactionOptions = {},
     ): Promise<T> {
         throw new Error(
-            'Transactions are not supported on the HTTP scalp PG client. ' +
+            'Transactions are not supported on the HTTP PG client. ' +
                 'Use the default socket client (unset SCALP_PG_USE_HTTP) for transactional code.',
         );
     }
 
     async $disconnect(): Promise<void> {
-        if (global.__scalpPgClient === this) {
-            global.__scalpPgClient = undefined;
+        if (global.__pgClient === this) {
+            global.__pgClient = undefined;
         }
         // HTTP client holds no persistent connection.
     }
@@ -431,12 +431,12 @@ function shouldUseHttpClient(): boolean {
     return ['1', 'true', 'yes', 'on'].includes(raw);
 }
 
-export function isScalpPgConfigured(): boolean {
-    return resolveScalpPgUrl() !== null;
+export function isPgConfigured(): boolean {
+    return resolvePgUrl() !== null;
 }
 
-export function createScalpPrismaClient(): ScalpPgClient {
-    const resolved = resolveScalpPgUrl();
+export function createPgClient(): PgClient {
+    const resolved = resolvePgUrl();
     if (!resolved) {
         throw new Error(
             'Missing scalp PG connection string. Set DATABASE_URL (Neon) or SCALP_PG_CONNECTION_STRING.',
@@ -452,7 +452,7 @@ export function createScalpPrismaClient(): ScalpPgClient {
 
     if (shouldUseHttpClient()) {
         const sql = neon(resolved.url, { fullResults: true }) as NeonQueryFunction<false, true>;
-        return new ScalpPgHttpClientImpl(sql);
+        return new PgHttpClientImpl(sql);
     }
 
     const sslEnabled = shouldUseSsl(resolved.url);
@@ -465,12 +465,12 @@ export function createScalpPrismaClient(): ScalpPgClient {
         allowExitOnIdle: true,
     });
 
-    return new ScalpPgClientImpl(pool);
+    return new PgClientImpl(pool);
 }
 
-export function scalpPrisma(): ScalpPgClient {
-    if (!global.__scalpPgClient) {
-        global.__scalpPgClient = createScalpPrismaClient();
+export function pgClient(): PgClient {
+    if (!global.__pgClient) {
+        global.__pgClient = createPgClient();
     }
-    return global.__scalpPgClient;
+    return global.__pgClient;
 }

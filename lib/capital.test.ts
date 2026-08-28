@@ -6,7 +6,7 @@ import {
   executeCapitalDecision,
   resolveCapitalEpic,
   resolveCapitalForexBaseUnitUsdFromQuotes,
-  resolveCapitalScalpOrderSizing,
+  resolveCapitalOrderSizing,
 } from "./capital";
 
 test("resolveCapitalEpic maps internal gold symbols to classic Capital gold CFD", () => {
@@ -119,7 +119,7 @@ test("Capital forex conversion reports unavailable cross-pair conversion", () =>
 });
 
 test("Capital EURJPY sizing uses base USD value instead of JPY quote price", () => {
-  const sizing = resolveCapitalScalpOrderSizing({
+  const sizing = resolveCapitalOrderSizing({
     symbol: "EURJPY",
     assetCategory: "forex",
     requestedNotionalUsd: 500,
@@ -141,7 +141,7 @@ test("Capital EURJPY sizing uses base USD value instead of JPY quote price", () 
 });
 
 test("Capital forex sizing rejects only when available margin cannot cover quantized minimum", () => {
-  const sizing = resolveCapitalScalpOrderSizing({
+  const sizing = resolveCapitalOrderSizing({
     symbol: "EURJPY",
     assetCategory: "forex",
     requestedNotionalUsd: 500,
@@ -161,7 +161,7 @@ test("Capital forex sizing rejects only when available margin cannot cover quant
 });
 
 test("Capital forex sizing blocks cross pairs when USD conversion is unavailable", () => {
-  const sizing = resolveCapitalScalpOrderSizing({
+  const sizing = resolveCapitalOrderSizing({
     symbol: "EURJPY",
     assetCategory: "forex",
     requestedNotionalUsd: 500,

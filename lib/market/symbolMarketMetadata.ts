@@ -1,7 +1,7 @@
-import type { ScalpAssetCategory } from "./symbolInfo";
-import { inferScalpAssetCategory, pipSizeForScalpSymbol } from "./symbolInfo";
+import type { AssetCategory } from "./symbolInfo";
+import { inferAssetCategory, pipSizeForSymbol } from "./symbolInfo";
 
-export type ScalpMarketDayKey =
+export type MarketDayKey =
   | "mon"
   | "tue"
   | "wed"
@@ -10,24 +10,24 @@ export type ScalpMarketDayKey =
   | "sat"
   | "sun";
 
-export interface ScalpOpeningHoursWindow {
-  day: ScalpMarketDayKey;
+export interface OpeningHoursWindow {
+  day: MarketDayKey;
   openTime: string;
   closeTime: string;
 }
 
-export interface ScalpOpeningHoursSchedule {
+export interface OpeningHoursSchedule {
   zone: string;
-  windows: ScalpOpeningHoursWindow[];
+  windows: OpeningHoursWindow[];
   alwaysOpen: boolean;
 }
 
-export interface ScalpSymbolMarketMetadata {
+export interface SymbolMarketMetadata {
   version: 1;
   symbol: string;
   epic: string | null;
   source: "bitget" | "heuristic";
-  assetCategory: ScalpAssetCategory;
+  assetCategory: AssetCategory;
   instrumentType: string | null;
   marketStatus: string | null;
   pipSize: number;
@@ -38,11 +38,11 @@ export interface ScalpSymbolMarketMetadata {
   minDealSize: number | null;
   sizeDecimals: number | null;
   maxLeverage?: number | null;
-  openingHours: ScalpOpeningHoursSchedule | null;
+  openingHours: OpeningHoursSchedule | null;
   fetchedAtMs: number;
 }
 
-const DAY_KEYS: ScalpMarketDayKey[] = [
+const DAY_KEYS: MarketDayKey[] = [
   "mon",
   "tue",
   "wed",
@@ -82,11 +82,11 @@ function decimalPipSize(decimalPlacesFactor: number | null): number | null {
 }
 
 function normalizeBitgetAssetCategory(params: {
-  source: ScalpSymbolMarketMetadata["source"];
+  source: SymbolMarketMetadata["source"];
   symbol: string;
   instrumentType: string | null;
-  assetCategory: ScalpAssetCategory;
-}): ScalpAssetCategory {
+  assetCategory: AssetCategory;
+}): AssetCategory {
   if (params.source !== "bitget") return params.assetCategory;
   if (params.assetCategory === "crypto") return "crypto";
   const instrumentType = String(params.instrumentType || "").trim().toUpperCase();
@@ -104,8 +104,8 @@ function normalizeBitgetAssetCategory(params: {
 }
 
 function normalizeBitgetPipSize(params: {
-  source: ScalpSymbolMarketMetadata["source"];
-  assetCategory: ScalpAssetCategory;
+  source: SymbolMarketMetadata["source"];
+  assetCategory: AssetCategory;
   explicitPipSize: number | null;
   tickSize: number | null;
   decimalPlacesFactor: number | null;
@@ -133,7 +133,7 @@ function normalizeZone(value: unknown): string {
   return "UTC";
 }
 
-function normalizeDayKey(value: unknown): ScalpMarketDayKey | null {
+function normalizeDayKey(value: unknown): MarketDayKey | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -170,7 +170,7 @@ function normalizeDayKey(value: unknown): ScalpMarketDayKey | null {
   return null;
 }
 
-function nextDayKey(day: ScalpMarketDayKey): ScalpMarketDayKey {
+function nextDayKey(day: MarketDayKey): MarketDayKey {
   const index = DAY_KEYS.indexOf(day);
   return DAY_KEYS[(index + 1) % DAY_KEYS.length] || "mon";
 }
@@ -194,21 +194,11 @@ function parseClockMinutes(value: string): number | null {
   return hour * 60 + minute;
 }
 
-function pushWindow(
-  out: ScalpOpeningHoursWindow[],
-  day: ScalpMarketDayKey,
-  openTime: string,
-  closeTime: string,
-): void {
-  if (openTime === closeTime) return;
-  out.push({ day, openTime, closeTime });
-}
-
 function expandDailyWindow(
-  day: ScalpMarketDayKey,
+  day: MarketDayKey,
   openTime: string,
   closeTime: string,
-): ScalpOpeningHoursWindow[] {
+): OpeningHoursWindow[] {
   const openMinutes = parseClockMinutes(openTime);
   const closeMinutes = parseClockMinutes(closeTime);
   if (openMinutes === null || closeMinutes === null) return [];
@@ -223,9 +213,9 @@ function expandDailyWindow(
 }
 
 function normalizeWindowEntry(
-  day: ScalpMarketDayKey,
+  day: MarketDayKey,
   value: unknown,
-): ScalpOpeningHoursWindow[] {
+): OpeningHoursWindow[] {
   if (!value) return [];
   if (typeof value === "string") {
     const match = value
@@ -248,8 +238,8 @@ function normalizeWindowEntry(
 }
 
 function sortWindows(
-  windows: ScalpOpeningHoursWindow[],
-): ScalpOpeningHoursWindow[] {
+  windows: OpeningHoursWindow[],
+): OpeningHoursWindow[] {
   const dayOrder = new Map(DAY_KEYS.map((day, index) => [day, index]));
   return windows.slice().sort((lhs, rhs) => {
     const lhsDay = dayOrder.get(lhs.day) ?? 0;
@@ -265,10 +255,10 @@ function sortWindows(
 }
 
 function dedupeWindows(
-  windows: ScalpOpeningHoursWindow[],
-): ScalpOpeningHoursWindow[] {
+  windows: OpeningHoursWindow[],
+): OpeningHoursWindow[] {
   const seen = new Set<string>();
-  const out: ScalpOpeningHoursWindow[] = [];
+  const out: OpeningHoursWindow[] = [];
   for (const row of sortWindows(windows)) {
     const key = `${row.day}:${row.openTime}:${row.closeTime}`;
     if (seen.has(key)) continue;
@@ -278,7 +268,7 @@ function dedupeWindows(
   return out;
 }
 
-function detectAlwaysOpen(windows: ScalpOpeningHoursWindow[]): boolean {
+function detectAlwaysOpen(windows: OpeningHoursWindow[]): boolean {
   if (windows.length < DAY_KEYS.length) return false;
   return DAY_KEYS.every((day) =>
     windows.some(
@@ -290,13 +280,13 @@ function detectAlwaysOpen(windows: ScalpOpeningHoursWindow[]): boolean {
   );
 }
 
-export function buildScalpOpeningHoursSchedule(params: {
+export function buildOpeningHoursSchedule(params: {
   zone?: unknown;
-  days?: Partial<Record<ScalpMarketDayKey, unknown>>;
+  days?: Partial<Record<MarketDayKey, unknown>>;
   windows?: unknown;
   alwaysOpen?: unknown;
-}): ScalpOpeningHoursSchedule | null {
-  const normalizedWindows: ScalpOpeningHoursWindow[] = [];
+}): OpeningHoursSchedule | null {
+  const normalizedWindows: OpeningHoursWindow[] = [];
 
   if (Array.isArray(params.windows)) {
     for (const row of params.windows) {
@@ -330,22 +320,22 @@ export function buildScalpOpeningHoursSchedule(params: {
   };
 }
 
-export function normalizeScalpOpeningHours(
+export function normalizeOpeningHours(
   value: unknown,
-): ScalpOpeningHoursSchedule | null {
+): OpeningHoursSchedule | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
-  return buildScalpOpeningHoursSchedule({
+  return buildOpeningHoursSchedule({
     zone: row.zone,
     windows: row.windows,
     alwaysOpen: row.alwaysOpen,
   });
 }
 
-export function scalpAssetCategoryFromInstrumentType(
+export function assetCategoryFromInstrumentType(
   symbol: string,
   instrumentTypeRaw: unknown,
-): ScalpAssetCategory {
+): AssetCategory {
   const instrumentType = String(instrumentTypeRaw || "")
     .trim()
     .toUpperCase();
@@ -354,23 +344,23 @@ export function scalpAssetCategoryFromInstrumentType(
   if (instrumentType === "COMMODITIES") return "commodity";
   if (instrumentType === "INDICES") return "index";
   if (instrumentType === "SHARES") return "equity";
-  return inferScalpAssetCategory(symbol);
+  return inferAssetCategory(symbol);
 }
 
-export function normalizeScalpSymbolMarketMetadata(
-  value: Partial<ScalpSymbolMarketMetadata> & { symbol: string },
-): ScalpSymbolMarketMetadata {
+export function normalizeSymbolMarketMetadata(
+  value: Partial<SymbolMarketMetadata> & { symbol: string },
+): SymbolMarketMetadata {
   const symbol = normalizeSymbol(value.symbol);
   const epic = normalizeText(value.epic)
     ? String(value.epic).trim().toUpperCase()
     : null;
-  const source: ScalpSymbolMarketMetadata["source"] =
+  const source: SymbolMarketMetadata["source"] =
     value.source === "bitget" ? "bitget" : "heuristic";
   const instrumentType =
     normalizeText(value.instrumentType)?.toUpperCase() || null;
   const unresolvedAssetCategory =
     value.assetCategory ||
-    scalpAssetCategoryFromInstrumentType(symbol, instrumentType);
+    assetCategoryFromInstrumentType(symbol, instrumentType);
   const assetCategory = normalizeBitgetAssetCategory({
     source,
     symbol,
@@ -386,14 +376,14 @@ export function normalizeScalpSymbolMarketMetadata(
   const maxLeverageRaw = toPositiveNumber(value.maxLeverage);
   const maxLeverage =
     maxLeverageRaw !== null ? Math.max(1, Math.floor(maxLeverageRaw)) : null;
-  const openingHours = normalizeScalpOpeningHours(value.openingHours);
+  const openingHours = normalizeOpeningHours(value.openingHours);
   const pipSizeCandidate = normalizeBitgetPipSize({
     source,
     assetCategory,
     explicitPipSize: toPositiveNumber(value.pipSize),
     tickSize,
     decimalPlacesFactor,
-    fallbackPipSize: pipSizeForScalpSymbol(symbol),
+    fallbackPipSize: pipSizeForSymbol(symbol),
   });
 
   return {
@@ -420,24 +410,24 @@ export function normalizeScalpSymbolMarketMetadata(
   };
 }
 
-export function buildHeuristicScalpSymbolMarketMetadata(
+export function buildHeuristicSymbolMarketMetadata(
   symbolRaw: string,
   params: {
     epic?: string | null;
     source?: "bitget" | "heuristic";
     fetchedAtMs?: number;
   } = {},
-): ScalpSymbolMarketMetadata {
+): SymbolMarketMetadata {
   const symbol = normalizeSymbol(symbolRaw);
-  return normalizeScalpSymbolMarketMetadata({
+  return normalizeSymbolMarketMetadata({
     symbol,
     epic: params.epic ?? null,
     source: params.source ?? "heuristic",
-    assetCategory: inferScalpAssetCategory(symbol),
-    pipSize: pipSizeForScalpSymbol(symbol),
+    assetCategory: inferAssetCategory(symbol),
+    pipSize: pipSizeForSymbol(symbol),
     fetchedAtMs: params.fetchedAtMs ?? Date.now(),
     openingHours:
-      inferScalpAssetCategory(symbol) === "crypto"
+      inferAssetCategory(symbol) === "crypto"
         ? {
             zone: "UTC",
             alwaysOpen: true,

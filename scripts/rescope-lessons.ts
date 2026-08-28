@@ -11,14 +11,14 @@
 // all cases so future promotions can compare origins.
 // Also drops the orphaned swing.refusal_outcomes table from the discarded
 // scoreboard design. Run: node --import tsx scripts/rescope-lessons.ts
-import { scalpPrisma, isScalpPgConfigured } from '../lib/db/client';
+import { pgClient, isPgConfigured } from '../lib/db/client';
 import { sql } from '../lib/db/sql';
 import { resolveSwingCategory } from '../lib/swing/category';
 import type { AnalysisPlatform } from '../lib/platform';
 
 async function main() {
-    if (!isScalpPgConfigured()) throw new Error('PG not configured (source .env.local)');
-    const db = scalpPrisma();
+    if (!isPgConfigured()) throw new Error('PG not configured (source .env.local)');
+    const db = pgClient();
 
     const lessons = await db.$queryRaw<Array<any>>(sql`
         SELECT id, scope, lesson, source_postmortem_ids

@@ -6,7 +6,7 @@
 // with this digest as evidence. Numbers are segmented per capability where the
 // data allows (side, platform, entry action) so "should we keep X" questions
 // are answered by a number, not a vibe.
-import { isScalpPgConfigured, scalpPrisma } from '../db/client';
+import { isPgConfigured, pgClient } from '../db/client';
 import { sql } from '../db/sql';
 import { ensureSwingSchema } from './pg';
 
@@ -78,7 +78,7 @@ function num(value: unknown): number | null {
 }
 
 async function tradeStats(fromMs: number, toMs: number): Promise<DigestTradeStats> {
-    const db = scalpPrisma();
+    const db = pgClient();
     const rows = await db.$queryRaw<Array<any>>(sql`
         SELECT count(*)::int AS closed,
                count(*) FILTER (WHERE pnl_net > 0)::int AS wins,
@@ -116,9 +116,9 @@ export async function buildSwingWeeklyDigest(opts?: {
     toMs?: number;
     days?: number;
 }): Promise<SwingWeeklyDigest | null> {
-    if (!isScalpPgConfigured()) return null;
+    if (!isPgConfigured()) return null;
     await ensureSwingSchema();
-    const db = scalpPrisma();
+    const db = pgClient();
 
     const days = Math.max(1, Math.min(90, opts?.days ?? 7));
     const toMs = opts?.toMs ?? Date.now();
@@ -325,9 +325,9 @@ export async function buildSwingWeeklyDigest(opts?: {
 // later data (drained postmortems, late reconciles) makes the re-run strictly
 // better informed.
 export async function storeSwingWeeklyDigest(digest: SwingWeeklyDigest): Promise<number | null> {
-    if (!isScalpPgConfigured()) return null;
+    if (!isPgConfigured()) return null;
     await ensureSwingSchema();
-    const db = scalpPrisma();
+    const db = pgClient();
     const rows = await db.$queryRaw<Array<any>>(sql`
         INSERT INTO swing.weekly_digests (window_from_ms, window_to_ms, digest_json)
         VALUES (${digest.window.fromMs}, ${digest.window.toMs}, ${JSON.stringify(digest)}::jsonb)
@@ -346,9 +346,9 @@ export type StoredDigestMeta = {
 };
 
 export async function listSwingWeeklyDigests(limit = 26): Promise<StoredDigestMeta[]> {
-    if (!isScalpPgConfigured()) return [];
+    if (!isPgConfigured()) return [];
     await ensureSwingSchema();
-    const db = scalpPrisma();
+    const db = pgClient();
     const rows = await db.$queryRaw<Array<any>>(sql`
         SELECT id, window_from_ms, window_to_ms,
                (extract(epoch FROM created_at) * 1000)::float8 AS created_at_ms
@@ -365,9 +365,9 @@ export async function listSwingWeeklyDigests(limit = 26): Promise<StoredDigestMe
 }
 
 export async function loadSwingWeeklyDigestById(id: number): Promise<SwingWeeklyDigest | null> {
-    if (!isScalpPgConfigured() || !Number.isFinite(id)) return null;
+    if (!isPgConfigured() || !Number.isFinite(id)) return null;
     await ensureSwingSchema();
-    const db = scalpPrisma();
+    const db = pgClient();
     const rows = await db.$queryRaw<Array<any>>(sql`
         SELECT digest_json FROM swing.weekly_digests WHERE id = ${Math.trunc(id)} LIMIT 1;
     `);

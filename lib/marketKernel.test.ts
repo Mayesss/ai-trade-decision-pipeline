@@ -4,13 +4,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  inferScalpAssetCategory,
+  inferAssetCategory,
   isPreciousMetalFamilySymbol,
-  isWeekendClosedScalpSymbol,
+  isWeekendClosedSymbol,
 } from "./market/symbolInfo";
 import {
-  buildScalpOpeningHoursSchedule,
-  scalpAssetCategoryFromInstrumentType,
+  buildOpeningHoursSchedule,
+  assetCategoryFromInstrumentType,
 } from "./market/symbolMarketMetadata";
 import { resolveOpeningHoursState } from "./market/marketHours";
 
@@ -43,23 +43,23 @@ test("asset category inference for the cron universe", () => {
     "": "other",
   };
   for (const [sym, expected] of Object.entries(expectations)) {
-    assert.equal(inferScalpAssetCategory(sym), expected, sym || "<empty>");
+    assert.equal(inferAssetCategory(sym), expected, sym || "<empty>");
   }
 });
 
 test("weekend-closed classification: only crypto trades weekends", () => {
-  assert.equal(isWeekendClosedScalpSymbol("BTCUSDT"), false);
-  assert.equal(isWeekendClosedScalpSymbol("GOLD"), true);
-  assert.equal(isWeekendClosedScalpSymbol("EURUSD"), true);
+  assert.equal(isWeekendClosedSymbol("BTCUSDT"), false);
+  assert.equal(isWeekendClosedSymbol("GOLD"), true);
+  assert.equal(isWeekendClosedSymbol("EURUSD"), true);
 });
 
 test("instrument-type mapping wins over symbol heuristics", () => {
-  assert.equal(scalpAssetCategoryFromInstrumentType("GOLD", "COMMODITIES"), "commodity");
-  assert.equal(scalpAssetCategoryFromInstrumentType("EURUSD", "CURRENCIES"), "forex");
-  assert.equal(scalpAssetCategoryFromInstrumentType("ANY", "SHARES"), "equity");
-  assert.equal(scalpAssetCategoryFromInstrumentType("ANY", "INDICES"), "index");
+  assert.equal(assetCategoryFromInstrumentType("GOLD", "COMMODITIES"), "commodity");
+  assert.equal(assetCategoryFromInstrumentType("EURUSD", "CURRENCIES"), "forex");
+  assert.equal(assetCategoryFromInstrumentType("ANY", "SHARES"), "equity");
+  assert.equal(assetCategoryFromInstrumentType("ANY", "INDICES"), "index");
   // Unknown instrument type falls back to symbol inference.
-  assert.equal(scalpAssetCategoryFromInstrumentType("BTCUSDT", ""), "crypto");
+  assert.equal(assetCategoryFromInstrumentType("BTCUSDT", ""), "crypto");
 });
 
 test("opening-hours state: no schedule means unknown, never closed", () => {
@@ -73,14 +73,14 @@ test("opening-hours state: no schedule means unknown, never closed", () => {
 });
 
 test("opening-hours state: alwaysOpen schedule is open", () => {
-  const schedule = buildScalpOpeningHoursSchedule({ zone: "UTC", alwaysOpen: true });
+  const schedule = buildOpeningHoursSchedule({ zone: "UTC", alwaysOpen: true });
   assert.ok(schedule, "alwaysOpen schedule should build");
   const state = resolveOpeningHoursState(schedule, Date.now());
   assert.equal(state.isOpen, true);
 });
 
 test("opening-hours state: UTC windowed schedule open/closed transitions", () => {
-  const schedule = buildScalpOpeningHoursSchedule({
+  const schedule = buildOpeningHoursSchedule({
     zone: "UTC",
     windows: [{ day: "mon", openTime: "08:00", closeTime: "16:00" }],
   });

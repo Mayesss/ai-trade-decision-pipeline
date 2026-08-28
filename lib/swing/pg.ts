@@ -1,19 +1,19 @@
 // Swing Postgres access layer (Neon). Durable source of truth for decisions,
-// positions and account snapshots. Reuses the generic Neon client that the
-// scalp subsystem already configures (same DB, same pool — no second pool).
+// positions and account snapshots. Reuses the shared Neon client from
+// lib/db/client (same DB, same pool — no second pool).
 // Reads project away bulky columns (e.g. prompt_json) to keep egress low; KV
 // stays in front of these as a cache (step 3).
-import { isScalpPgConfigured, scalpPrisma } from '../db/client';
+import { isPgConfigured, pgClient } from '../db/client';
 import { sql } from '../db/sql';
 import type { DecisionHistoryEntry } from '../history';
 import type { PositionWindow } from '../analytics';
 
 export function isSwingPgConfigured(): boolean {
-    return isScalpPgConfigured();
+    return isPgConfigured();
 }
 
 function swingPg() {
-    return scalpPrisma();
+    return pgClient();
 }
 
 function normalizePlatform(value?: string | null): string {

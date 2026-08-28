@@ -1,6 +1,11 @@
 # Cleanup plan: retire forex & scalp, keep lib/swing as the only actor
 
-Status: SKETCH — reviewed dependency map, no code changed yet.
+Status: EXECUTED through Phase 4 (2026-08-28). Code, routes, scripts, data files,
+and docs are cleaned; the shared kernel lives in `lib/db`, `lib/market`, and
+`lib/cronChaining.ts`. Identifiers were renamed (`pgClient`, `AssetCategory`, …)
+but env var names were intentionally kept (`SCALP_PG_*`, `SCALP_CAPITAL_*`, …).
+Phase 5 (database drops) is pending — SQL is prepared for manual execution on
+Neon after a soak period; see the phase 5 section below.
 Date: 2026-08-28
 
 ## Dependency map (verified by import analysis)

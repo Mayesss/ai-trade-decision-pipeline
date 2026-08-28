@@ -14,16 +14,13 @@ import {
   TRADE_WINDOW_MINUTES,
 } from "./constants";
 import {
-  buildHeuristicScalpSymbolMarketMetadata,
-  buildScalpOpeningHoursSchedule,
-  normalizeScalpSymbolMarketMetadata,
-  scalpAssetCategoryFromInstrumentType,
-  type ScalpOpeningHoursSchedule,
-  type ScalpSymbolMarketMetadata,
+  buildOpeningHoursSchedule,
+  assetCategoryFromInstrumentType,
+  type OpeningHoursSchedule
 } from "./market/symbolMarketMetadata";
 import { isPreciousMetalFamilySymbol } from "./market/symbolInfo";
 import { resolveOpeningHoursState } from "./market/marketHours";
-import type { ScalpAssetCategory } from "./market/symbolInfo";
+import type { AssetCategory } from "./market/symbolInfo";
 import type { TradeDecision } from "./trading";
 
 import defaultTickerEpicMap from "../data/capitalTickerMap.json";
@@ -91,7 +88,7 @@ type MarketDetails = {
   marketStatus: string | null;
   decimalPlacesFactor: number | null;
   scalingFactor: number | null;
-  openingHours: ScalpOpeningHoursSchedule | null;
+  openingHours: OpeningHoursSchedule | null;
   // Capital's own margin requirement for the instrument (marginFactor +
   // marginFactorUnit from /markets/{epic}). brokerLeverage is the derived max
   // leverage (100/marginFactor for PERCENTAGE, 1/marginFactor otherwise) — the
@@ -157,27 +154,6 @@ export type CapitalPositionOwnershipMatch =
   | "dealReference"
   | "epic"
   | null;
-
-export type CapitalScalpEntryResult = {
-  placed: boolean;
-  dryRun: boolean;
-  orderId: string | null;
-  dealId: string | null;
-  dealReference: string | null;
-  clientOid: string;
-  symbol: string;
-  direction: "BUY" | "SELL";
-  notionalUsd: number;
-  leverage: number | null;
-  orderType: "MARKET" | "LIMIT";
-  size: number | null;
-  epic: string | null;
-  dealStatus: string | null;
-  confirmStatus: string | null;
-  rejectReason: string | null;
-  reasonCodes?: string[];
-};
-
 const CAPITAL_API_BASE = (
   process.env.CAPITAL_API_BASE || "https://api-capital.backend-capital.com"
 ).replace(/\/+$/, "");
@@ -242,7 +218,7 @@ function toPositiveNumberWithFallback(value: unknown, fallback: number): number 
   if (!(Number.isFinite(n) && n > 0)) return fallback;
   return n;
 }
-const CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
+const CAPITAL_LEVERAGE_BY_CATEGORY: Record<AssetCategory, number> = {
   forex: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_FOREX, 30),
   index: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_INDEX, 20),
   // Energy/base commodities (copper, oil, gas) margin at ~10% on Capital, i.e.
@@ -269,7 +245,7 @@ const CAPITAL_LEVERAGE_METAL = toPositiveNumberWithFallback(
 // energy/base commodities since they margin very differently.
 function resolveCapitalEffectiveLeverage(
   symbol: string,
-  assetCategory: ScalpAssetCategory,
+  assetCategory: AssetCategory,
   brokerLeverage?: number | null,
 ): number {
   if (typeof brokerLeverage === "number" && brokerLeverage > 1) {
@@ -291,7 +267,7 @@ function resolveCapitalEffectiveLeverage(
 // symbol-based category resolution; openCapitalPosition refines via instrumentType
 // for the actual margin cap.
 export function getCapitalCategoryLeverage(symbol: string): number {
-  const category = scalpAssetCategoryFromInstrumentType(
+  const category = assetCategoryFromInstrumentType(
     normalizeTicker(symbol),
     null,
   );
@@ -746,23 +722,6 @@ function formatCapitalHistoryDateUtc(tsMs: number): string {
   return new Date(safe).toISOString().slice(0, 19);
 }
 
-function normalizeCapitalActivityRow(row: any): CapitalDealActivityRow {
-  const details =
-    row?.details && typeof row.details === "object" && !Array.isArray(row.details)
-      ? row.details
-      : {};
-  return {
-    dateUtcMs: toIsoTimestampMs(row?.dateUTC ?? row?.dateUtc ?? row?.date),
-    epic: normalizeCapitalText(row?.epic),
-    dealId: String(row?.dealId || "").trim() || null,
-    source: normalizeCapitalText(row?.source),
-    type: normalizeCapitalText(row?.type),
-    status: normalizeCapitalText(row?.status),
-    details,
-    raw: row && typeof row === "object" && !Array.isArray(row) ? row : {},
-  };
-}
-
 function normalizeCapitalTradeTransactionRow(row: any): CapitalTradeTransactionRow {
   const pnlNet = safeNumber(
     row?.size ?? row?.amount ?? row?.profitAndLoss ?? row?.profit ?? row?.pnl,
@@ -779,32 +738,6 @@ function normalizeCapitalTradeTransactionRow(row: any): CapitalTradeTransactionR
     status: normalizeCapitalText(row?.status),
     raw: row && typeof row === "object" && !Array.isArray(row) ? row : {},
   };
-}
-
-export async function fetchCapitalDealActivityHistory(params: {
-  dealId?: string | null;
-  fromTsMs?: number;
-  toTsMs?: number;
-  detailed?: boolean;
-}): Promise<CapitalDealActivityRow[]> {
-  const dealId = String(params.dealId || "").trim();
-  if (!dealId) return [];
-  const now = Date.now();
-  const toTsMs = Number.isFinite(Number(params.toTsMs))
-    ? Math.floor(Number(params.toTsMs))
-    : now;
-  const fromTsMs = Number.isFinite(Number(params.fromTsMs))
-    ? Math.floor(Number(params.fromTsMs))
-    : toTsMs - 24 * 60 * 60 * 1000;
-  const payload = await capitalFetch("GET", "/api/v1/history/activity", {
-    dealId,
-    from: formatCapitalHistoryDateUtc(fromTsMs),
-    to: formatCapitalHistoryDateUtc(toTsMs),
-    detailed: params.detailed === false ? "false" : "true",
-  });
-  return extractRows<any>(payload, ["activities", "activity", "data"]).map(
-    normalizeCapitalActivityRow,
-  );
 }
 
 export async function fetchCapitalTradeTransactions(params: {
@@ -961,14 +894,14 @@ function normalizeCapitalText(value: unknown): string | null {
 
 function parseCapitalOpeningHours(
   raw: unknown,
-): ScalpOpeningHoursSchedule | null {
+): OpeningHoursSchedule | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
   const marketTimes =
     (row.marketTimes && typeof row.marketTimes === "object"
       ? (row.marketTimes as Record<string, unknown>)
       : null) || row;
-  return buildScalpOpeningHoursSchedule({
+  return buildOpeningHoursSchedule({
     zone: row.zone,
     days: {
       mon: marketTimes?.mon,
@@ -980,33 +913,6 @@ function parseCapitalOpeningHours(
       sun: marketTimes?.sun,
     },
   });
-}
-
-function deriveCapitalPipSize(params: {
-  symbol: string;
-  instrumentType?: string | null;
-  minStepDistance?: number | null;
-  pipPosition?: number | null;
-  tickSize?: number | null;
-  decimalPlacesFactor?: number | null;
-}): number {
-  const instrumentType = String(params.instrumentType || "")
-    .trim()
-    .toUpperCase();
-  if (instrumentType === "CURRENCIES") {
-    return buildHeuristicScalpSymbolMarketMetadata(params.symbol).pipSize;
-  }
-  const minStepDistance = safePositiveNumber(params.minStepDistance);
-  if (minStepDistance !== null) return minStepDistance;
-  const pipPosition = safeInteger(params.pipPosition);
-  if (pipPosition !== null && pipPosition >= 0 && pipPosition <= 12) {
-    return Math.pow(10, -1 * pipPosition);
-  }
-  const tickSize = safePositiveNumber(params.tickSize);
-  if (tickSize !== null) return tickSize;
-  const decimalPlacesFactor = safePositiveNumber(params.decimalPlacesFactor);
-  if (decimalPlacesFactor !== null) return 1 / decimalPlacesFactor;
-  return buildHeuristicScalpSymbolMarketMetadata(params.symbol).pipSize;
 }
 
 function quantizeSize(
@@ -1084,9 +990,9 @@ export function resolveCapitalForexBaseUnitUsdFromQuotes(params: {
   return { baseUnitUsd: null, reasonCodes: ["CAPITAL_FX_CONVERSION_UNAVAILABLE"] };
 }
 
-export function resolveCapitalScalpOrderSizing(params: {
+export function resolveCapitalOrderSizing(params: {
   symbol: string;
-  assetCategory: ScalpAssetCategory;
+  assetCategory: AssetCategory;
   requestedNotionalUsd: number;
   referencePrice: number;
   minDealSize: number | null;
@@ -1400,416 +1306,6 @@ type CapitalMarketSearchRow = {
   };
   openingHours?: unknown;
 };
-
-export interface DiscoverCapitalMarketSymbolsParams {
-  searchTerms?: string[];
-  pageSize?: number;
-  maxSymbols?: number;
-  requireTradeable?: boolean;
-  preferFullScan?: boolean;
-}
-
-export interface DiscoverCapitalMarketSymbolsResult {
-  symbols: string[];
-  diagnostics: {
-    termsAttempted: number;
-    termsSucceeded: number;
-    rowsSeen: number;
-    rowsTradeable: number;
-    mappedSymbols: number;
-    errors: string[];
-  };
-}
-
-const DEFAULT_CAPITAL_MARKET_DISCOVERY_TERMS = [
-  "USDT",
-  "USD",
-  "EUR",
-  "GBP",
-  "JPY",
-  "AUD",
-  "CAD",
-  "CHF",
-  "NZD",
-  "XAU",
-  "BTC",
-  "ETH",
-  "SOL",
-  "SPX",
-  "QQQ",
-  "AAPL",
-  "TSLA",
-  "MSFT",
-  "NVDA",
-];
-
-function normalizeDiscoveryTerms(value: unknown): string[] {
-  const rows = Array.isArray(value) ? value : [];
-  const normalized = rows
-    .map((row) => normalizeTicker(String(row || "")))
-    .filter((row) => row.length > 0);
-  return Array.from(new Set(normalized));
-}
-
-function resolveCapitalDiscoveryTerms(override?: string[]): string[] {
-  const fromOverride = normalizeDiscoveryTerms(override);
-  if (fromOverride.length > 0) return fromOverride;
-
-  const fromEnv = String(process.env.CAPITAL_MARKET_DISCOVERY_TERMS || "")
-    .split(",")
-    .map((row) => normalizeTicker(row))
-    .filter((row) => row.length > 0);
-  if (fromEnv.length > 0) {
-    return Array.from(new Set(fromEnv));
-  }
-
-  return DEFAULT_CAPITAL_MARKET_DISCOVERY_TERMS.slice();
-}
-
-function isTradeableCapitalMarketRow(row: CapitalMarketSearchRow): boolean {
-  const statusHints = [
-    row?.status,
-    row?.marketStatus,
-    row?.instrumentStatus,
-    row?.snapshot?.marketStatus,
-  ]
-    .map((value) => normalizeTicker(String(value || "")))
-    .filter((value) => value.length > 0);
-
-  if (statusHints.some((value) => value === "TRADEABLE")) return true;
-  if (statusHints.length > 0) return false;
-
-  const bid = Number(row?.bid);
-  const offer = Number(row?.offer);
-  if (row?.streamingPricesAvailable === true) return true;
-  if (
-    Number.isFinite(bid) &&
-    Number.isFinite(offer) &&
-    offer >= bid &&
-    offer > 0
-  )
-    return true;
-
-  // Capital payloads can omit status hints; keep discovery permissive in that case.
-  return true;
-}
-
-function normalizeMarketSymbol(value: unknown): string {
-  return normalizeTicker(String(value || "")).replace(/[^A-Z0-9_-]/g, "");
-}
-
-const CRYPTO_BASES_FOR_USDT = new Set([
-  "BTC",
-  "ETH",
-  "SOL",
-  "XRP",
-  "ADA",
-  "DOGE",
-  "LTC",
-  "BCH",
-  "DOT",
-  "AVAX",
-  "TRX",
-  "LINK",
-  "ATOM",
-  "MATIC",
-]);
-
-const DISCOVERY_INSTRUMENT_TYPE_WEIGHTS: Record<string, number> = {
-  CURRENCIES: 34,
-  COMMODITIES: 28,
-  CRYPTOCURRENCIES: 26,
-  INDICES: 22,
-  SHARES: 8,
-};
-
-function symbolFromSlashPair(base: string, quote: string): string {
-  const b = normalizeTicker(base);
-  const q = normalizeTicker(quote);
-  if (!b || !q) return "";
-  if (q === "USD" && CRYPTO_BASES_FOR_USDT.has(b)) return `${b}USDT`;
-  if (q === "USD" && b === "XAU") return "XAUUSDT";
-  return `${b}${q}`;
-}
-
-function extractDiscoverableSymbolFromMarketRow(
-  row: CapitalMarketSearchRow,
-): string {
-  const instrumentType = normalizeTicker(String(row?.instrumentType || ""));
-  const rawSymbol = normalizeTicker(String(row?.symbol || ""));
-  const epic = normalizeTicker(row?.epic || "");
-  const name = normalizeTicker(
-    `${String(row?.instrumentName || "")} ${String(row?.marketName || "")} ${String(row?.displayName || "")}`,
-  );
-
-  if (
-    instrumentType === "COMMODITIES" &&
-    (rawSymbol === "GOLD" ||
-      epic === "GOLD" ||
-      normalizeComparable(name).includes("GOLD"))
-  ) {
-    return "XAUUSDT";
-  }
-
-  if (rawSymbol) {
-    const slash = rawSymbol.match(/^([A-Z]{3,6})\/([A-Z]{3,4})$/);
-    if (slash?.[1] && slash?.[2]) {
-      const mapped = symbolFromSlashPair(slash[1], slash[2]);
-      if (mapped) return mapped;
-    }
-    const pair = rawSymbol.match(/^([A-Z]{3,6})(USD|EUR|GBP|JPY)$/);
-    if (pair?.[1] && pair?.[2]) {
-      const mapped = symbolFromSlashPair(pair[1], pair[2]);
-      if (mapped) return mapped;
-    }
-    const direct = normalizeMarketSymbol(rawSymbol);
-    if (direct) return direct;
-  }
-
-  if (epic) {
-    const fx = epic.match(/\b([A-Z]{6})\b/);
-    if (fx?.[1]) return fx[1];
-
-    const pairUsd = epic.match(/\b([A-Z]{3,6})USD\b/);
-    if (pairUsd?.[1]) {
-      return symbolFromSlashPair(pairUsd[1], "USD");
-    }
-  }
-
-  const slash = name.match(/\b([A-Z]{3,6})\/([A-Z]{3,4})\b/);
-  if (slash?.[1] && slash?.[2]) {
-    return symbolFromSlashPair(slash[1], slash[2]);
-  }
-
-  return "";
-}
-
-function scoreDiscoverableMarketRow(params: {
-  row: CapitalMarketSearchRow;
-  symbol: string;
-  term: string;
-  tradeable: boolean;
-}): number {
-  const { row, symbol, term, tradeable } = params;
-  const normalizedSymbol = normalizeTicker(symbol);
-  const normalizedTerm = normalizeTicker(term);
-  const termCmp = normalizeComparable(normalizedTerm);
-  const epicCmp = normalizeComparable(String(row?.epic || ""));
-  const symbolCmp = normalizeComparable(String(row?.symbol || ""));
-  const discoveredCmp = normalizeComparable(normalizedSymbol);
-  const type = normalizeTicker(String(row?.instrumentType || ""));
-  const marketStatusHints = [
-    row?.status,
-    row?.marketStatus,
-    row?.instrumentStatus,
-    row?.snapshot?.marketStatus,
-  ]
-    .map((value) => normalizeTicker(String(value || "")))
-    .filter((value) => value.length > 0);
-  const bid = Number(row?.bid);
-  const offer = Number(row?.offer);
-
-  let score = 0;
-
-  if (tradeable) score += 120;
-  if (marketStatusHints.length > 0 && !marketStatusHints.includes("TRADEABLE"))
-    score -= 30;
-  if (row?.streamingPricesAvailable === true) score += 20;
-  if (
-    Number.isFinite(bid) &&
-    Number.isFinite(offer) &&
-    offer >= bid &&
-    offer > 0
-  ) {
-    score += 18;
-    const mid = (bid + offer) / 2;
-    if (mid > 0) {
-      const spreadPct = ((offer - bid) / mid) * 100;
-      if (Number.isFinite(spreadPct)) {
-        if (spreadPct <= 0.05) score += 15;
-        else if (spreadPct <= 0.2) score += 8;
-        else if (spreadPct <= 0.5) score += 4;
-      }
-    }
-  }
-
-  score += DISCOVERY_INSTRUMENT_TYPE_WEIGHTS[type] ?? 6;
-
-  if (/^[A-Z]{6}$/.test(normalizedSymbol)) score += 24;
-  if (normalizedSymbol.endsWith("USDT")) score += 22;
-  else if (normalizedSymbol.endsWith("USD")) score += 16;
-  else if (
-    normalizedSymbol.endsWith("EUR") ||
-    normalizedSymbol.endsWith("GBP") ||
-    normalizedSymbol.endsWith("JPY")
-  )
-    score += 10;
-  if (normalizedSymbol.startsWith("XAU")) score += 18;
-
-  if (termCmp.length >= 2) {
-    if (discoveredCmp === termCmp) score += 28;
-    if (epicCmp === termCmp || symbolCmp === termCmp) score += 20;
-    if (discoveredCmp.startsWith(termCmp)) score += 14;
-    if (epicCmp.startsWith(termCmp) || symbolCmp.startsWith(termCmp))
-      score += 10;
-    if (discoveredCmp.includes(termCmp)) score += 6;
-  }
-
-  return score;
-}
-
-function isScalpDiscoverySymbolCandidate(symbolRaw: string): boolean {
-  const symbol = normalizeTicker(symbolRaw);
-  if (!symbol) return false;
-  if (/^[A-Z]{6}$/.test(symbol)) return true; // FX pairs like EURUSD
-  if (symbol.endsWith("USDT")) return true;
-  if (symbol.startsWith("XAU") || symbol.startsWith("XAG")) return true;
-  if (
-    symbol.endsWith("USD") ||
-    symbol.endsWith("EUR") ||
-    symbol.endsWith("GBP") ||
-    symbol.endsWith("JPY") ||
-    symbol.endsWith("AUD") ||
-    symbol.endsWith("CAD") ||
-    symbol.endsWith("CHF") ||
-    symbol.endsWith("NZD")
-  ) {
-    return symbol.length >= 6 && symbol.length <= 12;
-  }
-  return false;
-}
-
-export async function discoverCapitalMarketSymbols(
-  params: DiscoverCapitalMarketSymbolsParams = {},
-): Promise<DiscoverCapitalMarketSymbolsResult> {
-  const terms = resolveCapitalDiscoveryTerms(params.searchTerms);
-  const preferFullScan = params.preferFullScan !== false;
-  const diagnostics: DiscoverCapitalMarketSymbolsResult["diagnostics"] = {
-    termsAttempted: terms.length + (preferFullScan ? 1 : 0),
-    termsSucceeded: 0,
-    rowsSeen: 0,
-    rowsTradeable: 0,
-    mappedSymbols: 0,
-    errors: [],
-  };
-  if (!terms.length) {
-    return {
-      symbols: [],
-      diagnostics,
-    };
-  }
-
-  const pageSize = Math.max(
-    10,
-    Math.min(200, Math.floor(Number(params.pageSize) || 50)),
-  );
-  const maxSymbols = Math.max(
-    1,
-    Math.min(5000, Math.floor(Number(params.maxSymbols) || 500)),
-  );
-  const requireTradeable = params.requireTradeable !== false;
-  const scoreBySymbol = new Map<string, number>();
-  const firstSeenIndex = new Map<string, number>();
-  let seenCursor = 0;
-
-  const ingestRows = (rows: CapitalMarketSearchRow[], term: string) => {
-    for (const row of rows) {
-      const tradeable = isTradeableCapitalMarketRow(row);
-      if (tradeable) diagnostics.rowsTradeable += 1;
-      if (requireTradeable && !tradeable) continue;
-      const symbol = extractDiscoverableSymbolFromMarketRow(row);
-      if (!symbol) continue;
-      if (!isScalpDiscoverySymbolCandidate(symbol)) continue;
-      const score = scoreDiscoverableMarketRow({
-        row,
-        symbol,
-        term,
-        tradeable,
-      });
-      const previous = scoreBySymbol.get(symbol);
-      if (previous === undefined) {
-        scoreBySymbol.set(symbol, score);
-        diagnostics.mappedSymbols += 1;
-        firstSeenIndex.set(symbol, seenCursor);
-        seenCursor += 1;
-      } else {
-        // Reward symbols that consistently match across discovery terms.
-        scoreBySymbol.set(symbol, Math.max(previous, score) + 2);
-      }
-    }
-  };
-
-  if (preferFullScan) {
-    let payload: any = null;
-    try {
-      payload = await capitalFetch(
-        "GET",
-        "/api/v1/markets",
-        undefined,
-        undefined,
-        true,
-      );
-      diagnostics.termsSucceeded += 1;
-    } catch (err: any) {
-      diagnostics.errors.push(
-        `FULL_SCAN:${String(err?.message || err || "fetch_failed").slice(0, 120)}`,
-      );
-    }
-
-    if (payload) {
-      const rows = extractRows<CapitalMarketSearchRow>(payload, [
-        "markets",
-        "data",
-      ]);
-      diagnostics.rowsSeen += rows.length;
-      ingestRows(rows, "FULL_SCAN");
-    }
-  }
-
-  if (scoreBySymbol.size === 0) {
-    for (const term of terms) {
-      let payload: any = null;
-      try {
-        payload = await capitalFetch(
-          "GET",
-          "/api/v1/markets",
-          { searchTerm: term, pageSize },
-          undefined,
-          true,
-        );
-        diagnostics.termsSucceeded += 1;
-      } catch (err: any) {
-        diagnostics.errors.push(
-          `${term}:${String(err?.message || err || "fetch_failed").slice(0, 120)}`,
-        );
-        continue;
-      }
-
-      const rows = extractRows<CapitalMarketSearchRow>(payload, [
-        "markets",
-        "data",
-      ]);
-      diagnostics.rowsSeen += rows.length;
-      ingestRows(rows, term);
-    }
-  }
-
-  const rankedSymbols = Array.from(scoreBySymbol.entries())
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      const aSeen = firstSeenIndex.get(a[0]) ?? Number.MAX_SAFE_INTEGER;
-      const bSeen = firstSeenIndex.get(b[0]) ?? Number.MAX_SAFE_INTEGER;
-      if (aSeen !== bSeen) return aSeen - bSeen;
-      return a[0].localeCompare(b[0]);
-    })
-    .slice(0, maxSymbols)
-    .map(([symbol]) => symbol);
-
-  return {
-    symbols: rankedSymbols,
-    diagnostics,
-  };
-}
 
 function scoreMarketCandidate(
   row: CapitalMarketSearchRow,
@@ -2639,77 +2135,6 @@ async function resolveCapitalForexBaseUnitUsdLive(params: {
   });
 }
 
-export async function fetchCapitalSymbolMarketMetadata(
-  symbol: string,
-): Promise<ScalpSymbolMarketMetadata> {
-  const normalizedSymbol = normalizeTicker(symbol);
-  const resolved = await resolveCapitalEpicRuntime(normalizedSymbol);
-  const [details, overview] = await Promise.all([
-    loadMarketDetails(resolved.epic),
-    loadMarketOverview(resolved.epic).catch(() => null),
-  ]);
-  const pipPosition = safeInteger(
-    overview?.pipPosition ?? (overview as any)?.instrument?.pipPosition,
-  );
-  const tickSize = safePositiveNumber(
-    overview?.tickSize ?? (overview as any)?.instrument?.tickSize,
-  );
-  const decimalPlacesFactor =
-    safeInteger(
-      details.decimalPlacesFactor ?? overview?.snapshot?.decimalPlacesFactor,
-    ) ?? null;
-  const scalingFactor =
-    safeInteger(details.scalingFactor ?? overview?.snapshot?.scalingFactor) ??
-    null;
-  const instrumentType =
-    normalizeCapitalText(
-      details.instrumentType ??
-        overview?.instrumentType ??
-        (overview as any)?.instrument?.type,
-    ) ?? null;
-  const marketStatus =
-    normalizeCapitalText(
-      details.marketStatus ??
-        overview?.marketStatus ??
-        overview?.status ??
-        overview?.snapshot?.marketStatus,
-    ) ?? null;
-  const openingHours =
-    details.openingHours ||
-    parseCapitalOpeningHours(
-      overview?.openingHours ?? (overview as any)?.instrument?.openingHours,
-    );
-  const pipSize = deriveCapitalPipSize({
-    symbol: normalizedSymbol,
-    instrumentType,
-    minStepDistance: details.minStepDistance,
-    pipPosition,
-    tickSize,
-    decimalPlacesFactor,
-  });
-
-  return normalizeScalpSymbolMarketMetadata({
-    symbol: normalizedSymbol,
-    epic: details.epic || resolved.epic,
-    source: "heuristic",
-    assetCategory: scalpAssetCategoryFromInstrumentType(
-      normalizedSymbol,
-      instrumentType,
-    ),
-    instrumentType,
-    marketStatus,
-    pipSize,
-    pipPosition,
-    tickSize,
-    decimalPlacesFactor,
-    scalingFactor,
-    minDealSize: details.minDealSize,
-    sizeDecimals: details.sizeDecimals,
-    openingHours,
-    fetchedAtMs: details.snapshotTsMs ?? Date.now(),
-  });
-}
-
 function extractDirection(
   position: CapitalPositionRow,
 ): "long" | "short" | null {
@@ -2763,39 +2188,6 @@ function extractDealReference(position: CapitalPositionRow): string | null {
     position?.position?.dealReference ?? position?.dealReference;
   if (!reference) return null;
   return String(reference);
-}
-
-function filterOpenCapitalPositionsByOwnership(
-  rows: CapitalPositionRow[],
-  params: {
-    epic?: string | null;
-    dealId?: string | null;
-    dealReference?: string | null;
-  },
-): { matches: CapitalPositionRow[]; matchedBy: CapitalPositionOwnershipMatch } {
-  const dealId = String(params.dealId || "").trim();
-  if (dealId) {
-    const matches = rows.filter((row) => extractDealId(row) === dealId);
-    if (matches.length > 0) return { matches, matchedBy: "dealId" };
-  }
-
-  const dealReference = String(params.dealReference || "").trim();
-  if (dealReference) {
-    const matches = rows.filter(
-      (row) => extractDealReference(row) === dealReference,
-    );
-    if (matches.length > 0) return { matches, matchedBy: "dealReference" };
-  }
-
-  const epic = normalizeTicker(String(params.epic || ""));
-  if (epic) {
-    const matches = rows.filter(
-      (row) => String(row?.market?.epic || "").toUpperCase() === epic,
-    );
-    if (matches.length > 0) return { matches, matchedBy: "epic" };
-  }
-
-  return { matches: [], matchedBy: null };
 }
 
 async function listOpenCapitalPositions(): Promise<CapitalPositionRow[]> {
@@ -3123,59 +2515,6 @@ async function findOpenCapitalPositionByEpic(
   return match ?? null;
 }
 
-function computeOpenPnlPctFromPositionRow(
-  position: CapitalPositionRow,
-): number | null {
-  const side = extractDirection(position);
-  const entry = extractEntryPrice(position);
-  if (!side || !entry || entry <= 0) return null;
-
-  const bid = safeNumber(position?.market?.bid, NaN);
-  const offer = safeNumber(position?.market?.offer, NaN);
-  const mark =
-    Number.isFinite(bid) && Number.isFinite(offer)
-      ? (bid + offer) / 2
-      : Number.isFinite(bid)
-        ? bid
-        : offer;
-  if (!Number.isFinite(mark) || mark <= 0) return null;
-
-  const lev = extractLeverage(position) ?? 1;
-  const sideSign = side === "long" ? 1 : -1;
-  const pct = ((mark - entry) / entry) * sideSign * lev * 100;
-  return Number.isFinite(pct) ? pct : null;
-}
-
-export async function fetchCapitalOpenPositionSnapshots(): Promise<
-  CapitalOpenPositionSnapshot[]
-> {
-  const rows = await listOpenCapitalPositions();
-  const updatedAtMs = Date.now();
-
-  return rows
-    .map((row) => {
-      const epic = normalizeTicker(String(row?.market?.epic || ""));
-      if (!epic) return null;
-      const bid = safeNumber(row?.market?.bid, NaN);
-      const offer = safeNumber(row?.market?.offer, NaN);
-      return {
-        epic,
-        dealId: extractDealId(row),
-        dealReference: extractDealReference(row),
-        side: extractDirection(row),
-        entryPrice: extractEntryPrice(row),
-        leverage: extractLeverage(row),
-        size: extractPositionSize(row),
-        pnlPct: computeOpenPnlPctFromPositionRow(row),
-        bid: Number.isFinite(bid) ? bid : null,
-        offer: Number.isFinite(offer) ? offer : null,
-        createdAtMs: extractEntryTimestamp(row) ?? null,
-        updatedAtMs,
-      } satisfies CapitalOpenPositionSnapshot;
-    })
-    .filter((row): row is CapitalOpenPositionSnapshot => row !== null);
-}
-
 function computeOpenPnlPct(
   position: CapitalPositionRow,
   details: MarketDetails | null,
@@ -3347,7 +2686,7 @@ export type CapitalMinSizeAffordability = {
 };
 
 // Can the account cover the SMALLEST tradeable position for this symbol right now?
-// Mirrors the sizing pre-check in resolveCapitalScalpOrderSizing (maxNotional =
+// Mirrors the sizing pre-check in resolveCapitalOrderSizing (maxNotional =
 // availableMargin * leverage vs minNotional = minDealSize * unitPrice) so a
 // pre-AI skip matches exactly what execution would reject on. Fails OPEN: any
 // missing input (unknown margin, price, min size) returns affordable=true so we
@@ -3369,7 +2708,7 @@ export async function evaluateCapitalMinSizeAffordability(
   const referencePrice = Number.isFinite(priceCandidate) && priceCandidate > 0
     ? priceCandidate
     : null;
-  const assetCategory = scalpAssetCategoryFromInstrumentType(
+  const assetCategory = assetCategoryFromInstrumentType(
     normalizeTicker(symbol),
     details.instrumentType,
   );
@@ -3414,7 +2753,7 @@ export async function evaluateCapitalMinSizeAffordability(
 
   // Probe the shared sizing logic with a requested notional large enough that the
   // only thing that can reject is the min-size-vs-margin ceiling (line-1060 path).
-  const sizing = resolveCapitalScalpOrderSizing({
+  const sizing = resolveCapitalOrderSizing({
     symbol,
     assetCategory,
     requestedNotionalUsd: Number.MAX_SAFE_INTEGER,
@@ -3506,7 +2845,7 @@ async function openCapitalPosition(params: {
   if (!(referencePrice > 0))
     throw new Error(`Cannot derive reference price for ${symbol}`);
 
-  const assetCategory = scalpAssetCategoryFromInstrumentType(
+  const assetCategory = assetCategoryFromInstrumentType(
     normalizeTicker(symbol),
     details.instrumentType,
   );
@@ -3543,7 +2882,7 @@ async function openCapitalPosition(params: {
   const availableMarginUsd = await fetchCapitalAccountAvailableMarginUsd().catch(
     () => null,
   );
-  const sizing = resolveCapitalScalpOrderSizing({
+  const sizing = resolveCapitalOrderSizing({
     symbol,
     assetCategory,
     requestedNotionalUsd: requestedNotional,
@@ -3805,114 +3144,6 @@ async function openCapitalPosition(params: {
   };
 }
 
-export async function executeCapitalScalpEntry(params: {
-  symbol: string;
-  direction: "BUY" | "SELL";
-  notionalUsd: number;
-  leverage?: number | null;
-  dryRun?: boolean;
-  clientOid?: string;
-  orderType?: "MARKET" | "LIMIT";
-  limitLevel?: number | null;
-  stopLevel?: number | null;
-  profitLevel?: number | null;
-}): Promise<CapitalScalpEntryResult> {
-  const symbol = String(params.symbol || "")
-    .trim()
-    .toUpperCase();
-  const notionalUsd = Number(params.notionalUsd);
-  if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
-    throw new Error(`Invalid scalp entry notional for ${symbol}`);
-  }
-  const clientOid = String(
-    params.clientOid || `cap-scl-${crypto.randomUUID()}`,
-  ).slice(0, 64);
-  const leverage = clampLeverage(params.leverage ?? null);
-  const dryRun = params.dryRun ?? true;
-  const orderType = params.orderType === "LIMIT" ? "LIMIT" : "MARKET";
-
-  if (dryRun) {
-    return {
-      placed: false,
-      dryRun: true,
-      orderId: null,
-      dealId: null,
-      dealReference: null,
-      clientOid,
-      symbol,
-      direction: params.direction,
-      notionalUsd,
-      leverage,
-      orderType,
-      size: null,
-      epic: null,
-      dealStatus: null,
-      confirmStatus: null,
-      rejectReason: null,
-      reasonCodes: [],
-    };
-  }
-
-  const opened = await openCapitalPosition({
-    symbol,
-    direction: params.direction,
-    sideSizeUSDT: notionalUsd,
-    leverage,
-    clientOid,
-    orderType,
-    limitLevel: params.limitLevel ?? null,
-    stopLevel: params.stopLevel ?? null,
-    profitLevel: params.profitLevel ?? null,
-    forceOpen: true,
-  });
-  if (!opened.accepted) {
-    return {
-      placed: false,
-      dryRun: false,
-      orderId: null,
-      dealId: null,
-      dealReference: opened.dealReference ?? clientOid,
-      clientOid,
-      symbol,
-      direction: params.direction,
-      notionalUsd:
-        Number.isFinite(Number(opened.notionalUsd)) && Number(opened.notionalUsd) > 0
-          ? Number(opened.notionalUsd)
-          : notionalUsd,
-      leverage,
-      orderType,
-      size: opened.size,
-      epic: opened.epic,
-      dealStatus: opened.dealStatus ?? null,
-      confirmStatus: opened.confirmStatus ?? null,
-      rejectReason: opened.rejectReason ?? null,
-      reasonCodes: opened.reasonCodes || [],
-    };
-  }
-  return {
-    placed: true,
-    dryRun: false,
-    orderId: opened.orderId,
-    dealId: opened.dealId ?? null,
-    dealReference: opened.dealReference ?? clientOid,
-    clientOid,
-    symbol,
-    direction: params.direction,
-    notionalUsd:
-      Number.isFinite(Number(opened.notionalUsd)) && Number(opened.notionalUsd) > 0
-        ? Number(opened.notionalUsd)
-        : notionalUsd,
-    leverage,
-    orderType,
-    size: opened.size,
-    epic: opened.epic,
-    dealStatus: opened.dealStatus ?? null,
-    confirmStatus: opened.confirmStatus ?? null,
-    rejectReason: opened.rejectReason ?? null,
-    reasonCodes: opened.reasonCodes || [],
-  };
-}
-
 async function closeCapitalPosition(
   position: CapitalPositionRow,
   partialClosePct: number | null,
@@ -3992,65 +3223,6 @@ async function closeCapitalPosition(
     payload,
     orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
     partial: false,
-  };
-}
-
-export async function closeCapitalPositionByOwnership(params: {
-  dealId?: string | null;
-  dealReference?: string | null;
-  epic?: string | null;
-  partialClosePct?: number | null;
-  clientOid?: string | null;
-}): Promise<{
-  closed: boolean;
-  orderId: string | null;
-  clientOid: string;
-  partial: boolean;
-  matchedOwnership: CapitalPositionOwnershipMatch;
-  note?: string;
-}> {
-  const clientOid = String(
-    params.clientOid || `cap-close-${crypto.randomUUID()}`,
-  ).slice(0, 64);
-  const rows = await listOpenCapitalPositions();
-  const ownership = filterOpenCapitalPositionsByOwnership(rows, {
-    dealId: params.dealId ?? null,
-    dealReference: params.dealReference ?? null,
-    epic: params.epic ?? null,
-  });
-  if (ownership.matches.length === 0) {
-    return {
-      closed: false,
-      orderId: null,
-      clientOid,
-      partial: false,
-      matchedOwnership: ownership.matchedBy,
-      note: "no_matching_position",
-    };
-  }
-  if (ownership.matches.length > 1) {
-    return {
-      closed: false,
-      orderId: null,
-      clientOid,
-      partial: false,
-      matchedOwnership: ownership.matchedBy,
-      note: "ambiguous_matching_positions",
-    };
-  }
-
-  const partialClosePct = normalizeClosePct(params.partialClosePct) ?? 100;
-  const closed = await closeCapitalPosition(
-    ownership.matches[0],
-    partialClosePct,
-    clientOid,
-  );
-  return {
-    closed: true,
-    orderId: closed.orderId ?? null,
-    clientOid,
-    partial: closed.partial,
-    matchedOwnership: ownership.matchedBy,
   };
 }
 

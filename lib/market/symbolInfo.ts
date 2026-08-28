@@ -1,4 +1,4 @@
-export type ScalpAssetCategory =
+export type AssetCategory =
   | "forex"
   | "crypto"
   | "commodity"
@@ -6,7 +6,7 @@ export type ScalpAssetCategory =
   | "equity"
   | "other";
 
-type ScalpPipMetadataLike = {
+type PipMetadataLike = {
   pipSize?: unknown;
 } | null;
 
@@ -124,7 +124,7 @@ export function isPreciousMetalFamilySymbol(symbol: string): boolean {
   );
 }
 
-export function inferScalpAssetCategory(symbol: string): ScalpAssetCategory {
+export function inferAssetCategory(symbol: string): AssetCategory {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return "other";
   if (isFxSymbol(normalized)) return "forex";
@@ -146,13 +146,13 @@ export function inferScalpAssetCategory(symbol: string): ScalpAssetCategory {
   return "other";
 }
 
-export function isWeekendClosedScalpSymbol(symbol: string): boolean {
-  return inferScalpAssetCategory(symbol) !== "crypto";
+export function isWeekendClosedSymbol(symbol: string): boolean {
+  return inferAssetCategory(symbol) !== "crypto";
 }
 
-export function pipSizeForScalpSymbol(
+export function pipSizeForSymbol(
   symbol: string,
-  metadata?: ScalpPipMetadataLike,
+  metadata?: PipMetadataLike,
 ): number {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return 0.0001;

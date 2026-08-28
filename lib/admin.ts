@@ -7,15 +7,6 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/swing/postmortem-drain",
   "/api/swing/weekly-digest",
   "/api/dashboard/summary-warm-fallback",
-  "/api/scalp/composer/cron/discover",
-  "/api/scalp/composer/cron/load-candles",
-  "/api/scalp/composer/cron/evaluate",
-  "/api/scalp/composer/cron/worker",
-  "/api/scalp/composer/cron/promote",
-  "/api/scalp/composer/cron/execute",
-  "/api/scalp/composer/cron/reconcile",
-  "/api/scalp/composer/cron/research",
-  "/api/scalp/composer/cron/cycle",
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {
