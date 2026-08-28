@@ -127,9 +127,26 @@ npm run db:pg:health    # counts the swing.* tables via the shared Neon client
 
 Contract tests assert only what crosses the process boundary — the ordered
 outgoing conversation (HTTP requests incl. full AI prompts, SQL) recorded by
-`test/harness/` and snapshotted under `test/contract/__snapshots__/`. No test
+`test/harness/` and snapshotted under `test/contract/**/__snapshots__/`. No test
 ever reaches the real network: msw runs with `onUnhandledRequest: 'error'` and
 Postgres is a fake client planted on `global.__pgClient`.
+
+The `test/contract/analyze/` scenarios replay a full `/api/swing/analyze` tick
+against real market data recorded in `test/contract/fixtures/`, with the test
+clock frozen at the fixture's capture time. Bitget scenarios: flat-HOLD,
+entry-SELL, in-position-manage, gated. Capital scenarios: flat-gated,
+in-position-manage (the full capital prompt + marketaux path — capital's
+flat-only gates don't apply in-position), market-closed.
+
+`npm run test:fixtures:capture -- SYMBOL [capital [category]]` re-records a
+fixture from one live dryRun tick. Bitget needs no credentials (public market
+endpoints); Capital needs real `CAPITAL_API_KEY/IDENTIFIER/PASSWORD` in the
+env (`vercel env pull`) for one read-only session — the session call is never
+recorded and account-state endpoints are stubbed, so fixtures contain market
+data only. Scenarios are calibrated to the captured market's structure, so
+after a re-capture expect to re-check gate outcomes (promptSkipped), re-pick
+the entry direction and refresh the snapshots. Capital tick tests run ~12s
+each: the rate limiter serializes calls against the frozen clock.
 
 ## API Routes (current behavior)
 

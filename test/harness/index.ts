@@ -101,14 +101,24 @@ async function describeRequest(request: Request): Promise<RecordedEntry> {
 
 // --- Normalization -----------------------------------------------------------
 
-const VOLATILE = [
-    // ISO timestamps
-    [/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIMESTAMP>'],
-    // The frozen clock as epoch-ms — Date.now() leaks into bodies and URLs
-    [new RegExp(`\\b${FIXED_NOW_MS}\\b`, 'g'), '<NOW_MS>'],
-    // Marketaux authenticates via query param
-    [/api_token=[^&"\s]+/g, 'api_token=<TOKEN>'],
-] as const;
+// The clock a boundary test runs on — FIXED_NOW_MS unless the test passes its
+// own (fixture-replay tests freeze at the fixture's capture time).
+let activeNowMs = FIXED_NOW_MS;
+
+function volatilePatterns(): ReadonlyArray<readonly [RegExp, string]> {
+    return [
+        // ISO timestamps
+        [/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<TIMESTAMP>'],
+        // The frozen clock as epoch-ms — Date.now() leaks into bodies and URLs
+        [new RegExp(`\\b${activeNowMs}\\b`, 'g'), '<NOW_MS>'],
+        // Marketaux authenticates via query param
+        [/api_token=[^&"\s]+/g, 'api_token=<TOKEN>'],
+        // clientOids from crypto.randomUUID() — bitget 'cfw-' (lib/trading.ts),
+        // capital 'cap-' (lib/capital.ts executeCapitalDecision). No leading \b:
+        // inside URL-encoded KV bodies the id follows '%22', a word character.
+        [/(cfw|cap)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '$1-<UUID>'],
+    ] as const;
+}
 
 /**
  * Sort keys recursively so that merely reordering an object literal in
@@ -127,7 +137,7 @@ function sortKeys(value: unknown): unknown {
 }
 
 function normalize(text: string): string {
-    return VOLATILE.reduce<string>((out, [pattern, replacement]) => out.replace(pattern, replacement), text);
+    return volatilePatterns().reduce<string>((out, [pattern, replacement]) => out.replace(pattern, replacement), text);
 }
 
 function format(request: RecordedEntry): string {
@@ -178,17 +188,25 @@ server.events.on('request:start', ({ request }) => {
  * after every test. Only env read lazily can be stubbed this way; the
  * import-time-frozen vars live in test/harness/setup-*.ts.
  */
-export function startBoundary(world: World | (() => World) = {}): {
+export function startBoundary(
+    world: World | (() => World) = {},
+    opts: { nowMs?: number } = {},
+): {
     use: (...handlers: RequestHandler[]) => void;
 } {
     const buildWorld = typeof world === 'function' ? world : () => world;
+    const nowMs = opts.nowMs ?? FIXED_NOW_MS;
 
     beforeAll(() => {
         server.listen({ onUnhandledRequest: 'error' });
     });
 
     beforeEach(() => {
-        vi.useFakeTimers({ now: FIXED_NOW_MS, toFake: ['Date'] });
+        activeNowMs = nowMs;
+        vi.useFakeTimers({ now: nowMs, toFake: ['Date'] });
+        // Deterministic randomness: kills lib/swing/pg.ts's 1-in-500 tick-log
+        // retention sweep and freezes retry-jitter arithmetic.
+        vi.spyOn(Math, 'random').mockReturnValue(0.5);
         const built = buildWorld();
         // resetHandlers(...) also sets the baseline for this test
         server.resetHandlers(...(built.http ?? []));
@@ -199,7 +217,7 @@ export function startBoundary(world: World | (() => World) = {}): {
     afterEach(() => {
         vi.unstubAllEnvs();
         vi.useRealTimers();
-        vi.clearAllMocks();
+        vi.restoreAllMocks();
     });
 
     afterAll(() => {

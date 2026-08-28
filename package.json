@@ -27,7 +27,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run --project unit",
-    "test:contract": "vitest run --project contract"
+    "test:contract": "vitest run --project contract",
+    "test:fixtures:capture": "node --import tsx scripts/capture-analyze-fixtures.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

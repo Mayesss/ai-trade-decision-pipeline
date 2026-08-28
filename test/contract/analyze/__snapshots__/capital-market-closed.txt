@@ -1,0 +1,94 @@
+POST https://api-capital.backend-capital.com/api/v1/session
+  content-type: application/json
+  x-cap-api-key: test-capital-key
+  {
+    "identifier": "test-capital-user",
+    "password": "test-capital-pass"
+  }
+
+GET https://api-capital.backend-capital.com/api/v1/markets/EURUSD
+  content-type: application/json
+  cst: test-cst
+  x-cap-api-key: test-capital-key
+  x-security-token: test-security-token
+
+GET https://api-capital.backend-capital.com/api/v1/markets/EURUSD
+  content-type: application/json
+  cst: test-cst
+  x-cap-api-key: test-capital-key
+  x-security-token: test-security-token
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.tick_log (ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb )",
+    "values": [
+      <NOW_MS>,
+      "EURUSD",
+      "capital",
+      "skip",
+      "capital_market_closed",
+      "capital_market_closed:CLOSED",
+      "manual",
+      true,
+      null,
+      null
+    ]
+  }
+
+POST https://kv.boundary.test/SETEX/decision%3A1786528800000%3Acapital%3AEURUSD/604800/%7B%22timestamp%22%3A1786528800000%2C%22symbol%22%3A%22EURUSD%22%2C%22category%22%3A%22forex%22%2C%22platform%22%3A%22capital%22%2C%22instrumentId%22%3A%22EURUSD%22%2C%22newsSource%22%3A%22marketaux%22%2C%22timeFrame%22%3A%224H%22%2C%22dryRun%22%3Atrue%2C%22prompt%22%3Anull%2C%22aiDecision%22%3A%7B%22action%22%3A%22HOLD%22%2C%22bias%22%3A%22NEUTRAL%22%2C%22signal_strength%22%3A%22LOW%22%2C%22summary%22%3A%22capital_market_closed%22%2C%22reason%22%3A%22capital_market_closed%3ACLOSED%22%2C%22decision_source%22%3A%22pre_ai_skip%22%2C%22promptSkipped%22%3Atrue%2C%22skipStage%22%3A%22capital_market_closed%22%7D%2C%22execResult%22%3A%7B%22placed%22%3Afalse%2C%22orderId%22%3Anull%2C%22clientOid%22%3Anull%2C%22reason%22%3A%22capital_market_closed%22%7D%2C%22snapshot%22%3A%7B%22category%22%3A%22forex%22%2C%22platform%22%3A%22capital%22%2C%22newsSource%22%3A%22marketaux%22%2C%22instrumentId%22%3A%22EURUSD%22%2C%22promptSkipped%22%3Atrue%2C%22skipStage%22%3A%22capital_market_closed%22%2C%22skipReason%22%3A%22capital_market_closed%3ACLOSED%22%2C%22usedTape%22%3Afalse%2C%22marketStatus%22%3A%22CLOSED%22%7D%2C%22biasTimeframes%22%3A%7B%22context%22%3A%221W%22%2C%22macro%22%3A%221D%22%2C%22primary%22%3A%224H%22%2C%22micro%22%3A%221H%22%7D%7D
+  authorization: Bearer <TOKEN>
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.decisions ( decided_at_ms, symbol, platform, category, instrument_id, news_source, time_frame, dry_run, action, applied_leverage, target_leverage, prompt_json, ai_decision_json, exec_result_json, snapshot_json, bias_timeframes_json ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb ) ON CONFLICT (decided_at_ms, platform, symbol) DO UPDATE SET category = EXCLUDED.category, instrument_id = EXCLUDED.instrument_id, news_source = EXCLUDED.news_source, time_frame = EXCLUDED.time_frame, dry_run = EXCLUDED.dry_run, action = EXCLUDED.action, applied_leverage = EXCLUDED.applied_leverage, target_leverage = EXCLUDED.target_leverage, prompt_json = EXCLUDED.prompt_json, ai_decision_json = EXCLUDED.ai_decision_json, exec_result_json = EXCLUDED.exec_result_json, snapshot_json = EXCLUDED.snapshot_json, bias_timeframes_json = EXCLUDED.bias_timeframes_json RETURNING id;",
+    "values": [
+      <NOW_MS>,
+      "EURUSD",
+      "capital",
+      "forex",
+      "EURUSD",
+      "marketaux",
+      "4H",
+      true,
+      "HOLD",
+      null,
+      null,
+      null,
+      "{\"action\":\"HOLD\",\"bias\":\"NEUTRAL\",\"signal_strength\":\"LOW\",\"summary\":\"capital_market_closed\",\"reason\":\"capital_market_closed:CLOSED\",\"decision_source\":\"pre_ai_skip\",\"promptSkipped\":true,\"skipStage\":\"capital_market_closed\"}",
+      "{\"placed\":false,\"orderId\":null,\"clientOid\":null,\"reason\":\"capital_market_closed\"}",
+      "{\"category\":\"forex\",\"platform\":\"capital\",\"newsSource\":\"marketaux\",\"instrumentId\":\"EURUSD\",\"promptSkipped\":true,\"skipStage\":\"capital_market_closed\",\"skipReason\":\"capital_market_closed:CLOSED\",\"usedTape\":false,\"marketStatus\":\"CLOSED\"}",
+      "{\"context\":\"1W\",\"macro\":\"1D\",\"primary\":\"4H\",\"micro\":\"1H\"}"
+    ]
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "DEL",
+    "swing:dashboard:summary:v6:1D"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "DEL",
+    "swing:dashboard:summary:v6:7D"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "DEL",
+    "swing:dashboard:summary:v6:30D"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "DEL",
+    "swing:dashboard:summary:v6:6M"
+  ]
