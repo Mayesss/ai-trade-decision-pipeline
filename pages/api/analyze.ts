@@ -62,7 +62,7 @@ import {
 } from '../../lib/ai';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
 import { AiCallError } from '../../lib/aiError';
-import { callSwingDecision, resolveSwingAiProvider } from '../../lib/aiProvider';
+import { callSwingDecision, resolveSwingAiProvider, type SwingDecisionCallResult } from '../../lib/aiProvider';
 import { truncateClaudeTranscript } from '../../lib/claudeAi';
 import { getGates } from '../../lib/gates';
 
@@ -80,6 +80,7 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory, type DecisionSnapshot } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
+import { buildWakeAutoEntryDecision } from '../../lib/swing/wakeAutoEntry';
 import {
     breakTriggerFailed,
     flatWakePlanStale,
@@ -2742,20 +2743,67 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // provider.
         const activeChainProvider = resolveSwingAiProvider();
         const chainedTranscript = aiThreadProvider === activeChainProvider ? aiThreadTranscript : null;
-        const {
-            json: decisionRaw,
-            responseId: aiResponseId,
-            provider: aiCallProvider,
-            model: aiCallModel,
-            usage: aiCallUsage,
-            appendTurns: aiAppendTurns,
-        } = await callSwingDecision({
-            system,
-            user,
-            schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-            thread: { transcript: chainedTranscript },
-        });
-        const decision = postprocessDecision({
+        // Mechanical entry on a CONFIRMED wake fire (lib/swing/wakeAutoEntry):
+        // a sustained band that fired confirmed —
+        // held for the AI's own window or extended by force — skips the AI
+        // call and executes a synthetic decision through the same pipeline.
+        // The 60d replay (2026-08-29) measured the AI converting its own
+        // confirmed breakout plans at 3.3% while re-arming retest bands in
+        // endless HOLD chains; instant-touch fires (no sustain window) still
+        // go to the AI, since entering those mechanically lost money in the
+        // same replay. Falls through to the normal AI call when the builder
+        // cannot anchor a stop (no usable ATR).
+        const wakeAutoEntryRaw = (() => {
+            if (positionOpen || !cooldownWake || cooldownWake.expired) return null;
+            if (cooldownWake.sustainedMinutes == null && cooldownWake.breakExtensionAtr == null) return null;
+            const atrRaw = Number(indicators?.metrics?.[timeFrame]?.atr);
+            return buildWakeAutoEntryDecision({
+                crossed: cooldownWake.crossed,
+                level: cooldownWake.level,
+                note: cooldownWake.note,
+                sustainedMinutes: cooldownWake.sustainedMinutes ?? null,
+                breakExtensionAtr: cooldownWake.breakExtensionAtr ?? null,
+                price: Number.isFinite(lastPrice) ? lastPrice : effectivePrice,
+                primaryAtr: Number.isFinite(atrRaw) && atrRaw > 0 ? atrRaw : null,
+            });
+        })();
+        let decisionRaw: Record<string, unknown> = {};
+        let aiResponseId: string | null = null;
+        let aiCallProvider = 'openai';
+        let aiCallModel: string | null = null;
+        let aiCallUsage: SwingDecisionCallResult['usage'] = null;
+        let aiAppendTurns: unknown[] | null | undefined = null;
+        // True while this tick is executing the mechanical wake entry; cleared
+        // when a mechanical dead-end falls back to the normal AI call below.
+        let wakeAutoEntryTaken = wakeAutoEntryRaw !== null;
+        const callAiForDecision = () =>
+            callSwingDecision({
+                system,
+                user,
+                schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
+                thread: { transcript: chainedTranscript },
+            });
+        if (wakeAutoEntryRaw) {
+            decisionRaw = wakeAutoEntryRaw;
+            // Synthetic id: keeps the thread/persist bookkeeping below on the
+            // same path an AI decision takes (a thread row is required so the
+            // next tick manages the position; it opens stateless by design).
+            aiResponseId = `wake-auto-${Date.now()}`;
+            aiCallProvider = 'wake-auto';
+            aiCallModel = null;
+            aiCallUsage = null;
+            aiAppendTurns = null;
+        } else {
+            ({
+                json: decisionRaw,
+                responseId: aiResponseId,
+                provider: aiCallProvider,
+                model: aiCallModel,
+                usage: aiCallUsage,
+                appendTurns: aiAppendTurns,
+            } = await callAiForDecision());
+        }
+        let decision = postprocessDecision({
             decision: decisionRaw,
             context,
             gates: gatesOut.gates,
@@ -2764,7 +2812,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionContext,
             policy: decisionPolicy,
             lastClosedPosition,
+            confirmedWakeEntry: wakeAutoEntryTaken,
         });
+        if (wakeAutoEntryTaken && decision.action !== 'BUY' && decision.action !== 'SELL') {
+            // A hard constraint (trend guard, re-entry cooldown, base gates)
+            // demoted the synthetic entry. A silent synthetic HOLD would
+            // consume the wake with no look and no re-plan — and enqueue a
+            // refusal investigation for a "refusal" the AI never made. Any
+            // mechanical dead-end falls through to the normal AI call instead:
+            // it cannot enter either (same constraints), but it can arm the
+            // opposite-side plan or a sensible cooldown.
+            wakeAutoEntryTaken = false;
+            ({
+                json: decisionRaw,
+                responseId: aiResponseId,
+                provider: aiCallProvider,
+                model: aiCallModel,
+                usage: aiCallUsage,
+                appendTurns: aiAppendTurns,
+            } = await callAiForDecision());
+            decision = postprocessDecision({
+                decision: decisionRaw,
+                context,
+                gates: gatesOut.gates,
+                positionOpen,
+                recentActions,
+                positionContext,
+                policy: decisionPolicy,
+                lastClosedPosition,
+            });
+        }
+        if (wakeAutoEntryTaken) {
+            // Cohort marker for SQL ("do mechanical wake entries pay?"):
+            // rides ai_decision_json next to risk_sizing.
+            decision.wake_auto_entry = {
+                confirmed_via: cooldownWake?.breakExtensionAtr != null ? 'extension' : 'time',
+                sustained_minutes: cooldownWake?.sustainedMinutes ?? null,
+                break_extension_atr: cooldownWake?.breakExtensionAtr ?? null,
+                level: cooldownWake?.level ?? null,
+            };
+        }
 
         // The profit-lock margin-recycle maneuver is crypto/Bitget only (set-leverage
         // + position TP/SL amend). Null the fields on any other venue so they never
@@ -2860,7 +2947,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const rawWakeAbove = decision.cooldown_wake_above;
         const rawWakeBelow = decision.cooldown_wake_below;
         const rawWakeNote = decision.cooldown_wake_note;
-        const holdCooldown = sanitizeHoldCooldown({
+        const holdCooldownRaw = sanitizeHoldCooldown({
             action: decision.action,
             positionOpen,
             price: marketAnchor,
@@ -2870,6 +2957,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             wakeNote: rawWakeNote,
             wakeSustainMinutes: decision.cooldown_wake_sustain_minutes,
         });
+        // Wake re-arm ratchet guard: a fresh wake fire that still ends in HOLD
+        // may not re-arm a band on the SAME side it just fired on — that is
+        // the measured goalpost-move loop (60d replay: 70 consecutive-wake
+        // chains, 51 never entered; US100 was woken 21 times in 4 days at
+        // ever-moving same-side levels). The OPPOSITE side survives: a retest
+        // band at a broken level after declining a confirmed break is the
+        // retest protocol, not the ratchet. The cooldown itself (quiet period)
+        // also survives — only the same-side band is dropped, so the loop
+        // ends at the normal cadence.
+        const holdCooldown = (() => {
+            if (positionOpen || !cooldownWake || cooldownWake.expired) {
+                return holdCooldownRaw;
+            }
+            if (String(decision.action || '').toUpperCase() !== 'HOLD') return holdCooldownRaw;
+            const dropAbove = cooldownWake.crossed === 'above' && holdCooldownRaw.wakeAbove !== null;
+            const dropBelow = cooldownWake.crossed === 'below' && holdCooldownRaw.wakeBelow !== null;
+            if (!dropAbove && !dropBelow) return holdCooldownRaw;
+            const wakeAbove = dropAbove ? null : holdCooldownRaw.wakeAbove;
+            const wakeBelow = dropBelow ? null : holdCooldownRaw.wakeBelow;
+            const anyBand = wakeAbove !== null || wakeBelow !== null;
+            return {
+                ...holdCooldownRaw,
+                // The AI requested this quiet period believing a band was
+                // watching it. When the guard strips the ONLY band, keeping
+                // the bare cooldown would leave the symbol blind for hours on
+                // terms the AI never signed — drop the cooldown with it (full
+                // fold: back to the normal cadence).
+                cooldownMinutes: anyBand ? holdCooldownRaw.cooldownMinutes : null,
+                wakeAbove,
+                wakeBelow,
+                wakeNote: anyBand ? holdCooldownRaw.wakeNote : null,
+                sustainMinutes: anyBand ? holdCooldownRaw.sustainMinutes : null,
+                notes: [...holdCooldownRaw.notes, 'wake_rearm_same_side_dropped'],
+            };
+        })();
         // In-position wake bands: side vs live price, strictly inside the
         // bracket as it will actually rest (this tick's sanitized amend, else
         // the standing leg), min ATR distance (churn guard). All-null when
@@ -3334,7 +3456,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // No KV marker: the decision row already surfaces this tick on the UI.
         await recordTickOutcome({
             kind: 'ai_call',
-            stage: 'decision',
+            // 'wake_auto_entry' rows carried no AI call: the decision was the
+            // mechanical confirmed-wake entry (kind stays 'ai_call' — the
+            // tick_log CHECK only knows skip|ai_call, and this IS the tick's
+            // decision row).
+            stage: wakeAutoEntryTaken ? 'wake_auto_entry' : 'decision',
             reason: String(decision.action || 'HOLD'),
             gates: gatesOut.gates,
             // ai-bouncer PROCEED verdicts ride along so tick_log alone supports
