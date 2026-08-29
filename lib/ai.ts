@@ -1087,6 +1087,11 @@ export function computeSwingState(
         // see lib/swing/lessons.ts). Rendered in the USER turn so the cached
         // system prefix stays byte-stable; [] / null omits the block.
         lessons: Array<{ scope: string; lesson: string; originLabel?: string | null }> | null = null,
+        // Fresh search-grounded news+social digest (lib/swing/perplexity.ts),
+        // fetched by the caller post-gates. Complements market.news, never
+        // replaces it. Rendered in the USER turn (cached system prefix stays
+        // byte-stable); null omits the block.
+        perplexity_context: { text: string; fetchedAtMs: number } | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1579,6 +1584,10 @@ ${
         ? `\nLESSONS (from forensic evaluations of your past trading — see INPUTS):\n${lessons
               .map((l) => `- [${l.scope}${l.originLabel ? ` | learned from ${l.originLabel}` : ''}] ${l.lesson}`)
               .join('\n')}\n`
+        : ''
+}${
+    perplexity_context?.text
+        ? `\nFRESH SENTIMENT (search-grounded news + social digest, generated ${new Date(perplexity_context.fetchedAtMs).toISOString()} — secondary color; the STATE/MARKET numbers remain the primary evidence):\n${perplexity_context.text}\n`
         : ''
 }
 TASKS:

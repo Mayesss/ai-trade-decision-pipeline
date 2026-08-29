@@ -2414,9 +2414,18 @@ export default function Home() {
                         <div className="mt-1">
                           {selectedTick.stage ? (
                             <>
-                              <span className="inline-flex rounded border border-slate-200 bg-white px-1.5 py-0.5 font-semibold text-slate-700">
-                                {selectedTick.stage}
-                              </span>
+                              {/* ai-bouncer skips get a teal badge: the cheap
+                                  triage model closed the door, not a hard gate
+                                  (matches .timeline-dot-bouncer). */}
+                              {selectedTick.stage === "ai_bouncer" ? (
+                                <span className="inline-flex rounded border border-teal-300 bg-teal-50 px-1.5 py-0.5 font-semibold text-teal-700">
+                                  AI bouncer
+                                </span>
+                              ) : (
+                                <span className="inline-flex rounded border border-slate-200 bg-white px-1.5 py-0.5 font-semibold text-slate-700">
+                                  {selectedTick.stage}
+                                </span>
+                              )}
                               {selectedTick.reason &&
                               selectedTick.reason !== selectedTick.stage
                                 ? ` · ${selectedTick.reason}`

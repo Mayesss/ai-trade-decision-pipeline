@@ -36,6 +36,8 @@ import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { recordSwingLastScan } from '../../lib/swing/lastScan';
 import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
 import { loadBtcContext } from '../../lib/swing/btcContext';
+import { loadPerplexityContext } from '../../lib/swing/perplexity';
+import { runAiBouncer, swingAiBouncerEnabled, type AiBouncerVerdict } from '../../lib/swing/aiBouncer';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
@@ -2500,6 +2502,96 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // 6z) ai-bouncer soft gate (flat entry scans ONLY): a cheap triage
+        // model decides whether the expensive decision call is worth making.
+        // It may only SKIP work — never unlocks what hard gates blocked — and
+        // is HARD-bypassed on open-position calls (skipping management risks a
+        // missed exit), wake calls (the expensive model armed that band
+        // itself), and swept-entry re-evaluations (the resting order was
+        // already cancelled upstream and demands a full re-decision).
+        // Fail-open: null verdict (disabled/error) → proceed to the full call.
+        // Placed BEFORE the supersede sweep below on purpose: the sweep's
+        // premise is "this tick reaches a fresh AI evaluation", so a bouncer
+        // skip must leave the previous tick's resting order untouched.
+        let aiBouncerVerdict: AiBouncerVerdict | null = null;
+        if (!positionOpen && !cooldownWakeActive && !sweptPendingEntry && swingAiBouncerEnabled()) {
+            aiBouncerVerdict = await runAiBouncer({
+                symbol,
+                platform,
+                category: category ?? null,
+                price: Number.isFinite(effectivePrice) ? effectivePrice : null,
+                change_24h_pct: Number.isFinite(Number(tickerData?.change24h))
+                    ? Number(tickerData?.change24h)
+                    : null,
+                signal_strength: context.signal_strength ?? null,
+                micro_bias_calc: context.micro_bias_calc ?? null,
+                primary_bias: context.primary_bias ?? null,
+                macro_bias: context.macro_bias ?? null,
+                context_bias: context.context_bias ?? null,
+                primary_trend_up: Boolean(context.primary_trend_up),
+                primary_trend_down: Boolean(context.primary_trend_down),
+                primary_breakout_confirmed: Boolean(context.primary_breakout_confirmed),
+                primary_breakdown_confirmed: Boolean(context.primary_breakdown_confirmed),
+                micro_entry_ok: Boolean(context.micro_entry_ok),
+                aligned_driver_count: context.aligned_driver_count ?? null,
+                regime_alignment: context.regime_alignment ?? null,
+                location_confluence_score: context.location_confluence_score ?? null,
+                micro_extension_atr: context.micro_extension_atr ?? null,
+                primary_extension_atr: context.primary_extension_atr ?? null,
+                breakout_retest_ok_primary: context.breakout_retest_ok_primary ?? null,
+                breakout_retest_dir_primary: context.breakout_retest_dir_primary ?? null,
+                actionability_branch: actionability?.reason ?? null,
+            });
+            if (aiBouncerVerdict && !aiBouncerVerdict.proceed) {
+                const reasonSlug =
+                    aiBouncerVerdict.reason
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, '_')
+                        .replace(/^_+|_+$/g, '')
+                        .slice(0, 60) || 'not_worth_the_call';
+                const decision: TradeDecision & Record<string, unknown> = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    summary: 'ai_bouncer_skip',
+                    reason: `flat_skip_ai_bouncer_${reasonSlug}`,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'ai_bouncer_skip' };
+                await persistPreAiSkip({
+                    stage: 'ai_bouncer',
+                    decision,
+                    execResult: execRes,
+                    gates: gatesOut.gates,
+                    metrics: gatesOut.metrics,
+                    usedTape,
+                    snapshot: {
+                        price: effectivePrice,
+                        actionability,
+                        aiBouncer: aiBouncerVerdict,
+                    },
+                });
+                emitGateDebug('ai_bouncer', {
+                    gate: 'AI_BOUNCER',
+                    reason: aiBouncerVerdict.reason,
+                    confidence: aiBouncerVerdict.confidence,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+        }
+
         // Supersede sweep for quarter ticks: this tick reaches a fresh AI
         // evaluation, so the previous evaluation's resting pullback order (if
         // any) is stale — cancel it before the new decision executes. Hourly
@@ -2572,7 +2664,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the BTC regime context (measured correlation/beta + BTC state). All
         // deferred to here so gated ticks never pay for them; each fails open
         // (prompt just omits the block).
-        const [newsBundleRes, nanoRes, btcContext, promptLessons] = await Promise.all([
+        const [newsBundleRes, nanoRes, btcContext, promptLessons, perplexityContext] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
@@ -2598,6 +2690,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // global (max 5, confidence-sorted). SWING_LESSONS_MODE=off or an
             // empty library returns [] — the prompt block just doesn't render.
             loadPromptLessons(symbol, category),
+            // Fresh search-grounded news+social digest (Perplexity sonar via
+            // the AI gateway, KV-cached). SWING_PERPLEXITY_ENABLED opt-in;
+            // fails open to null like the rest of the bundle.
+            loadPerplexityContext(symbol, { platform, category }),
         ]);
         newsBundle = newsBundleRes;
         // Nano (15m) geometry is an ENTRY-TIMING tool: injected into the prompt
@@ -2626,6 +2722,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             eventReaction,
             btcContext,
             promptLessons,
+            perplexityContext,
         );
 
         // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse
@@ -3156,6 +3253,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesForExec.metrics,
             newsSentiment: newsBundle?.sentiment ?? null,
             newsHeadlines: newsBundle?.headlines ?? [],
+            // Fresh Perplexity digest as fed to the prompt — keeps "did fresh
+            // sentiment help" a SQL query. Omitted (not null) when disabled or
+            // failed, so dark deployments leave decision rows byte-identical.
+            ...(perplexityContext ? { perplexityContext } : {}),
             forexEventContext: forexEventContext,
             // Post-event reaction measurements as fed to the prompt (null when no
             // recent high-impact release) — makes "did the AI trade the drift and
@@ -3177,6 +3278,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // it here makes per-branch outcome tracking a SQL query instead of a
             // reverse-engineering job over prompt STATE.
             actionability,
+            // ai-bouncer verdict on ticks it let PROCEED — makes "does the
+            // bouncer help" a SQL comparison of bouncer-passed vs
+            // bouncer-skipped cohorts. Omitted (not null) when disabled,
+            // bypassed, or failed-open, so dark deployments leave decision
+            // rows byte-identical.
+            ...(aiBouncerVerdict ? { aiBouncer: aiBouncerVerdict } : {}),
             // Wake-band trigger (null unless this call exists because price
             // crossed the previous flat HOLD's cooldown wake band — those calls
             // bypass the flat quality gates). Persisting it makes "what does the
@@ -3230,7 +3337,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             stage: 'decision',
             reason: String(decision.action || 'HOLD'),
             gates: gatesOut.gates,
-            metrics: gatesOut.metrics,
+            // ai-bouncer PROCEED verdicts ride along so tick_log alone supports
+            // the bouncer-passed vs bouncer-skipped cohort comparison.
+            metrics: aiBouncerVerdict
+                ? {
+                      ...(gatesOut.metrics ?? {}),
+                      aiBouncer: {
+                          proceed: true,
+                          confidence: aiBouncerVerdict.confidence,
+                          reason: aiBouncerVerdict.reason,
+                          latencyMs: aiBouncerVerdict.latencyMs,
+                      },
+                  }
+                : gatesOut.metrics,
             kvMarker: false,
         });
         // Refusal investigation: a flat HOLD on a wake evaluation is a DECLINED
