@@ -118,6 +118,46 @@ export type WakeSweepEvent = {
     extreme: number | null;
 };
 
+// ---------------------------------------------------------------------------
+// Reclaim wake: a sweep (touch + reclaim before the sustain window) of an
+// AI-armed band fires an immediate AI look — the bounce moment becomes
+// actionable instead of arriving hours later as stale wake_band_sweeps
+// evidence. Judgment-gated ONLY: the 2026-08-29 replay of 236 sweeps showed
+// mechanical fades losing (21% win, −0.73R/trade net) — the look exists so
+// the model can fade WITH structural confluence, never so code enters.
+// ---------------------------------------------------------------------------
+
+// Depth floor: a poke that barely cleared the band is bar noise, not a
+// liquidity grab worth an AI call (the TLT case swept one band six times in
+// an hour at ~0.005 depth). Measured real sweeps ran up to ~0.3% deep.
+export const RECLAIM_WAKE_MIN_DEPTH_ATR = 0.2;
+
+// Analyze-side freshness: the look must happen at the bounce moment. A sweep
+// older than this (watcher outage, fire lost) is evidence, not an event.
+export const RECLAIM_WAKE_FRESH_MINUTES = 10;
+
+// Shared by the watcher (fire?) and the analyze route (build the look?).
+// One reclaim look per cooldown row lifetime (reclaimLookedAtMs one-shot;
+// a fresh cooldown upsert resets it — new plan, new budget).
+export function reclaimWakeEligible(params: {
+    sweep: Pick<WakeSweepEvent, 'level' | 'extreme' | 'reclaimedAtMs'> | null | undefined;
+    atr: number | null;
+    reclaimLookedAtMs: number | null;
+    nowMs: number;
+}): boolean {
+    const { sweep, atr, reclaimLookedAtMs, nowMs } = params;
+    if (!sweep) return false;
+    if (reclaimLookedAtMs !== null && reclaimLookedAtMs > 0) return false;
+    if (!(Number.isFinite(Number(atr)) && Number(atr) > 0)) return false;
+    const extreme = Number(sweep.extreme);
+    const level = Number(sweep.level);
+    if (!(Number.isFinite(extreme) && extreme > 0 && Number.isFinite(level) && level > 0)) return false;
+    if (Math.abs(extreme - level) / Number(atr) < RECLAIM_WAKE_MIN_DEPTH_ATR) return false;
+    const reclaimedAtMs = Number(sweep.reclaimedAtMs);
+    if (!(Number.isFinite(reclaimedAtMs) && reclaimedAtMs > 0)) return false;
+    return nowMs - reclaimedAtMs <= RECLAIM_WAKE_FRESH_MINUTES * 60_000;
+}
+
 // One watcher-minute of a sustained band, as a pure state transition.
 // The caller persists what the step tells it to and nothing else:
 //   fire   — confirmed: either the time window held (`via: 'time'`) or the

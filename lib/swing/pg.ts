@@ -235,6 +235,11 @@ async function ensureSwingSchema(): Promise<void> {
         // watcher confirm a sustained band EARLY when the break extends
         // ≥ SWING_WAKE_BREAK_CONFIRM_ATR beyond the level (force beats clock).
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_atr NUMERIC`);
+        // reclaim_looked_at_ms: one-shot budget for the reclaim wake (a fresh
+        // sweep of a sustained band fires an immediate AI look — the bounce
+        // moment). Set atomically when a look claims the event; reset by every
+        // fresh cooldown upsert (new plan, new budget).
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS reclaim_looked_at_ms BIGINT`);
 
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
@@ -745,6 +750,9 @@ export type SwingAiCooldown = {
     // Primary ATR at band-set time — anchor for the extension confirm.
     atr: number | null;
     sweeps: SwingWakeSweep[];
+    // Reclaim-wake one-shot: when a sweep of this row's band already earned
+    // its immediate AI look (null = budget available).
+    reclaimLookedAtMs: number | null;
 };
 
 type CooldownDbRow = {
@@ -759,10 +767,11 @@ type CooldownDbRow = {
     wake_touch_extreme: unknown;
     wake_atr: unknown;
     wake_sweeps: unknown;
+    reclaim_looked_at_ms: unknown;
 };
 
 const COOLDOWN_SELECT_COLUMNS = sql`until_ms, wake_above, wake_below, wake_note, set_at_ms,
-        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps`;
+        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms`;
 
 function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
     // Driver-dependent: jsonb may arrive parsed or as text.
@@ -808,6 +817,7 @@ function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
         touchExtreme: finitePos(row.wake_touch_extreme),
         atr: finitePos(row.wake_atr),
         sweeps: parseWakeSweeps(row.wake_sweeps),
+        reclaimLookedAtMs: finitePos(row.reclaim_looked_at_ms),
     };
 }
 
@@ -875,8 +885,32 @@ export async function upsertSwingAiCooldown(params: {
             wake_touch_started_ms = NULL,
             wake_touch_extreme = NULL,
             wake_sweeps = NULL,
+            reclaim_looked_at_ms = NULL,
             updated_at = NOW()
     `);
+}
+
+// Atomically claim the row's one-shot reclaim look (a fresh sweep of the band
+// fires an immediate AI look — the bounce moment). Returns true when THIS
+// caller won the budget; false when it was already spent or another run's
+// wake claim lease is live. Marker is set at CLAIM time, so a run that dies
+// mid-AI loses the look — acceptable for an opportunistic event (the band's
+// own plan stays armed and unharmed either way).
+export async function claimSwingReclaimLook(platform: string, symbol: string): Promise<boolean> {
+    if (!isSwingPgConfigured()) return false;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const now = Date.now();
+    const rows = await db.$queryRaw<Array<{ set_at_ms: unknown }>>(sql`
+        UPDATE swing.ai_cooldowns
+        SET reclaim_looked_at_ms = ${now}, updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)}
+          AND symbol = ${String(symbol || '').toUpperCase()}
+          AND reclaim_looked_at_ms IS NULL
+          AND (claimed_until_ms IS NULL OR claimed_until_ms < ${now})
+        RETURNING set_at_ms
+    `);
+    return Boolean(rows?.length);
 }
 
 // Arm (or refresh) the in-flight touch state on a sustained wake band: called

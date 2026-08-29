@@ -8,7 +8,7 @@ GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-fut
 
 SQL neon-postgres
   {
-    "text": "SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps FROM swing.ai_cooldowns WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL) AND (claimed_until_ms IS NULL OR claimed_until_ms < $1)",
+    "text": "SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms FROM swing.ai_cooldowns WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL) AND (claimed_until_ms IS NULL OR claimed_until_ms < $1)",
     "values": [
       <NOW_MS>
     ]

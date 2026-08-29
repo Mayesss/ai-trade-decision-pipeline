@@ -86,6 +86,9 @@ SQL neon-postgres
   ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_atr NUMERIC
 
 SQL neon-postgres
+  ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS reclaim_looked_at_ms BIGINT
+
+SQL neon-postgres
   CREATE TABLE IF NOT EXISTS swing.break_triggers ( platform TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, trigger_price NUMERIC NOT NULL, time_frame TEXT NOT NULL, entry_at_ms BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT break_triggers_key PRIMARY KEY (platform, symbol), CONSTRAINT break_triggers_side_check CHECK (side IN ('long', 'short')) )
 
 SQL neon-postgres

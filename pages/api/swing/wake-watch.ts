@@ -69,6 +69,7 @@ import {
     flatWakePlanStale,
     lastClosedBar,
     minutesSinceBarBoundary,
+    reclaimWakeEligible,
     sustainedWakeStep,
     timeframeToMs,
     wakeBandCrossed,
@@ -298,6 +299,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 });
             } else if (step.kind === 'sweep') {
                 await replaceSwingWakeSweeps(row.platform, row.symbol, [...row.sweeps, step.sweep]);
+                // Reclaim wake: a deep-enough sweep of the band earns ONE
+                // immediate AI look at the bounce moment (the analyze route
+                // re-detects the fresh sweep, claims the row's one-shot
+                // budget and builds market.reclaim_wake). Only the pure sweep
+                // transition fires — an 'arm' side-flip means price is already
+                // beyond the OTHER band, not at a reclaimed level.
+                if (
+                    reclaimWakeEligible({
+                        sweep: step.sweep,
+                        atr: row.atr,
+                        reclaimLookedAtMs: row.reclaimLookedAtMs,
+                        nowMs: Date.now(),
+                    })
+                ) {
+                    await maybeFire(row.platform, row.symbol, `reclaim_wake_${step.sweep.side}`);
+                }
             }
         } catch (err) {
             console.warn(`[wake-watch] sustained-band persistence failed for ${row.platform}:${row.symbol}:`, err);

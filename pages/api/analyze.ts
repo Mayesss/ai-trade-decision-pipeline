@@ -85,6 +85,7 @@ import {
     breakTriggerFailed,
     flatWakePlanStale,
     lastClosedBar,
+    reclaimWakeEligible,
     timeframeToMs,
     wakeBandCrossed,
     wakeBreakConfirmAtr,
@@ -96,6 +97,7 @@ import { maybeEnqueueSwingPostmortem, maybeEnqueueSwingRefusalInvestigation } fr
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
     claimSwingAiCooldown,
+    claimSwingReclaimLook,
     clearSwingAiCooldown,
     clearSwingBreakTrigger,
     endSwingAiThread,
@@ -1637,6 +1639,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         let cooldownWakeSustainedMinutes: number | null = null;
         let cooldownWakeExtensionAtr: number | null = null;
         let wakeBandSweeps: SwingWakeSweep[] | null = null;
+        // Reclaim wake: a fresh sweep of the standing sustained band claimed
+        // its one-shot AI look — THIS tick is the bounce moment. Mutually
+        // exclusive with cooldownWake by construction (only reachable when no
+        // band is crossed). READ-ONLY wrt the cooldown row: the band's plan
+        // stays armed; only a placed entry supersedes it.
+        let reclaimWake: {
+            side: 'above' | 'below';
+            level: number;
+            extreme: number | null;
+            touchedAtMs: number;
+            reclaimedAtMs: number;
+            atr: number | null;
+            note: string | null;
+        } | null = null;
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
                 const cooldown = await getSwingAiCooldown(platform, symbol);
@@ -1690,6 +1706,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         }
                     }
                     if (!expired && !wokenAbove && !wokenBelow) {
+                        // Reclaim wake: no band crossed, but the newest sweep
+                        // of this row's band is fresh, deep enough, and the
+                        // row's one-shot look budget is unspent — claim it
+                        // atomically and proceed as the bounce-moment look
+                        // instead of the quiet-cooldown skip. Claim losers
+                        // (another run already looking) fall through to the
+                        // ordinary skip below.
+                        const newestSweep = cooldown.sweeps[cooldown.sweeps.length - 1] ?? null;
+                        if (
+                            reclaimWakeEligible({
+                                sweep: newestSweep,
+                                atr: cooldown.atr,
+                                reclaimLookedAtMs: cooldown.reclaimLookedAtMs,
+                                nowMs: Date.now(),
+                            })
+                        ) {
+                            const won = await claimSwingReclaimLook(platform, symbol).catch((err) => {
+                                console.warn(`reclaim-look claim failed for ${symbol}:`, err);
+                                return false;
+                            });
+                            if (won && newestSweep) {
+                                reclaimWake = {
+                                    side: newestSweep.side,
+                                    level: newestSweep.level,
+                                    extreme: newestSweep.extreme,
+                                    touchedAtMs: newestSweep.touchedAtMs,
+                                    reclaimedAtMs: newestSweep.reclaimedAtMs,
+                                    atr: cooldown.atr,
+                                    note: cooldown.wakeNote,
+                                };
+                                emitGateDebug('flat_cooldown_reclaim_look', {
+                                    gate: 'AI_COOLDOWN',
+                                    side: newestSweep.side,
+                                    level: newestSweep.level,
+                                    extreme: newestSweep.extreme,
+                                    price: effectivePrice,
+                                });
+                            }
+                        }
+                    }
+                    if (!expired && !wokenAbove && !wokenBelow && !reclaimWake) {
                         const minutesLeft = Math.max(1, Math.round((cooldown.untilMs - Date.now()) / 60_000));
                         emitGateDebug('flat_cooldown_active', {
                             gate: 'AI_COOLDOWN',
@@ -1819,9 +1876,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             price: effectivePrice,
                             expired,
                         });
-                    } else {
+                    } else if (!reclaimWake) {
                         // Bare expiry, no crossing: nothing to protect — consume
                         // the row now and proceed as a normal scan (no bypass).
+                        // (A claimed reclaim look never lands here — it is only
+                        // reachable pre-expiry — but guard it anyway: the row
+                        // must survive a reclaim look untouched.)
                         await clearSwingAiCooldown(platform, symbol);
                     }
                 }
@@ -1834,7 +1894,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // expired one (crossed past its plan horizon) rides to the prompt as
         // context if the tick passes the gates on its own merits — a stale
         // plan is re-evaluated as an idea, never fast-tracked as a schedule.
-        const cooldownWakeActive = cooldownWake !== null && !cooldownWake.expired;
+        // A claimed reclaim look earns the same flat quality-gate bypass a
+        // fired band does: signal strength is definitionally LOW at the
+        // reclaim minute — the reclaim IS the actionability. Hard gates
+        // (base executability, event blackout, margin) still apply below.
+        const cooldownWakeActive = (cooldownWake !== null && !cooldownWake.expired) || reclaimWake !== null;
         const momentumSignals = computeMomentumSignals({
             price: effectivePrice,
             indicators,
@@ -2233,6 +2297,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             { fired: positionWakeFired, armed: threadWake },
             // Failed sustained-band touches → market.wake_band_sweeps.
             wakeBandSweeps,
+            // Claimed one-shot bounce-moment look → market.reclaim_wake.
+            reclaimWake,
         );
         const { context, actionability } = swingState;
 
@@ -2967,6 +3033,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // also survives — only the same-side band is dropped, so the loop
         // ends at the normal cadence.
         const holdCooldown = (() => {
+            // Reclaim look is READ-ONLY wrt the cooldown row: the band's plan
+            // did not fire and stays armed exactly as it was — any cooldown_*
+            // fields the model outputs on a non-entry are ignored (an entry
+            // nulls them anyway), so the look can never rewrite or shorten
+            // the standing plan.
+            if (reclaimWake) {
+                return {
+                    cooldownMinutes: null,
+                    wakeAbove: null,
+                    wakeBelow: null,
+                    wakeNote: null,
+                    sustainMinutes: null,
+                    notes: [...holdCooldownRaw.notes, 'reclaim_look_read_only'],
+                };
+            }
             if (positionOpen || !cooldownWake || cooldownWake.expired) {
                 return holdCooldownRaw;
             }
@@ -3344,6 +3425,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // A PLACED reclaim-look entry supersedes the band's standing plan —
+        // consume the cooldown row (a HOLD leaves it fully armed; the row was
+        // never claimed on this path). Best-effort, never blocks.
+        if (
+            !dryRun &&
+            reclaimWake &&
+            !positionOpen &&
+            execRes?.placed === true &&
+            (decision.action === 'BUY' || decision.action === 'SELL')
+        ) {
+            await clearSwingAiCooldown(platform, symbol).catch((err) =>
+                console.warn(`reclaim-entry cooldown consume failed for ${symbol}:`, err),
+            );
+        }
+
         if (platform === 'capital' && !dryRun) {
             await persistCapitalClosedPositionSnapshot({
                 symbol,
@@ -3411,6 +3507,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // bypass the flat quality gates). Persisting it makes "what does the
             // AI do when its own wake level fires, and does it pay" a SQL query.
             cooldownWake,
+            // Reclaim-wake trigger (null unless this call is a claimed
+            // one-shot bounce-moment look at a swept band) — makes "do
+            // reclaim looks convert, and do the entries pay" a SQL query.
+            reclaimWake,
             // In-position wake-band trigger (null unless this call exists
             // because price crossed a band the model set on a previous
             // management look) — same SQL-ability rationale as cooldownWake.
@@ -3460,7 +3560,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // mechanical confirmed-wake entry (kind stays 'ai_call' — the
             // tick_log CHECK only knows skip|ai_call, and this IS the tick's
             // decision row).
-            stage: wakeAutoEntryTaken ? 'wake_auto_entry' : 'decision',
+            stage: wakeAutoEntryTaken ? 'wake_auto_entry' : reclaimWake ? 'reclaim_wake' : 'decision',
             reason: String(decision.action || 'HOLD'),
             gates: gatesOut.gates,
             // ai-bouncer PROCEED verdicts ride along so tick_log alone supports
@@ -3486,7 +3586,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // actually did — and corrects the lesson library when the skip was
         // wrong. Best-effort (enqueue catches internally), never fails a tick.
         if (
-            cooldownWake &&
+            (cooldownWake || reclaimWake) &&
             !positionOpen &&
             !dryRun &&
             String(decision.action || '').toUpperCase() === 'HOLD'

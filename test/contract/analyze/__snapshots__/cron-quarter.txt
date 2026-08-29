@@ -340,7 +340,7 @@ POST https://kv.boundary.test/
 
 SQL neon-postgres
   {
-    "text": "SELECT until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps FROM swing.ai_cooldowns WHERE platform = $1 AND symbol = $2",
+    "text": "SELECT until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms FROM swing.ai_cooldowns WHERE platform = $1 AND symbol = $2",
     "values": [
       "bitget",
       "ETHUSDT"
