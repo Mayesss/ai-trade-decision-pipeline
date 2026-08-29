@@ -42,8 +42,5 @@
     "tsx": "^4.21.0",
     "typescript-eslint": "^8.68.0",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "pg-cloudflare": "file:stubs/pg-cloudflare"
   }
 }

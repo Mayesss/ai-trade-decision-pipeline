@@ -9,11 +9,11 @@ import tseslint from 'typescript-eslint';
 const gitignorePath = path.resolve('.', '.gitignore');
 
 export default defineConfig([
-  // Ignore everything .gitignore ignores (.next, node_modules, coverage, ...),
-  // the vendored stub package (npm override target), and the test suite —
-  // dev-only code whose harness/fixture style clashes with the strict rules.
+  // Ignore everything .gitignore ignores (.next, node_modules, coverage, ...)
+  // and the test suite — dev-only code whose harness/fixture style clashes
+  // with the strict rules.
   includeIgnoreFile(gitignorePath),
-  { ignores: ['stubs/**', 'test/**'] },
+  { ignores: ['test/**'] },
   // Next.js recommended + Core Web Vitals
   ...nextVitals,
   // Next.js TypeScript setup (typescript-eslint recommended)
