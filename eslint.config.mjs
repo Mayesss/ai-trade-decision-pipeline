@@ -23,15 +23,11 @@ export default defineConfig([
   {
     name: 'project/overrides',
     rules: {
-      // Ratchet targets: ~600 pre-existing findings across lib/. Warn until
-      // the any/assertion cleanup happens; new code should not add more.
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-non-null-assertion': 'warn',
-      // React 19 compiler-era rules: real findings in the dashboard UI, but
-      // behavior-touching refactors with no UI test net yet.
+      // Kept at warn for the four canonical fetch-effects (dashboard load,
+      // symbol details, chart fetch, live-tick merge): a data fetch that
+      // flips its own loading state has no rule-clean formulation that isn't
+      // worse code. Everything else was refactored clean — don't add more.
       'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/refs': 'warn',
-      'react-hooks/purity': 'warn',
       '@typescript-eslint/no-unused-vars': ['error', {
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
