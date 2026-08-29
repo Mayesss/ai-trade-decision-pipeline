@@ -276,6 +276,158 @@ export function sustainedWakeStep(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Session-level sweeps (reclaim-wake phase 2): the same touch-and-reclaim
+// event class as band sweeps, but at CODE-KNOWN liquidity pools — the last
+// completed session's high/low and the prior day's high/low — so a sweep
+// fires an immediate AI look even when the AI armed no band there. All state
+// lives in KV (there is no cooldown row to hang it on): analyze stamps a
+// levels ref on every session-category look; the watcher runs a per-minute
+// touch state machine against it and, on a deep-enough reclaim, writes an
+// event the analyze route consumes as market.session_reclaim. Judgment-gated
+// only, same as phase 1 — a fired look is never a mechanical entry.
+// ---------------------------------------------------------------------------
+
+export type SessionSweepKind = 'last_session_high' | 'last_session_low' | 'prior_day_high' | 'prior_day_low';
+
+// Stamped by analyze whenever it builds the forex session context. Levels
+// carry their own validity horizons instead of a blanket ref age: last-session
+// levels are true until the CURRENT session completes (then a new "last
+// completed" exists), prior-day levels until the UTC date rolls — so a symbol
+// parked under a multi-hour AI cooldown keeps sweep coverage from its last
+// stamped ref instead of going blind after a fixed staleness window.
+export type SessionLevelsRef = {
+    levels: Partial<Record<SessionSweepKind, number | null>>;
+    // Primary ATR at stamp time — anchors the sweep depth floor.
+    atr: number | null;
+    ts: number;
+    lastSessionValidUntilMs: number | null;
+    priorDayValidUntilMs: number | null;
+};
+
+export function sessionSweepKindValidUntil(ref: SessionLevelsRef, kind: SessionSweepKind): number {
+    const fallback = Number(ref.ts) + 90 * 60_000; // rows stamped before the horizons existed
+    const horizon =
+        kind === 'prior_day_high' || kind === 'prior_day_low' ? ref.priorDayValidUntilMs : ref.lastSessionValidUntilMs;
+    return Number.isFinite(Number(horizon)) && Number(horizon) > 0 ? Number(horizon) : fallback;
+}
+
+// In-flight touch (one at a time per symbol) and the fired reclaim event.
+export type SessionSweepState = {
+    kind: SessionSweepKind;
+    side: 'above' | 'below';
+    level: number;
+    touchedAtMs: number;
+    extreme: number;
+};
+export type SessionSweepEvent = {
+    kind: SessionSweepKind;
+    side: 'above' | 'below';
+    level: number;
+    extreme: number;
+    touchedAtMs: number;
+    reclaimedAtMs: number;
+    atr: number | null;
+};
+
+export const sessionLevelsRefKey = (platform: string, symbol: string) =>
+    `swing:sessionsweep:ref:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
+export const sessionSweepStateKey = (platform: string, symbol: string) =>
+    `swing:sessionsweep:state:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
+export const sessionSweepEventKey = (platform: string, symbol: string) =>
+    `swing:sessionsweep:event:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
+// Per-level one-shot budget (TTL-scoped): the TLT failure mode is the same
+// pool being poked many times per session — one look per pool per window.
+export const sessionSweepLookedKey = (platform: string, symbol: string, kind: SessionSweepKind) =>
+    `swing:sessionsweep:looked:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}:${kind}`;
+export const SESSION_SWEEP_LOOKED_TTL_SECONDS = 6 * 3600;
+export const SESSION_SWEEP_EVENT_TTL_SECONDS = 15 * 60;
+
+// A touch that HOLDS beyond the level this long is a break, not a sweep —
+// the state is abandoned (breakouts belong to the AI's own band machinery).
+export const SESSION_SWEEP_WINDOW_MINUTES = 30;
+
+export type SessionSweepStep =
+    | { kind: 'idle' }
+    | { kind: 'hold' }
+    | { kind: 'arm'; state: SessionSweepState }
+    | { kind: 'extend'; state: SessionSweepState }
+    | { kind: 'abandon' }
+    | { kind: 'reclaim'; event: SessionSweepEvent };
+
+// One watcher-minute against the session levels, as a pure transition —
+// mirrors sustainedWakeStep's contract (caller persists what the step says).
+export function sessionSweepStep(params: {
+    price: number | null;
+    ref: SessionLevelsRef | null;
+    state: SessionSweepState | null;
+    nowMs: number;
+}): SessionSweepStep {
+    const { price, ref, state, nowMs } = params;
+    if (!ref) return state ? { kind: 'abandon' } : { kind: 'idle' };
+    const p = Number(price);
+    // Unobservable market: hold still (never false-reclaim on a failed fetch).
+    if (!(Number.isFinite(p) && p > 0)) return state ? { kind: 'hold' } : { kind: 'idle' };
+    if (state && nowMs > sessionSweepKindValidUntil(ref, state.kind)) {
+        // The touched pool's level expired mid-touch (session completed, day
+        // rolled): abandon rather than judge against a superseded level.
+        return { kind: 'abandon' };
+    }
+
+    if (state) {
+        const dir = state.side === 'above' ? 1 : -1;
+        const beyond = dir * (p - state.level) > 0;
+        if (!beyond) {
+            return {
+                kind: 'reclaim',
+                event: {
+                    kind: state.kind,
+                    side: state.side,
+                    level: state.level,
+                    extreme: state.extreme,
+                    touchedAtMs: state.touchedAtMs,
+                    reclaimedAtMs: nowMs,
+                    atr: ref.atr,
+                },
+            };
+        }
+        if (nowMs - state.touchedAtMs > SESSION_SWEEP_WINDOW_MINUTES * 60_000) return { kind: 'abandon' };
+        const newExtreme = state.side === 'above' ? Math.max(state.extreme, p) : Math.min(state.extreme, p);
+        if (newExtreme !== state.extreme) return { kind: 'extend', state: { ...state, extreme: newExtreme } };
+        return { kind: 'hold' };
+    }
+
+    // No touch in flight: is price beyond a pool right now? Highs sweep from
+    // below ('above' excursion), lows from above ('below'). When several
+    // pools on one side are violated, the NEAREST one to price is the pool
+    // being taken. Both sides violated at once = unusable levels; stay idle.
+    const highs: SessionSweepKind[] = ['last_session_high', 'prior_day_high'];
+    const lows: SessionSweepKind[] = ['last_session_low', 'prior_day_low'];
+    let above: { kind: SessionSweepKind; level: number } | null = null;
+    let below: { kind: SessionSweepKind; level: number } | null = null;
+    for (const kind of highs) {
+        if (nowMs > sessionSweepKindValidUntil(ref, kind)) continue;
+        const level = Number(ref.levels[kind]);
+        if (Number.isFinite(level) && level > 0 && p > level && (!above || level > above.level)) {
+            above = { kind, level };
+        }
+    }
+    for (const kind of lows) {
+        if (nowMs > sessionSweepKindValidUntil(ref, kind)) continue;
+        const level = Number(ref.levels[kind]);
+        if (Number.isFinite(level) && level > 0 && p < level && (!below || level < below.level)) {
+            below = { kind, level };
+        }
+    }
+    if (above && below) return { kind: 'idle' };
+    const violated = above ? { ...above, side: 'above' as const } : below ? { ...below, side: 'below' as const } : null;
+    if (!violated) return { kind: 'idle' };
+    return {
+        kind: 'arm',
+        state: { kind: violated.kind, side: violated.side, level: violated.level, touchedAtMs: nowMs, extreme: p },
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Failed-break watch (swing.break_triggers): on a breakout/breakdown entry the
 // model declares the trigger level that justified the trade; if a LATER
 // primary bar CLOSES back through it, the break has failed and the model

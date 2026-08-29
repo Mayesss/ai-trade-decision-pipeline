@@ -228,6 +228,15 @@ type MarketPayload = {
         reclaimed_minutes_ago: number;
         note?: string;
     };
+    session_reclaim?: {
+        kind: 'last_session_high' | 'last_session_low' | 'prior_day_high' | 'prior_day_low';
+        side: 'above' | 'below';
+        level: number;
+        extreme?: number;
+        depth_atr?: number;
+        held_minutes: number;
+        reclaimed_minutes_ago: number;
+    };
     failed_break?: {
         side: 'long' | 'short';
         trigger_price: number;
@@ -679,6 +688,17 @@ export function computeSwingState(
         reclaimedAtMs: number;
         atr: number | null;
         note?: string | null;
+    } | null,
+    // Same event class at a CODE-KNOWN session/prior-day liquidity pool
+    // (reclaim-wake phase 2) — surfaces as market.session_reclaim.
+    sessionReclaim?: {
+        kind: 'last_session_high' | 'last_session_low' | 'prior_day_high' | 'prior_day_low';
+        side: 'above' | 'below';
+        level: number;
+        extreme: number | null;
+        touchedAtMs: number;
+        reclaimedAtMs: number;
+        atr: number | null;
     } | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
@@ -1389,6 +1409,29 @@ export function computeSwingState(
             ...(typeof reclaimWake.note === 'string' && reclaimWake.note.trim() ? { note: reclaimWake.note.trim() } : {}),
         };
     }
+    if (sessionReclaim && Number.isFinite(sessionReclaim.level) && sessionReclaim.level > 0) {
+        const srNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+        const srDepthAtr =
+            sessionReclaim.extreme !== null &&
+            Number.isFinite(sessionReclaim.extreme) &&
+            Number.isFinite(Number(sessionReclaim.atr)) &&
+            Number(sessionReclaim.atr) > 0
+                ? Math.round(
+                      (Math.abs((sessionReclaim.extreme as number) - sessionReclaim.level) / Number(sessionReclaim.atr)) * 100,
+                  ) / 100
+                : null;
+        market.session_reclaim = {
+            kind: sessionReclaim.kind,
+            side: sessionReclaim.side,
+            level: sessionReclaim.level,
+            ...(sessionReclaim.extreme !== null && Number.isFinite(sessionReclaim.extreme)
+                ? { extreme: sessionReclaim.extreme }
+                : {}),
+            ...(srDepthAtr !== null ? { depth_atr: srDepthAtr } : {}),
+            held_minutes: Math.max(0, Math.round((sessionReclaim.reclaimedAtMs - sessionReclaim.touchedAtMs) / 60_000)),
+            reclaimed_minutes_ago: Math.max(0, Math.round((srNowMs - sessionReclaim.reclaimedAtMs) / 60_000)),
+        };
+    }
     if (failedBreak && Number.isFinite(failedBreak.triggerPrice) && Number.isFinite(failedBreak.barClose)) {
         const fbNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
         market.failed_break = {
@@ -1611,7 +1654,7 @@ ${
             ? 'If the move is real but price has already run multiple ATR beyond the level, a pullback limit at the broken level’s retest is the natural tool — you asked to be woken precisely so you would not have to chase later.'
             : 'Only if the move is real but price has already run multiple ATR beyond the level, set a fresh wake band at the broken level WITH a note naming the intended entry ("retest of X after breakout → long on hold") so the retest wake arrives with the plan in hand.'
     } ACT-OR-FOLD: this wake look ends one of exactly three ways — you ENTER (market or a resting entry), you arm the OPPOSITE side (e.g. the broken level’s retest per the retest protocol), or you FOLD the level (HOLD; the symbol returns to the normal cadence). A re-armed band on the SIDE that just fired is DROPPED in code, even when you judge the cross a fake-out — refusing a wake costs the watch, so do not spend this look re-scheduling the same rejection; if the level still matters after a fake-out, the evidence will be in wake_band_sweeps and the next scheduled scan can re-derive it.
-- Reclaim-wake trigger (market.reclaim_wake, when present): THIS evaluation exists because a sustained band you set was POKED and RECLAIMED within your own confirmation window minutes ago (side, level, extreme, depth_atr, held_minutes, note = the band's plan) — a liquidity grab AT your level, not acceptance beyond it. This is NOT the band's breakout check (that plan stays fully armed and is untouched by this look): it is a one-shot BOUNCE OPPORTUNITY look at the freshest possible moment. Judge it as a level-bounce entry TOWARD the range per the level-bounce doctrine: the sweep extreme is the natural invalidation (stop just beyond it), the reclaim is the micro turn. Require genuine structural confluence — mechanically fading every sweep LOSES money (measured: 21% win rate); a sweep into a defended HTF level with room toward the other side is the shape that pays, a mid-chop poke is not. If you do not enter, simply HOLD: this look is READ-ONLY — your standing band, cooldown and plan remain exactly as they were, any cooldown_* fields you output are ignored in code, and the sweep stays recorded in wake_band_sweeps. Each band gets ONE reclaim look; declining is final for this plan's lifetime, so decide on the confluence in front of you, not on hope for a deeper sweep.
+- Reclaim-wake trigger (market.reclaim_wake, when present): THIS evaluation exists because a sustained band you set was POKED and RECLAIMED within your own confirmation window minutes ago (side, level, extreme, depth_atr, held_minutes, note = the band's plan) — a liquidity grab AT your level, not acceptance beyond it. This is NOT the band's breakout check (that plan stays fully armed and is untouched by this look): it is a one-shot BOUNCE OPPORTUNITY look at the freshest possible moment. Judge it as a level-bounce entry TOWARD the range per the level-bounce doctrine: the sweep extreme is the natural invalidation (stop just beyond it), the reclaim is the micro turn. Require genuine structural confluence — mechanically fading every sweep LOSES money (measured: 21% win rate); a sweep into a defended HTF level with room toward the other side is the shape that pays, a mid-chop poke is not. If you do not enter, simply HOLD: this look is READ-ONLY — your standing band, cooldown and plan remain exactly as they were, any cooldown_* fields you output are ignored in code, and the sweep stays recorded in wake_band_sweeps. Each band gets ONE reclaim look; declining is final for this plan's lifetime, so decide on the confluence in front of you, not on hope for a deeper sweep. market.session_reclaim (when present instead) is the SAME event class at a session/prior-day liquidity pool you did not have to arm yourself — kind names the pool (last_session_high/low, prior_day_high/low) — with the same doctrine, the same read-only rule, and one look per pool per session.
 - ${leverageGuidance}${manageGuidance ? `\n- ${manageGuidance}` : ''}
 - Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.
 

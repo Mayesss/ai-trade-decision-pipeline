@@ -86,13 +86,18 @@ import {
     flatWakePlanStale,
     lastClosedBar,
     reclaimWakeEligible,
+    RECLAIM_WAKE_FRESH_MINUTES,
+    sessionLevelsRefKey,
+    sessionSweepEventKey,
     timeframeToMs,
+    type SessionLevelsRef,
+    type SessionSweepEvent,
     wakeBandCrossed,
     wakeBreakConfirmAtr,
     wakeWatchRefKey,
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
-import { kvSetJson } from '../../lib/kv';
+import { kvDel, kvGetJson, kvSetJson } from '../../lib/kv';
 import { maybeEnqueueSwingPostmortem, maybeEnqueueSwingRefusalInvestigation } from '../../lib/swing/postmortem';
 import { loadPromptLessons } from '../../lib/swing/lessons';
 import {
@@ -1653,6 +1658,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             atr: number | null;
             note: string | null;
         } | null = null;
+        // Session-reclaim look (phase 2): the watcher detected a deep sweep-
+        // and-reclaim of a session/prior-day liquidity pool and left the event
+        // in KV (one-shot per pool, watcher-side budget). Same semantics as a
+        // band reclaim look: quality-gate bypass, judgment only, READ-ONLY wrt
+        // any standing cooldown row. A fired band or band-reclaim look takes
+        // precedence (cleared below) — one wake context per evaluation.
+        let sessionReclaim: SessionSweepEvent | null = null;
+        if (!positionOpen && !dryRun && !aiThreadResponseId) {
+            try {
+                const ev = await kvGetJson<SessionSweepEvent>(sessionSweepEventKey(platform, symbol));
+                if (
+                    ev &&
+                    Number.isFinite(Number(ev.level)) &&
+                    Number(ev.level) > 0 &&
+                    Date.now() - Number(ev.reclaimedAtMs) <= RECLAIM_WAKE_FRESH_MINUTES * 60_000
+                ) {
+                    sessionReclaim = ev;
+                }
+            } catch (err) {
+                console.warn(`session-reclaim event read failed for ${symbol}:`, err);
+            }
+        }
         if (!positionOpen && !dryRun && !aiThreadResponseId) {
             try {
                 const cooldown = await getSwingAiCooldown(platform, symbol);
@@ -1746,7 +1773,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             }
                         }
                     }
-                    if (!expired && !wokenAbove && !wokenBelow && !reclaimWake) {
+                    if (!expired && !wokenAbove && !wokenBelow && !reclaimWake && !sessionReclaim) {
                         const minutesLeft = Math.max(1, Math.round((cooldown.untilMs - Date.now()) / 60_000));
                         emitGateDebug('flat_cooldown_active', {
                             gate: 'AI_COOLDOWN',
@@ -1894,11 +1921,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // expired one (crossed past its plan horizon) rides to the prompt as
         // context if the tick passes the gates on its own merits — a stale
         // plan is re-evaluated as an idea, never fast-tracked as a schedule.
-        // A claimed reclaim look earns the same flat quality-gate bypass a
-        // fired band does: signal strength is definitionally LOW at the
-        // reclaim minute — the reclaim IS the actionability. Hard gates
-        // (base executability, event blackout, margin) still apply below.
-        const cooldownWakeActive = (cooldownWake !== null && !cooldownWake.expired) || reclaimWake !== null;
+        // One wake context per evaluation: a fired band or a claimed band-
+        // reclaim look outranks the KV session event (which stays TTL'd for
+        // a later tick or expires unused).
+        if (cooldownWake || reclaimWake) sessionReclaim = null;
+        // A claimed reclaim look (band or session pool) earns the same flat
+        // quality-gate bypass a fired band does: signal strength is
+        // definitionally LOW at the reclaim minute — the reclaim IS the
+        // actionability. Hard gates (base executability, event blackout,
+        // margin) still apply below.
+        const cooldownWakeActive =
+            (cooldownWake !== null && !cooldownWake.expired) || reclaimWake !== null || sessionReclaim !== null;
         const momentumSignals = computeMomentumSignals({
             price: effectivePrice,
             indicators,
@@ -2168,6 +2201,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 console.warn(`Could not build forex session levels for ${symbol}:`, err);
             }
         }
+        // Session-levels ref for the watcher's sweep detection (reclaim-wake
+        // phase 2): the pools plus their own validity horizons — last-session
+        // levels are superseded when the current session completes, prior-day
+        // levels when the UTC date rolls. Best-effort fire-and-forget.
+        if (!dryRun && forexSessionContext) {
+            const refAtrRaw = Number(indicators?.metrics?.[timeFrame]?.atr);
+            const nowRef = Date.now();
+            const utcMidnightMs = Date.UTC(
+                new Date(nowRef).getUTCFullYear(),
+                new Date(nowRef).getUTCMonth(),
+                new Date(nowRef).getUTCDate() + 1,
+            );
+            const currentSessionEndMs = Date.parse(String(forexSessionContext.currentSession?.endUtc ?? ''));
+            kvSetJson(
+                sessionLevelsRefKey(platform, symbol),
+                {
+                    levels: {
+                        last_session_high: forexSessionContext.lastCompletedSession?.high ?? null,
+                        last_session_low: forexSessionContext.lastCompletedSession?.low ?? null,
+                        prior_day_high: forexSessionContext.priorDay?.high ?? null,
+                        prior_day_low: forexSessionContext.priorDay?.low ?? null,
+                    },
+                    atr: Number.isFinite(refAtrRaw) && refAtrRaw > 0 ? refAtrRaw : null,
+                    ts: nowRef,
+                    lastSessionValidUntilMs: Number.isFinite(currentSessionEndMs) ? currentSessionEndMs : utcMidnightMs,
+                    priorDayValidUntilMs: utcMidnightMs,
+                } satisfies SessionLevelsRef,
+                26 * 3600,
+            ).catch((err: unknown) => console.warn(`session-levels ref stamp failed for ${symbol}:`, err));
+        }
 
         // 6a) Event-proximity gate (HARD risk rule). When flat and inside a
         // high/medium-impact event blackout window (pre/post-event minutes +
@@ -2299,6 +2362,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             wakeBandSweeps,
             // Claimed one-shot bounce-moment look → market.reclaim_wake.
             reclaimWake,
+            // Session/prior-day pool sweep-and-reclaim → market.session_reclaim.
+            sessionReclaim,
         );
         const { context, actionability } = swingState;
 
@@ -3038,7 +3103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // fields the model outputs on a non-entry are ignored (an entry
             // nulls them anyway), so the look can never rewrite or shorten
             // the standing plan.
-            if (reclaimWake) {
+            if (reclaimWake || sessionReclaim) {
                 return {
                     cooldownMinutes: null,
                     wakeAbove: null,
@@ -3425,6 +3490,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Consume the session-reclaim event after the decision is durably
+        // recorded — the per-pool looked-marker (watcher-side) already spent
+        // the budget, this only stops the next tick from re-reading a used
+        // event before its TTL lapses. Best-effort.
+        if (!dryRun && sessionReclaim) {
+            await kvDel(sessionSweepEventKey(platform, symbol)).catch((err) =>
+                console.warn(`session-reclaim event consume failed for ${symbol}:`, err),
+            );
+        }
+
         // A PLACED reclaim-look entry supersedes the band's standing plan —
         // consume the cooldown row (a HOLD leaves it fully armed; the row was
         // never claimed on this path). Best-effort, never blocks.
@@ -3511,6 +3586,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // one-shot bounce-moment look at a swept band) — makes "do
             // reclaim looks convert, and do the entries pay" a SQL query.
             reclaimWake,
+            // Session-pool sweep-reclaim trigger (phase 2) — same rationale.
+            sessionReclaim,
             // In-position wake-band trigger (null unless this call exists
             // because price crossed a band the model set on a previous
             // management look) — same SQL-ability rationale as cooldownWake.
@@ -3560,7 +3637,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // mechanical confirmed-wake entry (kind stays 'ai_call' — the
             // tick_log CHECK only knows skip|ai_call, and this IS the tick's
             // decision row).
-            stage: wakeAutoEntryTaken ? 'wake_auto_entry' : reclaimWake ? 'reclaim_wake' : 'decision',
+            stage: wakeAutoEntryTaken
+                ? 'wake_auto_entry'
+                : reclaimWake
+                  ? 'reclaim_wake'
+                  : sessionReclaim
+                    ? 'session_reclaim'
+                    : 'decision',
             reason: String(decision.action || 'HOLD'),
             gates: gatesOut.gates,
             // ai-bouncer PROCEED verdicts ride along so tick_log alone supports
@@ -3586,7 +3669,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // actually did — and corrects the lesson library when the skip was
         // wrong. Best-effort (enqueue catches internally), never fails a tick.
         if (
-            (cooldownWake || reclaimWake) &&
+            (cooldownWake || reclaimWake || sessionReclaim) &&
             !positionOpen &&
             !dryRun &&
             String(decision.action || '').toUpperCase() === 'HOLD'

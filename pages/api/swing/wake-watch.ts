@@ -51,8 +51,9 @@ import {
     fetchCapitalOpenPositionMarkers,
     resolveCapitalEpic,
 } from '../../../lib/capital';
-import { kvGetJson, kvSetJson } from '../../../lib/kv';
+import { kvDel, kvGetJson, kvMGetJson, kvSetJson } from '../../../lib/kv';
 import { invokeCronEndpoint } from '../../../lib/cronChaining';
+import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import {
     clearSwingBreakTrigger,
     listSwingAiCooldownsWithWakeBands,
@@ -70,14 +71,28 @@ import {
     lastClosedBar,
     minutesSinceBarBoundary,
     reclaimWakeEligible,
+    sessionLevelsRefKey,
+    sessionSweepEventKey,
+    sessionSweepLookedKey,
+    sessionSweepStateKey,
+    sessionSweepStep,
+    SESSION_SWEEP_EVENT_TTL_SECONDS,
+    SESSION_SWEEP_LOOKED_TTL_SECONDS,
+    SESSION_SWEEP_WINDOW_MINUTES,
     sustainedWakeStep,
     timeframeToMs,
     wakeBandCrossed,
     wakeWatchFiredKey,
     wakeWatchRefKey,
     WAKE_WATCH_FIRED_TTL_SECONDS,
+    type SessionLevelsRef,
+    type SessionSweepState,
     type WakeWatchRef,
 } from '../../../lib/swing/wakeWatch';
+
+// Session-sweep detection runs for the venue classes that carry session
+// structure (matches analyze's SESSION_LEVEL_CATEGORIES).
+const SESSION_SWEEP_CATEGORIES = new Set(['forex', 'commodity', 'index']);
 import { getTradeProductType } from '../../../lib/trading';
 
 // Same knob the analyze route uses for its own off-boundary in-position look.
@@ -321,6 +336,96 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
     }
 
+    // 1b) Session-level sweeps (reclaim-wake phase 2): per-minute touch state
+    // machine against the last-session / prior-day highs and lows stamped by
+    // analyze (sessionLevelsRefKey). A deep-enough touch-and-reclaim writes an
+    // event the analyze route consumes as market.session_reclaim and fires the
+    // look. Batched KV reads (two MGETs per minute) keep the round-trip cost
+    // flat regardless of universe size; prices are fetched only for symbols
+    // that actually carry a ref or an in-flight touch.
+    let sessionSweepsChecked = 0;
+    try {
+        const sessionCfgs = getCronSymbolConfigs().filter((c) =>
+            SESSION_SWEEP_CATEGORIES.has(String(c.category || '').toLowerCase()),
+        );
+        if (sessionCfgs.length) {
+            const [refs, states] = await Promise.all([
+                kvMGetJson<SessionLevelsRef>(sessionCfgs.map((c) => sessionLevelsRefKey(c.platform, c.symbol))),
+                kvMGetJson<SessionSweepState>(sessionCfgs.map((c) => sessionSweepStateKey(c.platform, c.symbol))),
+            ]);
+            for (let i = 0; i < sessionCfgs.length; i++) {
+                const cfg = sessionCfgs[i];
+                const platform = String(cfg.platform || '').toLowerCase();
+                const symbol = String(cfg.symbol || '').toUpperCase();
+                const ref = refs[i] ?? null;
+                const state = states[i] ?? null;
+                if (!ref && !state) continue;
+                // Flat symbols only — the position paths below own open ones.
+                let openKeySymbol = symbol;
+                if (platform === 'capital') {
+                    try {
+                        openKeySymbol = String(resolveCapitalEpic(symbol).epic || symbol).toUpperCase();
+                    } catch {
+                        /* unresolvable → raw-symbol key */
+                    }
+                }
+                if (openBySymbol.has(`${platform}:${openKeySymbol}`)) continue;
+                sessionSweepsChecked++;
+                const price =
+                    platform === 'capital'
+                        ? await fetchCapitalMidPrice(symbol)
+                        : await fetchBitgetLastPrice(symbol);
+                const step = sessionSweepStep({
+                    price: Number.isFinite(Number(price)) && Number(price) > 0 ? Number(price) : null,
+                    ref,
+                    state,
+                    nowMs: Date.now(),
+                });
+                try {
+                    if (step.kind === 'arm' || step.kind === 'extend') {
+                        await kvSetJson(
+                            sessionSweepStateKey(platform, symbol),
+                            step.state,
+                            (SESSION_SWEEP_WINDOW_MINUTES + 10) * 60,
+                        );
+                    } else if (step.kind === 'abandon') {
+                        await kvDel(sessionSweepStateKey(platform, symbol));
+                    } else if (step.kind === 'reclaim') {
+                        await kvDel(sessionSweepStateKey(platform, symbol));
+                        // Same depth/freshness floor as band sweeps, plus a
+                        // per-pool one-shot budget (the TLT failure mode is
+                        // one pool poked many times per session).
+                        const eligible = reclaimWakeEligible({
+                            sweep: {
+                                level: step.event.level,
+                                extreme: step.event.extreme,
+                                reclaimedAtMs: step.event.reclaimedAtMs,
+                            },
+                            atr: step.event.atr,
+                            reclaimLookedAtMs: null,
+                            nowMs: Date.now(),
+                        });
+                        const lookedKey = sessionSweepLookedKey(platform, symbol, step.event.kind);
+                        const looked = eligible ? await kvGetJson<{ ts: number }>(lookedKey).catch(() => null) : null;
+                        if (eligible && !looked) {
+                            await kvSetJson(lookedKey, { ts: Date.now() }, SESSION_SWEEP_LOOKED_TTL_SECONDS);
+                            await kvSetJson(
+                                sessionSweepEventKey(platform, symbol),
+                                step.event,
+                                SESSION_SWEEP_EVENT_TTL_SECONDS,
+                            );
+                            await maybeFire(platform, symbol, `session_reclaim_${step.event.kind}`);
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[wake-watch] session-sweep persistence failed for ${platform}:${symbol}:`, err);
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[wake-watch] session-sweep pass failed:', err);
+    }
+
     // 2) In-position wake bands + emergency moves. Bands are AI-declared levels
     // inside the bracket, stored on the in_position thread (zero extra queries —
     // they ride the close-detection list) and checked against the same live
@@ -464,6 +569,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({
         ok: true,
         bandsChecked,
+        sessionSweepsChecked,
         positionsChecked: positionMarkers.length,
         breakTriggersChecked,
         inPositionThreads: inPositionThreads.length,

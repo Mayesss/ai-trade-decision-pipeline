@@ -38,6 +38,50 @@ POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
   [
+    "MGET",
+    "swing:sessionsweep:ref:capital:GOLD",
+    "swing:sessionsweep:ref:capital:USDJPY",
+    "swing:sessionsweep:ref:capital:EURUSD",
+    "swing:sessionsweep:ref:capital:US100",
+    "swing:sessionsweep:ref:capital:DE40",
+    "swing:sessionsweep:ref:capital:J225",
+    "swing:sessionsweep:ref:capital:OIL_CRUDE",
+    "swing:sessionsweep:ref:capital:NATURALGAS",
+    "swing:sessionsweep:ref:capital:COPPER",
+    "swing:sessionsweep:ref:capital:HK50",
+    "swing:sessionsweep:ref:capital:TLT",
+    "swing:sessionsweep:ref:capital:US500",
+    "swing:sessionsweep:ref:capital:UK100",
+    "swing:sessionsweep:ref:capital:SILVER",
+    "swing:sessionsweep:ref:capital:GBPUSD"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "MGET",
+    "swing:sessionsweep:state:capital:GOLD",
+    "swing:sessionsweep:state:capital:USDJPY",
+    "swing:sessionsweep:state:capital:EURUSD",
+    "swing:sessionsweep:state:capital:US100",
+    "swing:sessionsweep:state:capital:DE40",
+    "swing:sessionsweep:state:capital:J225",
+    "swing:sessionsweep:state:capital:OIL_CRUDE",
+    "swing:sessionsweep:state:capital:NATURALGAS",
+    "swing:sessionsweep:state:capital:COPPER",
+    "swing:sessionsweep:state:capital:HK50",
+    "swing:sessionsweep:state:capital:TLT",
+    "swing:sessionsweep:state:capital:US500",
+    "swing:sessionsweep:state:capital:UK100",
+    "swing:sessionsweep:state:capital:SILVER",
+    "swing:sessionsweep:state:capital:GBPUSD"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
     "GET",
     "swing:wakewatch:ref:bitget:BTCUSDT"
   ]
