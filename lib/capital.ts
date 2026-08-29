@@ -2711,6 +2711,9 @@ export async function fetchCapitalPositionInfo(
   };
 }
 
+// Interface parity with Bitget's fetchRealizedRoi — Capital realized PnL comes
+// from position history instead, so the params are deliberately unused.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function fetchCapitalRealizedRoi(_symbol: string, _hours = 24) {
   return {
     roi: null,

@@ -408,8 +408,10 @@ class PgHttpClientImpl implements PgClient {
         return Number(result.rowCount || 0);
     }
 
+    // Params exist for PgClient interface parity; this client always throws.
     async $transaction<T>(
         _fn: (tx: PgTxClient) => Promise<T>,
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         _options: PgTransactionOptions = {},
     ): Promise<T> {
         throw new Error(

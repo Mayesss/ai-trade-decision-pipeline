@@ -1228,6 +1228,10 @@ export default function ChartPanel(props: ChartPanelProps) {
 
   useEffect(() => {
     if (!adminGranted || !symbol) {
+      // Chart teardown + the cache-hydration below are one fetch-effect:
+      // it resets/hydrates chart state synchronously around the request.
+      // There is no rule-clean version that isn't worse code.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsFullscreen(false);
       setChartLoading(false);
       setChartAttempted(false);
@@ -1373,6 +1377,10 @@ export default function ChartPanel(props: ChartPanelProps) {
     const tsMs = Number.isFinite(liveTimestamp as number) ? Number(liveTimestamp) : Date.now();
     const barTime = Math.floor(Math.floor(tsMs / 1000) / interval) * interval;
 
+    // Live-tick merge: folds the polled quote into the candle series with
+    // pure updaters. It can't move to render — the Date.now() fallback above
+    // must stay out of render-time code (react-hooks/purity).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setChartData((prev) => {
       if (!prev.length || barTime < prev[0].time) return prev;
       const last = prev[prev.length - 1];

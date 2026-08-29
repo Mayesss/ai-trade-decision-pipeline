@@ -111,6 +111,8 @@ function sanitizeTranscript(input: unknown[] | null | undefined): Anthropic.Mess
             role,
             content: content.map((block) => {
                 if (block && typeof block === 'object' && 'cache_control' in block) {
+                    // Rest-omit: strip cache_control, keep everything else.
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
                     const { cache_control: _dropped, ...rest } = block;
                     return rest;
                 }

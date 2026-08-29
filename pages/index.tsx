@@ -802,10 +802,13 @@ export default function Home() {
 
   // background: refresh the data in place without the loading skeleton — used
   // by the warm-status poll when a new analyze cycle's summary lands.
-  const loadDashboard = async (opts?: { background?: boolean }) => {
+  const loadDashboard = async (opts?: {
+    background?: boolean;
+    range?: DashboardRangeKey;
+  }) => {
     const requestId = swingDashboardRequestIdRef.current + 1;
     swingDashboardRequestIdRef.current = requestId;
-    const requestedRange = dashboardRange;
+    const requestedRange = opts?.range ?? dashboardRange;
     setSwingSummaryRange((prev) => (prev === requestedRange ? prev : null));
     if (!opts?.background) setLoading(true);
     try {
@@ -1081,13 +1084,17 @@ export default function Home() {
     if (typeof document === "undefined") return;
     document.documentElement.style.colorScheme = resolvedTheme;
   }, [resolvedTheme]);
-  // The range is passed only to key the effect: the event reads all other
-  // state (tabs, request ids) at call time.
-  const refreshDashboard = useEffectEvent((_range: DashboardRangeKey) => {
-    void loadDashboard();
+  // The range keys the effect below; the event reads all other state (tabs,
+  // request ids) at call time.
+  const refreshDashboard = useEffectEvent((range: DashboardRangeKey) => {
+    void loadDashboard({ range });
   });
   useEffect(() => {
     if (!adminGranted) return;
+    // Canonical fetch-effect: loadDashboard flips its own loading state
+    // synchronously before fetching — there is no rule-clean formulation of
+    // "fetch on auth/range change with a spinner" that isn't worse code.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshDashboard(dashboardRange);
   }, [adminGranted, dashboardRange]);
   const loadActiveSymbolDetails = useEffectEvent(
@@ -1112,6 +1119,10 @@ export default function Home() {
     const symbol = symbols[active] || null;
     if (!adminGranted || !symbol) return;
     let cancelled = false;
+    // Canonical fetch-effect: the loaders merge fetched data into state; the
+    // sync prefix the rule flags is their request bookkeeping, not derived
+    // state that could move to render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadActiveSymbolDetails(symbol, () => cancelled);
     return () => {
       cancelled = true;

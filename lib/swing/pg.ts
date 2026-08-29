@@ -1481,6 +1481,8 @@ export async function loadSwingPostmortems(
         LIMIT ${limit};
     `);
     return (rows || []).map((r) => {
+        // Rest-omit: the heavy report/dossier payloads stay out of the summary row.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { report: _r, dossier: _d, ...summary } = mapPostmortemRow({ ...r, report_json: null, dossier_json: null });
         return summary;
     });
