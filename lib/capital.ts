@@ -35,6 +35,16 @@ type SessionState = {
 
 type CapitalTickerMap = Record<string, string>;
 
+// Parsed JSON body of a Capital API response (object payloads; arrays and
+// primitives are handled behind unknown-typed helpers like extractRows).
+type CapitalApiPayload = Record<string, unknown> | null;
+
+// Decisions produced before the exit_size_pct/close_size_pct rename may still
+// carry the legacy field; it is read but intentionally not part of TradeDecision.
+type TradeDecisionWithLegacyClosePct = TradeDecision & {
+  partial_close_pct?: number | null;
+};
+
 type CapitalPositionRow = {
   market?: {
     epic?: string;
@@ -64,6 +74,9 @@ type CapitalPositionRow = {
   size?: number | string;
   level?: number | string;
   openLevel?: number | string;
+  stopLevel?: number | string;
+  profitLevel?: number | string;
+  limitLevel?: number | string;
 };
 
 type BundleOpts = {
@@ -364,16 +377,17 @@ function isCapitalEpicNotFoundError(err: unknown): boolean {
   );
 }
 
-function midFromQuote(value: any): number | null {
+function midFromQuote(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string") {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
-  const bid = safeNumber(value?.bid, NaN);
-  const ask = safeNumber(value?.ask, NaN);
-  const last = safeNumber(value?.lastTraded, NaN);
+  const quote = value as { bid?: unknown; ask?: unknown; lastTraded?: unknown };
+  const bid = safeNumber(quote?.bid, NaN);
+  const ask = safeNumber(quote?.ask, NaN);
+  const last = safeNumber(quote?.lastTraded, NaN);
   if (Number.isFinite(last)) return last;
   if (Number.isFinite(bid) && Number.isFinite(ask)) return (bid + ask) / 2;
   if (Number.isFinite(bid)) return bid;
@@ -543,10 +557,11 @@ async function fetchCapitalRateLimited(
         ...init,
         signal: ctrl.signal,
       });
-    } catch (err: any) {
+    } catch (err) {
+      const abortInfo = err as { name?: unknown; code?: unknown } | null;
       const isAbort =
-        String(err?.name || "").toLowerCase() === "aborterror" ||
-        String(err?.code || "").toUpperCase() === "ABORT_ERR";
+        String(abortInfo?.name || "").toLowerCase() === "aborterror" ||
+        String(abortInfo?.code || "").toUpperCase() === "ABORT_ERR";
       if (isAbort) {
         let path = url;
         try {
@@ -577,7 +592,7 @@ async function fetchCapitalRateLimited(
   }
 }
 
-async function parseResponsePayload(res: Response): Promise<any> {
+async function parseResponsePayload(res: Response): Promise<CapitalApiPayload> {
   const text = await res.text();
   if (!text) return null;
   try {
@@ -665,7 +680,7 @@ async function capitalFetch(
   body?: unknown,
   auth = true,
   retryAuth = true,
-) {
+): Promise<CapitalApiPayload> {
   if (!process.env.CAPITAL_API_KEY) throw new Error("Missing CAPITAL_API_KEY");
   const query = buildQuery(params);
   const url = `${CAPITAL_API_BASE}${path}${query ? `?${query}` : ""}`;
@@ -707,13 +722,18 @@ async function capitalFetch(
   return payload;
 }
 
-function extractRows<T>(payload: any, keys: string[]): T[] {
+function extractRows<T>(payload: unknown, keys: string[]): T[] {
+  const record =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : null;
   for (const key of keys) {
-    const value = payload?.[key];
+    const value = record?.[key];
     if (Array.isArray(value)) return value as T[];
   }
   if (Array.isArray(payload)) return payload as T[];
-  if (Array.isArray(payload?.data)) return payload.data as T[];
+  const data = record?.data;
+  if (Array.isArray(data)) return data as T[];
   return [];
 }
 
@@ -722,21 +742,25 @@ function formatCapitalHistoryDateUtc(tsMs: number): string {
   return new Date(safe).toISOString().slice(0, 19);
 }
 
-function normalizeCapitalTradeTransactionRow(row: any): CapitalTradeTransactionRow {
+function normalizeCapitalTradeTransactionRow(raw: unknown): CapitalTradeTransactionRow {
+  const row: Record<string, unknown> =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
   const pnlNet = safeNumber(
-    row?.size ?? row?.amount ?? row?.profitAndLoss ?? row?.profit ?? row?.pnl,
+    row.size ?? row.amount ?? row.profitAndLoss ?? row.profit ?? row.pnl,
     NaN,
   );
   return {
-    dateUtcMs: toIsoTimestampMs(row?.dateUTC ?? row?.dateUtc ?? row?.date),
-    instrumentName: normalizeCapitalText(row?.instrumentName ?? row?.instrument ?? row?.epic),
-    transactionType: normalizeCapitalText(row?.transactionType ?? row?.type),
-    note: normalizeCapitalText(row?.note),
-    reference: String(row?.reference ?? row?.dealId ?? row?.dealReference ?? "").trim() || null,
+    dateUtcMs: toIsoTimestampMs(row.dateUTC ?? row.dateUtc ?? row.date),
+    instrumentName: normalizeCapitalText(row.instrumentName ?? row.instrument ?? row.epic),
+    transactionType: normalizeCapitalText(row.transactionType ?? row.type),
+    note: normalizeCapitalText(row.note),
+    reference: String(row.reference ?? row.dealId ?? row.dealReference ?? "").trim() || null,
     pnlNet: Number.isFinite(pnlNet) ? pnlNet : null,
-    currency: normalizeCapitalText(row?.currency),
-    status: normalizeCapitalText(row?.status),
-    raw: row && typeof row === "object" && !Array.isArray(row) ? row : {},
+    currency: normalizeCapitalText(row.currency),
+    status: normalizeCapitalText(row.status),
+    raw: row,
   };
 }
 
@@ -762,7 +786,7 @@ export async function fetchCapitalTradeTransactions(params: {
       type: "TRADE",
     });
     rows.push(
-      ...extractRows<any>(payload, ["transactions", "transaction", "data"]).map(
+      ...extractRows<unknown>(payload, ["transactions", "transaction", "data"]).map(
         normalizeCapitalTradeTransactionRow,
       ),
     );
@@ -772,8 +796,12 @@ export async function fetchCapitalTradeTransactions(params: {
   return rows.sort((a, b) => Number(a.dateUtcMs ?? 0) - Number(b.dateUtcMs ?? 0));
 }
 
-function parseCapitalCandles(payload: any): any[] {
-  const prices = extractRows<any>(payload, ["prices", "Price", "data"]);
+function parseCapitalCandles(payload: unknown): number[][] {
+  const prices = extractRows<Record<string, unknown>>(payload, [
+    "prices",
+    "Price",
+    "data",
+  ]);
   const candles = prices
     .map((p) => {
       // snapshotTimeUTC is UTC by contract; snapshotTime (and the generic
@@ -812,7 +840,7 @@ function buildSyntheticOrderbook(last: number) {
   };
 }
 
-function buildCapitalTicker(candles: any[], timeframe: string) {
+function buildCapitalTicker(candles: number[][], timeframe: string) {
   const last = safeNumber(candles.at(-1)?.[4], NaN);
   if (!Number.isFinite(last))
     return { last: 0, lastPr: 0, close: 0, change24h: 0 };
@@ -840,9 +868,9 @@ function clampLeverage(value: unknown): number | null {
 }
 
 function deriveLeverage(decision: TradeDecision): number | null {
-  const explicit = clampLeverage((decision as any)?.leverage);
+  const explicit = clampLeverage(decision?.leverage);
   if (explicit) return explicit;
-  const raw = (decision as any)?.signal_strength;
+  const raw = decision?.signal_strength;
   const numericStrength = Number(raw);
   if (Number.isFinite(numericStrength)) {
     const mapped = clampLeverage(numericStrength);
@@ -1143,7 +1171,9 @@ type CapitalStopLossConstraint = {
 function parseCapitalStopLossConstraint(
   error: unknown,
 ): CapitalStopLossConstraint | null {
-  const message = String((error as any)?.message || error || "");
+  const message = String(
+    (error as { message?: unknown } | null)?.message || error || "",
+  );
   if (!message.toLowerCase().includes("error.invalid.stoploss")) return null;
   const match = message.match(
     /error\.invalid\.stoploss\.(minvalue|maxvalue)\s*:\s*(-?\d+(?:\.\d+)?)/i,
@@ -1265,7 +1295,7 @@ function adjustStopAndSizeForCapitalConstraint(params: {
   };
 }
 
-function extractPositionRows(payload: any): CapitalPositionRow[] {
+function extractPositionRows(payload: unknown): CapitalPositionRow[] {
   return extractRows<CapitalPositionRow>(payload, ["positions", "data"]);
 }
 
@@ -1304,6 +1334,8 @@ type CapitalMarketSearchRow = {
     decimalPlacesFactor?: number | string;
     scalingFactor?: number | string;
   };
+  // ?epics= rows are marketDetails objects carrying the epic under instrument.
+  instrument?: { epic?: string } | null;
   openingHours?: unknown;
 };
 
@@ -1394,7 +1426,7 @@ async function discoverCapitalEpic(
 
   let best: { epic: string; score: number } | null = null;
   for (const term of terms) {
-    let payload: any;
+    let payload: CapitalApiPayload;
     try {
       payload = await capitalFetch(
         "GET",
@@ -1488,7 +1520,7 @@ export async function fetchCapitalCandlesByEpic(
   epic: string,
   timeframe: string,
   limit = 200,
-): Promise<any[]> {
+): Promise<number[][]> {
   const preferredResolution = toCapitalResolution(timeframe);
   const max = Math.max(20, Math.min(limit, 1000));
   const fallbackResolutions = Array.from(
@@ -1525,8 +1557,8 @@ export async function fetchCapitalCandlesByEpic(
       );
 }
 
-function dedupeSortedCandles(candles: any[]): any[] {
-  const byTs = new Map<number, any>();
+function dedupeSortedCandles(candles: number[][]): number[][] {
+  const byTs = new Map<number, number[]>();
   for (const row of candles) {
     const ts = safeNumber(row?.[0], NaN);
     if (!Number.isFinite(ts) || ts <= 0) continue;
@@ -1582,7 +1614,7 @@ async function fetchCapitalPriceRangeChunk(params: {
   fromMs: number;
   toMs: number;
   max: number;
-}): Promise<any> {
+}): Promise<CapitalApiPayload> {
   const candidates = [
     { from: toIsoMs(params.fromMs), to: toIsoMs(params.toMs) },
     { from: toIsoNoMsUtc(params.fromMs), to: toIsoNoMsUtc(params.toMs) },
@@ -1627,7 +1659,7 @@ export async function fetchCapitalCandlesByEpicDateRange(
     debug?: boolean;
     debugLabel?: string;
   } = {},
-): Promise<any[]> {
+): Promise<number[][]> {
   const startMs = Math.floor(Math.min(fromTsMs, toTsMs));
   const endMs = Math.floor(Math.max(fromTsMs, toTsMs));
   if (
@@ -1649,7 +1681,7 @@ export async function fetchCapitalCandlesByEpicDateRange(
   );
   const chunkBars = Math.max(20, maxPerRequest - 10);
   const chunkSpanMs = chunkBars * tfMs;
-  const candles: any[] = [];
+  const candles: number[][] = [];
   const debugLabel = String(opts.debugLabel || `${epic}:${timeframe}`);
 
   let requestCount = 0;
@@ -1659,7 +1691,7 @@ export async function fetchCapitalCandlesByEpicDateRange(
   while (cursorFromMs <= endMs && requestCount < maxRequests) {
     const cursorToMs = Math.min(endMs, cursorFromMs + chunkSpanMs);
     requestCount += 1;
-    let chunk: any[] = [];
+    let chunk: number[][] = [];
     let chunkStatus: "ok" | "empty" | "prices_not_found" = "ok";
     const chunkStartedAt = Date.now();
     try {
@@ -1757,7 +1789,7 @@ export async function fetchCapitalMarketBundle(
   const last = safeNumber(ticker.last, 0);
   const orderbook = buildSyntheticOrderbook(last);
 
-  let trades: any[] = [];
+  let trades: { ts: number; price: number; size: number }[] = [];
   if (includeTrades) {
     const tfMinutes = Math.max(1, timeframeToMinutes(bundleTimeFrame));
     const bars = Math.max(1, Math.ceil(tradeMinutes / tfMinutes));
@@ -1888,8 +1920,17 @@ export async function fetchCapitalOpenPositionMarkers(): Promise<CapitalOpenPosi
 // the venue-closed gate).
 export function capitalMidPriceFromMarketRow(row: unknown): number | null {
   if (!row || typeof row !== "object") return null;
-  const r = row as any;
-  const snapshot = r.snapshot && typeof r.snapshot === "object" ? r.snapshot : null;
+  const r = row as {
+    snapshot?: unknown;
+    marketStatus?: unknown;
+    status?: unknown;
+    bid?: unknown;
+    offer?: unknown;
+  };
+  const snapshot =
+    r.snapshot && typeof r.snapshot === "object"
+      ? (r.snapshot as { marketStatus?: unknown; bid?: unknown; offer?: unknown })
+      : null;
   const status = normalizeCapitalText(snapshot?.marketStatus ?? r.marketStatus ?? r.status);
   if (status && status.toUpperCase() !== "TRADEABLE") return null;
   const bid = safeNumber(snapshot?.bid ?? r.bid, NaN);
@@ -1941,10 +1982,55 @@ async function loadMarketOverview(
   // ?epics= rows carry the epic under instrument, searchTerm rows at the top.
   const exact = rows.find(
     (row) =>
-      normalizeTicker(String(row?.epic || (row as any)?.instrument?.epic || "")) === targetEpic,
+      normalizeTicker(String(row?.epic || row?.instrument?.epic || "")) === targetEpic,
   );
   return exact || rows[0] || null;
 }
+
+// /markets/{epic} response fields actually read below — every leaf stays
+// unknown and is narrowed through safeNumber/normalizeCapitalText/etc.
+type CapitalMarketDetailsPayload = {
+  epic?: unknown;
+  bid?: unknown;
+  offer?: unknown;
+  lastTraded?: unknown;
+  last?: unknown;
+  snapshotTimeUTC?: unknown;
+  snapshotTime?: unknown;
+  updateTime?: unknown;
+  timestamp?: unknown;
+  marketStatus?: unknown;
+  status?: unknown;
+  instrumentType?: unknown;
+  decimalPlacesFactor?: unknown;
+  scalingFactor?: unknown;
+  openingHours?: unknown;
+  overnightFee?: { longRate?: unknown; shortRate?: unknown } | null;
+  marginFactor?: unknown;
+  marginFactorUnit?: unknown;
+  snapshot?: {
+    bid?: unknown;
+    offer?: unknown;
+    lastTraded?: unknown;
+    updateTimeUTC?: unknown;
+    updateTime?: unknown;
+    marketStatus?: unknown;
+    decimalPlacesFactor?: unknown;
+    scalingFactor?: unknown;
+  } | null;
+  dealingRules?: {
+    minDealSize?: { value?: unknown } | null;
+    minStepDistance?: { value?: unknown } | null;
+    marginFactor?: { value?: unknown; unit?: unknown } | null;
+  } | null;
+  instrument?: {
+    type?: unknown;
+    openingHours?: unknown;
+    overnightFee?: { longRate?: unknown; shortRate?: unknown } | null;
+    marginFactor?: unknown;
+    marginFactorUnit?: unknown;
+  } | null;
+};
 
 async function loadMarketDetails(epic: string): Promise<MarketDetails> {
   const payload = await capitalFetch(
@@ -1954,7 +2040,9 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
     undefined,
     true,
   );
-  const market = payload?.market ?? payload?.data ?? payload;
+  const market = (payload?.market ?? payload?.data ?? payload) as
+    | CapitalMarketDetailsPayload
+    | null;
   const bid = safeNumber(market?.snapshot?.bid ?? market?.bid, NaN);
   const offer = safeNumber(market?.snapshot?.offer ?? market?.offer, NaN);
   const lastTraded = safeNumber(
@@ -2091,7 +2179,7 @@ async function fetchCapitalForexConversionQuote(symbol: string): Promise<number 
   const nowMs = Date.now();
   if (cached && cached.expiresAtMs > nowMs) return cached.price;
   const quote = await fetchCapitalLivePrice(normalized).catch(() => null);
-  const price = positiveQuote((quote as any)?.price);
+  const price = positiveQuote(quote?.price);
   if (price === null) return null;
   capitalFxConversionQuoteCache.set(normalized, {
     price,
@@ -2237,7 +2325,23 @@ function pickNewestPosition(
   return sorted[0] ?? null;
 }
 
-function extractConfirmDealId(payload: any): string | null {
+// /confirms/{dealReference} response fields actually read below.
+type CapitalConfirmPayload = {
+  dealId?: string | null;
+  positionDealId?: string | null;
+  dealReference?: string | null;
+  positionDealReference?: string | null;
+  affectedDeals?: Array<{
+    dealId?: string | null;
+    dealReference?: string | null;
+  }> | null;
+  dealStatus?: string | null;
+  status?: string | null;
+  rejectReason?: string | null;
+  reason?: string | null;
+};
+
+function extractConfirmDealId(payload: CapitalConfirmPayload | null): string | null {
   const direct =
     payload?.dealId ??
     payload?.positionDealId ??
@@ -2248,7 +2352,7 @@ function extractConfirmDealId(payload: any): string | null {
   return value || null;
 }
 
-function extractConfirmDealReference(payload: any): string | null {
+function extractConfirmDealReference(payload: CapitalConfirmPayload | null): string | null {
   const direct =
     payload?.dealReference ??
     payload?.positionDealReference ??
@@ -2259,36 +2363,36 @@ function extractConfirmDealReference(payload: any): string | null {
   return value || null;
 }
 
-function extractConfirmDealStatus(payload: any): string | null {
+function extractConfirmDealStatus(payload: CapitalConfirmPayload | null): string | null {
   const value = normalizeCapitalText(payload?.dealStatus);
   return value ? value.toUpperCase() : null;
 }
 
-function extractConfirmStatus(payload: any): string | null {
+function extractConfirmStatus(payload: CapitalConfirmPayload | null): string | null {
   const value = normalizeCapitalText(payload?.status);
   return value ? value.toUpperCase() : null;
 }
 
-function extractConfirmRejectReason(payload: any): string | null {
+function extractConfirmRejectReason(payload: CapitalConfirmPayload | null): string | null {
   const value = normalizeCapitalText(payload?.rejectReason);
   return value ? value.toUpperCase() : null;
 }
 
 async function fetchCapitalDealConfirmationByReference(
   dealReference: string | null,
-): Promise<any | null> {
+): Promise<CapitalConfirmPayload | null> {
   const normalized = String(dealReference || "").trim();
   if (!normalized) return null;
   const deadlineMs = Date.now() + 4_000;
   while (Date.now() < deadlineMs) {
     try {
-      const confirm = await capitalFetch(
+      const confirm = (await capitalFetch(
         "GET",
         `/api/v1/confirms/${encodeURIComponent(normalized)}`,
         {},
         undefined,
         true,
-      );
+      )) as CapitalConfirmPayload | null;
       if (!confirm || typeof confirm !== "object") return confirm;
       const status = extractConfirmDealStatus(confirm);
       const confirmStatus = extractConfirmStatus(confirm);
@@ -2324,13 +2428,13 @@ async function resolveOpenedPositionOwnership(params: {
     String(params.submittedDealReference || "").trim() || null;
   if (submittedDealReference) {
     try {
-      const confirm = await capitalFetch(
+      const confirm = (await capitalFetch(
         "GET",
         `/api/v1/confirms/${encodeURIComponent(submittedDealReference)}`,
         {},
         undefined,
         true,
-      );
+      )) as CapitalConfirmPayload | null;
       const confirmDealId = extractConfirmDealId(confirm);
       const confirmDealReference = extractConfirmDealReference(confirm);
       if (confirmDealId) {
@@ -2403,8 +2507,30 @@ async function resolveOpenedPositionOwnership(params: {
   };
 }
 
-function extractAccountRows(payload: any): any[] {
-  return extractRows<any>(payload, ["accounts", "accountInfo", "data"]);
+// /accounts row fields actually read below (balance doubles as an object or a
+// bare number depending on API version — every leaf stays unknown).
+type CapitalAccountRow = {
+  balance?: {
+    equity?: unknown;
+    balance?: unknown;
+    profitLoss?: unknown;
+    available?: unknown;
+    margin?: unknown;
+  } | null;
+  equity?: unknown;
+  funds?: unknown;
+  available?: unknown;
+  availableFunds?: unknown;
+  fundsAvailable?: unknown;
+  availableToDeal?: unknown;
+  profitLoss?: unknown;
+  margin?: unknown;
+  usedMargin?: unknown;
+  marginUsed?: unknown;
+};
+
+function extractAccountRows(payload: unknown): CapitalAccountRow[] {
+  return extractRows<CapitalAccountRow>(payload, ["accounts", "accountInfo", "data"]);
 }
 
 function toPositiveFinite(value: unknown): number | null {
@@ -2413,7 +2539,7 @@ function toPositiveFinite(value: unknown): number | null {
   return n;
 }
 
-function extractAccountEquityUsd(account: any): number | null {
+function extractAccountEquityUsd(account: CapitalAccountRow): number | null {
   const directEquity = toPositiveFinite(
     account?.balance?.equity ??
       account?.equity ??
@@ -2437,7 +2563,7 @@ function extractAccountEquityUsd(account: any): number | null {
   return balance;
 }
 
-function extractAccountAvailableMarginUsd(account: any): number | null {
+function extractAccountAvailableMarginUsd(account: CapitalAccountRow): number | null {
   const directAvailable = toPositiveFinite(
     account?.balance?.available ??
       account?.available ??
@@ -2562,13 +2688,13 @@ export async function fetchCapitalPositionInfo(
   // stop/limit levels on the positions row ("limitLevel" is the take-profit in
   // some API versions, "profitLevel" in others — accept either).
   const stopLevel = safePositiveNumber(
-    open?.position?.stopLevel ?? (open as any)?.stopLevel,
+    open?.position?.stopLevel ?? open?.stopLevel,
   );
   const profitLevel = safePositiveNumber(
     open?.position?.profitLevel ??
       open?.position?.limitLevel ??
-      (open as any)?.profitLevel ??
-      (open as any)?.limitLevel,
+      open?.profitLevel ??
+      open?.limitLevel,
   );
   return {
     status: "open",
@@ -2607,7 +2733,7 @@ export async function calculateCapitalMultiTFIndicators(
   const contextTF = normalizeTimeframe(opts.context || CONTEXT_TIMEFRAME);
   const epic = (await resolveCapitalEpicRuntime(symbol)).epic;
 
-  const byTf = new Map<string, any[]>();
+  const byTf = new Map<string, number[][]>();
   const tfs = Array.from(new Set([microTF, macroTF, primaryTF, contextTF]));
   await Promise.all(
     tfs.map(async (tf) => {
@@ -2784,6 +2910,31 @@ export async function evaluateCapitalMinSizeAffordability(
   };
 }
 
+// POST /positions (and DELETE /positions/{dealId}) response fields actually
+// read below.
+type CapitalDealResponsePayload = {
+  dealId?: string | null;
+  positionDealId?: string | null;
+  dealReference?: string | null;
+  id?: string | null;
+};
+
+type OpenCapitalPositionResult = {
+  payload: unknown;
+  orderId: string | null;
+  dealId: string | null;
+  dealReference: string | null;
+  notionalUsd: number;
+  size: number | null;
+  epic: string;
+  dealStatus: string | null;
+  confirmStatus: string | null;
+  rejectReason: string | null;
+  reasonCodes: string[];
+  accepted: boolean;
+  pending?: boolean;
+};
+
 async function openCapitalPosition(params: {
   symbol: string;
   direction: "BUY" | "SELL";
@@ -2805,7 +2956,7 @@ async function openCapitalPosition(params: {
   // backstop behind the caller-owned one-tick TTL.
   asWorkingOrder?: boolean;
   goodTillMs?: number | null;
-}) {
+}): Promise<OpenCapitalPositionResult> {
   const {
     symbol,
     direction,
@@ -2986,13 +3137,13 @@ async function openCapitalPosition(params: {
     let dealStatus: string | null = null;
     let rejectReason: string | null = null;
     try {
-      const confirm = await capitalFetch(
+      const confirm = (await capitalFetch(
         "GET",
         `/api/v1/confirms/${encodeURIComponent(dealReference)}`,
         {},
         undefined,
         true,
-      );
+      )) as CapitalConfirmPayload | null;
       dealId = confirm?.dealId ? String(confirm.dealId) : null;
       dealStatus = confirm?.dealStatus ? String(confirm.dealStatus) : null;
       rejectReason = confirm?.rejectReason ?? confirm?.reason ?? null;
@@ -3018,10 +3169,16 @@ async function openCapitalPosition(params: {
   }
 
   const submittedAtMs = Date.now();
-  let payload: any = null;
+  let payload: CapitalDealResponsePayload | null = null;
   try {
-    payload = await capitalFetch("POST", "/api/v1/positions", {}, body, true);
-  } catch (err: any) {
+    payload = (await capitalFetch(
+      "POST",
+      "/api/v1/positions",
+      {},
+      body,
+      true,
+    )) as CapitalDealResponsePayload | null;
+  } catch (err) {
     const constraint = parseCapitalStopLossConstraint(err);
     if (!constraint || stopLevelNumber === null) throw err;
     const adjusted = adjustStopAndSizeForCapitalConstraint({
@@ -3069,8 +3226,14 @@ async function openCapitalPosition(params: {
     }
 
     try {
-      payload = await capitalFetch("POST", "/api/v1/positions", {}, body, true);
-    } catch (retryErr: any) {
+      payload = (await capitalFetch(
+        "POST",
+        "/api/v1/positions",
+        {},
+        body,
+        true,
+      )) as CapitalDealResponsePayload | null;
+    } catch (retryErr) {
       const retryConstraint = parseCapitalStopLossConstraint(retryErr);
       if (!retryConstraint) throw retryErr;
       return {
@@ -3190,7 +3353,7 @@ async function closeCapitalPosition(
     // validation showed the sized DELETE variant also closes the whole position.
     // A market order in the opposite direction with forceOpen=false reduces the
     // existing deal without opening a hedge when hedging is off.
-    const payload = await capitalFetch(
+    const payload = (await capitalFetch(
       "POST",
       "/api/v1/positions",
       {},
@@ -3204,7 +3367,7 @@ async function closeCapitalPosition(
         dealReference: clientOid,
       },
       true,
-    );
+    )) as CapitalDealResponsePayload | null;
     return {
       payload,
       orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
@@ -3212,13 +3375,13 @@ async function closeCapitalPosition(
     };
   }
 
-  const payload = await capitalFetch(
+  const payload = (await capitalFetch(
     "DELETE",
     `/api/v1/positions/${encodeURIComponent(dealId)}`,
     {},
     undefined,
     true,
-  );
+  )) as CapitalDealResponsePayload | null;
   return {
     payload,
     orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
@@ -3238,14 +3401,34 @@ export type CapitalPendingEntryOrder = {
   createdAtMs: number | null;
 };
 
+// /workingorders row fields actually read below (nested workingOrderData shape
+// or the flat legacy one).
+type CapitalWorkingOrderData = {
+  epic?: unknown;
+  dealId?: unknown;
+  direction?: unknown;
+  orderLevel?: unknown;
+  level?: unknown;
+  orderSize?: unknown;
+  size?: unknown;
+  createdDateUTC?: unknown;
+  createdDate?: unknown;
+};
+
+type CapitalWorkingOrderRow = CapitalWorkingOrderData & {
+  workingOrderData?: CapitalWorkingOrderData | null;
+  marketData?: { epic?: unknown } | null;
+};
+
 // The pipeline is the only writer on this account, so every working order on a
 // symbol's epic is one of our resting pullback entries.
 export async function listCapitalPendingEntryOrders(symbol: string): Promise<CapitalPendingEntryOrder[]> {
   const resolved = await resolveCapitalEpicRuntime(symbol);
   const payload = await capitalFetch("GET", "/api/v1/workingorders", {}, undefined, true);
-  const rows = Array.isArray(payload?.workingOrders) ? payload.workingOrders : [];
+  const workingOrders = payload?.workingOrders;
+  const rows: CapitalWorkingOrderRow[] = Array.isArray(workingOrders) ? workingOrders : [];
   return rows
-    .map((row: any): CapitalPendingEntryOrder | null => {
+    .map((row): CapitalPendingEntryOrder | null => {
       const data = row?.workingOrderData ?? row;
       const epic = normalizeTicker(String(data?.epic ?? row?.marketData?.epic ?? ""));
       if (epic !== resolved.epic) return null;
@@ -3337,13 +3520,13 @@ export async function updateCapitalPositionLevels(params: {
     // Preserve the untouched leg: fall back to the level currently standing on
     // the position row so a single-leg amend never clears the other leg.
     const standingStop = safePositiveNumber(
-      open?.position?.stopLevel ?? (open as any)?.stopLevel,
+      open?.position?.stopLevel ?? open?.stopLevel,
     );
     const standingProfit = safePositiveNumber(
       open?.position?.profitLevel ??
         open?.position?.limitLevel ??
-        (open as any)?.profitLevel ??
-        (open as any)?.limitLevel,
+        open?.profitLevel ??
+        open?.limitLevel,
     );
     const stopLevel = requestedStop ?? standingStop;
     const profitLevel = requestedProfit ?? standingProfit;
@@ -3395,9 +3578,11 @@ export async function executeCapitalDecision(
     ? getCapitalCategoryLeverage(symbol)
     : deriveLeverage(decision);
   const partialClosePct =
-    normalizeClosePct((decision as any)?.exit_size_pct) ??
-    normalizeClosePct((decision as any)?.close_size_pct) ??
-    normalizeClosePct((decision as any)?.partial_close_pct);
+    normalizeClosePct(decision?.exit_size_pct) ??
+    normalizeClosePct(decision?.close_size_pct) ??
+    normalizeClosePct(
+      (decision as TradeDecisionWithLegacyClosePct)?.partial_close_pct,
+    );
 
   if (decision.action === "BUY" || decision.action === "SELL") {
     if (dryRun) return { placed: false, orderId: null, clientOid, leverage };
@@ -3450,7 +3635,7 @@ export async function executeCapitalDecision(
       leverage,
       size: opened.size,
       epic: opened.epic,
-      ...((opened as any).pending ? { pendingEntry: true, entryLimitPrice } : {}),
+      ...(opened.pending ? { pendingEntry: true, entryLimitPrice } : {}),
     };
   }
 

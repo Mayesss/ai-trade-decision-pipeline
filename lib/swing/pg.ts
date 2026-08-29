@@ -498,7 +498,21 @@ export async function loadSwingTickLog(opts: {
     const limit = Math.max(1, Math.min(5000, opts.limit ?? 2000));
     const toMs = opts.toMs ?? Date.now();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<
+        Array<{
+            id: unknown;
+            ts_ms: unknown;
+            symbol: unknown;
+            platform: unknown;
+            kind: unknown;
+            stage: unknown;
+            reason: string | null;
+            cadence: string | null;
+            dry_run: unknown;
+            gates_json: Record<string, unknown> | null;
+            metrics_json: Record<string, unknown> | null;
+        }>
+    >(sql`
         SELECT id, ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json
         FROM swing.tick_log
         WHERE symbol = ${String(opts.symbol || '').toUpperCase()}
@@ -760,15 +774,18 @@ function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
             parsed = null;
         }
     }
-    const arr = Array.isArray(parsed) ? parsed : [];
+    const arr: unknown[] = Array.isArray(parsed) ? parsed : [];
     return arr
-        .map((entry: any) => ({
-            side: entry?.side === 'above' ? ('above' as const) : entry?.side === 'below' ? ('below' as const) : null,
-            level: finitePos(entry?.level),
-            touchedAtMs: Number(entry?.touched_at_ms) || 0,
-            reclaimedAtMs: Number(entry?.reclaimed_at_ms) || 0,
-            extreme: finitePos(entry?.extreme),
-        }))
+        .map((raw) => {
+            const entry = raw as Record<string, unknown> | null | undefined;
+            return {
+                side: entry?.side === 'above' ? ('above' as const) : entry?.side === 'below' ? ('below' as const) : null,
+                level: finitePos(entry?.level),
+                touchedAtMs: Number(entry?.touched_at_ms) || 0,
+                reclaimedAtMs: Number(entry?.reclaimed_at_ms) || 0,
+                extreme: finitePos(entry?.extreme),
+            };
+        })
         .filter((s): s is SwingWakeSweep => s.side !== null && s.level !== null && s.touchedAtMs > 0 && s.reclaimedAtMs > 0)
         .slice(-SWING_WAKE_SWEEPS_MAX);
 }
@@ -1003,7 +1020,7 @@ export type SwingBreakTrigger = {
 
 export type SwingBreakTriggerRow = SwingBreakTrigger & { platform: string; symbol: string };
 
-function parseBreakTriggerRow(row: any): SwingBreakTrigger | null {
+function parseBreakTriggerRow(row: Record<string, unknown>): SwingBreakTrigger | null {
     const side = String(row?.side || '');
     const triggerPrice = finitePos(row?.trigger_price);
     const entryAtMs = Number(row?.entry_at_ms);
@@ -1075,8 +1092,8 @@ export async function listSwingBreakTriggers(): Promise<SwingBreakTriggerRow[]> 
     const out: SwingBreakTriggerRow[] = [];
     for (const row of rows || []) {
         const parsed = parseBreakTriggerRow(row);
-        const platform = String((row as any)?.platform || '');
-        const symbol = String((row as any)?.symbol || '');
+        const platform = String(row?.platform || '');
+        const symbol = String(row?.symbol || '');
         if (parsed && platform && symbol) out.push({ ...parsed, platform, symbol });
     }
     return out;
@@ -1116,10 +1133,10 @@ export async function upsertSwingDecision(entry: DecisionHistoryEntry): Promise<
     await ensureSwingSchema();
     const platform = normalizePlatform(entry.platform);
     const symbol = String(entry.symbol || '').toUpperCase();
-    const exec = (entry.execResult || {}) as Record<string, any>;
+    const exec = entry.execResult || {};
     const appliedLeverage = finitePos(exec.leverage);
     const targetLeverage = finitePos(exec.targetLeverage);
-    const action = (entry.aiDecision as any)?.action ?? null;
+    const action = entry.aiDecision?.action ?? null;
 
     const db = swingPg();
     const rows = await db.$queryRaw<Array<{ id: number | string }>>(sql`
@@ -1219,17 +1236,44 @@ export type SwingPostmortemRow = {
     verdict: string | null;
     lesson: string | null;
     lessonScope: string | null;
-    report: Record<string, any> | null;
-    dossier: Record<string, any> | null;
+    report: Record<string, unknown> | null;
+    dossier: Record<string, unknown> | null;
     model: string | null;
-    usage: Record<string, any> | null;
+    usage: Record<string, unknown> | null;
     error: string | null;
     attempts: number;
     createdAtMs: number;
     updatedAtMs: number;
 };
 
-function mapPostmortemRow(r: any): SwingPostmortemRow {
+type PostmortemDbRow = {
+    id: unknown;
+    platform: unknown;
+    symbol: unknown;
+    position_key: unknown;
+    status: unknown;
+    trigger_source: unknown;
+    side: string | null;
+    entry_ts_ms: unknown;
+    exit_ts_ms: unknown;
+    entry_price: unknown;
+    exit_price: unknown;
+    pnl_pct: unknown;
+    pnl_net: unknown;
+    verdict: string | null;
+    lesson: string | null;
+    lesson_scope: string | null;
+    report_json: Record<string, unknown> | null;
+    dossier_json: Record<string, unknown> | null;
+    model: string | null;
+    usage_json: Record<string, unknown> | null;
+    error: string | null;
+    attempts: unknown;
+    created_at: string | Date | null;
+    updated_at: string | Date | null;
+};
+
+function mapPostmortemRow(r: PostmortemDbRow): SwingPostmortemRow {
     return {
         id: Number(r.id),
         platform: String(r.platform),
@@ -1293,7 +1337,7 @@ export async function claimSwingPostmortemById(
     await ensureSwingSchema();
     const db = swingPg();
     const staleBefore = new Date(Date.now() - 15 * 60 * 1000);
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<PostmortemDbRow>>(sql`
         UPDATE swing.postmortems
         SET status = 'running', attempts = attempts + 1, error = NULL
         WHERE id = ${Math.floor(id)}
@@ -1321,7 +1365,7 @@ export async function claimQueuedSwingPostmortems(
     const capped = Math.max(1, Math.min(10, Math.floor(limit)));
     const cutoff = Number.isFinite(Number(opts.exitTsBeforeMs)) ? Math.floor(Number(opts.exitTsBeforeMs)) : null;
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<PostmortemDbRow>>(sql`
         UPDATE swing.postmortems
         SET status = 'running', attempts = attempts + 1, error = NULL
         WHERE id IN (
@@ -1346,10 +1390,10 @@ export async function completeSwingPostmortem(
         verdict: string | null;
         lesson: string | null;
         lessonScope?: string | null;
-        report: Record<string, any>;
-        dossier: Record<string, any>;
+        report: Record<string, unknown>;
+        dossier: Record<string, unknown>;
         model: string | null;
-        usage: Record<string, any> | null;
+        usage: Record<string, unknown> | null;
     },
 ): Promise<void> {
     if (!isSwingPgConfigured()) return;
@@ -1425,7 +1469,7 @@ export async function loadSwingPostmortems(
     const platform = opts.platform ? normalizePlatform(opts.platform) : null;
     const status = opts.status ?? null;
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<Omit<PostmortemDbRow, 'report_json' | 'dossier_json'>>>(sql`
         SELECT id, platform, symbol, position_key, status, trigger_source, side,
                entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_pct, pnl_net,
                verdict, lesson, lesson_scope, model, usage_json, error, attempts, created_at, updated_at
@@ -1446,7 +1490,7 @@ export async function loadSwingPostmortemById(id: number): Promise<SwingPostmort
     if (!isSwingPgConfigured()) return null;
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<PostmortemDbRow>>(sql`
         SELECT * FROM swing.postmortems WHERE id = ${Math.floor(id)} LIMIT 1;
     `);
     return rows?.length ? mapPostmortemRow(rows[0]) : null;
@@ -1486,7 +1530,21 @@ function parseOriginCounts(raw: unknown): SwingLessonOriginCounts {
     return out;
 }
 
-function mapLessonRow(r: any): SwingLessonRow {
+type LessonDbRow = {
+    id: unknown;
+    scope: unknown;
+    symbol: string | null;
+    asset_class: string | null;
+    lesson: unknown;
+    confidence: unknown;
+    support_count: unknown;
+    source_postmortem_ids: unknown;
+    origin_counts: unknown;
+    status: unknown;
+    updated_at: string | Date | null;
+};
+
+function mapLessonRow(r: LessonDbRow): SwingLessonRow {
     return {
         id: Number(r.id),
         scope: String(r.scope) as SwingLessonScope,
@@ -1636,7 +1694,7 @@ export async function loadActiveSwingLessons(opts: {
     const assetClass = opts.assetClass ?? null;
     const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<LessonDbRow>>(sql`
         SELECT id, scope, symbol, asset_class, lesson, confidence, support_count,
                source_postmortem_ids, origin_counts, status, updated_at
         FROM swing.lessons
@@ -1663,9 +1721,9 @@ export type SwingDecisionFullRow = {
     action: string | null;
     dryRun: boolean;
     prompt: { system?: string; user?: string } | null;
-    aiDecision: Record<string, any>;
-    execResult: Record<string, any>;
-    snapshot: Record<string, any>;
+    aiDecision: Record<string, unknown>;
+    execResult: Record<string, unknown>;
+    snapshot: Record<string, unknown>;
 };
 
 export async function loadSwingDecisionWindow(opts: {
@@ -1680,7 +1738,20 @@ export async function loadSwingDecisionWindow(opts: {
     const limit = Math.max(1, Math.min(1000, opts.limit ?? 500));
     const platform = opts.platform ? normalizePlatform(opts.platform) : null;
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<
+        Array<{
+            id: unknown;
+            decided_at_ms: unknown;
+            symbol: unknown;
+            platform: unknown;
+            action: string | null;
+            dry_run: unknown;
+            prompt_json: { system?: string; user?: string } | null;
+            ai_decision_json: Record<string, unknown> | null;
+            exec_result_json: Record<string, unknown> | null;
+            snapshot_json: Record<string, unknown> | null;
+        }>
+    >(sql`
         SELECT id, decided_at_ms, symbol, platform, action, dry_run,
                prompt_json, ai_decision_json, exec_result_json, snapshot_json
         FROM swing.decisions
@@ -1713,7 +1784,24 @@ export async function loadSwingPositionByKey(
     if (!isSwingPgConfigured()) return null;
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<
+        Array<{
+            position_key: unknown;
+            symbol: unknown;
+            side: string | null;
+            status: unknown;
+            entry_ts_ms: unknown;
+            exit_ts_ms: unknown;
+            entry_price: unknown;
+            exit_price: unknown;
+            notional: unknown;
+            entry_leverage: unknown;
+            pnl_net: unknown;
+            pnl_gross: unknown;
+            pnl_pct: unknown;
+            pnl_gross_pct: unknown;
+        }>
+    >(sql`
         SELECT position_key, symbol, side, status, entry_ts_ms, exit_ts_ms,
                entry_price, exit_price, notional, entry_leverage, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct
         FROM swing.positions
@@ -1762,7 +1850,18 @@ export async function loadRecentSwingDecisions(
     const symbol = opts.symbol ? opts.symbol.toUpperCase() : null;
     const platform = opts.platform ? normalizePlatform(opts.platform) : null;
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<
+        Array<{
+            id: unknown;
+            decided_at_ms: unknown;
+            symbol: unknown;
+            platform: unknown;
+            action: string | null;
+            applied_leverage: unknown;
+            target_leverage: unknown;
+            dry_run: unknown;
+        }>
+    >(sql`
         SELECT id, decided_at_ms, symbol, platform, action, applied_leverage, target_leverage, dry_run
         FROM swing.decisions
         WHERE (${symbol}::text IS NULL OR symbol = ${symbol})
@@ -1885,7 +1984,23 @@ export async function loadClosedSwingPositions(opts: {
     const toMs = finite(opts.toMs) ?? Date.now();
     const limit = Math.max(1, Math.min(5000, Math.floor(Number(opts.limit) || 1000)));
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<
+        Array<{
+            position_key: unknown;
+            symbol: unknown;
+            side: string | null;
+            entry_ts_ms: unknown;
+            exit_ts_ms: unknown;
+            entry_price: unknown;
+            exit_price: unknown;
+            pnl_net: unknown;
+            pnl_gross: unknown;
+            pnl_pct: unknown;
+            pnl_gross_pct: unknown;
+            notional: unknown;
+            entry_leverage: unknown;
+        }>
+    >(sql`
         SELECT
             position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price,
             pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage

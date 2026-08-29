@@ -93,11 +93,15 @@ function clampLeverage(value: unknown): number | null {
     return clamped;
 }
 
+// Decisions produced before the exit_size_pct/close_size_pct rename may still
+// carry the legacy field; it is read but intentionally not part of TradeDecision.
+type TradeDecisionWithLegacyClosePct = TradeDecision & { partial_close_pct?: number | null };
+
 function deriveLeverage(decision: TradeDecision): number | null {
-    const explicit = clampLeverage((decision as any)?.leverage);
+    const explicit = clampLeverage(decision?.leverage);
     if (explicit) return explicit;
 
-    const strengthRaw = (decision as any)?.signal_strength;
+    const strengthRaw = decision?.signal_strength;
     const strengthNum = Number(strengthRaw);
     if (Number.isFinite(strengthNum)) {
         const mapped = clampLeverage(strengthNum);
@@ -124,7 +128,14 @@ function deriveOrderNotional(sideSizeUSDT: number, leverage: number | null): num
 // OPEN isolated position via this exact function).
 export async function postSetLeverage(symbol: string, productType: ProductType, leverage: number, holdSide?: 'long' | 'short') {
     const pt = (productType as string).toUpperCase();
-    const body: any = {
+    const body: {
+        symbol: string;
+        productType: string;
+        marginCoin: string;
+        marginMode: string;
+        leverage: string;
+        holdSide?: 'long' | 'short';
+    } = {
         symbol,
         productType: pt,
         marginCoin: 'USDT',
@@ -362,7 +373,16 @@ export async function updatePositionTpsl(params: {
                 const modifySize = wholePositionPlan
                     ? '0'
                     : ((pos.status === 'open' ? pos.total ?? pos.available : null) ?? current.size);
-                const body: any = {
+                const body: {
+                    orderId: string;
+                    symbol: string;
+                    productType: string;
+                    marginCoin: string;
+                    triggerPrice: string;
+                    triggerType: string;
+                    executePrice: string;
+                    size?: string;
+                } = {
                     orderId: current.orderId,
                     symbol,
                     productType: (productType as string).toUpperCase(),
@@ -418,14 +438,26 @@ export type PendingEntryOrder = {
 // The pipeline is the only writer on this account, so every pending NORMAL
 // order on a symbol is one of our resting pullback entries (TP/SL live as
 // plan orders, listed separately).
+// orders-pending row fields actually read below.
+type BitgetPendingOrderRow = {
+    orderId?: unknown;
+    clientOid?: unknown;
+    side?: unknown;
+    price?: unknown;
+    priceAvg?: unknown;
+    size?: unknown;
+    cTime?: unknown;
+    ctime?: unknown;
+};
+
 export async function fetchPendingEntryOrders(symbol: string, productType: ProductType): Promise<PendingEntryOrder[]> {
     const res = await bitgetFetch('GET', '/api/v2/mix/order/orders-pending', {
         symbol,
         productType: (productType as string).toUpperCase(),
     });
-    const list = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
+    const list: BitgetPendingOrderRow[] = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
     return list
-        .map((o: any): PendingEntryOrder | null => {
+        .map((o): PendingEntryOrder | null => {
             const orderId = o?.orderId ? String(o.orderId) : null;
             if (!orderId) return null;
             const price = Number(o?.price ?? o?.priceAvg);
@@ -530,7 +562,7 @@ async function quantizePositionSize(symbol: string, productType: ProductType, ra
 // ------------------------------
 
 export async function flashClosePosition(symbol: string, productType: ProductType, holdSide?: 'long' | 'short') {
-    const body: any = {
+    const body: { productType: ProductType; symbol: string; holdSide?: 'long' | 'short' } = {
         productType,
         symbol,
     };
@@ -712,6 +744,15 @@ export async function maybeManagePosition(args: {
     };
 }
 
+// Narrow view of maybeManagePosition's result for the fields the execution
+// path reads back (the full shape stays inferred for scripts/tests).
+type ManagedPositionView = {
+    managed?: boolean;
+    leverage?: number;
+    beTriggerPrice?: number | null;
+    side?: 'long' | 'short';
+} | null;
+
 export async function executeDecision(
     symbol: string,
     sideSizeUSDT: number,
@@ -724,8 +765,8 @@ export async function executeDecision(
     const clientOid = `cfw-${crypto.randomUUID()}`;
     const partialClosePct =
         normalizeClosePct(decision.exit_size_pct) ??
-        normalizeClosePct((decision as any).close_size_pct) ??
-        normalizeClosePct((decision as any).partial_close_pct);
+        normalizeClosePct(decision.close_size_pct) ??
+        normalizeClosePct((decision as TradeDecisionWithLegacyClosePct).partial_close_pct);
     const targetLeverage = deriveLeverage(decision);
 
     // BUY / SELL
@@ -776,7 +817,7 @@ export async function executeDecision(
         // crash: available margin can move between the caller's pre-check and
         // this call (fees, ticks, a concurrent fill). Surface it as a failed
         // placement so the tick records the decision instead of dying.
-        let res: any;
+        let res: { orderId?: string | null; order_id?: string | null } | null;
         try {
             res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         } catch (err) {
@@ -976,9 +1017,10 @@ export async function executeDecision(
         // BE trigger (pickTighterStop) — never loosening the just-rested floor.
         if (partialClosePct !== null && partialClosePct < 100) {
             const trimMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun, pos });
-            const trimMgmtLev = trimMgmt && (trimMgmt as any).managed ? (trimMgmt as any).leverage : undefined;
+            const trimMgmtView: ManagedPositionView = trimMgmt;
+            const trimMgmtLev = trimMgmtView && trimMgmtView.managed ? trimMgmtView.leverage : undefined;
             const beTriggerPrice =
-                trimMgmt && (trimMgmt as any).managed ? ((trimMgmt as any).beTriggerPrice ?? null) : null;
+                trimMgmtView && trimMgmtView.managed ? (trimMgmtView.beTriggerPrice ?? null) : null;
             // Bracket amend targets the remainder that keeps running, so it runs
             // even when the trim itself fails or is skipped (protective either
             // way) — with the freshest position snapshot available.
@@ -1029,7 +1071,20 @@ export async function executeDecision(
                 };
             }
             const partialIsHedge = pos.posMode === 'hedge_mode';
-            const body: any = {
+            const body: {
+                symbol: string;
+                productType: ProductType;
+                marginCoin: string;
+                marginMode: string;
+                orderType: string;
+                size: string;
+                clientOid: string;
+                force: string;
+                side?: string;
+                tradeSide?: string;
+                holdSide?: 'long' | 'short';
+                reduceOnly?: 'YES' | 'NO';
+            } = {
                 symbol,
                 productType,
                 marginCoin: pos.marginCoin ?? 'USDT',
@@ -1103,10 +1158,11 @@ export async function executeDecision(
     // if it tightens past that trigger (pickTighterStop) — a tighter structural
     // stop is welcome, a looser one must not undo the floor.
     const holdMgmt = await maybeManagePosition({ symbol, productType, decision, dryRun });
-    const holdMgmtLev = holdMgmt && (holdMgmt as any).managed ? (holdMgmt as any).leverage : undefined;
+    const holdMgmtView: ManagedPositionView = holdMgmt;
+    const holdMgmtLev = holdMgmtView && holdMgmtView.managed ? holdMgmtView.leverage : undefined;
     const holdBeTrigger =
-        holdMgmt && (holdMgmt as any).managed ? ((holdMgmt as any).beTriggerPrice ?? null) : null;
-    const holdMgmtSide = holdMgmt && (holdMgmt as any).managed ? ((holdMgmt as any).side ?? null) : null;
+        holdMgmtView && holdMgmtView.managed ? (holdMgmtView.beTriggerPrice ?? null) : null;
+    const holdMgmtSide = holdMgmtView && holdMgmtView.managed ? (holdMgmtView.side ?? null) : null;
     const holdGuardedStop =
         holdBeTrigger != null && (holdMgmtSide === 'long' || holdMgmtSide === 'short')
             ? pickTighterStop(holdMgmtSide, holdBeTrigger, decision.stop_loss_price ?? null)

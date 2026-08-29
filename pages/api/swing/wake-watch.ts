@@ -224,11 +224,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const capitalFetchOk = Array.isArray(capitalMarkers);
     const capitalMarkerRows = capitalMarkers ?? [];
     const bitgetPositions = (bitgetFetchOk ? (bitgetPositionsRaw as unknown[]) : [])
-        .map((row: any) => ({
-            symbol: String(row?.symbol || '').toUpperCase(),
-            price: Number(row?.markPrice),
-            size: Number(row?.total ?? row?.available),
-        }))
+        .map((row) => {
+            const r = row as { symbol?: unknown; markPrice?: unknown; total?: unknown; available?: unknown } | null;
+            return {
+                symbol: String(r?.symbol || '').toUpperCase(),
+                price: Number(r?.markPrice),
+                size: Number(r?.total ?? r?.available),
+            };
+        })
         .filter((p) => p.symbol && Number.isFinite(p.size) && p.size > 0);
     const openBySymbol = new Set<string>([
         ...bitgetPositions.map((p) => `bitget:${p.symbol}`),
@@ -393,7 +396,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         // Venue feed ordering isn't guaranteed here — sort ascending by bar ts
         // so lastClosedBar's from-the-end scan sees the newest bars last.
-        const ascending = [...candles].sort((a: any, b: any) => Number(a?.[0]) - Number(b?.[0]));
+        const ascending = [...candles].sort(
+            (a, b) => Number((a as ArrayLike<unknown> | null)?.[0]) - Number((b as ArrayLike<unknown> | null)?.[0]),
+        );
         const bar = lastClosedBar(ascending, tfMs, Date.now());
         if (!bar || bar.closeTs <= row.entryAtMs) continue;
         if (breakTriggerFailed(row.side, row.triggerPrice, bar.close)) {

@@ -52,8 +52,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             CAPITAL_PASSWORD: process.env.CAPITAL_PASSWORD ? '✅ set' : '❌ missing',
             BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
         });
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error in /debug-env-values:', err);
-        return res.status(500).json({ error: err.message || String(err) });
+        return res.status(500).json({ error: err instanceof Error && err.message ? err.message : String(err) });
     }
 }

@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
@@ -70,10 +76,10 @@ type EvaluationEntry = {
     summary?: string;
     reason?: string;
     signal_strength?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   } | null;
   lastPrompt?: { system?: string; user?: string } | null;
-  lastMetrics?: Record<string, any> | null;
+  lastMetrics?: Record<string, unknown> | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -153,7 +159,7 @@ type DashboardDecisionResponse = {
   lastDecisionTs?: number | null;
   lastDecision?: EvaluationEntry["lastDecision"];
   lastPrompt?: { system?: string; user?: string } | null;
-  lastMetrics?: Record<string, any> | null;
+  lastMetrics?: Record<string, unknown> | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
   lastNewsSource?: string | null;
 };
@@ -224,6 +230,51 @@ const formatCash = (value: number, currencySymbol: "$" | "€" = "$") => {
     return `${sign}${currencySymbol}${(v / 1_000).toFixed(1)}K`;
   return `${sign}${currencySymbol}${v.toFixed(0)}`;
 };
+// `err?.message || fallback` for unknown catch variables — returns the message
+// only when it is a non-empty string, so the caller's fallback chain is intact.
+const errMsg = (err: unknown): string | undefined => {
+  const message = (err as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" && message ? message : undefined;
+};
+
+// External-store bindings (useSyncExternalStore): the theme preference lives
+// in localStorage, the resolved system theme and the phone layout in media
+// queries — all client-only, so the server snapshots pin SSR markup to the
+// pre-hydration defaults (dark theme, desktop layout) and React swaps in the
+// client value right after hydration, exactly like the old mount effects did.
+const THEME_PREFERENCE_CHANGE_EVENT = "dashboard-theme-preference-change";
+const subscribeThemePreference = (onChange: () => void) => {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(THEME_PREFERENCE_CHANGE_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(THEME_PREFERENCE_CHANGE_EVENT, onChange);
+  };
+};
+const readStoredThemePreference = (): ThemePreference => {
+  const stored = window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY);
+  return stored === "light" || stored === "dark" || stored === "system"
+    ? stored
+    : "system";
+};
+const subscribeSystemTheme = (onChange: () => void) => {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  if (typeof media.addEventListener === "function") {
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }
+  media.addListener(onChange);
+  return () => media.removeListener(onChange);
+};
+const readSystemTheme = (): ResolvedTheme =>
+  window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+const subscribePhoneLayout = (onChange: () => void) => {
+  const media = window.matchMedia("(max-width: 640px)");
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+};
+const readPhoneLayout = () => window.matchMedia("(max-width: 640px)").matches;
+
 const actionPillToneClass = (action?: string | null, pnlValue?: number | null) => {
   const normalized = String(action || '').trim().toUpperCase();
   if (normalized === "BUY") return "border-emerald-200 bg-emerald-100 text-emerald-800";
@@ -314,10 +365,25 @@ export default function Home() {
     string,
     { netUsd: number | null; netEur: number | null; trades: number }
   > | null>(null);
+  // "Now" for the calendar strip, stamped when its data lands — render code
+  // must stay pure, and day boundaries only need to be as fresh as the data.
+  const [swingWeekLoadedAtMs, setSwingWeekLoadedAtMs] = useState<number | null>(
+    null,
+  );
   // Chart-only range: superset of DashboardRangeKey ("4H" shows 5m bars but the
   // summary pipeline only warms 1D/7D/30D/6M caches, so 4H maps to 1D for PnL).
-  // Desktop defaults to 1D; phones drop to 4H on mount (effect below).
-  const [chartRange, setChartRange] = useState<ChartRangeKey>("1D");
+  // On phones, the chart defaults to the 4H range (desktop keeps 1D; PnL stays
+  // on the 1D summary since 4H is chart-only). Derived, so an explicit pick
+  // always wins and the default never overwrites it.
+  const [chartRangeChoice, setChartRangeChoice] =
+    useState<ChartRangeKey | null>(null);
+  const isPhoneLayout = useSyncExternalStore(
+    subscribePhoneLayout,
+    readPhoneLayout,
+    () => false,
+  );
+  const chartRange: ChartRangeKey =
+    chartRangeChoice ?? (isPhoneLayout ? "4H" : "1D");
   // Live EURUSD used to fold the Bitget USDT net into the € header rollup.
   // Fetched once per session; EUR_USD_FALLBACK_RATE covers the gap.
   const [eurUsdRate, setEurUsdRate] = useState<number | null>(null);
@@ -367,9 +433,18 @@ export default function Home() {
   >(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
-  const [themePreference, setThemePreference] =
-    useState<ThemePreference>("dark");
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
+  const themePreference = useSyncExternalStore(
+    subscribeThemePreference,
+    readStoredThemePreference,
+    (): ThemePreference => "dark",
+  );
+  const systemTheme = useSyncExternalStore(
+    subscribeSystemTheme,
+    readSystemTheme,
+    (): ResolvedTheme => "dark",
+  );
+  const resolvedTheme: ResolvedTheme =
+    themePreference === "system" ? systemTheme : themePreference;
   const readStoredAdminSecret = () => {
     if (typeof window === "undefined") return null;
     const stored = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
@@ -387,17 +462,41 @@ export default function Home() {
     const secret = resolveAdminSecret();
     return secret ? { "x-admin-access-secret": secret } : undefined;
   };
-  // On phones, default the chart to the 4H range (desktop keeps 1D; PnL stays
-  // on the 1D summary since 4H is chart-only). Runs once on mount so it never
-  // overrides a range the user picks afterward.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.matchMedia("(max-width: 640px)").matches) {
-      setDashboardRange("1D");
-      setChartRange("4H");
+  // Effect events: effects read the latest admin secret / symbol platform
+  // through these without widening their dependency arrays — re-subscription
+  // stays keyed to the deps that matter, not to every value the body touches.
+  const fetchAdminHeaders = useEffectEvent(buildAdminHeaders);
+  const resolveSymbolPlatform = useEffectEvent(
+    // Captured once per effect run — a symbol's platform doesn't change
+    // within its lifetime.
+    (symbol: string) => tabData[symbol]?.lastPlatform ?? null,
+  );
+  // Per-symbol view state resets the moment the viewed symbol context
+  // changes — the render-time adjustment pattern (react.dev: "Adjusting
+  // state when a prop changes"), replacing reset-inside-effect versions.
+  const [prevViewKey, setPrevViewKey] = useState<
+    readonly [boolean, string[], number] | null
+  >(null);
+  if (
+    prevViewKey === null ||
+    prevViewKey[0] !== adminGranted ||
+    prevViewKey[1] !== symbols ||
+    prevViewKey[2] !== active
+  ) {
+    setPrevViewKey([adminGranted, symbols, active]);
+    if (prevViewKey !== null) {
+      // A stale quote from the previous symbol must never paint the new chart.
+      setLivePriceNow(null);
+      setLivePriceTs(null);
+      setShowPrompt(false);
+      setShowRawResponse(false);
+      if (adminGranted && (symbols[active] || null)) {
+        // Switching symbols returns the decision card to its live "latest" view.
+        setSelectedTickTs(null);
+        setSelectedTickDecision(null);
+      }
     }
-  }, []);
-
+  }
   // EURUSD quote for the header rollup's $→€ conversion. Once per session —
   // the figure is approximate by design, so no polling.
   useEffect(() => {
@@ -407,7 +506,7 @@ export default function Home() {
       try {
         const res = await fetch(
           "/api/swing/dashboard/live-price?symbol=EURUSD&platform=capital",
-          { headers: buildAdminHeaders(), cache: "no-store" },
+          { headers: fetchAdminHeaders(), cache: "no-store" },
         );
         if (!res.ok) return;
         const json = await res.json();
@@ -429,15 +528,12 @@ export default function Home() {
   // websockets — Capital would need a Lightstreamer session; the REST quote
   // covers both platforms uniformly). Feeds the chart's live candle and the
   // live open-PnL. Skips ticks while the tab is hidden or a request is still
-  // in flight; state resets on symbol switch so a stale quote from the
-  // previous symbol never paints the new chart.
+  // in flight; the render-time reset above clears state on symbol switch so a
+  // stale quote from the previous symbol never paints the new chart.
   useEffect(() => {
-    setLivePriceNow(null);
-    setLivePriceTs(null);
     const symbol = symbols[active] || null;
     if (!adminGranted || !symbol) return;
-    // Captured once — a symbol's platform doesn't change within its lifetime.
-    const platform = tabData[symbol]?.lastPlatform ?? null;
+    const platform = resolveSymbolPlatform(symbol);
     let cancelled = false;
     let inFlight = false;
     const tick = async () => {
@@ -448,7 +544,7 @@ export default function Home() {
         if (platform) params.set("platform", platform);
         const res = await fetch(
           `/api/swing/dashboard/live-price?${params.toString()}`,
-          { headers: buildAdminHeaders(), cache: "no-store" },
+          { headers: fetchAdminHeaders(), cache: "no-store" },
         );
         if (cancelled) return;
         if (!res.ok) return;
@@ -472,13 +568,6 @@ export default function Home() {
       window.clearInterval(id);
     };
   }, [adminGranted, symbols, active]);
-
-  const resolveSystemTheme = (): ResolvedTheme => {
-    if (typeof window === "undefined") return "light";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  };
 
   const handleAuthExpired = (message?: string) => {
     if (typeof window !== "undefined") {
@@ -894,29 +983,30 @@ export default function Home() {
             }
           }
           setSwingWeekDaily(byDay);
+          setSwingWeekLoadedAtMs(Date.now());
         } catch (weekErr) {
           console.warn("week-calendar summary load failed:", weekErr);
         }
-      } catch (summaryErr: any) {
+      } catch (summaryErr) {
         if (requestId === swingDashboardRequestIdRef.current) {
           setSwingSummaryRange(null);
         }
         summaryError =
-          summaryErr?.message || "Failed to load dashboard summary";
+          errMsg(summaryErr) || "Failed to load dashboard summary";
       }
 
       try {
         await loadSwingCronControl();
-      } catch (controlErr: any) {
+      } catch (controlErr) {
         summaryError =
           summaryError ||
-          controlErr?.message ||
+          errMsg(controlErr) ||
           "Failed to load swing cron control";
       }
 
       setError(summaryError);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load dashboard");
+    } catch (err) {
+      setError(errMsg(err) || "Failed to load dashboard");
     } finally {
       setLoading(false);
     }
@@ -955,8 +1045,8 @@ export default function Home() {
       } else {
         await loadSwingCronControl();
       }
-    } catch (err: any) {
-      setError(err?.message || "Failed to update swing cron control");
+    } catch (err) {
+      setError(errMsg(err) || "Failed to update swing cron control");
     } finally {
       setSwingCronControlUpdating(false);
     }
@@ -988,52 +1078,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY);
-    const normalizedThemePreference: ThemePreference =
-      stored === "light" || stored === "dark" || stored === "system"
-        ? stored
-        : "system";
-    setThemePreference(normalizedThemePreference);
-    if (normalizedThemePreference === "system") {
-      setResolvedTheme(resolveSystemTheme());
-      return;
-    }
-    setResolvedTheme(normalizedThemePreference);
-  }, []);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (themePreference !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const handleThemeChange = () => {
-      setResolvedTheme(media.matches ? "dark" : "light");
-    };
-    handleThemeChange();
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", handleThemeChange);
-      return () => media.removeEventListener("change", handleThemeChange);
-    }
-    media.addListener(handleThemeChange);
-    return () => media.removeListener(handleThemeChange);
-  }, [themePreference]);
-
-  useEffect(() => {
     if (typeof document === "undefined") return;
     document.documentElement.style.colorScheme = resolvedTheme;
   }, [resolvedTheme]);
+  // The range is passed only to key the effect: the event reads all other
+  // state (tabs, request ids) at call time.
+  const refreshDashboard = useEffectEvent((_range: DashboardRangeKey) => {
+    void loadDashboard();
+  });
   useEffect(() => {
     if (!adminGranted) return;
-    loadDashboard();
+    refreshDashboard(dashboardRange);
   }, [adminGranted, dashboardRange]);
-  useEffect(() => {
-    const symbol = symbols[active] || null;
-    if (!adminGranted || !symbol) return;
-    const platform = tabData[symbol]?.lastPlatform ?? null;
-    // Switching symbols returns the decision card to its live "latest" view.
-    setSelectedTickTs(null);
-    setSelectedTickDecision(null);
-    let cancelled = false;
-    (async () => {
+  const loadActiveSymbolDetails = useEffectEvent(
+    async (symbol: string, isCancelled: () => boolean) => {
+      const platform = tabData[symbol]?.lastPlatform ?? null;
       try {
         await Promise.all([
           loadSymbolDecision(symbol, platform),
@@ -1042,12 +1101,18 @@ export default function Home() {
           // must not blank the whole card.
           loadSymbolTimeline(symbol, platform).catch(() => undefined),
         ]);
-        if (!cancelled) setError(null);
-      } catch (err: any) {
-        if (cancelled) return;
-        setError(err?.message || `Failed to load details for ${symbol}`);
+        if (!isCancelled()) setError(null);
+      } catch (err) {
+        if (isCancelled()) return;
+        setError(errMsg(err) || `Failed to load details for ${symbol}`);
       }
-    })();
+    },
+  );
+  useEffect(() => {
+    const symbol = symbols[active] || null;
+    if (!adminGranted || !symbol) return;
+    let cancelled = false;
+    void loadActiveSymbolDetails(symbol, () => cancelled);
     return () => {
       cancelled = true;
     };
@@ -1058,11 +1123,10 @@ export default function Home() {
   // summary blobs (the fallback warm stamps it too). Polling that tiny status
   // endpoint (one KV read) tells an open dashboard exactly when new decisions
   // and timeline ticks are queryable — no full-summary polling on a timer.
-  // The refresher lives in a ref so the poll effect keeps stable deps while
-  // still seeing the current range/symbol/platform.
+  // The refresher is an effect event so the poll effect keeps stable deps
+  // while still seeing the current range/symbol/platform.
   const swingWarmSeenMsRef = useRef<number | null>(null);
-  const swingWarmRefreshRef = useRef<() => void>(() => {});
-  swingWarmRefreshRef.current = () => {
+  const onSwingWarm = useEffectEvent(() => {
     void loadDashboard({ background: true });
     const symbol = symbols[active] || null;
     if (!symbol) return;
@@ -1071,7 +1135,7 @@ export default function Home() {
     // existing state, so a user inspecting an older tick isn't disturbed.
     void loadSymbolDecision(symbol, platform).catch(() => undefined);
     void loadSymbolTimeline(symbol, platform).catch(() => undefined);
-  };
+  });
 
   useEffect(() => {
     if (!adminGranted) return;
@@ -1083,7 +1147,7 @@ export default function Home() {
       inFlight = true;
       try {
         const res = await fetch("/api/swing/dashboard/warm-status", {
-          headers: buildAdminHeaders(),
+          headers: fetchAdminHeaders(),
           cache: "no-store",
         });
         if (!res.ok || cancelled) return;
@@ -1108,7 +1172,7 @@ export default function Home() {
         // The first sample is only a baseline — the page just loaded fresh
         // data anyway. Refresh when a NEWER warm lands after that.
         if (seen !== null && warmedAtMs > seen && !cancelled) {
-          swingWarmRefreshRef.current();
+          onSwingWarm();
         }
       } catch {
         // transient poll failure — retry on the next tick
@@ -1131,11 +1195,6 @@ export default function Home() {
     };
   }, [adminGranted]);
 
-  useEffect(() => {
-    setShowPrompt(false);
-    setShowRawResponse(false);
-  }, [active, symbols]);
-
   // Decision prices span BTC (~118,000) to forex (~1.08) — scale the decimals
   // to the magnitude instead of one fixed precision.
   const formatDecisionPrice = (value: number): string => {
@@ -1155,7 +1214,9 @@ export default function Home() {
 
   // "HOLD + CD 2h (↑51,200 ↓49,700)" — the armed quiet period and the wake
   // bands that end it early. Empty when the decision carries no cooldown.
-  const formatCooldownSuffix = (decision: any): string => {
+  const formatCooldownSuffix = (
+    decision: Record<string, unknown> | null | undefined,
+  ): string => {
     const minutes = Number(decision?.cooldown_minutes ?? decision?.cooldownMinutes);
     if (!Number.isFinite(minutes) || minutes <= 0) return "";
     const above = Number(decision?.cooldown_wake_above ?? decision?.cooldownWakeAbove);
@@ -1172,7 +1233,9 @@ export default function Home() {
   // pullback-limit entry shows its resting price, e.g. "BUY @ 6.34" (a market
   // entry stays bare "BUY"/"SELL"); a flat HOLD that armed a cooldown shows the
   // quiet period + wake bands, e.g. "HOLD + CD 2h (↑51,200 ↓49,700)".
-  const formatLastDecisionAction = (decision: any): string => {
+  const formatLastDecisionAction = (
+    decision: Record<string, unknown> | null | undefined,
+  ): string => {
     const action = String(decision?.action || "");
     if (action === "BUY" || action === "SELL") {
       const limit = Number(decision?.entry_limit_price);
@@ -1355,7 +1418,7 @@ export default function Home() {
   // folded in at the live EURUSD rate (fallback approximation when the quote
   // hasn't loaded) — cells with a conversion are marked ≈ in their tooltip.
   const swingWeekCalendar = (() => {
-    if (!swingWeekDaily) return null;
+    if (!swingWeekDaily || swingWeekLoadedAtMs === null) return null;
     const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
     const cells: Array<{
       key: string;
@@ -1369,7 +1432,7 @@ export default function Home() {
       trades: number;
     }> = [];
     for (let daysBack = 6; daysBack >= 0; daysBack--) {
-      const date = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      const date = new Date(swingWeekLoadedAtMs - daysBack * 24 * 60 * 60 * 1000);
       const key = BERLIN_DAY_KEY_FORMAT.format(date);
       const slot = swingWeekDaily[key];
       const hasNet =
@@ -1662,7 +1725,7 @@ export default function Home() {
   // Partial close (e.g. CLOSE 50%): the action pill goes amber — trims carry
   // the same yellow as their timeline dot and chart marker.
   const displayIsTrim = (() => {
-    const d = displayDecision as any;
+    const d = displayDecision;
     if (!d || String(d.action || "").toUpperCase() !== "CLOSE") return false;
     const pct = Number(
       d.exit_size_pct ?? d.close_size_pct ?? d.partial_close_pct,
@@ -1750,10 +1813,9 @@ export default function Home() {
   const handleThemeToggle = () => {
     const nextTheme: ThemePreference =
       resolvedTheme === "dark" ? "light" : "dark";
-    setThemePreference(nextTheme);
-    setResolvedTheme(nextTheme);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, nextTheme);
+      window.dispatchEvent(new Event(THEME_PREFERENCE_CHANGE_EVENT));
     }
   };
   return (
@@ -2242,7 +2304,7 @@ export default function Home() {
                     isDark={resolvedTheme === "dark"}
                     rangeKey={chartRange}
                     onRangeChange={(next) => {
-                      setChartRange(next);
+                      setChartRangeChoice(next);
                       // 4H is chart-only; PnL/summary ranges stay at 1D.
                       setDashboardRange(next === "4H" ? "1D" : next);
                     }}
@@ -2372,30 +2434,34 @@ export default function Home() {
                               displayIsTrim
                                 ? "action-pill-trim"
                                 : actionPillToneClass(
-                                    (displayDecision as any)?.action,
+                                    displayDecision?.action,
                                     current.lastPositionPnl,
                                   )
                             }`}
                           >
                             {formatLastDecisionAction(displayDecision) || "—"}
                           </span>
-                          {(displayDecision as any)?.summary
-                            ? ` · ${(displayDecision as any).summary}`
+                          {displayDecision?.summary
+                            ? ` · ${displayDecision.summary}`
                             : ""}
                         </div>
-                        {(displayDecision as any)?.reason ? (
+                        {displayDecision?.reason ? (
                           <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
                             <span className="font-semibold text-slate-800">
                               Reason:{" "}
                             </span>
-                            {(displayDecision as any).reason}
+                            {displayDecision.reason}
                           </p>
                         ) : null}
                         <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
                           {biasOrder.map(({ key, label }) => {
-                            const raw = (displayDecision as any)?.[key];
+                            const raw = displayDecision?.[key];
                             const val =
-                              typeof raw === "string" ? raw.toUpperCase() : raw;
+                              typeof raw === "string"
+                                ? raw.toUpperCase()
+                                : raw != null
+                                  ? String(raw)
+                                  : null;
                             const tfLabel =
                               displayBiasTimeframes?.[
                                 key.replace("_bias", "")

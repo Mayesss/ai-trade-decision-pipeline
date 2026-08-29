@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
-import { loadDecisionHistory, listHistorySymbols, extractCapturedLeverages } from '../../lib/history';
+import { loadDecisionHistory, listHistorySymbols, extractCapturedLeverages, type DecisionHistoryEntry } from '../../lib/history';
 import {
   fetchPositionInfo as fetchBitgetPositionInfo,
   fetchRealizedRoi as fetchBitgetRealizedRoi,
@@ -14,7 +14,7 @@ import { bitgetFetch, resolveProductType } from '../../lib/bitget';
 
 type EnrichedEntry = {
   symbol: string;
-  evaluation: any;
+  evaluation: unknown;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
   lastPlatform?: string | null;
@@ -33,8 +33,8 @@ type EnrichedEntry = {
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
   lastDecisionTs?: number | null;
-  lastDecision?: any;
-  lastMetrics?: any;
+  lastDecision?: DecisionHistoryEntry['aiDecision'] | null;
+  lastMetrics?: unknown;
   lastPrompt?: { system?: string; user?: string } | null;
   winRate?: number | null;
   avgWinPct?: number | null;
@@ -50,7 +50,7 @@ const scalePct = (value: number | null | undefined, factor: number): number | nu
   return value * factor;
 };
 
-function extractPlatformFromHistoryEntry(entry: any): AnalysisPlatform {
+function extractPlatformFromHistoryEntry(entry: DecisionHistoryEntry): AnalysisPlatform {
   const raw =
     typeof entry?.platform === 'string'
       ? entry.platform
@@ -124,8 +124,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
       let lastPositionLeverage: number | null | undefined = null;
       let lastDecisionTs: number | null | undefined = null;
-      let lastDecision: any = null;
-      let lastMetrics: any = null;
+      let lastDecision: DecisionHistoryEntry['aiDecision'] | null = null;
+      let lastMetrics: unknown = null;
       let lastPrompt: { system?: string; user?: string } | null = null;
       let lastPlatform: string | null | undefined = null;
       let lastNewsSource: string | null | undefined = null;
@@ -164,7 +164,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         // KV entries no longer embed prompts; pull the latest one from the
         // Neon dual-write when the viewer would otherwise show nothing.
-        if (latest && !lastPrompt && lastDecisionTs && !(lastDecision as any)?.promptSkipped) {
+        if (latest && !lastPrompt && lastDecisionTs && !lastDecision?.promptSkipped) {
           try {
             lastPrompt = await getSwingDecisionPrompt(platform, symbol, lastDecisionTs);
           } catch (err) {

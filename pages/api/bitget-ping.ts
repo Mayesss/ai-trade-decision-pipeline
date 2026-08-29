@@ -18,8 +18,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             ok: ping.ok,
             serverTime: data?.data?.serverTime || null,
         });
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error in /bitget-ping:', err);
-        return res.status(500).json({ error: err.message || String(err) });
+        return res.status(500).json({ error: err instanceof Error && err.message ? err.message : String(err) });
     }
 }

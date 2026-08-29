@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { ColorType } from 'lightweight-charts';
 import { ChartSkeleton, TimelineSkeleton } from './ChartSkeleton';
 
 type DecisionBrief = {
@@ -43,11 +51,43 @@ type PositionOverlay = {
 
 type ChartApiResponse = {
   candles?: Array<{ time: number; close: number }>;
-  markers?: any[];
+  markers?: unknown[];
   positions?: PositionOverlay[];
   pendingOrders?: PendingOrderLine[];
   cooldowns?: CooldownBandSegment[];
   limitOrders?: LimitOrderSegment[];
+};
+
+// Minimal structural views of the lightweight-charts objects this component
+// touches. The code deliberately probes optional members across library
+// versions, so these stay looser than the library's own branded types —
+// plain numbers stand in for `Time`.
+type ChartTimeScaleLike = {
+  applyOptions: (options: Record<string, unknown>) => void;
+  fitContent: () => void;
+  timeToCoordinate: (time: number) => number | null;
+  subscribeVisibleLogicalRangeChange?: (handler: () => void) => void;
+  unsubscribeVisibleLogicalRangeChange?: (handler: () => void) => void;
+};
+type ChartSeriesLike = {
+  setData: (data: Array<{ time: number; value: number }>) => void;
+  attachPrimitive?: (primitive: PositionOverlayPrimitive) => void;
+  priceToCoordinate: (price: number) => number | null;
+  createPriceLine?: (options: Record<string, unknown>) => unknown;
+  removePriceLine?: (line: unknown) => void;
+};
+type ChartClickParam =
+  | { point?: { x: number; y: number } | null; time?: unknown }
+  | null
+  | undefined;
+type ChartApiLike = {
+  timeScale: () => ChartTimeScaleLike;
+  applyOptions: (options: Record<string, unknown>) => void;
+  remove: () => void;
+  subscribeClick: (handler: (param: ChartClickParam) => void) => void;
+  addAreaSeries?: (options: Record<string, unknown>) => ChartSeriesLike;
+  addLineSeries?: (options: Record<string, unknown>) => ChartSeriesLike;
+  addSeries?: (ctor: unknown, options: Record<string, unknown>) => ChartSeriesLike;
 };
 
 // An AI flat-HOLD cooldown window with its wake band levels — drawn as gray
@@ -321,18 +361,18 @@ const formatCompactPrice = (value: number) => {
   return value.toFixed(2);
 };
 
-const toUnixSeconds = (time: any): number => {
+const toUnixSeconds = (time: unknown): number => {
   const seconds =
     typeof time === 'number'
       ? time
       : typeof time === 'object' && time !== null && 'timestamp' in time
-      ? Number((time as any).timestamp)
+      ? Number((time as { timestamp?: unknown }).timestamp)
       : Number(time);
   return Number.isFinite(seconds) ? seconds : NaN;
 };
 
 
-const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
+const formatAxisTick = (time: unknown, rangeKey: ChartRangeKey) => {
   const seconds = toUnixSeconds(time);
   if (!Number.isFinite(seconds)) return '';
   const date = new Date(seconds * 1000);
@@ -366,7 +406,7 @@ const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
   }).format(date);
 };
 
-const formatCrosshairTime = (time: any, rangeKey: ChartRangeKey) => {
+const formatCrosshairTime = (time: unknown, rangeKey: ChartRangeKey) => {
   const seconds = toUnixSeconds(time);
   if (!Number.isFinite(seconds)) return '';
   const date = new Date(seconds * 1000);
@@ -601,10 +641,17 @@ class PositionOverlayRenderer {
     private readonly limitItems: { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[],
     private readonly theme: OverlayTheme,
   ) {}
-  draw(target: any) {
-    target.useMediaCoordinateSpace((scope: any) => {
-      const ctx = scope.context as CanvasRenderingContext2D;
-      const paneHeight = scope.mediaSize.height as number;
+  draw(target: {
+    useMediaCoordinateSpace: (
+      draw: (scope: {
+        context: CanvasRenderingContext2D;
+        mediaSize: { width: number; height: number };
+      }) => void,
+    ) => void;
+  }) {
+    target.useMediaCoordinateSpace((scope) => {
+      const ctx = scope.context;
+      const paneHeight = scope.mediaSize.height;
       // Cooldown wake zones: a translucent gray box between the two wake bands
       // over exactly the cooldown window, with dashed edges — reads as "the AI
       // sleeps while price stays inside this range", visually distinct from the
@@ -790,8 +837,8 @@ type CooldownBandItem = { fromTime: number; toTime: number; above: number | null
 type LimitOrderItem = { fromTime: number; toTime: number; price: number; side: 'buy' | 'sell'; filled: boolean };
 
 class PositionOverlayPrimitive {
-  chart: any = null;
-  series: any = null;
+  chart: ChartApiLike | null = null;
+  series: ChartSeriesLike | null = null;
   data: OverlayPrimitiveDatum[] = [];
   bands: CooldownBandItem[] = [];
   limitOrders: LimitOrderItem[] = [];
@@ -802,10 +849,14 @@ class PositionOverlayPrimitive {
     this.theme = theme;
     this.paneView = new PositionOverlayPaneView(this);
   }
-  attached(param: any) {
+  attached(param: {
+    chart: ChartApiLike;
+    series?: ChartSeriesLike | null;
+    requestUpdate?: () => void;
+  }) {
     this.chart = param.chart;
     this.series = param.series ?? null;
-    this.requestUpdate = param.requestUpdate;
+    this.requestUpdate = param.requestUpdate ?? null;
   }
   detached() {
     this.chart = null;
@@ -1023,20 +1074,19 @@ export default function ChartPanel(props: ChartPanelProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
-  const chartInstanceRef = useRef<any>(null);
-  const chartSeriesRef = useRef<any>(null);
+  const chartInstanceRef = useRef<ChartApiLike | null>(null);
+  const chartSeriesRef = useRef<ChartSeriesLike | null>(null);
   const overlayPrimitiveRef = useRef<PositionOverlayPrimitive | null>(null);
-  const bracketPriceLinesRef = useRef<any[]>([]);
-  const pendingOrderLinesRef = useRef<any[]>([]);
+  const bracketPriceLinesRef = useRef<unknown[]>([]);
+  const pendingOrderLinesRef = useRef<unknown[]>([]);
   // Identity of the currently-rendered dataset — dataset swaps re-fit the
   // time scale, live appends don't (see the setData effect).
   const lastDatasetRef = useRef<{ first: number; length: number } | null>(null);
   const snappedOverlaysRef = useRef<SnappedOverlay[]>([]);
   const pinnedOverlayIdRef = useRef<string | null>(null);
-  // Prop callbacks used inside chart event handlers registered once at init —
-  // read through a ref so the handlers never close over stale props.
-  const onTimeSelectRef = useRef<typeof onTimeSelect>(onTimeSelect);
-  onTimeSelectRef.current = onTimeSelect;
+  // Prop callback used inside chart event handlers registered once at init —
+  // an effect event, so the handlers never close over a stale prop.
+  const emitTimeSelect = useEffectEvent((tsMs: number) => onTimeSelect?.(tsMs));
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   // Fetched report rows by postmortem id — clicking back and forth on the
   // analysis dots shouldn't refetch.
@@ -1087,11 +1137,12 @@ export default function ChartPanel(props: ChartPanelProps) {
     }
   };
 
-  // Symbol switch closes any open report overlay.
-  useEffect(() => {
+  // Symbol switch closes any open report overlay (render-time adjustment).
+  const [prevAnalysisSymbol, setPrevAnalysisSymbol] = useState(symbol);
+  if (prevAnalysisSymbol !== symbol) {
+    setPrevAnalysisSymbol(symbol);
     closeAnalysisOverlay();
-     
-  }, [symbol]);
+  }
   const rangePreset = CHART_RANGE_PRESETS[rangeKey];
   const timeframe = rangePreset.timeframe;
   const timeframeSeconds = timeframeToSeconds(timeframe);
@@ -1115,9 +1166,24 @@ export default function ChartPanel(props: ChartPanelProps) {
     setHoveredOverlay(null);
     setHoverX(null);
   };
+  // Overlay pane width, observed into state — the tooltip clamps below need it
+  // during render, where reading the ref's clientWidth directly is not allowed.
+  const [overlayPaneWidth, setOverlayPaneWidth] = useState(320);
+  useEffect(() => {
+    const el = overlayLayerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      const next = Math.round(el.clientWidth || 320);
+      setOverlayPaneWidth((prev) => (prev === next ? prev : next));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasChartData, chartInitToken]);
 
-  const applyPayload = (payload: ChartApiResponse) => {
-    const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
+  // Effect event: the chart-fetch effect applies payloads without listing
+  // every parent callback (onOpenPositionChange, ...) as a dependency.
+  const applyPayload = useEffectEvent((payload: ChartApiResponse) => {
+    const mapped = (payload.candles || []).map((c) => ({ time: Number(c.time), value: Number(c.close) }));
     setChartData(mapped.filter((c) => Number.isFinite(c.time) && Number.isFinite(c.value)));
     const nextPositions = Array.isArray(payload.positions) ? payload.positions : [];
     setPositionOverlays(nextPositions);
@@ -1158,7 +1224,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       openLeverage: typeof openPosition?.leverage === 'number' ? openPosition.leverage : null,
       openEntryPrice: typeof openPosition?.entryPrice === 'number' ? openPosition.entryPrice : null,
     });
-  };
+  });
 
   useEffect(() => {
     if (!adminGranted || !symbol) {
@@ -1232,8 +1298,9 @@ export default function ChartPanel(props: ChartPanelProps) {
           fetchedAt: Date.now(),
         });
         applyPayload(payload);
-      } catch (err: any) {
-        if (cancelled || err?.name === 'AbortError') return;
+      } catch (err) {
+        const errName = (err as { name?: unknown } | null | undefined)?.name;
+        if (cancelled || errName === 'AbortError') return;
         if (!cached) {
           setChartData([]);
           setPositionOverlays([]);
@@ -1283,7 +1350,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       // Exit via button/Escape leaves our pushed entry on the stack — pop it so
       // the next back press doesn't need a no-op step. When the exit itself came
       // from popstate the flag is already gone.
-      if ((window.history.state as any)?.chartFullscreen) {
+      if ((window.history.state as { chartFullscreen?: boolean } | null)?.chartFullscreen) {
         window.history.back();
       }
     };
@@ -1347,23 +1414,37 @@ export default function ChartPanel(props: ChartPanelProps) {
     );
   }, [livePrice, liveTimestamp, timeframeSeconds, resolvedLimit, adminGranted, symbol]);
 
+  // Data/theme snapshot for chart INIT: read through an effect event so the
+  // init effect's deps stay the identity keys (symbol/timeframe/colors) — the
+  // separate feed effects below keep the live chart in sync afterwards.
+  const readChartInitState = useEffectEvent(() => ({
+    chartData,
+    positionOverlays,
+    isDark,
+    priceScaleWidth,
+  }));
   useEffect(() => {
     const container = chartContainerRef.current;
     if (!container || !hasChartData) return;
-    let chart: any;
+    const init = readChartInitState();
+    let chart: ChartApiLike | undefined;
     let disposed = false;
 
     (async () => {
       const lw = await import('lightweight-charts');
+      // CJS/ESM interop: some bundles hang the API off `default`.
+      const lwModule = lw as typeof lw & { default?: typeof lw };
       const createChart =
         typeof lw.createChart === 'function'
           ? lw.createChart
-          : typeof (lw as any)?.default?.createChart === 'function'
-          ? (lw as any).default.createChart
+          : typeof lwModule.default?.createChart === 'function'
+          ? lwModule.default.createChart
           : null;
       if (!createChart || disposed) return;
 
       const initialHeight = Math.max(260, Math.floor(container.clientHeight || 260));
+      // Structural view: the version probes below touch members the branded
+      // library types don't declare uniformly across major versions.
       chart = createChart(container, {
         width: container.clientWidth,
         height: initialHeight,
@@ -1382,7 +1463,7 @@ export default function ChartPanel(props: ChartPanelProps) {
           axisDoubleClickReset: true,
         },
         layout: {
-          background: { type: 'solid', color: 'transparent' },
+          background: { type: 'solid' as ColorType, color: 'transparent' },
           textColor: chartTextColor,
         },
         grid: {
@@ -1391,7 +1472,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         },
         rightPriceScale: {
           borderVisible: false,
-          minimumWidth: priceScaleWidth,
+          minimumWidth: init.priceScaleWidth,
         },
         timeScale: {
           borderVisible: false,
@@ -1402,17 +1483,17 @@ export default function ChartPanel(props: ChartPanelProps) {
         },
         localization: {
           priceFormatter: formatCompactPrice,
-          timeFormatter: (time: any) => formatCrosshairTime(time, rangeKey),
+          timeFormatter: (time: unknown) => formatCrosshairTime(time, rangeKey),
         },
-      });
+      }) as unknown as ChartApiLike;
 
       chartInstanceRef.current = chart;
       chart.timeScale().applyOptions({
-        tickMarkFormatter: (time: any) => formatAxisTick(time, rangeKey),
+        tickMarkFormatter: (time: unknown) => formatAxisTick(time, rangeKey),
       });
 
-      const AreaSeriesCtor = (lw as any).AreaSeries || (lw as any)?.default?.AreaSeries;
-      const LineSeriesCtor = (lw as any).LineSeries || (lw as any)?.default?.LineSeries;
+      const AreaSeriesCtor = lwModule.AreaSeries || lwModule.default?.AreaSeries;
+      const LineSeriesCtor = lwModule.LineSeries || lwModule.default?.LineSeries;
 
       const series =
         typeof chart.addAreaSeries === 'function'
@@ -1438,16 +1519,16 @@ export default function ChartPanel(props: ChartPanelProps) {
       if (!series) return;
 
       chartSeriesRef.current = series;
-      series.setData(chartData);
+      series.setData(init.chartData);
 
       // Attach the position-overlay canvas primitive so the chart paints the
       // overlays in lockstep with its own coordinate system — no layout drift
       // on zoom/resize, no per-event React state churn.
       try {
-        const primitive = new PositionOverlayPrimitive(buildOverlayTheme(isDark));
+        const primitive = new PositionOverlayPrimitive(buildOverlayTheme(init.isDark));
         series.attachPrimitive?.(primitive);
         overlayPrimitiveRef.current = primitive;
-        const { data, snapped } = buildOverlayPrimitiveData(chartData, positionOverlays);
+        const { data, snapped } = buildOverlayPrimitiveData(init.chartData, init.positionOverlays);
         snappedOverlaysRef.current = snapped;
         primitive.setData(data);
       } catch (err) {
@@ -1456,7 +1537,7 @@ export default function ChartPanel(props: ChartPanelProps) {
 
       // Click/tap drives the HTML tooltip. Hover is intentionally ignored so the
       // overlay does not flash open while scanning the chart on desktop.
-      const handleClick = (param: any) => {
+      const handleClick = (param: ChartClickParam) => {
         const point = param?.point;
         const time = param?.time;
         if (!point || time == null) {
@@ -1468,7 +1549,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         const t = Number(time);
         // Chart click drives the decision timeline too: hand the clicked bar
         // time to the parent so it can select the nearest tick.
-        if (Number.isFinite(t)) onTimeSelectRef.current?.(t * 1000);
+        if (Number.isFinite(t)) emitTimeSelect(t * 1000);
         const hit = snappedOverlaysRef.current.find((o) => t >= o.entryTime && t <= o.exitTime);
         if (!hit) {
           pinnedOverlayIdRef.current = null;
@@ -1550,18 +1631,38 @@ export default function ChartPanel(props: ChartPanelProps) {
   }, [chartData, timeframeSeconds]);
 
   // Feed overlays to the canvas primitive. Snapping to candles depends only on
-  // the data, so it happens here (once per data change); the chart itself
-  // repaints the primitive on every zoom/resize frame — no manual projection,
-  // no drift. Clearing the hover if the pinned/hovered overlay disappears.
+  // the data, so it's memoized per data change; the chart itself repaints the
+  // primitive on every zoom/resize frame — no manual projection, no drift.
+  const overlayPrimitiveState = useMemo(
+    () => buildOverlayPrimitiveData(chartData, positionOverlays),
+    [chartData, positionOverlays],
+  );
+  // Clear the hovered overlay if it disappeared from the data — render-time
+  // adjustment keyed on the same identities as the feed effect below.
+  const [prevOverlayFeedKey, setPrevOverlayFeedKey] = useState<
+    readonly [typeof overlayPrimitiveState, number] | null
+  >(null);
+  if (
+    prevOverlayFeedKey === null ||
+    prevOverlayFeedKey[0] !== overlayPrimitiveState ||
+    prevOverlayFeedKey[1] !== chartInitToken
+  ) {
+    setPrevOverlayFeedKey([overlayPrimitiveState, chartInitToken]);
+    setHoveredOverlay((cur) =>
+      cur && overlayPrimitiveState.snapped.some((o) => o.pos.id === cur.id)
+        ? cur
+        : null,
+    );
+  }
   useEffect(() => {
-    const { data, snapped } = buildOverlayPrimitiveData(chartData, positionOverlays);
+    const { data, snapped } = overlayPrimitiveState;
     snappedOverlaysRef.current = snapped;
     overlayPrimitiveRef.current?.setData(data);
-    const stillExists = (id: string | null) =>
-      id !== null && snapped.some((o) => o.pos.id === id);
-    if (!stillExists(pinnedOverlayIdRef.current)) pinnedOverlayIdRef.current = null;
-    setHoveredOverlay((cur) => (cur && stillExists(cur.id) ? cur : null));
-  }, [positionOverlays, chartData, chartInitToken]);
+    const pinned = pinnedOverlayIdRef.current;
+    if (pinned !== null && !snapped.some((o) => o.pos.id === pinned)) {
+      pinnedOverlayIdRef.current = null;
+    }
+  }, [overlayPrimitiveState, chartInitToken]);
 
   useEffect(() => {
     overlayPrimitiveRef.current?.setTheme(buildOverlayTheme(isDark));
@@ -1602,7 +1703,8 @@ export default function ChartPanel(props: ChartPanelProps) {
       if (!Number.isFinite(value) || value <= 0) return;
       try {
         bracketPriceLinesRef.current.push(
-          series.createPriceLine({
+          // `?.` — the typeof guard above doesn't narrow inside this closure
+          series.createPriceLine?.({
             price: value,
             color,
             lineWidth: 1,
@@ -2022,7 +2124,7 @@ export default function ChartPanel(props: ChartPanelProps) {
               <div
                 className="pointer-events-none absolute z-40"
                 style={{
-                  left: Math.min(Math.max(hoverX - 140, 8), (overlayLayerRef.current?.clientWidth || 320) - 288),
+                  left: Math.min(Math.max(hoverX - 140, 8), overlayPaneWidth - 288),
                   top: 10,
                 }}
               >
@@ -2169,7 +2271,7 @@ export default function ChartPanel(props: ChartPanelProps) {
               ? (() => {
                   const dot = analysisDots.find((d) => d.tick.ts === selectedAnalysisTs);
                   if (!dot) return null;
-                  const paneWidth = overlayLayerRef.current?.clientWidth || 320;
+                  const paneWidth = overlayPaneWidth;
                   const family = analysisFamily(dot.tick);
                   return (
                     <div

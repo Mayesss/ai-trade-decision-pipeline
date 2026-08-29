@@ -111,7 +111,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   for (const entry of decisions) {
     const ts = Number(entry?.timestamp);
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
-    const decision = (entry.aiDecision ?? {}) as Record<string, any>;
+    const decision = (entry.aiDecision ?? {}) as Record<string, unknown>;
     const action = String(decision.action || '').trim().toUpperCase();
     const skipped =
       decision.promptSkipped === true ||

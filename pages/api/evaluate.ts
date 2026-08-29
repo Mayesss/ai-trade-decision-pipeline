@@ -9,7 +9,7 @@ import { DEFAULT_AI_MODEL } from '../../lib/constants';
 import { setEvaluation } from '../../lib/utils';
 import { kvGetJson, kvSetJson } from '../../lib/kv';
 
-function actionStats(items: any[]) {
+function actionStats(items: Array<{ aiDecision?: { action?: string | null } | null }>) {
     return items.reduce(
         (acc, item) => {
             const action = (item.aiDecision?.action || 'UNKNOWN').toUpperCase();
@@ -48,14 +48,14 @@ type EvaluateResult = {
         totalSamples: number;
         actionDistribution: Record<string, number>;
     };
-    samples: any[];
+    samples: unknown[];
     batch: {
         batchSize: number;
         batchCount: number;
         sampleCounts: number[];
     };
-    batchEvaluations?: any[];
-    evaluation: any;
+    batchEvaluations?: unknown[];
+    evaluation: unknown;
 };
 
 type EvaluateJobRecord = {
@@ -177,7 +177,7 @@ async function runEvaluation(params: {
                 });
                 const byTs = new Map(rows.map((r) => [r.decidedAtMs, r.prompt]));
                 for (const h of history) {
-                    if (!h.prompt) h.prompt = byTs.get(Number(h.timestamp)) as any ?? null;
+                    if (!h.prompt) h.prompt = (byTs.get(Number(h.timestamp)) ?? null) as { system: string; user: string } | null;
                 }
             }
         }
@@ -206,7 +206,7 @@ async function runEvaluation(params: {
     };
 
     const chunks = chunkArray(condensed, batchSize);
-    const batchEvaluations: any[] = [];
+    const batchEvaluations: Array<{ batchIndex: number; sampleCount: number; evaluation: unknown }> = [];
 
     for (let i = 0; i < chunks.length; i += 1) {
         const chunk = chunks[i];
@@ -230,12 +230,14 @@ async function runEvaluation(params: {
                 sampleCount: chunk.length,
                 evaluation: chunkEvaluation,
             });
-        } catch (err: any) {
-            throw new Error(`Batch ${i + 1}/${chunks.length} failed: ${err?.message || String(err)}`);
+        } catch (err) {
+            throw new Error(
+                `Batch ${i + 1}/${chunks.length} failed: ${err instanceof Error && err.message ? err.message : String(err)}`,
+            );
         }
     }
 
-    let evaluation: any;
+    let evaluation: unknown;
     if (batchEvaluations.length === 1) {
         evaluation = batchEvaluations[0].evaluation;
     } else {
@@ -295,14 +297,14 @@ async function runEvaluationJob(record: EvaluateJobRecord) {
             },
             EVALUATE_JOB_TTL_SECONDS,
         );
-    } catch (err: any) {
+    } catch (err) {
         await kvSetJson<EvaluateJobRecord>(
             key,
             {
                 ...record,
                 status: 'failed',
                 updatedAt: Date.now(),
-                error: err?.message || String(err),
+                error: err instanceof Error && err.message ? err.message : String(err),
             },
             EVALUATE_JOB_TTL_SECONDS,
         );
@@ -426,8 +428,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             includeBatchEvaluations,
         });
         return res.status(200).json(result);
-    } catch (err: any) {
-        if (String(err?.message || '').includes('no_history')) {
+    } catch (err) {
+        if ((err instanceof Error ? err.message : '').includes('no_history')) {
             return res.status(404).json({ error: 'no_history', symbol });
         }
         throw err;

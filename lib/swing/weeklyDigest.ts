@@ -79,7 +79,7 @@ function num(value: unknown): number | null {
 
 async function tradeStats(fromMs: number, toMs: number): Promise<DigestTradeStats> {
     const db = pgClient();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
         SELECT count(*)::int AS closed,
                count(*) FILTER (WHERE pnl_net > 0)::int AS wins,
                count(*) FILTER (WHERE pnl_net <= 0)::int AS losses,
@@ -131,7 +131,7 @@ export async function buildSwingWeeklyDigest(opts?: {
 
     const [extremes, bySide, byPlatform, bySymbol, equity, decisions, ticks, topSkips, pms, verdicts, lessonState, lessonChurn, lessonAdds, threads] =
         await Promise.all([
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 (SELECT 'win' AS kind, symbol, platform, pnl_net::float8 AS pnl_net FROM swing.positions
                  WHERE status = 'closed' AND pnl_net > 0 AND exit_ts_ms >= ${fromMs} AND exit_ts_ms < ${toMs}
                  ORDER BY pnl_net DESC LIMIT 1)
@@ -140,7 +140,7 @@ export async function buildSwingWeeklyDigest(opts?: {
                  WHERE status = 'closed' AND pnl_net <= 0 AND exit_ts_ms >= ${fromMs} AND exit_ts_ms < ${toMs}
                  ORDER BY pnl_net ASC LIMIT 1);
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT coalesce(side, 'unknown') AS side, count(*)::int AS closed,
                        count(*) FILTER (WHERE pnl_net > 0)::int AS wins,
                        coalesce(sum(pnl_net), 0)::float8 AS pnl_net_total
@@ -148,7 +148,7 @@ export async function buildSwingWeeklyDigest(opts?: {
                 WHERE status = 'closed' AND pnl_net IS NOT NULL AND exit_ts_ms >= ${fromMs} AND exit_ts_ms < ${toMs}
                 GROUP BY 1 ORDER BY closed DESC;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT platform, count(*)::int AS closed,
                        count(*) FILTER (WHERE pnl_net > 0)::int AS wins,
                        coalesce(sum(pnl_net), 0)::float8 AS pnl_net_total
@@ -156,7 +156,7 @@ export async function buildSwingWeeklyDigest(opts?: {
                 WHERE status = 'closed' AND pnl_net IS NOT NULL AND exit_ts_ms >= ${fromMs} AND exit_ts_ms < ${toMs}
                 GROUP BY 1 ORDER BY closed DESC;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT symbol, platform, count(*)::int AS closed,
                        count(*) FILTER (WHERE pnl_net > 0)::int AS wins,
                        coalesce(sum(pnl_net), 0)::float8 AS pnl_net_total
@@ -169,7 +169,7 @@ export async function buildSwingWeeklyDigest(opts?: {
             // reading captured into decision.risk_sizing at ENTRY time. Union
             // both: entries backfill the pre-fix history and cover snapshot
             // fetch failures.
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 WITH readings AS (
                     SELECT platform, captured_at_ms AS ts_ms, equity::float8 AS eq
                     FROM swing.account_snapshots
@@ -189,13 +189,13 @@ export async function buildSwingWeeklyDigest(opts?: {
                        max(eq)::float8 AS max_equity
                 FROM readings GROUP BY platform;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT coalesce(action, 'unknown') AS action, count(*)::int AS count
                 FROM swing.decisions
                 WHERE decided_at_ms >= ${fromMs} AND decided_at_ms < ${toMs} AND NOT dry_run
                 GROUP BY 1 ORDER BY count DESC;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE kind = 'ai_call')::int AS ai_calls,
                        count(*) FILTER (WHERE kind = 'skip')::int AS skips,
@@ -204,30 +204,30 @@ export async function buildSwingWeeklyDigest(opts?: {
                 FROM swing.tick_log
                 WHERE ts_ms >= ${fromMs} AND ts_ms < ${toMs} AND NOT dry_run;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT stage, count(*)::int AS count
                 FROM swing.tick_log
                 WHERE kind = 'skip' AND ts_ms >= ${fromMs} AND ts_ms < ${toMs} AND NOT dry_run
                 GROUP BY stage ORDER BY count DESC LIMIT 10;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT count(*)::int AS total,
                        count(*) FILTER (WHERE status IN ('queued', 'running', 'failed'))::int AS unfinished
                 FROM swing.postmortems
                 WHERE created_at >= to_timestamp(${fromMs} / 1000.0) AND created_at < to_timestamp(${toMs} / 1000.0);
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT coalesce(verdict, 'none') AS verdict, count(*)::int AS count
                 FROM swing.postmortems
                 WHERE status = 'succeeded'
                   AND created_at >= to_timestamp(${fromMs} / 1000.0) AND created_at < to_timestamp(${toMs} / 1000.0)
                 GROUP BY 1 ORDER BY count DESC;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT scope, count(*)::int AS count, avg(confidence)::float8 AS avg_confidence
                 FROM swing.lessons WHERE status = 'active' GROUP BY scope;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT count(*) FILTER (
                            WHERE created_at < to_timestamp(${fromMs} / 1000.0)
                              AND updated_at >= to_timestamp(${fromMs} / 1000.0) AND updated_at < to_timestamp(${toMs} / 1000.0)
@@ -239,13 +239,13 @@ export async function buildSwingWeeklyDigest(opts?: {
                        )::int AS retired
                 FROM swing.lessons;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT scope, lesson, confidence::float8 AS confidence
                 FROM swing.lessons
                 WHERE created_at >= to_timestamp(${fromMs} / 1000.0) AND created_at < to_timestamp(${toMs} / 1000.0)
                 ORDER BY created_at DESC LIMIT 20;
             `),
-            db.$queryRaw<Array<any>>(sql`
+            db.$queryRaw<Array<Record<string, unknown>>>(sql`
                 SELECT platform, symbol, status, turns FROM swing.ai_threads ORDER BY updated_at DESC;
             `),
         ]);
@@ -328,7 +328,7 @@ export async function storeSwingWeeklyDigest(digest: SwingWeeklyDigest): Promise
     if (!isPgConfigured()) return null;
     await ensureSwingSchema();
     const db = pgClient();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
         INSERT INTO swing.weekly_digests (window_from_ms, window_to_ms, digest_json)
         VALUES (${digest.window.fromMs}, ${digest.window.toMs}, ${JSON.stringify(digest)}::jsonb)
         ON CONFLICT (window_from_ms, window_to_ms)
@@ -349,7 +349,7 @@ export async function listSwingWeeklyDigests(limit = 26): Promise<StoredDigestMe
     if (!isPgConfigured()) return [];
     await ensureSwingSchema();
     const db = pgClient();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
         SELECT id, window_from_ms, window_to_ms,
                (extract(epoch FROM created_at) * 1000)::float8 AS created_at_ms
         FROM swing.weekly_digests
@@ -368,7 +368,7 @@ export async function loadSwingWeeklyDigestById(id: number): Promise<SwingWeekly
     if (!isPgConfigured() || !Number.isFinite(id)) return null;
     await ensureSwingSchema();
     const db = pgClient();
-    const rows = await db.$queryRaw<Array<any>>(sql`
+    const rows = await db.$queryRaw<Array<Record<string, unknown>>>(sql`
         SELECT digest_json FROM swing.weekly_digests WHERE id = ${Math.trunc(id)} LIMIT 1;
     `);
     const raw = rows?.[0]?.digest_json;

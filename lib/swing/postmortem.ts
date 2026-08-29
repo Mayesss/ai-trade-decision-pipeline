@@ -233,12 +233,15 @@ export function summarizePostExitBars(params: {
     const exitPrice = Number(params.exitPrice);
     if (!(Number.isFinite(exitPrice) && exitPrice > 0)) return null;
     const rows = (Array.isArray(params.bars) ? params.bars : [])
-        .map((b: any) => ({
-            ts: Number(b?.[0]),
-            high: Number(b?.[2]),
-            low: Number(b?.[3]),
-            close: Number(b?.[4]),
-        }))
+        .map((raw) => {
+            const b = raw as ReadonlyArray<unknown> | null | undefined;
+            return {
+                ts: Number(b?.[0]),
+                high: Number(b?.[2]),
+                low: Number(b?.[3]),
+                close: Number(b?.[4]),
+            };
+        })
         .filter(
             (b) =>
                 Number.isFinite(b.ts) &&
@@ -332,7 +335,7 @@ type DecisionDigest = {
     entry_limit_price: number | null;
     exit_size_pct: number | null;
     cooldown_minutes: number | null;
-    exec: Record<string, any> | null;
+    exec: Record<string, unknown> | null;
     model: string | null;
     tokens: { in: number; out: number; cached: number | null } | null;
     decision_id: number;
@@ -343,11 +346,11 @@ type SkipDigest = {
     iso: string;
     stage: string;
     reason: string | null;
-    metrics: Record<string, any> | null;
+    metrics: Record<string, unknown> | null;
 };
 
 export type PostmortemDossier = {
-    position: Record<string, any>;
+    position: Record<string, unknown>;
     window: { from_utc: string; to_utc: string };
     counts: { ai_calls: number; skipped_ticks: number; dropped_ai_calls: number; dropped_skips: number; full_prompts: number };
     ai_calls: DecisionDigest[];
@@ -369,15 +372,15 @@ const numOrNull = (v: unknown): number | null => {
 };
 
 function isSkipDecision(d: SwingDecisionFullRow): boolean {
-    const ai = d.aiDecision as any;
+    const ai = d.aiDecision;
     return ai?.decision_source === 'pre_ai_skip' || ai?.promptSkipped === true;
 }
 
 function digestDecision(d: SwingDecisionFullRow): DecisionDigest {
-    const ai = (d.aiDecision ?? {}) as any;
-    const exec = (d.execResult ?? {}) as any;
-    const usage = ai.ai_usage as any;
-    const execDigest: Record<string, any> = {};
+    const ai = d.aiDecision ?? {};
+    const exec = d.execResult ?? {};
+    const usage = ai.ai_usage as Record<string, unknown> | null | undefined;
+    const execDigest: Record<string, unknown> = {};
     for (const key of ['placed', 'closed', 'reversed', 'reason', 'orderId', 'leverage', 'targetLeverage']) {
         if (exec[key] !== undefined && exec[key] !== null) execDigest[key] = exec[key];
     }
@@ -385,7 +388,7 @@ function digestDecision(d: SwingDecisionFullRow): DecisionDigest {
     return {
         ts: d.decidedAtMs,
         iso: new Date(d.decidedAtMs).toISOString(),
-        action: d.action ?? ai.action ?? null,
+        action: d.action ?? (ai.action as string | null) ?? null,
         summary: typeof ai.summary === 'string' ? ai.summary : null,
         reason: typeof ai.reason === 'string' ? ai.reason : null,
         take_profit_price: numOrNull(ai.take_profit_price),
@@ -412,14 +415,17 @@ function digestDecision(d: SwingDecisionFullRow): DecisionDigest {
 // importance, capped by the caller.
 export function pickPivotalDecisions(calls: SwingDecisionFullRow[]): SwingDecisionFullRow[] {
     const scored = calls.map((d, idx) => {
-        const ai = (d.aiDecision ?? {}) as any;
-        const exec = (d.execResult ?? {}) as any;
+        const ai = d.aiDecision ?? {};
+        const exec = d.execResult ?? {};
         const action = String(d.action ?? ai.action ?? '').toUpperCase();
         let score = 0;
         if (action === 'BUY' || action === 'SELL' || action === 'REVERSE') score += 100;
         if (action === 'CLOSE') score += 90;
         if (exec.placed === true) score += 40;
-        const tpsl = exec.tpsl as any;
+        const tpsl = exec.tpsl as
+            | { takeProfit?: { applied?: unknown }; stopLoss?: { applied?: unknown }; updated?: unknown }
+            | null
+            | undefined;
         if (tpsl?.takeProfit?.applied === true || tpsl?.stopLoss?.applied === true || tpsl?.updated === true) score += 30;
         if (numOrNull(ai.exit_size_pct) != null && Number(ai.exit_size_pct) > 0) score += 30;
         if (idx === calls.length - 1) score += 25; // last call before/at close
@@ -443,14 +449,14 @@ function digestTickSkip(t: SwingTickLogRow): SkipDigest {
 }
 
 function digestDecisionSkip(d: SwingDecisionFullRow): SkipDigest {
-    const ai = (d.aiDecision ?? {}) as any;
-    const snap = (d.snapshot ?? {}) as any;
+    const ai = d.aiDecision ?? {};
+    const snap = d.snapshot ?? {};
     return {
         ts: d.decidedAtMs,
         iso: new Date(d.decidedAtMs).toISOString(),
         stage: String(ai.skipStage ?? snap.skipStage ?? 'skip'),
-        reason: typeof ai.reason === 'string' ? ai.reason : (snap.skipReason ?? null),
-        metrics: snap.metrics ?? null,
+        reason: typeof ai.reason === 'string' ? ai.reason : ((snap.skipReason as string | null) ?? null),
+        metrics: (snap.metrics as Record<string, unknown> | null | undefined) ?? null,
     };
 }
 
@@ -474,7 +480,7 @@ export function truncateMiddle<T>(rows: T[], max: number): { rows: T[]; dropped:
 }
 
 export function buildPostmortemDossier(input: {
-    position: Record<string, any>;
+    position: Record<string, unknown>;
     fromMs: number;
     toMs: number;
     decisions: SwingDecisionFullRow[];
@@ -939,14 +945,25 @@ export async function runSwingPostmortem(
         // reinforce / revise / retire / none) against the slice it was actually
         // shown. 'none' is a legitimate outcome — bad luck, a lucky win, a
         // correct skip, or an already-covered failure teaches nothing new.
-        const decision = resolveLessonDecision(report, library, {
-            kind: isRefusal ? 'refusal' : isWin ? 'win' : 'loss',
-        });
+        const decision = resolveLessonDecision(
+            report as {
+                verdict?: string | null;
+                lesson?: string | null;
+                lesson_action?: string | null;
+                lesson_scope?: string | null;
+                reinforce_lesson_id?: number | null;
+                confidence?: number | null;
+            },
+            library,
+            {
+                kind: isRefusal ? 'refusal' : isWin ? 'win' : 'loss',
+            },
+        );
         // Row keeps the per-trade record: the (re)formulated text on new or
         // reinforce; null when there was nothing to teach.
         const lesson = decision.kind === 'none' || decision.kind === 'retire' ? null : decision.text;
         const lessonScope =
-            lesson && ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope)
+            lesson && ['symbol', 'asset_class', 'global'].includes(report?.lesson_scope as string)
                 ? String(report.lesson_scope)
                 : null;
         await completeSwingPostmortem(row.id, { verdict, lesson, lessonScope, report, dossier, model, usage });
@@ -961,8 +978,8 @@ export async function runSwingPostmortem(
             `[postmortem] #${row.id} lesson decision: ${JSON.stringify({ kind: decision.kind, ...applied })}`,
         );
         return { id: row.id, status: 'succeeded', verdict, lesson };
-    } catch (err: any) {
-        const message = err?.message || String(err);
+    } catch (err) {
+        const message = (err instanceof Error && err.message) || String(err);
         // AI provider failures are retryable — the trade data is fine, only
         // the analyst was unreachable. Requeue instead of terminally failing
         // so the drain picks the row up again once the provider recovers

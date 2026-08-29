@@ -37,7 +37,7 @@ export type SwingThreadContext = {
 };
 
 export type SwingDecisionCallResult = {
-    json: any;
+    json: Record<string, unknown>;
     // Provider id of THIS call (OpenAI `resp_...`, Claude `msg_...`) — persisted
     // on the decision row; chained decisions link through it on the dashboard.
     responseId: string | null;

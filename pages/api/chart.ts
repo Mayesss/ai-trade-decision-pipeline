@@ -16,6 +16,7 @@ import {
   extractCapturedLeverages,
   isCooldownBandDecision,
   isPositionWakeBandDecision,
+  type DecisionHistoryEntry,
 } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
@@ -28,6 +29,7 @@ import {
   attachTrimChunkPnl,
   foldCapitalTrimChunks,
   type CapitalWindowChunk,
+  type FoldedCapitalWindow,
 } from '../../lib/swing/capitalWindows';
 import {
   readChartCandlesCache,
@@ -38,6 +40,7 @@ import {
 import {
   readPositionOverlayCache,
   writePositionOverlayCache,
+  type ChartPositionOverlay,
 } from '../../lib/swing/positionOverlayCache';
 
 const BTC_SYMBOL = 'BTCUSDT';
@@ -151,7 +154,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const fetchMarketBundle = targetPlatform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
         return fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
       };
-      let bundle: any;
+      let bundle: Awaited<ReturnType<typeof fetchBundleByPlatform>>;
       try {
         bundle = await fetchBundleByPlatform(platform);
       } catch (err) {
@@ -261,7 +264,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const findNearestDecision = (tsMs?: number | null) => {
       if (!tsMs || !history?.length) return null;
-      let best: any = null;
+      let best: DecisionHistoryEntry | null = null;
       let bestDiff = Number.POSITIVE_INFINITY;
       for (const h of history) {
         if (!h.timestamp) continue;
@@ -309,7 +312,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (nearestCloseActionDiffMs(exitTsMs) <= AI_CLOSE_MATCH_MS) return null;
       return pnlValue >= 0 ? 'tp' : 'sl';
     };
-    const getPartialClosePct = (entry: any): number | null => {
+    const getPartialClosePct = (entry: DecisionHistoryEntry | null | undefined): number | null => {
       const pct =
         finiteNumber(entry?.execResult?.partialClosePct) ??
         finiteNumber(entry?.aiDecision?.exit_size_pct) ??
@@ -341,7 +344,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
     };
 
-    let positions: any[] = [];
+    // Closed windows (optionally carrying folded trim chunks) and the live
+    // open-position overlay, as the overlay math below reads them.
+    type OverlaySourceWindow = FoldedCapitalWindow & {
+      takeProfitPrice?: number | null;
+      stopLossPrice?: number | null;
+    };
+    let positions: ChartPositionOverlay[] = [];
     const overlayLoadStartedAt = Date.now();
     // Serve the position overlay from a short-lived KV cache when present: it skips
     // the Neon closed-positions read (lowers Neon transfer) and the live broker
@@ -351,7 +360,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (cachedOverlay) {
       overlayCacheStatus = 'hit';
       closedPositionSource = 'cache';
-      positions = cachedOverlay as any[];
+      positions = cachedOverlay;
     } else {
       try {
         const loadPersistedClosed = () =>
@@ -369,7 +378,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Open position first: the Capital trim fold below needs its entry to
         // recognize realized chunks of the STILL-OPEN position (they must fold
         // into the live overlay's markers, not draw a phantom closed box).
-        let openOverlay: any = null;
+        let openOverlay: OverlaySourceWindow | null = null;
         try {
           const open = await fetchPositionInfo(symbol);
           if (open.status === 'open') {
@@ -379,8 +388,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // Capital exposes it on the position row; Bitget resting TP/SL live
             // as plan orders and need their own read. Best-effort — a failure
             // just omits the lines.
-            let takeProfitPrice = positiveNumber((open as any).takeProfitPrice);
-            let stopLossPrice = positiveNumber((open as any).stopLossPrice);
+            let takeProfitPrice = positiveNumber(open.takeProfitPrice);
+            let stopLossPrice = positiveNumber(open.stopLossPrice);
             if (platform === 'bitget') {
               try {
                 const tpsl = await fetchPositionTpsl(symbol, getTradeProductType());
@@ -463,7 +472,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 };
               })
             : closed;
-        const combined = [...closedNormalized];
+        const combined: OverlaySourceWindow[] = [...closedNormalized];
         if (openOverlay) combined.push(openOverlay);
 
         positions = combined.map((p) => {
@@ -502,8 +511,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             entryPrice: positiveNumber(p.entryPrice),
             exitPrice: positiveNumber(p.exitPrice),
             leverage: positiveNumber(p.leverage),
-            takeProfitPrice: positiveNumber((p as any).takeProfitPrice),
-            stopLossPrice: positiveNumber((p as any).stopLossPrice),
+            takeProfitPrice: positiveNumber(p.takeProfitPrice),
+            stopLossPrice: positiveNumber(p.stopLossPrice),
             entryDecision,
             exitDecision,
             // Trim markers carry the cash each chunk realized: folded closed
@@ -511,7 +520,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // the fold peeled off for the still-open position.
             partialCloses: attachTrimChunkPnl(
               buildPartialCloses(p.entryTimestamp, p.exitTimestamp),
-              p.exitTimestamp ? (p as any).chunks : openTrimChunks,
+              p.exitTimestamp ? p.chunks : openTrimChunks,
             ),
           };
         });
@@ -608,14 +617,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const LIMIT_REST_MAX_MS = 65 * 60_000;
     const limitRows = (indexedHistory || [])
       .filter((h) => {
-        if ((h as any)?.dryRun === true) return false;
+        if (h?.dryRun === true) return false;
         const a = String(h?.aiDecision?.action || '').toUpperCase();
-        const limit = Number((h?.aiDecision as any)?.entry_limit_price);
+        const limit = Number(h?.aiDecision?.entry_limit_price);
         return (a === 'BUY' || a === 'SELL') && Number.isFinite(limit) && limit > 0;
       })
       .map((h) => ({
         side: (String(h.aiDecision?.action).toUpperCase() === 'SELL' ? 'sell' : 'buy') as 'buy' | 'sell',
-        price: Number((h.aiDecision as any).entry_limit_price),
+        price: Number(h.aiDecision.entry_limit_price),
         tsMs: Number(h.timestamp),
       }))
       .sort((a, b) => a.tsMs - b.tsMs);
@@ -624,7 +633,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .filter((t) => Number.isFinite(t))
       .sort((a, b) => a - b);
     const positionEntryTimesMs = positions
-      .map((p: any) => (Number.isFinite(Number(p.entryTime)) ? Number(p.entryTime) * 1000 : null))
+      .map((p) => (Number.isFinite(Number(p.entryTime)) ? Number(p.entryTime) * 1000 : null))
       .filter((t: number | null): t is number => t !== null);
     const limitChains: Array<{ side: 'buy' | 'sell'; price: number; firstMs: number; lastMs: number }> = [];
     for (const row of limitRows) {
@@ -690,7 +699,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // typically a wake-band crossing. Draw the lived window, not the requested
     // one: a band woken early must stop at the wake, not overlap its successor.
     const decisionTimesSec = (indexedHistory || [])
-      .filter((h) => (h as any)?.dryRun !== true && Number(h?.timestamp) > 0)
+      .filter((h) => h?.dryRun !== true && Number(h?.timestamp) > 0)
       .map((h) => Math.floor(Number(h.timestamp) / 1000))
       .sort((a, b) => a - b);
     const truncateAtNextDecision = (s: CooldownBandSegment): CooldownBandSegment => {
@@ -699,9 +708,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return next !== undefined && next < s.toTime ? { ...s, toTime: next } : s;
     };
     const cooldowns: CooldownBandSegment[] = (indexedHistory || [])
-      .filter((h) => (h as any)?.dryRun !== true && isCooldownBandDecision(h?.aiDecision))
+      .filter((h) => h?.dryRun !== true && isCooldownBandDecision(h?.aiDecision))
       .map((h) => {
-        const d = h.aiDecision as any;
+        const d = h.aiDecision;
         const fromMs = Number(h.timestamp);
         const minutes = Number(d?.cooldown_minutes);
         return {
@@ -741,9 +750,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Data-driven, no flag check: with the flag off no such rows exist.
     const primaryBarSec = Math.floor((timeframeToMs(PRIMARY_TIMEFRAME) ?? 4 * 60 * 60_000) / 1000);
     const positionWakeSegments: CooldownBandSegment[] = (indexedHistory || [])
-      .filter((h) => (h as any)?.dryRun !== true && isPositionWakeBandDecision(h?.aiDecision))
+      .filter((h) => h?.dryRun !== true && isPositionWakeBandDecision(h?.aiDecision))
       .map((h) => {
-        const d = h.aiDecision as any;
+        const d = h.aiDecision;
         const fromTime = Math.floor(Number(h.timestamp) / 1000);
         return {
           fromTime,
@@ -787,8 +796,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res
       .status(200)
       .json({ symbol, platform, timeframe, candles, markers, positions, pendingOrders, cooldowns, limitOrders });
-  } catch (err: any) {
+  } catch (err) {
     console.error('Error fetching chart data:', err);
-    res.status(500).json({ error: err?.message || 'chart_fetch_failed' });
+    res.status(500).json({ error: err instanceof Error && err.message ? err.message : 'chart_fetch_failed' });
   }
 }

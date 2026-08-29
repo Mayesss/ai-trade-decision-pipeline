@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
-import { loadDecisionAt, loadDecisionHistory } from '../../../lib/history';
+import { loadDecisionAt, loadDecisionHistory, type DecisionHistoryEntry } from '../../../lib/history';
 import { getSwingDecisionPrompt } from '../../../lib/swing/pg';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/platform';
@@ -11,9 +11,9 @@ type DecisionPayload = {
   category: string | null;
   platform: AnalysisPlatform | null;
   lastDecisionTs: number | null;
-  lastDecision: any | null;
+  lastDecision: DecisionHistoryEntry['aiDecision'] | null;
   lastPrompt: { system?: string; user?: string } | null;
-  lastMetrics: Record<string, any> | null;
+  lastMetrics: unknown;
   lastBiasTimeframes: Record<string, string | undefined> | null;
   lastNewsSource: string | null;
 };

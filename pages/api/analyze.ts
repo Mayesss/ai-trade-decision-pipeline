@@ -71,10 +71,11 @@ import {
     fetchPositionTpsl,
     getTargetLeverage,
     getTradeProductType,
+    type TradeDecision,
 } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { updatePositionExtrema } from '../../lib/positionExtrema';
-import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
+import { appendDecisionHistory, loadDecisionHistory, type DecisionSnapshot } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
 import {
@@ -141,15 +142,32 @@ function parsePnlPct(p: string | undefined): number {
     return m ? Number(m[0]) : 0;
 }
 
-function safeNum(x: any, def = 0): number {
+function safeNum(x: unknown, def = 0): number {
     const n = Number(x);
     return Number.isFinite(n) ? n : def;
 }
 
+// Structural view over the venue execution results — only the fields this
+// file reads (both venues' result unions are assignable to it).
+type ExecResultView = {
+    placed?: unknown;
+    closed?: unknown;
+    reversed?: unknown;
+    orderId?: unknown;
+    clientOid?: unknown;
+    tpsl?: {
+        takeProfit?: { applied?: unknown } | null;
+        stopLoss?: { applied?: unknown } | null;
+        updated?: unknown;
+        profitLevel?: unknown;
+        stopLevel?: unknown;
+    } | null;
+};
+
 async function persistCapitalClosedPositionSnapshot(params: {
     symbol: string;
     positionInfo: PositionInfo;
-    execRes: any;
+    execRes: ExecResultView | null;
     exitPrice: number | null;
     closedAtMs: number;
 }) {
@@ -289,14 +307,21 @@ type PersistState = {
 const persist = new Map<string, PersistState>();
 
 function touchPersist(key: string): PersistState {
-    if (!persist.has(key)) persist.set(key, {});
-    return persist.get(key)!;
+    const existing = persist.get(key);
+    if (existing) return existing;
+    const created: PersistState = {};
+    persist.set(key, created);
+    return created;
 }
 
 const ATR_ACTIVE_MIN_PCT = 0.0007; // ~0.07%
 const STALE_TRADE_MINUTES = 15;
 
-function readLatestTradeTimestamp(trades: any[]): number | null {
+// Tape rows arrive either as objects (ts/tradeTime fields) or positional
+// arrays ([ts, ...]) — this is the minimal shape the timestamp read needs.
+type TradeTapeRow = { ts?: unknown; tradeTime?: unknown; [index: number]: unknown };
+
+function readLatestTradeTimestamp(trades: TradeTapeRow[]): number | null {
     if (!Array.isArray(trades) || trades.length === 0) return null;
     let latest = 0;
     for (const t of trades) {
@@ -311,7 +336,7 @@ function readLatestTradeTimestamp(trades: any[]): number | null {
 function shouldSkipMomentumCall(params: {
     signals: MomentumSignals;
     price: number;
-    trades: any[];
+    trades: TradeTapeRow[];
     enforceRecentTape?: boolean;
 }) {
     const { signals, price, trades, enforceRecentTape = true } = params;
@@ -462,8 +487,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             kind: 'skip' | 'ai_call';
             stage: string;
             reason?: string;
-            gates?: Record<string, any> | null;
-            metrics?: Record<string, any> | null;
+            gates?: Record<string, unknown> | null;
+            metrics?: Record<string, unknown> | null;
             kvMarker?: boolean;
         }) => {
             if (info.kvMarker !== false) {
@@ -484,12 +509,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         };
         const persistPreAiSkip = async (params: {
             stage: string;
-            decision: Record<string, any>;
-            execResult: Record<string, any>;
-            gates?: Record<string, any>;
-            metrics?: Record<string, any>;
+            decision: TradeDecision & Record<string, unknown>;
+            execResult: Record<string, unknown>;
+            gates?: Record<string, unknown>;
+            metrics?: Record<string, unknown>;
             usedTape?: boolean;
-            snapshot?: Record<string, any>;
+            snapshot?: DecisionSnapshot & Record<string, unknown>;
         }) => {
             const reason = typeof params.decision?.reason === 'string' ? params.decision.reason : params.stage;
             await recordTickOutcome({
@@ -524,7 +549,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     decision_source: 'pre_ai_skip',
                     promptSkipped: true,
                     skipStage: params.stage,
-                } as any,
+                },
                 execResult: params.execResult,
                 snapshot: {
                     category: category ?? undefined,
@@ -564,7 +589,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     updatedBy: swingCronControl.updatedBy,
                     reason: swingCronControl.reason,
                 });
-                const decision = {
+                const decision: TradeDecision & Record<string, unknown> = {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
@@ -632,7 +657,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     gate: 'CAPITAL_MARKET_CLOSED',
                     marketStatus: tradeability.status,
                 });
-                const decision = {
+                const decision: TradeDecision & Record<string, unknown> = {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
@@ -702,7 +727,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     warmupMinutes: openWarmupMinutes,
                 });
                 const reason = `open_warmup:${Math.round(minutesSinceOpen)}m_of_${openWarmupMinutes}m_since_open`;
-                const decision = {
+                const decision: TradeDecision & Record<string, unknown> = {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
@@ -761,7 +786,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 platform,
                 symbol,
                 capturedAtMs: Date.now(),
-                positionInfo: positionInfo as any,
+                positionInfo,
                 equityUsd: snapshotEquityUsd,
             });
         }
@@ -813,7 +838,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     minDealSize: afford.minDealSize,
                     leverage: afford.leverage,
                 });
-                const decision = {
+                const decision: TradeDecision & Record<string, unknown> = {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
@@ -981,13 +1006,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const sweepPendingEntries = async () => {
             try {
                 const result =
-                    platform === 'capital'
+                    platform === 'capital' || productType === null
                         ? await cancelCapitalPendingEntryOrders(symbol)
-                        : await cancelPendingEntryOrders(symbol, productType!);
-                const first: any = result.orders?.[0];
+                        : await cancelPendingEntryOrders(symbol, productType);
+                const first = result.orders?.[0];
                 if (first) {
-                    const sideRaw = String(first.side ?? first.direction ?? '').toUpperCase();
-                    const price = Number(first.price ?? first.level);
+                    const sideRaw = String(('side' in first ? first.side : first.direction) ?? '').toUpperCase();
+                    const price = Number('price' in first ? first.price : first.level);
                     const createdAtMs = Number(first.createdAtMs);
                     sweptPendingEntry = {
                         side: sideRaw === 'BUY' || sideRaw === 'SELL' ? (sideRaw as 'BUY' | 'SELL') : null,
@@ -1120,9 +1145,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }),
         ]);
         if (platform === 'capital') {
+            const bundleEpic = 'epic' in bundleLight ? bundleLight.epic : null;
             instrumentId =
-                typeof (bundleLight as any)?.epic === 'string' && (bundleLight as any).epic
-                    ? (bundleLight as any).epic
+                typeof bundleEpic === 'string' && bundleEpic
+                    ? bundleEpic
                     : (await resolveCapitalEpicRuntime(symbol)).epic;
             category = resolveSwingCategory({
                 category: categoryParam as string | undefined,
@@ -1146,7 +1172,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     rawCandlesByTf: indicators.rawCandles,
                     fetch15m: async () => {
                         const b = await fetchMarketBundle(symbol, '15m', { includeTrades: false, candleLimit: 106 });
-                        return (b as any)?.candles ?? [];
+                        return b?.candles ?? [];
                     },
                 }),
                 warmPositionOverlayCacheFromAnalyze({
@@ -1201,7 +1227,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     } else {
                         const tfMs = timeframeToMs(breakTrigger.timeFrame) ?? timeframeToMs(timeFrame);
                         const bar = tfMs
-                            ? lastClosedBar((indicators as any)?.rawCandles?.[timeFrame], tfMs, Date.now())
+                            ? lastClosedBar(indicators?.rawCandles?.[timeFrame], tfMs, Date.now())
                             : null;
                         if (
                             bar &&
@@ -1275,7 +1301,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const priceNow = Number(
                 tickerLight?.lastPr ?? tickerLight?.last ?? tickerLight?.close ?? tickerLight?.price,
             );
-            const atrNow = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+            const atrNow = Number(indicators?.metrics?.[timeFrame]?.atr);
             let refPrice: number | null = null;
             try {
                 const recent = await loadDecisionHistory(symbol, 5, platform);
@@ -1283,10 +1309,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // the LATEST AI call (a .reverse() here compared against the
                 // oldest call in the window — a stale reference price).
                 const lastAiCall = recent.find((h) => {
-                    const d = h.aiDecision as any;
+                    const d = h.aiDecision;
                     return d && d.decision_source !== 'pre_ai_skip' && !d.promptSkipped;
                 });
-                const p = Number((lastAiCall?.snapshot as any)?.price);
+                const p = Number(lastAiCall?.snapshot?.price);
                 if (Number.isFinite(p) && p > 0) refPrice = p;
             } catch (err) {
                 console.warn(`Could not load last AI-call price for ${symbol}:`, err);
@@ -1823,7 +1849,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
 
         if (!positionOpen && calmMarket && !cooldownWakeActive) {
-            const decision = {
+            const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
                 signal_strength: 'LOW',
@@ -1997,9 +2023,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // chains need enough rows to collapse into one entry below.
         const recentHistory = await loadDecisionHistory(symbol, 12, platform);
         const recentActionsRaw = recentHistory
-            .filter((h) => (h.aiDecision as any)?.decision_source !== 'pre_ai_skip' && !(h.aiDecision as any)?.promptSkipped)
+            .filter((h) => h.aiDecision?.decision_source !== 'pre_ai_skip' && !h.aiDecision?.promptSkipped)
             .map((h) => {
-                const d = h.aiDecision as any;
+                const d = h.aiDecision;
                 // Preserve the close size so a partial trim (e.g. 30%) is distinguishable
                 // from a full exit in the model's recent-actions feedback. Kept as a
                 // separate field so the raw `action` string stays clean for the
@@ -2065,9 +2091,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                               includeTrades: false,
                               candleLimit: 120,
                           });
+                const sessionCandles = sessionBundle?.candles;
                 forexSessionContext = buildForexSessionLevelsContext({
                     symbol,
-                    candles: Array.isArray((sessionBundle as any)?.candles) ? (sessionBundle as any).candles : [],
+                    candles: Array.isArray(sessionCandles) ? sessionCandles : [],
                     sourceTimeframe: microTimeFrame,
                 });
             } catch (err) {
@@ -2084,7 +2111,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // here also avoids the prompt assembly, news fetch and AI call.
         if (!positionOpen && forexEventContext?.status === 'active') {
             const reasonCodes = Array.isArray(forexEventContext.reasonCodes) ? forexEventContext.reasonCodes : [];
-            const decision = {
+            const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
                 summary: 'event_blackout',
@@ -2216,7 +2243,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // always proceed (exits/trims can be needed regardless). Predicate:
         // evaluateActionability in lib/ai.ts.
         if (!positionOpen && !actionability.actionable && !cooldownWakeActive) {
-            const decision = {
+            const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
                 summary: 'not_actionable',
@@ -2272,7 +2299,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // call. Flat entries only — in-position ticks always proceed (exits/trims
         // can be needed regardless).
         if (!positionOpen && context.signal_strength === 'LOW' && !cooldownWakeActive) {
-            const decision = {
+            const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
                 summary: 'weak_signal',
@@ -2341,7 +2368,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             ]
                 .filter(Boolean)
                 .join('_');
-            const decision = {
+            const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
                 bias: 'NEUTRAL',
                 summary: 'overextended',
@@ -2409,15 +2436,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // recent flat AI call (the old .reverse() picked the OLDEST in the
             // window, deduping against a stale price reference).
             const lastFlatAiCall = recentHistory.find((h) => {
-                const d = h.aiDecision as any;
+                const d = h.aiDecision;
                 if (!d || d.decision_source === 'pre_ai_skip' || d.promptSkipped) return false;
-                return !(h.snapshot as any)?.positionContext;
+                return !h.snapshot?.positionContext;
             });
-            const lastSnap = (lastFlatAiCall?.snapshot ?? null) as any;
-            const lastAction = String((lastFlatAiCall?.aiDecision as any)?.action || '').toUpperCase();
+            const lastSnap = lastFlatAiCall?.snapshot ?? null;
+            const lastAction = String(lastFlatAiCall?.aiDecision?.action || '').toUpperCase();
             const ageMin = lastFlatAiCall ? (Date.now() - Number(lastFlatAiCall.timestamp)) / 60_000 : Infinity;
             const lastPrice = Number(lastSnap?.price);
-            const dedupeAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+            const dedupeAtr = Number(indicators?.metrics?.[timeFrame]?.atr);
             const priceMoveAtr =
                 Number.isFinite(lastPrice) && lastPrice > 0 && Number.isFinite(dedupeAtr) && dedupeAtr > 0
                     ? Math.abs(effectivePrice - lastPrice) / dedupeAtr
@@ -2553,9 +2580,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         includeTrades: false,
                         candleLimit: 110,
                     });
-                    const nanoCandles = Array.isArray((nanoBundle as any)?.candles)
-                        ? ((nanoBundle as any).candles as unknown[])
-                        : [];
+                    const nanoCandlesRaw = nanoBundle?.candles;
+                    const nanoCandles: unknown[] = Array.isArray(nanoCandlesRaw) ? nanoCandlesRaw : [];
                     return { nanoContext: computeNanoContext(nanoCandles), nanoCandles };
                 } catch (err) {
                     console.warn(`Could not build nano (15m) context for ${symbol}:`, err);
@@ -2647,34 +2673,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // + position TP/SL amend). Null the fields on any other venue so they never
         // reach execution or the decision history for a non-crypto instrument.
         if (platform !== 'bitget') {
-            (decision as any).raise_leverage_to = null;
-            (decision as any).move_stop_to_be = false;
+            decision.raise_leverage_to = null;
+            decision.move_stop_to_be = false;
         }
         // Nano (15m) bias measured at decision time — persisted on the decision
         // so the dashboard can render a Nano chip next to the other TF biases.
-        (decision as any).nano_bias = nanoContext?.bias ?? null;
+        decision.nano_bias = nanoContext?.bias ?? null;
         // Provider message id of this call (gateway gen_..., Claude msg_...) —
         // persisted in ai_decision_json so every decision row maps to its turn
         // in the conversation. The previous id (null on stateless calls) lets
         // the dashboard link chained decisions on the timeline; chaining itself
         // runs through the stored transcript, the id only fills the linkage slot
         // and is meaningful only when this tick actually chained.
-        (decision as any).response_id = aiResponseId;
-        (decision as any).previous_response_id =
+        decision.response_id = aiResponseId;
+        decision.previous_response_id =
             aiThreadProvider === activeChainProvider ? aiThreadResponseId : null;
         // Which provider/model served this call and what it cost (cache activity
         // included) — rides in ai_decision_json next to response_id, so every
         // decision row is self-describing for post-mortems and token audits.
-        (decision as any).ai_provider = aiCallProvider;
-        (decision as any).ai_model = aiCallModel;
-        (decision as any).ai_usage = aiCallUsage;
+        decision.ai_provider = aiCallProvider;
+        decision.ai_model = aiCallModel;
+        decision.ai_usage = aiCallUsage;
 
         // Pullback entry limit first (its price anchors everything downstream):
         // validate the model's limit against live price + ATR — too far clamps;
         // wrong side / inside the noise band / unverifiable DROPS the entry for
         // this tick (no silent market fallback — the model asked for a patience
         // price, and null is its way to request market).
-        const tpslAtrRaw = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+        const tpslAtrRaw = Number(indicators?.metrics?.[timeFrame]?.atr);
         const primaryAtrSane = Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null;
         const marketAnchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
 
@@ -2695,12 +2721,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionOpen,
             price: marketAnchor,
             primaryAtr: primaryAtrSane,
-            entryLimitPrice: (decision as any).entry_limit_price ?? null,
+            entryLimitPrice: decision.entry_limit_price ?? null,
         });
-        (decision as any).entry_limit_price = entryLimit.entryLimitPrice;
+        decision.entry_limit_price = entryLimit.entryLimitPrice;
         if (entryLimit.dropEntry && (decision.action === 'BUY' || decision.action === 'SELL')) {
-            (decision as any).action = 'HOLD';
-            (decision as any).reason = `${String((decision as any).reason ?? '')} [entry dropped: ${entryLimit.notes.join(',')}]`.trim();
+            decision.action = 'HOLD';
+            decision.reason = `${String(decision.reason ?? '')} [entry dropped: ${entryLimit.notes.join(',')}]`.trim();
         }
         // Bracket anchor: for a resting pullback entry the protective stop and
         // TP must be sized from the LIMIT price (where the position would
@@ -2718,13 +2744,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             side: positionInfo.status === 'open' ? positionInfo.holdSide : null,
             price: bracketAnchor,
             primaryAtr: primaryAtrSane,
-            takeProfitPrice: (decision as any).take_profit_price ?? null,
-            stopLossPrice: (decision as any).stop_loss_price ?? null,
-            exitSizePct: (decision as any).exit_size_pct ?? null,
+            takeProfitPrice: decision.take_profit_price ?? null,
+            stopLossPrice: decision.stop_loss_price ?? null,
+            exitSizePct: decision.exit_size_pct ?? null,
             standingStopLossPrice: currentStopLoss,
         });
-        (decision as any).take_profit_price = exchangeTpsl.takeProfitPrice;
-        (decision as any).stop_loss_price = exchangeTpsl.stopLossPrice;
+        decision.take_profit_price = exchangeTpsl.takeProfitPrice;
+        decision.stop_loss_price = exchangeTpsl.stopLossPrice;
 
         // Flat-HOLD cooldown request: clamp minutes and validate wake-band sides
         // against live price; write the SANITIZED values back onto the decision
@@ -2734,18 +2760,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // wake bands depending on position state (normalizeDecision routes
         // eligibility); read the raw values once, run the state's sanitizer,
         // and write the surviving values back so history shows what was armed.
-        const rawWakeAbove = (decision as any).cooldown_wake_above;
-        const rawWakeBelow = (decision as any).cooldown_wake_below;
-        const rawWakeNote = (decision as any).cooldown_wake_note;
+        const rawWakeAbove = decision.cooldown_wake_above;
+        const rawWakeBelow = decision.cooldown_wake_below;
+        const rawWakeNote = decision.cooldown_wake_note;
         const holdCooldown = sanitizeHoldCooldown({
             action: decision.action,
             positionOpen,
             price: marketAnchor,
-            cooldownMinutes: (decision as any).cooldown_minutes,
+            cooldownMinutes: decision.cooldown_minutes,
             wakeAbove: rawWakeAbove,
             wakeBelow: rawWakeBelow,
             wakeNote: rawWakeNote,
-            wakeSustainMinutes: (decision as any).cooldown_wake_sustain_minutes,
+            wakeSustainMinutes: decision.cooldown_wake_sustain_minutes,
         });
         // In-position wake bands: side vs live price, strictly inside the
         // bracket as it will actually rest (this tick's sanitized amend, else
@@ -2754,7 +2780,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const positionWakeBands = sanitizePositionWake({
             action: decision.action,
             positionOpen,
-            exitSizePct: (decision as any).exit_size_pct ?? null,
+            exitSizePct: decision.exit_size_pct ?? null,
             price: marketAnchor,
             primaryAtr: primaryAtrSane,
             takeProfitPrice: exchangeTpsl.takeProfitPrice ?? currentTakeProfit,
@@ -2763,16 +2789,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             wakeBelow: rawWakeBelow,
             wakeNote: rawWakeNote,
         });
-        (decision as any).cooldown_minutes = holdCooldown.cooldownMinutes;
-        (decision as any).cooldown_wake_above = positionOpen ? positionWakeBands.wakeAbove : holdCooldown.wakeAbove;
-        (decision as any).cooldown_wake_below = positionOpen ? positionWakeBands.wakeBelow : holdCooldown.wakeBelow;
-        (decision as any).cooldown_wake_note = positionOpen ? positionWakeBands.wakeNote : holdCooldown.wakeNote;
+        decision.cooldown_minutes = holdCooldown.cooldownMinutes;
+        decision.cooldown_wake_above = positionOpen ? positionWakeBands.wakeAbove : holdCooldown.wakeAbove;
+        decision.cooldown_wake_below = positionOpen ? positionWakeBands.wakeBelow : holdCooldown.wakeBelow;
+        decision.cooldown_wake_note = positionOpen ? positionWakeBands.wakeNote : holdCooldown.wakeNote;
         // Sustained confirmation is a flat-band concept only (in-position
         // bands stay instant by design).
-        (decision as any).cooldown_wake_sustain_minutes = positionOpen ? null : holdCooldown.sustainMinutes;
+        decision.cooldown_wake_sustain_minutes = positionOpen ? null : holdCooldown.sustainMinutes;
         const wakeNotes = [...holdCooldown.notes, ...positionWakeBands.notes];
         if (wakeNotes.length) {
-            (decision as any).cooldown_notes = wakeNotes;
+            decision.cooldown_notes = wakeNotes;
         }
 
         // Failed-break watch trigger: side-validate against live price and write
@@ -2782,11 +2808,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             action: decision.action,
             positionOpen,
             price: marketAnchor,
-            triggerPrice: (decision as any).entry_trigger_price,
+            triggerPrice: decision.entry_trigger_price,
         });
-        (decision as any).entry_trigger_price = entryTrigger.triggerPrice;
+        decision.entry_trigger_price = entryTrigger.triggerPrice;
         if (entryTrigger.notes.length) {
-            (decision as any).entry_trigger_notes = entryTrigger.notes;
+            decision.entry_trigger_notes = entryTrigger.notes;
         }
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
@@ -2874,7 +2900,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             if (exchangeTpsl.stopLossPrice != null) {
                 stopLossPrice = exchangeTpsl.stopLossPrice;
             } else {
-                const primaryAtr = Number((indicators as any)?.metrics?.[timeFrame]?.atr);
+                const primaryAtr = Number(indicators?.metrics?.[timeFrame]?.atr);
                 // Anchored at the pullback limit when one is resting — the stop
                 // protects the position from where it would actually open.
                 const anchor = bracketAnchor;
@@ -2911,9 +2937,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 let minNotionalUsd: number | null = platform === 'bitget' ? 5 : null;
                 if (platform === 'capital') {
                     const afford = await evaluateCapitalMinSizeAffordability(symbol).catch(() => null);
-                    minNotionalUsd = Number.isFinite(afford?.minNotionalUsd as number)
-                        ? Number(afford!.minNotionalUsd)
-                        : null;
+                    const affordMin = afford?.minNotionalUsd;
+                    minNotionalUsd = typeof affordMin === 'number' && Number.isFinite(affordMin) ? affordMin : null;
                 }
                 emitGateDebug('risk_sizing', {
                     gate: 'RISK_SIZING',
@@ -2937,21 +2962,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     bitgetAvailableUsd = await fetchBitgetAccountAvailableMarginUsd();
                 }
                 if (minNotionalUsd !== null && riskSizing.notionalUsd < minNotionalUsd) {
-                    (decision as any).action = 'HOLD';
-                    (decision as any).reason =
-                        `${String((decision as any).reason ?? '')} [entry dropped: risk_budget_below_min_size ` +
+                    decision.action = 'HOLD';
+                    decision.reason =
+                        `${String(decision.reason ?? '')} [entry dropped: risk_budget_below_min_size ` +
                         `notional≈${riskSizing.notionalUsd.toFixed(0)} min≈${minNotionalUsd.toFixed(0)}]`.trim();
                 } else if (bitgetAvailableUsd !== null && riskSizing.marginUsd > bitgetAvailableUsd * 0.98) {
-                    (decision as any).action = 'HOLD';
-                    (decision as any).reason =
-                        `${String((decision as any).reason ?? '')} [entry dropped: insufficient_available_margin ` +
+                    decision.action = 'HOLD';
+                    decision.reason =
+                        `${String(decision.reason ?? '')} [entry dropped: insufficient_available_margin ` +
                         `need≈${riskSizing.marginUsd.toFixed(2)} have≈${bitgetAvailableUsd.toFixed(2)}]`.trim();
                 } else {
                     execSideSizeUSDT = riskSizing.marginUsd;
                 }
                 // Persisted with the decision row so post-mortems can audit the
                 // realized risk against the budget.
-                (decision as any).risk_sizing = {
+                decision.risk_sizing = {
                     risk_usd: Number(riskSizing.riskUsd.toFixed(2)),
                     notional_usd: Number(riskSizing.notionalUsd.toFixed(2)),
                     margin_usd: Number(riskSizing.marginUsd.toFixed(2)),
@@ -2963,7 +2988,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         const execRes =
-            platform === 'capital'
+            platform === 'capital' || productType === null
                 ? await executeCapitalDecision(
                       symbol,
                       execSideSizeUSDT,
@@ -2977,7 +3002,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       symbol,
                       execSideSizeUSDT,
                       decision,
-                      productType!,
+                      productType,
                       dryRun,
                       stopLossPrice,
                       exchangeTpsl.takeProfitPrice,
@@ -3004,7 +3029,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     positionOpen &&
                     decision.action === 'CLOSE' &&
                     execRes?.placed === true &&
-                    Number((decision as any).exit_size_pct ?? 100) >= 100;
+                    Number(decision.exit_size_pct ?? 100) >= 100;
                 // The conversation is OURS to store on both providers (the AI
                 // Gateway is stateless) — append this tick's turns (sent user
                 // turn + assistant response) to the transcript the tick chained
@@ -3014,9 +3039,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const nextTranscript =
                     Array.isArray(aiAppendTurns) && aiAppendTurns.length
                         ? truncateClaudeTranscript([
-                              ...(Array.isArray(chainedTranscript) ? (chainedTranscript as any[]) : []),
-                              ...(aiAppendTurns as any[]),
-                          ] as any)
+                              ...(Array.isArray(chainedTranscript) ? chainedTranscript : []),
+                              ...aiAppendTurns,
+                          ] as Parameters<typeof truncateClaudeTranscript>[0])
                         : null;
                 if (fullCloseExecuted) {
                     await endSwingAiThread(platform, symbol);
@@ -3024,7 +3049,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     await upsertSwingAiThread({
                         platform,
                         symbol,
-                        status: (decision as any).entry_limit_price != null ? 'pending_entry' : 'in_position',
+                        status: decision.entry_limit_price != null ? 'pending_entry' : 'in_position',
                         lastResponseId: aiResponseId,
                         provider: activeProvider,
                         transcript: nextTranscript,
@@ -3273,7 +3298,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // amend carries the new levels; otherwise the pre-decision standing
             // bracket still holds. Handles both venue result shapes (Bitget
             // per-leg {applied}, Capital {updated, stopLevel, profitLevel}).
-            const tpslExec = (execRes as any)?.tpsl;
+            const execResView: ExecResultView | null = execRes;
+            const tpslExec = execResView?.tpsl;
             const entryPlaced =
                 execRes?.placed === true &&
                 (decision.action === 'BUY' || decision.action === 'SELL' || decision.action === 'REVERSE');
@@ -3337,8 +3363,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   }
                 : {}),
         });
-    } catch (err: any) {
+    } catch (err) {
         console.error('Error in /api/analyze:', err);
+        const errMessage =
+            typeof err === 'object' && err !== null && 'message' in err ? err.message : null;
         // Durable trace of the crash (best-effort): without this row a run
         // that dies between the gates and the decision record leaves no
         // evidence in tick_log at all. insertSwingTickLog never throws.
@@ -3346,7 +3374,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // outage) gets its own stage so it's tellable apart from code crashes.
         if (tickErrorContext) {
             const stage = err instanceof AiCallError ? 'ai_unavailable' : 'handler_error';
-            const reason = String(err?.message || err).slice(0, 300);
+            const reason = String(errMessage || err).slice(0, 300);
             await insertSwingTickLog({
                 tsMs: Date.now(),
                 symbol: tickErrorContext.symbol,
@@ -3363,7 +3391,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // marker just went stale). recordSwingLastScan never throws.
             await recordSwingLastScan(tickErrorContext.platform, tickErrorContext.symbol, { stage, reason });
         }
-        return res.status(500).json({ error: err.message || String(err) });
+        return res.status(500).json({ error: errMessage || String(err) });
     } finally {
         // Countdown latch: the last swing cron of the 15-minute cycle to finish
         // rebuilds the dashboard summary blobs, so the warm always runs AFTER

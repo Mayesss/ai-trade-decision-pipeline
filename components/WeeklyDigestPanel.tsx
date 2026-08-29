@@ -68,7 +68,13 @@ export default function WeeklyDigestPanel(props: {
   onUnauthorized?: () => void;
 }) {
   const { getAdminHeaders, onUnauthorized } = props;
-  const [open, setOpen] = useState(false);
+  // Read once at first client render — the dashboard mounts this panel only
+  // after admin unlock, so there is no server-rendered markup to mismatch.
+  const [open, setOpen] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(PANEL_OPEN_STORAGE_KEY) === "1",
+  );
   const [days, setDays] = useState(7);
   const [storedList, setStoredList] = useState<StoredDigestMeta[]>([]);
   const [selectedStoredId, setSelectedStoredId] = useState<number | null>(null);
@@ -77,13 +83,6 @@ export default function WeeklyDigestPanel(props: {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const fetchedOnceRef = useRef(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (window.localStorage.getItem(PANEL_OPEN_STORAGE_KEY) === "1") {
-      setOpen(true);
-    }
-  }, []);
 
   const fetchDigest = useCallback(
     async (storedId: number | null, liveDays: number) => {

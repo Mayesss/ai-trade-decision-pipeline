@@ -19,7 +19,7 @@ import {
   withDerivedPnlPct,
   type FoldedCapitalWindow,
 } from '../../../lib/swing/capitalWindows';
-import { loadDecisionHistory, extractCapturedLeverages } from '../../../lib/history';
+import { loadDecisionHistory, extractCapturedLeverages, type DecisionHistoryEntry } from '../../../lib/history';
 import { readSwingLastScan } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
@@ -27,7 +27,7 @@ import { kvGetJson, kvSetJson } from '../../../lib/kv';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
-import { buildForexEventContext, ensureForexEventsState } from '../../../lib/swing/forexEvents';
+import { buildForexEventContext, ensureForexEventsState, type ForexEventContext } from '../../../lib/swing/forexEvents';
 import { swingSummaryCacheKey } from '../../../lib/swing/summaryCache';
 import type { PositionWindow } from '../../../lib/analytics';
 
@@ -36,7 +36,7 @@ type SummaryEntry = {
   category?: string | null;
   lastPlatform: AnalysisPlatform;
   lastNewsSource?: string | null;
-  forexEventContext?: any | null;
+  forexEventContext?: ForexEventContext | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -168,29 +168,35 @@ async function loadCapitalTradeWindowsForSummary(params: {
   return windows;
 }
 
-function parseHistoryPnlPct(entry: any): number | null {
+function parseHistoryPnlPct(entry: DecisionHistoryEntry): number | null {
+  const positionContext = (entry?.snapshot?.positionContext ?? null) as {
+    unrealized_pnl_pct_on_margin?: unknown;
+    unrealized_pnl_pct?: unknown;
+    pnlPct?: unknown;
+    currentPnl?: unknown;
+  } | null;
   const direct =
-    finiteNumber(entry?.snapshot?.positionContext?.unrealized_pnl_pct_on_margin) ??
+    finiteNumber(positionContext?.unrealized_pnl_pct_on_margin) ??
     // legacy key on rows written before the on-margin rename
-    finiteNumber(entry?.snapshot?.positionContext?.unrealized_pnl_pct) ??
-    finiteNumber(entry?.snapshot?.positionContext?.pnlPct) ??
+    finiteNumber(positionContext?.unrealized_pnl_pct) ??
+    finiteNumber(positionContext?.pnlPct) ??
     finiteNumber(entry?.execResult?.pnlPct);
   if (direct !== null) return direct;
-  const raw = String(entry?.snapshot?.positionContext?.currentPnl || entry?.execResult?.currentPnl || '');
+  const raw = String(positionContext?.currentPnl || entry?.execResult?.currentPnl || '');
   const match = raw.match(/-?\d+(\.\d+)?/);
   return match ? Number(match[0]) : null;
 }
 
-function capitalHistoryClosedWindows(history: any[], symbol: string, fromMs: number, toMs: number): PositionWindow[] {
+function capitalHistoryClosedWindows(history: DecisionHistoryEntry[], symbol: string, fromMs: number, toMs: number): PositionWindow[] {
   return (history || [])
     .map((entry): PositionWindow | null => {
       const ts = finiteNumber(entry?.timestamp);
       if (ts === null || ts < fromMs || ts > toMs) return null;
       const action = String(entry?.aiDecision?.action || '').toUpperCase();
       if (action !== 'CLOSE' && action !== 'REVERSE') return null;
-      const exec = entry?.execResult || {};
+      const exec = entry?.execResult;
       if (!(exec?.placed === true && (exec?.closed === true || exec?.reversed === true))) return null;
-      const positionContext = entry?.snapshot?.positionContext || {};
+      const positionContext = entry?.snapshot?.positionContext;
       const pnlPct = parseHistoryPnlPct(entry);
       if (pnlPct === null) return null;
       const sideRaw = String(positionContext?.side || '').toLowerCase();
@@ -381,7 +387,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
       let lastNewsSource: string | null | undefined = config.newsSource;
-      let forexEventContext: any | null = null;
+      let forexEventContext: ForexEventContext | null = null;
       let lastWasAiCall = false;
       let lastAiDecisionTs: number | null = null;
       let lastAiDecisionAction: string | null = null;
@@ -401,8 +407,8 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         lastScanReason = lastScan?.reason ?? null;
         const latest = history[0];
         const isRealAiCall = (entry: (typeof history)[number]): boolean =>
-          (entry.aiDecision as any)?.decision_source !== 'pre_ai_skip' &&
-          !(entry.aiDecision as any)?.promptSkipped;
+          entry.aiDecision?.decision_source !== 'pre_ai_skip' &&
+          !entry.aiDecision?.promptSkipped;
         // Was the most recent decision (history is newest-first) a real AI call,
         // or a calm-market / below-min-signal-strength pre-AI skip?
         lastWasAiCall = latest ? isRealAiCall(latest) : false;
@@ -410,13 +416,13 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
         // how many skip rows landed since — plus what it decided.
         const latestAiCall = history.find(isRealAiCall);
         lastAiDecisionTs = latestAiCall?.timestamp ?? null;
-        lastAiDecisionAction = String((latestAiCall?.aiDecision as any)?.action || '').toUpperCase() || null;
-        const cooldownMin = Number((latestAiCall?.aiDecision as any)?.cooldown_minutes);
+        lastAiDecisionAction = String(latestAiCall?.aiDecision?.action || '').toUpperCase() || null;
+        const cooldownMin = Number(latestAiCall?.aiDecision?.cooldown_minutes);
         lastAiDecisionCooldownMinutes = Number.isFinite(cooldownMin) && cooldownMin > 0 ? cooldownMin : null;
         // Venue closed at the last cron tick — analyze.ts skips before the AI
         // with skipStage === 'capital_market_closed'. Crypto (bitget) never
         // hits this gate, so it stays open 24/7.
-        marketClosed = (latest?.aiDecision as any)?.skipStage === 'capital_market_closed';
+        marketClosed = latest?.aiDecision?.skipStage === 'capital_market_closed';
         if (latest) {
           category =
             typeof latest.category === 'string'

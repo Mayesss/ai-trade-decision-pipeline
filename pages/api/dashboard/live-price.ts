@@ -66,8 +66,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ts: Number.isFinite(ts) ? ts : Date.now(),
       source: 'bitget-rest-ticker',
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error(`Error in /api/dashboard/live-price (${platform}:${symbol}):`, err);
-    return res.status(500).json({ error: err?.message || 'live_price_fetch_failed' });
+    return res.status(500).json({ error: err instanceof Error && err.message ? err.message : 'live_price_fetch_failed' });
   }
 }

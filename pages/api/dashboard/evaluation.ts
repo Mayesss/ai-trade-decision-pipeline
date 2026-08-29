@@ -16,7 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: 'symbol_required' });
   }
 
-  let evaluation: Record<string, any> = {};
+  let evaluation: Record<string, unknown> = {};
   let evaluationTs: number | null = null;
   try {
     const raw = await getEvaluation(symbol);
