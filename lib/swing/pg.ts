@@ -151,7 +151,7 @@ async function ensureSwingSchema(): Promise<void> {
             END $$`);
 
         // ai_threads: one active AI conversation per (platform, symbol). A thread
-        // starts when an entry order is placed (market fill or resting pullback
+        // starts when an entry order is placed (market fill or resting
         // limit), survives the limit fill into position management AND
         // unfilled-limit re-evaluations (sweep + re-issue continues the same
         // conversation), and ends when the entry is dropped without a re-issue
@@ -218,7 +218,9 @@ async function ensureSwingSchema(): Promise<void> {
         // claimed_until_ms: in-flight lease on a triggered wake (see table
         // comment above). Predates some deployments.
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS claimed_until_ms BIGINT`);
-        // Sustained-confirmation wake bands. wake_sustain_minutes: AI-chosen
+        // Confirmation wake bands. wake_sustain_minutes is the storage name of
+        // the model-facing cooldown_wake_confirm_minutes (kept to avoid a
+        // rename migration on a live table). AI-chosen
         // confirmation window — the band wakes only if price is STILL beyond
         // it that many minutes after first touch (null = instant touch wake).
         // wake_touch_*: the watcher's in-flight touch state (side, first-touch
@@ -634,7 +636,7 @@ export async function upsertSwingAiThread(params: {
     `);
 }
 
-// All symbols whose conversation is parked on a resting pullback limit — one
+// All symbols whose conversation is parked on a resting entry order — one
 // query for the dashboard summary's pending-entry flags (pill ordering).
 export async function listSwingPendingEntryThreads(): Promise<Array<{ platform: string; symbol: string }>> {
     if (!isSwingPgConfigured()) return [];
@@ -706,7 +708,7 @@ export async function setSwingThreadWake(params: {
     `);
 }
 
-// Resting pullback limit filled → the same conversation now manages the position.
+// Resting entry filled → the same conversation now manages the position.
 export async function markSwingAiThreadInPosition(platform: string, symbol: string): Promise<void> {
     if (!isSwingPgConfigured()) return;
     await ensureSwingSchema();
@@ -743,7 +745,7 @@ export type SwingAiCooldown = {
     wakeNote: string | null;
     setAtMs: number;
     // Sustained confirmation (null = instant touch wake).
-    sustainMinutes: number | null;
+    confirmMinutes: number | null;
     touchSide: 'above' | 'below' | null;
     touchStartedMs: number | null;
     touchExtreme: number | null;
@@ -802,7 +804,7 @@ function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
 function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
     const untilMs = Number(row.until_ms);
     if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
-    const sustainRaw = Number(row.wake_sustain_minutes);
+    const confirmRaw = Number(row.wake_sustain_minutes);
     const touchSide = row.wake_touch_side === 'above' ? 'above' : row.wake_touch_side === 'below' ? 'below' : null;
     const touchStartedMs = Number(row.wake_touch_started_ms);
     return {
@@ -811,7 +813,7 @@ function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
         wakeBelow: finitePos(row.wake_below),
         wakeNote: typeof row.wake_note === 'string' && row.wake_note.trim() ? row.wake_note.trim() : null,
         setAtMs: Number(row.set_at_ms) || 0,
-        sustainMinutes: Number.isFinite(sustainRaw) && sustainRaw > 0 ? Math.floor(sustainRaw) : null,
+        confirmMinutes: Number.isFinite(confirmRaw) && confirmRaw > 0 ? Math.floor(confirmRaw) : null,
         touchSide,
         touchStartedMs: touchSide && Number.isFinite(touchStartedMs) && touchStartedMs > 0 ? touchStartedMs : null,
         touchExtreme: finitePos(row.wake_touch_extreme),
@@ -846,7 +848,7 @@ export async function upsertSwingAiCooldown(params: {
     // wake. A fresh cooldown always resets touch state and sweep evidence —
     // the new bands encode a NEW plan, and the model was just shown the old
     // sweeps on the look that produced this decision.
-    wakeSustainMinutes?: number | null;
+    wakeConfirmMinutes?: number | null;
     // Primary ATR at set time (code-provided, not AI-provided) — anchor for
     // the watcher's extension confirm on sustained bands.
     wakeAtr?: number | null;
@@ -856,8 +858,8 @@ export async function upsertSwingAiCooldown(params: {
     await ensureSwingSchema();
     const db = swingPg();
     const wakeNote = typeof params.wakeNote === 'string' && params.wakeNote.trim() ? params.wakeNote.trim() : null;
-    const sustainRaw = Number(params.wakeSustainMinutes);
-    const sustainMinutes = Number.isFinite(sustainRaw) && sustainRaw > 0 ? Math.floor(sustainRaw) : null;
+    const confirmRaw = Number(params.wakeConfirmMinutes);
+    const confirmMinutes = Number.isFinite(confirmRaw) && confirmRaw > 0 ? Math.floor(confirmRaw) : null;
     await db.$executeRaw(sql`
         INSERT INTO swing.ai_cooldowns (platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, claimed_until_ms, wake_sustain_minutes, wake_atr)
         VALUES (
@@ -869,7 +871,7 @@ export async function upsertSwingAiCooldown(params: {
             ${wakeNote},
             ${Date.now()},
             NULL,
-            ${sustainMinutes},
+            ${confirmMinutes},
             ${finitePos(params.wakeAtr)}
         )
         ON CONFLICT (platform, symbol) DO UPDATE SET

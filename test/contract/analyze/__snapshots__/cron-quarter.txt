@@ -69,6 +69,22 @@ SQL neon-postgres
     ]
   }
 
+GET https://api.bitget.com/api/v2/mix/order/orders-pending?productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/order/orders-plan-pending?planType=normal_plan&productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
 GET https://api.bitget.com/api/v2/mix/market/ticker?productType=usdt-futures&symbol=ETHUSDT
   access-key: test-bitget-key
   access-passphrase: test-bitget-passphrase

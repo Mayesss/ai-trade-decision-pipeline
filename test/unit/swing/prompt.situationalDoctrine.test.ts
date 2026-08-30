@@ -76,6 +76,8 @@ function systemFor(opts: Opts = {}): string {
         [],
         null,
         null,
+        // resting_entry — nothing stands on these ticks
+        null,
         opts.eventReaction ?? null,
         opts.btcContext ?? null,
         opts.lessons ?? null,

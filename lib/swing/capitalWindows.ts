@@ -232,7 +232,7 @@ const SAME_POSITION_ENTRY_TOLERANCE_MS = 5 * 60 * 1000;
 // per symbol at a time, so same-symbol windows that genuinely coexist can only
 // be realized chunks of the same position — sequential positions overlap by at
 // most seconds of venue skew (a close and a REVERSE re-entry book back to
-// back). The overlap test is what catches pullback-limit entries: a trim tx
+// back). The overlap test is what catches resting-entry fills: a trim tx
 // row is enriched with the BUY/SELL DECISION timestamp while captured rows and
 // the open position carry the venue FILL time, which can trail the decision by
 // hours — same position, entries far apart, spans overlapping.

@@ -48,7 +48,7 @@ type SummaryEntry = {
   // trade count, keyed YYYY-MM-DD. Days without closes are absent. Feeds the
   // dashboard's week-calendar strip.
   pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
-  // A pullback entry limit is resting on the venue (ai_threads status
+  // A resting entry order is live on the venue (ai_threads status
   // 'pending_entry') — ranks the symbol pill between open positions and
   // fresh AI decisions.
   pendingEntry?: boolean;
@@ -355,7 +355,7 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
     capitalTradeWindowsBySymbol.set(key, rows);
   }
 
-  // Resting pullback limits, one query for all symbols. Best-effort: a miss
+  // Resting entries, one query for all symbols. Best-effort: a miss
   // just leaves the pills unflagged until the next rebuild.
   const pendingEntryKeys = new Set(
     (await listSwingPendingEntryThreads().catch(() => [])).map(

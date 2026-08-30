@@ -20,7 +20,7 @@ OUTPUT: one decision object per the enforced schema. Flat context: allowed actio
 
 const USER_1 = `You are analyzing BTC for swing trading (mode=simulation).
 STATE: {"biases":{"micro":"up","primary":"up","macro":"neutral"},"price":50000,"atr_primary":600,"levels":{"resistance":{"price":51200,"dist_atr":2.0},"support":{"price":49700,"dist_atr":0.5}}}
-TASKS: output one action (BUY/SELL/HOLD); leverage 5-10 on entries else null; raise_leverage_to/move_stop_to_be null; exit_size_pct null when flat; set take_profit_price and stop_loss_price on entries; entry_limit_price optional pullback limit; summary <=2 lines; reason brief.`;
+TASKS: output one action (BUY/SELL/HOLD); leverage 5-10 on entries else null; raise_leverage_to/move_stop_to_be null; exit_size_pct null when flat; set take_profit_price and stop_loss_price on entries; entry_limit_price optional resting entry; name the play in strategy; summary <=2 lines; reason brief.`;
 
 const USER_2 = `Follow-up tick, same instrument. Price moved to 50250, everything else unchanged. Re-evaluate: does your previous reasoning still hold? Same output schema.`;
 
@@ -33,6 +33,8 @@ const REQUIRED_KEYS = [
     'take_profit_price',
     'stop_loss_price',
     'entry_limit_price',
+    'entry_stop_price',
+    'strategy',
 ];
 
 async function main() {

@@ -8,13 +8,15 @@
 // prompt's "enforced in code" claims are these functions, and both read their
 // bounds from decisionConfig.ts so the two can never disagree.
 
-import { clampWakeSustainMinutes } from './wakeWatch';
+import { clampWakeConfirmMinutes } from './wakeWatch';
+import { SWING_STRATEGIES } from './decisionSchema';
 import type { RecentActionEntry } from './recentActions';
 import type { TradeDecision } from '../trading';
 import {
     resolveDecisionPolicy,
     flagOff,
-    PULLBACK_LIMIT_ENABLED,
+    restingEntryKindAllowed,
+    RESTING_ENTRY_WINDOWS,
     SESSION_OFFENSE_ENABLED,
     POSITION_WAKE_MIN_ATR,
     HOLD_COOLDOWN_MIN_MINUTES,
@@ -25,10 +27,14 @@ import {
     ENTRY_SL_MIN_ATR,
     TP_MAX_ATR,
     AMEND_MIN_GAP_ATR,
-    ENTRY_LIMIT_MIN_ATR,
-    ENTRY_LIMIT_MAX_ATR,
 } from './decisionConfig';
-import type { PositionContext, DecisionPolicy, LastClosedPosition, PromptDecisionContext } from './decisionConfig';
+import type {
+    PositionContext,
+    DecisionPolicy,
+    LastClosedPosition,
+    PromptDecisionContext,
+    RestingEntryKind,
+} from './decisionConfig';
 import { resolveReentryCooldown, computeSignalStrength } from './signals';
 
 const toBiasLabel = (value: string): 'UP' | 'DOWN' | 'NEUTRAL' => {
@@ -50,11 +56,13 @@ export function postprocessDecision(params: {
     // Test seam for the sweep-reclaim re-entry exception; production callers
     // rely on the env-derived default.
     sessionOffenseEnabled?: boolean;
-    // Mechanical entry on a CONFIRMED wake fire (lib/swing/wakeAutoEntry):
-    // bypasses ONLY the micro_entry_ok timing block below — momentum timing is
-    // routinely false in the first minutes of a real break, and the wake's
-    // sustain/extension confirmation IS the timing evidence. Trend guard,
-    // re-entry cooldown, and base gates still apply.
+    // This tick is a CONFIRMED wake fire: the band held for the model's own
+    // confirm window, or the break extended beyond it by force. Bypasses ONLY
+    // the micro_entry_ok timing block below — momentum timing is routinely
+    // false in the first minutes of a real break, and the confirmation IS the
+    // timing evidence. Without this, a confirmed-break wake would be answered
+    // with a BUY/SELL and silently coerced to HOLD. Trend guard, re-entry
+    // cooldown and base gates still apply.
     confirmedWakeEntry?: boolean;
 }) {
     const {
@@ -207,11 +215,26 @@ export function postprocessDecision(params: {
         isEntryAction || tpslAmendEligible ? coercePrice(decision?.take_profit_price) : null;
     const stop_loss_price =
         isEntryAction || tpslAmendEligible ? coercePrice(decision?.stop_loss_price) : null;
-    // Pullback limit entry: flat BUY/SELL only (REVERSE stays market — it must
-    // actually flip the exposure, not maybe-flip it). Price-side/distance
-    // sanity is enforced by sanitizeEntryLimit in the API route.
-    const entry_limit_price =
-        !positionOpen && (action === 'BUY' || action === 'SELL') ? coercePrice(decision?.entry_limit_price) : null;
+    // Resting entry: flat BUY/SELL only (REVERSE stays market — it must
+    // actually flip the exposure, not maybe-flip it). Mutual exclusion,
+    // price-side and distance sanity are enforced by sanitizeRestingEntry in
+    // the API route; this is type/eligibility coercion only.
+    const restingEligible = !positionOpen && (action === 'BUY' || action === 'SELL');
+    const entry_limit_price = restingEligible ? coercePrice(decision?.entry_limit_price) : null;
+    const entry_stop_price = restingEligible ? coercePrice(decision?.entry_stop_price) : null;
+    // Withdrawing a standing resting entry is meaningful ONLY on a flat HOLD:
+    // an entry action already supersedes whatever rests, and in a position
+    // nothing rests. Silence leaves the order standing, which is the point —
+    // this is the one way to take it back without trading.
+    const withdraw_resting_entry = !positionOpen && action === 'HOLD' ? Boolean(decision?.withdraw_resting_entry) : false;
+    // The model's own label for the play it is running. Recorded, never acted
+    // on — an unrecognized value becomes null rather than travelling as free
+    // text, so the column stays queryable.
+    const rawStrategy = decision?.strategy;
+    const strategy =
+        typeof rawStrategy === 'string' && (SWING_STRATEGIES as readonly string[]).includes(rawStrategy)
+            ? rawStrategy
+            : null;
     // Failed-break watch trigger: fresh flat entries only (REVERSE stays
     // untracked — its side depends on the position being flipped, and the rare
     // reverse can re-declare on the next look). Side sanity vs live price is
@@ -248,8 +271,8 @@ export function postprocessDecision(params: {
     // Sustained confirmation: FLAT bands only (an in-position band guards a
     // live position, where the instant look is right whether the break is
     // real or fake). Type coercion here; clamping in sanitizeHoldCooldown.
-    const rawSustain = Number(decision?.cooldown_wake_sustain_minutes);
-    const cooldown_wake_sustain_minutes =
+    const rawSustain = Number(decision?.cooldown_wake_confirm_minutes);
+    const cooldown_wake_confirm_minutes =
         cooldownEligible &&
         (cooldown_wake_above !== null || cooldown_wake_below !== null) &&
         Number.isFinite(rawSustain) &&
@@ -267,12 +290,15 @@ export function postprocessDecision(params: {
         take_profit_price,
         stop_loss_price,
         entry_limit_price,
+        entry_stop_price,
+        withdraw_resting_entry,
         entry_trigger_price,
+        strategy,
         cooldown_minutes,
         cooldown_wake_above,
         cooldown_wake_below,
         cooldown_wake_note,
-        cooldown_wake_sustain_minutes,
+        cooldown_wake_confirm_minutes,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
@@ -299,11 +325,11 @@ export type HoldCooldown = {
     // a general memo.
     wakeNote: string | null;
     // Sustained-confirmation window (minutes, clamped to
-    // [WAKE_SUSTAIN_MIN_MINUTES, WAKE_SUSTAIN_MAX_MINUTES]): the band wakes
+    // [WAKE_CONFIRM_MIN_MINUTES, WAKE_CONFIRM_MAX_MINUTES]): the band wakes
     // only if price is still beyond it this long after first touch; failed
     // touches return as market.wake_band_sweeps. null = instant touch wake.
     // Like the note, only kept while at least one band survives.
-    sustainMinutes: number | null;
+    confirmMinutes: number | null;
     notes: string[];
 };
 
@@ -319,15 +345,15 @@ export function sanitizeHoldCooldown(params: {
     wakeAbove: unknown;
     wakeBelow: unknown;
     wakeNote?: unknown;
-    wakeSustainMinutes?: unknown;
+    wakeConfirmMinutes?: unknown;
 }): HoldCooldown {
     const notes: string[] = [];
     if (params.positionOpen || String(params.action).toUpperCase() !== 'HOLD') {
-        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, sustainMinutes: null, notes };
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, confirmMinutes: null, notes };
     }
     const rawMinutes = Number(params.cooldownMinutes);
     if (!Number.isFinite(rawMinutes) || rawMinutes <= 0) {
-        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, sustainMinutes: null, notes };
+        return { cooldownMinutes: null, wakeAbove: null, wakeBelow: null, wakeNote: null, confirmMinutes: null, notes };
     }
     const cooldownMinutes = Math.min(HOLD_COOLDOWN_MAX_MINUTES, Math.max(HOLD_COOLDOWN_MIN_MINUTES, Math.round(rawMinutes)));
     if (cooldownMinutes !== Math.round(rawMinutes)) notes.push(`clamped_${Math.round(rawMinutes)}m_to_${cooldownMinutes}m`);
@@ -359,15 +385,15 @@ export function sanitizeHoldCooldown(params: {
         notes.push('wake_note_dropped_no_band');
         wakeNote = null;
     }
-    const rawSustain = Number(params.wakeSustainMinutes);
-    let sustainMinutes: number | null = clampWakeSustainMinutes(params.wakeSustainMinutes);
-    if (sustainMinutes !== null && above === null && below === null) {
+    const rawSustain = Number(params.wakeConfirmMinutes);
+    let confirmMinutes: number | null = clampWakeConfirmMinutes(params.wakeConfirmMinutes);
+    if (confirmMinutes !== null && above === null && below === null) {
         notes.push('wake_sustain_dropped_no_band');
-        sustainMinutes = null;
-    } else if (sustainMinutes !== null && sustainMinutes !== Math.round(rawSustain)) {
-        notes.push(`wake_sustain_clamped_${Math.round(rawSustain)}m_to_${sustainMinutes}m`);
+        confirmMinutes = null;
+    } else if (confirmMinutes !== null && confirmMinutes !== Math.round(rawSustain)) {
+        notes.push(`wake_sustain_clamped_${Math.round(rawSustain)}m_to_${confirmMinutes}m`);
     }
-    return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, sustainMinutes, notes };
+    return { cooldownMinutes, wakeAbove: above, wakeBelow: below, wakeNote, confirmMinutes, notes };
 }
 
 // ------------------------------
@@ -654,66 +680,102 @@ export function sanitizeExchangeTpSl(params: {
 }
 
 // ------------------------------
-// Pullback limit entry sanitation
+// Resting entry sanitation
 // ------------------------------
 
+export type RestingEntry = {
+    price: number | null;
+    kind: RestingEntryKind | null;
+    dropEntry: boolean;
+    notes: string[];
+};
+
 /**
- * Validate the model's pullback entry limit against live price + primary ATR.
- * Returns the usable limit price (null = market entry as requested), or
- * dropEntry=true when the limit was invalid and the entry must be skipped
+ * Validate a resting entry price against live price + primary ATR.
+ *
+ * The model picks its tool by naming the field — entry_limit_price (rests
+ * AGAINST the trade: BUY below, SELL above) or entry_stop_price (rests WITH it:
+ * BUY above, SELL below) — and geometry then VALIDATES that claim rather than
+ * inferring it. Inferring the kind from the sign would silently turn a
+ * fat-fingered price into the opposite trade shape; making the model name the
+ * tool turns the same slip into a dropped entry instead.
+ *
+ * Code owns the envelope only (side validity for the named kind, per-kind ATR
+ * distance window, venue support). WHY the model wants to rest an order —
+ * pullback, breakout, range fade, bounce — is its call and is recorded in
+ * `strategy`, not adjudicated here.
+ *
+ * Returns the usable price + kind (price null = market entry as requested), or
+ * dropEntry=true when the request was invalid and the entry must be skipped for
  * this tick. Only flat BUY/SELL qualifies.
  */
-export function sanitizeEntryLimit(params: {
+export function sanitizeRestingEntry(params: {
     action: string;
     positionOpen: boolean;
     price: number;
     primaryAtr: number | null;
     entryLimitPrice: number | null;
-    // Test seam; production callers rely on the env-derived default.
-    pullbackLimitEnabled?: boolean;
-}): { entryLimitPrice: number | null; dropEntry: boolean; notes: string[] } {
+    entryStopPrice: number | null;
+    platform?: string | null;
+    // Test seam; production callers rely on the code-owned venue defaults.
+    allowKind?: (kind: RestingEntryKind) => boolean;
+}): RestingEntry {
     const notes: string[] = [];
+    const none = (): RestingEntry => ({ price: null, kind: null, dropEntry: false, notes });
     const action = String(params.action || '').toUpperCase();
     const price = Number(params.price);
     const atr =
         Number.isFinite(params.primaryAtr as number) && (params.primaryAtr as number) > 0
             ? Number(params.primaryAtr)
             : null;
-    const raw =
-        Number.isFinite(params.entryLimitPrice as number) && (params.entryLimitPrice as number) > 0
-            ? Number(params.entryLimitPrice)
-            : null;
-    if (raw == null) return { entryLimitPrice: null, dropEntry: false, notes };
-    if (params.positionOpen || (action !== 'BUY' && action !== 'SELL') || !(price > 0)) {
-        return { entryLimitPrice: null, dropEntry: false, notes: ['limit_not_applicable'] };
-    }
-    // Feature flag OFF (swing default): the prompt instructs entry_limit_price
-    // to be null, so a model-sent limit is a contract violation. Drop the entry
-    // rather than converting to market — the limit signals the model judged the
-    // CURRENT price wrong, and filling it here at market is the exact chase the
-    // flag-on prose forbids.
-    if (!(params.pullbackLimitEnabled ?? PULLBACK_LIMIT_ENABLED)) {
-        return { entryLimitPrice: null, dropEntry: true, notes: ['limit_disabled_entry_dropped'] };
-    }
-    if (!atr) return { entryLimitPrice: null, dropEntry: true, notes: ['limit_no_atr_entry_dropped'] };
+    const positive = (v: number | null) => (Number.isFinite(v as number) && (v as number) > 0 ? Number(v) : null);
+    const limitRaw = positive(params.entryLimitPrice);
+    const stopRaw = positive(params.entryStopPrice);
 
+    // Neither field set = market entry, the overwhelmingly common case.
+    if (limitRaw == null && stopRaw == null) return none();
+    if (params.positionOpen || (action !== 'BUY' && action !== 'SELL') || !(price > 0)) {
+        return { price: null, kind: null, dropEntry: false, notes: ['resting_entry_not_applicable'] };
+    }
+    // Both set: the two tools are mutually exclusive and the model's intent is
+    // unrecoverable. Dropping is the only safe read — picking one would be
+    // guessing at a trade shape.
+    if (limitRaw != null && stopRaw != null) {
+        return { price: null, kind: null, dropEntry: true, notes: ['resting_entry_ambiguous_entry_dropped'] };
+    }
+
+    const kind: RestingEntryKind = limitRaw != null ? 'limit' : 'stop';
+    const raw = (limitRaw ?? stopRaw) as number;
+    const allow = params.allowKind ?? ((k: RestingEntryKind) => restingEntryKindAllowed(k, params.platform));
+    if (!allow(kind)) {
+        return { price: null, kind: null, dropEntry: true, notes: [`resting_entry_${kind}_unsupported_entry_dropped`] };
+    }
+    if (!atr) return { price: null, kind: null, dropEntry: true, notes: [`resting_entry_no_atr_entry_dropped`] };
+
+    // One sign convention covers all four quadrants. dir is the trade's
+    // direction; away flips it for a limit, which rests on the far side.
+    //   BUY  limit: raw < price -> positive     BUY  stop: raw > price -> positive
+    //   SELL limit: raw > price -> positive     SELL stop: raw < price -> positive
     const dir = action === 'BUY' ? 1 : -1;
-    // Pullback distance: positive = on the pullback side of price.
-    const distAtr = (dir * (price - raw)) / atr;
+    const away = kind === 'limit' ? -1 : 1;
+    const distAtr = (dir * away * (raw - price)) / atr;
+    const window = RESTING_ENTRY_WINDOWS[kind];
     if (distAtr <= 0) {
-        notes.push('limit_wrong_side_entry_dropped');
-        return { entryLimitPrice: null, dropEntry: true, notes };
+        notes.push(`resting_entry_${kind}_wrong_side_entry_dropped`);
+        return { price: null, kind: null, dropEntry: true, notes };
     }
-    if (distAtr < ENTRY_LIMIT_MIN_ATR) {
-        notes.push('limit_too_close_entry_dropped');
-        return { entryLimitPrice: null, dropEntry: true, notes };
+    if (distAtr < window.minAtr) {
+        notes.push(`resting_entry_${kind}_too_close_entry_dropped`);
+        return { price: null, kind: null, dropEntry: true, notes };
     }
-    if (distAtr > ENTRY_LIMIT_MAX_ATR) {
-        const clamped = price - dir * ENTRY_LIMIT_MAX_ATR * atr;
-        notes.push('limit_clamped_max_atr');
-        return { entryLimitPrice: clamped > 0 ? clamped : null, dropEntry: false, notes };
+    if (distAtr > window.maxAtr) {
+        const clamped = price + dir * away * window.maxAtr * atr;
+        notes.push(`resting_entry_${kind}_clamped_max_atr`);
+        return clamped > 0
+            ? { price: clamped, kind, dropEntry: false, notes }
+            : { price: null, kind: null, dropEntry: true, notes };
     }
-    return { entryLimitPrice: raw, dropEntry: false, notes };
+    return { price: raw, kind, dropEntry: false, notes };
 }
 
 // ------------------------------

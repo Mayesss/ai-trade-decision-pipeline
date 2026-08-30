@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { RESTING_ENTRY_MAX_AGE_MINUTES } from "./swing/decisionConfig";
 
 import type { PositionInfo } from "./analytics";
 import type {
@@ -2953,11 +2954,14 @@ async function openCapitalPosition(params: {
   // asset class (notional = sideSizeUSDT * category leverage). Off (default) keeps
   // the scalp contract where sideSizeUSDT IS the target notional.
   notionalLeverageByCategory?: boolean;
-  // Pullback limit entry: place a resting LIMIT working order (documented
-  // /api/v1/workingorders endpoint) instead of an immediate position. Requires
-  // orderType LIMIT + limitLevel. goodTillMs sets a venue-side expiry as a
-  // backstop behind the caller-owned one-tick TTL.
+  // Resting entry: place a working order (documented /api/v1/workingorders
+  // endpoint) instead of an immediate position. Requires orderType LIMIT +
+  // limitLevel; `restingKind` then selects the venue order type — 'limit' rests
+  // AGAINST the trade, 'stop' rests WITH it, and Capital's `type` field takes
+  // exactly LIMIT or STOP. goodTillMs sets a venue-side expiry as a backstop
+  // behind the caller-owned age backstop.
   asWorkingOrder?: boolean;
+  restingKind?: "limit" | "stop";
   goodTillMs?: number | null;
 }): Promise<OpenCapitalPositionResult> {
   const {
@@ -2973,6 +2977,7 @@ async function openCapitalPosition(params: {
     forceOpen = true,
     notionalLeverageByCategory = false,
     asWorkingOrder = false,
+    restingKind = "limit",
     goodTillMs = null,
   } = params;
   const resolved = await resolveCapitalEpicRuntime(symbol);
@@ -3112,9 +3117,11 @@ async function openCapitalPosition(params: {
     if (explicitLeverage) body.leverage = explicitLeverage;
   }
 
-  // Pullback limit entry: resting working order instead of an immediate
-  // position. Uses the documented /workingorders endpoint (the /positions
-  // orderType=LIMIT variant is undocumented) and reuses all the sizing above.
+  // Resting entry: working order instead of an immediate position. Uses the
+  // documented /workingorders endpoint (the /positions orderType=LIMIT variant
+  // is undocumented) and reuses all the sizing above. `type` must be LIMIT or
+  // STOP per the API — the two differ only in which side of live price `level`
+  // sits on, which the upstream sanitizer has already validated.
   if (asWorkingOrder) {
     const level = safeNumber(limitLevel, NaN);
     if (orderType !== "LIMIT" || !(Number.isFinite(level) && level > 0)) {
@@ -3125,7 +3132,7 @@ async function openCapitalPosition(params: {
       direction,
       size,
       level,
-      type: "LIMIT",
+      type: restingKind === "stop" ? "STOP" : "LIMIT",
       currencyCode: "USD",
       dealReference: clientOid,
     };
@@ -3393,7 +3400,7 @@ async function closeCapitalPosition(
 }
 
 // ------------------------------
-// Pending entry working orders (pullback limit entries, one-tick TTL)
+// Pending entry working orders (resting LIMIT/STOP entries)
 // ------------------------------
 
 export type CapitalPendingEntryOrder = {
@@ -3402,6 +3409,11 @@ export type CapitalPendingEntryOrder = {
   level: number | null;
   size: number | null;
   createdAtMs: number | null;
+  // The venue's own LIMIT/STOP type, normalized. Read rather than inferred from
+  // the level vs current price: Capital rests both kinds on the same endpoint,
+  // and the caller needs the kind at a point in the tick where no price is
+  // resolved yet.
+  restingKind: 'limit' | 'stop' | null;
 };
 
 // /workingorders row fields actually read below (nested workingOrderData shape
@@ -3409,6 +3421,8 @@ export type CapitalPendingEntryOrder = {
 type CapitalWorkingOrderData = {
   epic?: unknown;
   dealId?: unknown;
+  type?: unknown;
+  orderType?: unknown;
   direction?: unknown;
   orderLevel?: unknown;
   level?: unknown;
@@ -3424,7 +3438,7 @@ type CapitalWorkingOrderRow = CapitalWorkingOrderData & {
 };
 
 // The pipeline is the only writer on this account, so every working order on a
-// symbol's epic is one of our resting pullback entries.
+// symbol's epic is one of our resting entries.
 export async function listCapitalPendingEntryOrders(symbol: string): Promise<CapitalPendingEntryOrder[]> {
   const resolved = await resolveCapitalEpicRuntime(symbol);
   const payload = await capitalFetch("GET", "/api/v1/workingorders", {}, undefined, true);
@@ -3443,19 +3457,22 @@ export async function listCapitalPendingEntryOrders(symbol: string): Promise<Cap
       // Date.parse would additionally vary with the SERVER's timezone.
       const createdAtMs =
         toIsoTimestampMs(data?.createdDateUTC) ?? toCapitalAccountTimestampMs(data?.createdDate) ?? NaN;
+      const typeRaw = String(data?.type ?? data?.orderType ?? '').toUpperCase();
       return {
         dealId,
         direction: data?.direction ? String(data.direction) : null,
         level: Number.isFinite(level) ? level : null,
         size: Number.isFinite(size) ? size : null,
         createdAtMs: Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : null,
+        restingKind: typeRaw === 'STOP' ? 'stop' : typeRaw === 'LIMIT' ? 'limit' : null,
       };
     })
     .filter((o: CapitalPendingEntryOrder | null): o is CapitalPendingEntryOrder => o !== null);
 }
 
-// Cancel all resting entry working orders for a symbol (one-tick TTL /
-// supersede-on-new-evaluation). Never throws.
+// Cancel all resting entry working orders for a symbol. Called when a decision
+// supersedes or withdraws the standing entry, or when the age backstop fires —
+// NOT on every evaluation. Never throws.
 export async function cancelCapitalPendingEntryOrders(
   symbol: string,
 ): Promise<{ found: number; cancelled: number; errors: string[]; orders: CapitalPendingEntryOrder[] }> {
@@ -3597,10 +3614,15 @@ export async function executeCapitalDecision(
       Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0
         ? Number(stopLossPrice)
         : null;
-    // Pullback limit entry (sanitized upstream): rest a LIMIT working order
-    // with the bracket attached; the caller owns the one-tick TTL and the
-    // goodTillDate is a venue-side backstop just past one hourly tick.
-    const entryLimitPrice = safePositiveNumber(decision.entry_limit_price);
+    // Resting entry (sanitized upstream): rest a working order with the bracket
+    // attached; the caller owns the lifecycle and the goodTillDate is a
+    // venue-side backstop just past one hourly tick. `resting_entry_kind` picks
+    // LIMIT vs STOP; the sanitizer has already proven the level sits on the
+    // correct side of price for that kind.
+    const restingKind = decision.resting_entry_kind === "stop" ? "stop" : "limit";
+    const entryRestPrice = safePositiveNumber(
+      restingKind === "stop" ? decision.entry_stop_price : decision.entry_limit_price,
+    );
     const opened = await openCapitalPosition({
       symbol,
       direction,
@@ -3610,12 +3632,16 @@ export async function executeCapitalDecision(
       stopLevel,
       profitLevel: safePositiveNumber(takeProfitPrice),
       notionalLeverageByCategory,
-      ...(entryLimitPrice != null
+      ...(entryRestPrice != null
         ? {
             orderType: "LIMIT" as const,
-            limitLevel: entryLimitPrice,
+            limitLevel: entryRestPrice,
             asWorkingOrder: true,
-            goodTillMs: Date.now() + 70 * 60_000,
+            restingKind,
+            // Venue-side backstop behind the code-owned age cancel: a resting
+            // entry now survives evaluations, so a 70-minute goodTillDate would
+            // kill it long before the model ever revisits it.
+            goodTillMs: Date.now() + RESTING_ENTRY_MAX_AGE_MINUTES * 60_000,
           }
         : {}),
     });
@@ -3638,7 +3664,9 @@ export async function executeCapitalDecision(
       leverage,
       size: opened.size,
       epic: opened.epic,
-      ...(opened.pending ? { pendingEntry: true, entryLimitPrice } : {}),
+      ...(opened.pending
+        ? { pendingEntry: true, entryLimitPrice: entryRestPrice, restingEntryKind: restingKind }
+        : {}),
     };
   }
 

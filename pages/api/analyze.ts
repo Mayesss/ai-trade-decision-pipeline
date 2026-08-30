@@ -26,6 +26,7 @@ import {
     fetchCapitalPositionInfo,
     fetchCapitalRealizedRoi,
     cancelCapitalPendingEntryOrders,
+    listCapitalPendingEntryOrders,
     resolveCapitalEpic,
     resolveCapitalEpicRuntime,
     type CapitalMarketTradeability,
@@ -44,19 +45,20 @@ import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
 
-import { POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
+import { POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
-import { postprocessDecision, sanitizeEntryLimit, sanitizeEntryTrigger, sanitizeExchangeTpSl, sanitizeHoldCooldown, sanitizePositionWake } from '../../lib/swing/decisionRules';
+import { postprocessDecision, sanitizeRestingEntry, sanitizeEntryTrigger, sanitizeExchangeTpSl, sanitizeHoldCooldown, sanitizePositionWake } from '../../lib/swing/decisionRules';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/swing/decisionConfig';
 import { AiCallError } from '../../lib/aiError';
-import { callSwingDecision, resolveSwingAiProvider, type SwingDecisionCallResult } from '../../lib/aiProvider';
+import { callSwingDecision, resolveSwingAiProvider } from '../../lib/aiProvider';
 import { truncateClaudeTranscript } from '../../lib/claudeAi';
 import { getGates } from '../../lib/gates';
 
 import {
     cancelPendingEntryOrders,
+    fetchPendingEntryOrders,
     classifyPendingEntrySweep,
     executeDecision,
     fetchPositionTpsl,
@@ -69,7 +71,6 @@ import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory, type DecisionSnapshot } from '../../lib/history';
 import { recordSwingAccountSnapshot } from '../../lib/swing/sync';
 import { resolveRiskBasedSizing, RISK_EQUITY_PCT } from '../../lib/swing/riskSizing';
-import { buildWakeAutoEntryDecision } from '../../lib/swing/wakeAutoEntry';
 import {
     breakTriggerFailed,
     flatWakePlanStale,
@@ -906,7 +907,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Responses-API thread (per-order conversation chain). A thread starts
-        // when an entry order is placed, survives a pullback-limit fill into
+        // when an entry order is placed, survives a resting-entry fill into
         // position management AND unfilled-limit re-evaluations (sweep +
         // re-issue keeps the same conversation), and ends when the entry is
         // dropped without a re-issue or the position closes. Reconciled here
@@ -935,7 +936,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // and echoed to the prompt; replaced after every real AI decision.
         let threadWake: { above: number | null; below: number | null; note: string | null; setAtMs: number | null } | null =
             null;
-        // The thread row claims a pullback limit is resting while we're flat —
+        // The thread row claims a resting entry is live while we are flat —
         // cross-checked against what the hourly sweep actually finds below.
         let aiThreadWasPendingEntry = false;
         if (!dryRun) {
@@ -986,11 +987,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        // Resting pullback entries (one-tick TTL). Sweep = cancel whatever the
-        // PREVIOUS evaluation left resting. Hourly flat ticks always sweep
-        // (TTL expiry, even when the gates then skip the AI); quarter ticks
-        // sweep later, only when they actually reach a new AI evaluation
-        // (supersede) — a gate-skipped quarter tick leaves the order resting.
+        // Resting entries. A standing entry SURVIVES evaluations, so the sweep
+        // is no longer something a tick does by default — it runs only when the
+        // age backstop fires (below) or when the decision itself supersedes or
+        // withdraws the order (after the AI call). What every flat tick does do
+        // is READ, so the model can see what stands and decide its fate.
         // If a cancel fails because the order just FILLED, the tick stops:
         // a position now exists and the next tick manages it.
         // Any OTHER unclean sweep (helper threw, pending-orders fetch failed,
@@ -998,10 +999,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // order may still be live on the venue, and a fresh entry on top of it
         // stacks exposure (fail closed; the DE40 double fill 2026-07-13).
         // What the sweep found, normalized for the prompt: the AI decides fresh
-        // each evaluation, but it should KNOW its previous pullback limit rested
+        // each evaluation, but it should KNOW its previous resting entry rested
         // without filling (re-issue vs chase vs drop is its call to make).
         let sweptPendingEntry: { side: 'BUY' | 'SELL' | null; price: number | null; age_min: number | null } | null =
             null;
+        // What is resting on the venue RIGHT NOW, read without cancelling.
+        //
+        // A resting entry is a standing commitment and survives evaluations: the
+        // model sees it as state.position.resting_entry and decides what happens
+        // to it (HOLD leaves it, a fresh BUY/SELL supersedes it, a market entry
+        // or withdraw_resting_entry cancels it). Before 2026-08-30 the tick
+        // cancelled unconditionally BEFORE asking, so the model could only ever
+        // see the corpse (cancelled_pending_entry) and silence destroyed the
+        // commitment — the opposite of the in-position bracket, where null means
+        // "leave the standing leg alone".
+        //
+        // Returns null on a read failure, which the caller treats as fail-closed:
+        // not knowing what rests means we must not place anything on top of it.
+        const readPendingEntries = async () => {
+            try {
+                const orders =
+                    platform === 'capital' || productType === null
+                        ? await listCapitalPendingEntryOrders(symbol)
+                        : await fetchPendingEntryOrders(symbol, productType);
+                return orders;
+            } catch (err) {
+                console.warn(`pending entry read failed for ${symbol}:`, err);
+                return null;
+            }
+        };
+        const describeRestingEntry = (first: { createdAtMs?: number | null } & Record<string, unknown>) => {
+            const sideRaw = String(('side' in first ? first.side : first.direction) ?? '').toUpperCase();
+            const price = Number('price' in first ? first.price : first.level);
+            const createdAtMs = Number(first.createdAtMs);
+            return {
+                side: sideRaw === 'BUY' || sideRaw === 'SELL' ? (sideRaw as 'BUY' | 'SELL') : null,
+                price: Number.isFinite(price) && price > 0 ? price : null,
+                age_min:
+                    Number.isFinite(createdAtMs) && createdAtMs > 0
+                        ? Math.max(0, Math.round((Date.now() - createdAtMs) / 60_000))
+                        : null,
+            };
+        };
         const sweepPendingEntries = async () => {
             try {
                 const result =
@@ -1009,19 +1048,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         ? await cancelCapitalPendingEntryOrders(symbol)
                         : await cancelPendingEntryOrders(symbol, productType);
                 const first = result.orders?.[0];
-                if (first) {
-                    const sideRaw = String(('side' in first ? first.side : first.direction) ?? '').toUpperCase();
-                    const price = Number('price' in first ? first.price : first.level);
-                    const createdAtMs = Number(first.createdAtMs);
-                    sweptPendingEntry = {
-                        side: sideRaw === 'BUY' || sideRaw === 'SELL' ? (sideRaw as 'BUY' | 'SELL') : null,
-                        price: Number.isFinite(price) && price > 0 ? price : null,
-                        age_min:
-                            Number.isFinite(createdAtMs) && createdAtMs > 0
-                                ? Math.max(0, Math.round((Date.now() - createdAtMs) / 60_000))
-                                : null,
-                    };
-                }
+                if (first) sweptPendingEntry = describeRestingEntry(first);
                 // Resting entry cancelled without filling → delete the thread
                 // ROW (no order is resting anymore, so the pendingEntry flag
                 // must drop) — but the CONVERSATION survives: this tick's AI
@@ -1055,7 +1082,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
             return filled;
         };
-        if (!positionOpen && !quarterTick) {
+        // What is standing right now, and whether it has outlived its backstop.
+        // Populated on every flat tick; drives state.position.resting_entry and
+        // the post-decision cancel below.
+        let standingEntry: {
+            kind: 'limit' | 'stop' | null;
+            side: 'BUY' | 'SELL' | null;
+            price: number | null;
+            age_min: number | null;
+        } | null = null;
+        let restingEntryReadFailed = false;
+        if (!positionOpen) {
+            const orders = await readPendingEntries();
+            if (orders === null) {
+                restingEntryReadFailed = true;
+            } else if (orders.length) {
+                const first = orders[0] as Record<string, unknown> & { createdAtMs?: number | null };
+                // Each venue reports its own kind: Bitget by which order book the
+                // row came from, Capital by the working order's LIMIT/STOP type.
+                // Neither is inferred from price — that would be guessing at the
+                // model's intent from geometry.
+                const kind: 'limit' | 'stop' | null =
+                    'planOrder' in first
+                        ? first.planOrder
+                            ? 'stop'
+                            : 'limit'
+                        : ((first.restingKind as 'limit' | 'stop' | null) ?? null);
+                standingEntry = { kind, ...describeRestingEntry(first) };
+            }
+        }
+        // Age backstop: a resting order now survives evaluations, so nothing
+        // else bounds its life if this pipeline stops running. An entry idea
+        // older than this is stale regardless of what the model last thought,
+        // and a stop firing days later on a dead thesis is the failure mode
+        // this guards. Not a policy the model reasons about — a safety net
+        // under our own outages.
+        const restingEntryAgedOut =
+            standingEntry !== null &&
+            standingEntry.age_min !== null &&
+            standingEntry.age_min > RESTING_ENTRY_MAX_AGE_MINUTES;
+        if (!positionOpen && !quarterTick && restingEntryAgedOut) {
             const sweep = await sweepPendingEntries();
             if (await pendingEntryFilledMidTick(sweep)) {
                 // No KV marker (never had one — the fill surfaces as a position
@@ -1115,18 +1181,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     promptSkipped: true,
                 });
             }
-            // Stale-thread reconcile: the row said a pullback limit was resting,
-            // but the sweep found NOTHING on the venue (expired, weekend purge,
-            // manual cancel). The sweep's own row-deletion only fires when a
-            // cancel succeeded (found > 0) and the post-AI cleanup only on ticks
-            // that reach the AI — without this, a vanished order leaves the
-            // dashboard's pendingEntry flag latched through every gate-skipped
-            // tick (EURUSD sat stale for 25h, 2026-07-15).
-            if (!dryRun && sweep && sweep.found === 0 && aiThreadWasPendingEntry) {
-                await endSwingAiThread(platform, symbol).catch((err) =>
-                    console.warn(`stale pending-entry thread cleanup failed for ${symbol}:`, err),
-                );
-            }
+            // Aged out and cancelled — nothing stands any more, so the model
+            // decides this tick as if it never rested one.
+            standingEntry = null;
+        }
+        // Fail closed on a read failure. Not knowing what rests is exactly when
+        // placing a fresh entry stacks exposure on an order still live at the
+        // venue (the DE40 double fill, 2026-07-13); the previous
+        // cancel-first design failed closed here for the same reason.
+        if (!positionOpen && restingEntryReadFailed) {
+            await recordTickOutcome({
+                kind: 'skip',
+                stage: 'pending_entry_read_failed',
+                reason: 'entry_blocked_pending_entry_read_failed',
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision: {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'pending_entry_read_failed',
+                    reason: 'entry_blocked_pending_entry_read_failed',
+                },
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_read_failed' },
+                usedTape: false,
+                promptSkipped: true,
+            });
+        }
+        // Stale-thread reconcile: the row says an entry is resting but the venue
+        // has nothing (filled and closed, expired, weekend purge, manual
+        // cancel). Without this a vanished order leaves the dashboard's
+        // pendingEntry flag latched through every gate-skipped tick (EURUSD sat
+        // stale for 25h, 2026-07-15). Now keyed on the READ rather than on a
+        // sweep, since ticks no longer sweep by default.
+        if (!positionOpen && !dryRun && standingEntry === null && aiThreadWasPendingEntry) {
+            await endSwingAiThread(platform, symbol).catch((err) =>
+                console.warn(`stale pending-entry thread cleanup failed for ${symbol}:`, err),
+            );
         }
 
         // News is the AI's ONLY consumer — defer fetching it until we know the AI
@@ -1373,7 +1472,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Flat off-boundary ticks under the 4H-close cadence: no AI call unless
-        // (a) this tick just swept a resting pullback entry — the model owes
+        // (a) this tick just swept a resting entry — the model owes
         // itself a re-issue/switch/drop decision — or (b) a flat wake band is
         // crossed. The band is PEEKED here without touching the cooldown row:
         // the full cooldown handler below re-reads it, claims the row (lease)
@@ -1688,7 +1787,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     // unconfirmed crossing stays a quiet cooldown tick — but
                     // arm the touch state as a backstop so time confirmation
                     // still accrues on cron ticks alone if the watcher is down.
-                    if (cooldown.sustainMinutes && (wokenAbove || wokenBelow)) {
+                    if (cooldown.confirmMinutes && (wokenAbove || wokenBelow)) {
                         const side: 'above' | 'below' = wokenAbove ? 'above' : 'below';
                         const level = wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow;
                         const heldMs =
@@ -1699,7 +1798,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             level !== null && cooldown.atr !== null && cooldown.atr > 0
                                 ? ((effectivePrice - level) * (side === 'above' ? 1 : -1)) / cooldown.atr
                                 : null;
-                        const confirmedByTime = heldMs !== null && heldMs >= cooldown.sustainMinutes * 60_000;
+                        const confirmedByTime = heldMs !== null && heldMs >= cooldown.confirmMinutes * 60_000;
                         const confirmedByExtension =
                             extensionAtr !== null && extensionAtr >= wakeBreakConfirmAtr();
                         if (confirmedByTime || confirmedByExtension) {
@@ -2068,7 +2167,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // tick stays the backstop, so an opposite-direction reversal is
         // delayed by at most 45 min. Quarter-only: hourly ticks still evaluate.
         // Does NOT apply with a position open (skip is flat-only) or while a
-        // pullback limit rests (aiThreadResponseId set on a flat tick ⇔
+        // resting entry is live (aiThreadResponseId set on a flat tick ⇔
         // pending-entry conversation) — a resting opposite-direction entry
         // must keep being re-validated against the moving market.
         // Also does NOT apply during sweep windows (opening_drive / thin_reopen):
@@ -2122,9 +2221,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const rawPct = d?.exit_size_pct ?? d?.close_size_pct ?? d?.partial_close_pct;
                 const pctNum = Number(rawPct);
                 const closePct = Number.isFinite(pctNum) ? Math.max(0, Math.min(100, pctNum)) : null;
-                const limitNum = Number(d?.entry_limit_price);
-                const entryLimitPrice = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : null;
-                return { action: d?.action, timestamp: h.timestamp, closePct, entryLimitPrice };
+                // Resting entry: either tool, reported with the kind so the
+                // model sees WHICH order it rested, not just at what price.
+                // Rows written before entry_stop_price existed carry only a
+                // limit — the kind falls back accordingly.
+                const restingKind: 'limit' | 'stop' = d?.resting_entry_kind === 'stop' ? 'stop' : 'limit';
+                const restNum = Number(restingKind === 'stop' ? d?.entry_stop_price : d?.entry_limit_price);
+                const entryLimitPrice = Number.isFinite(restNum) && restNum > 0 ? restNum : null;
+                const strategy = typeof d?.strategy === 'string' && d.strategy ? d.strategy : null;
+                return {
+                    action: d?.action,
+                    timestamp: h.timestamp,
+                    closePct,
+                    entryLimitPrice,
+                    restingEntryKind: entryLimitPrice != null ? restingKind : null,
+                    strategy,
+                };
             })
             .filter((a) => a.action)
             // loadDecisionHistory returns newest-first; everything downstream
@@ -2713,71 +2825,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
-        // Supersede sweep for quarter ticks: this tick reaches a fresh AI
-        // evaluation, so the previous evaluation's resting pullback order (if
-        // any) is stale — cancel it before the new decision executes. Hourly
-        // ticks already swept above; the second call is a cheap no-op then.
-        if (!positionOpen && quarterTick) {
-            const sweep = await sweepPendingEntries();
-            if (await pendingEntryFilledMidTick(sweep)) {
-                await recordTickOutcome({
-                    kind: 'skip',
-                    stage: 'pending_entry_filled',
-                    reason: 'pending_entry_filled_during_supersede_sweep',
-                    kvMarker: false,
-                });
-                return res.status(200).json({
-                    symbol,
-                    platform,
-                    newsSource,
-                    category,
-                    instrumentId,
-                    timeFrame,
-                    dryRun,
-                    decisionPolicy,
-                    decision: {
-                        action: 'HOLD',
-                        bias: 'NEUTRAL',
-                        signal_strength: 'LOW',
-                        summary: 'pending_entry_filled',
-                        reason: 'pending_entry_filled_during_supersede_sweep',
-                    },
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
-                    usedTape,
-                    promptSkipped: true,
-                });
-            }
-            const sweepFailure = classifyPendingEntrySweep(sweep);
-            if (sweepFailure) {
-                await recordTickOutcome({
-                    kind: 'skip',
-                    stage: 'pending_entry_sweep_failed',
-                    reason: sweepFailure,
-                    gates: gatesOut.gates,
-                    metrics: gatesOut.metrics,
-                });
-                return res.status(200).json({
-                    symbol,
-                    platform,
-                    newsSource,
-                    category,
-                    instrumentId,
-                    timeFrame,
-                    dryRun,
-                    decisionPolicy,
-                    decision: {
-                        action: 'HOLD',
-                        bias: 'NEUTRAL',
-                        signal_strength: 'LOW',
-                        summary: 'pending_entry_sweep_failed',
-                        reason: `entry_blocked_${sweepFailure}`,
-                    },
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_sweep_failed' },
-                    usedTape,
-                    promptSkipped: true,
-                });
-            }
-        }
+        // (No quarter-tick supersede sweep. A resting entry is a standing
+        // commitment now, so a fresh evaluation no longer implies cancelling it —
+        // the reconcile after the decision cancels only when the model actually
+        // supersedes or withdraws.)
 
         // Past the gates → the AI will be called. Fetch its remaining inputs
         // together: news (its only consumer is the prompt), the nano (15m)
@@ -2845,6 +2896,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsBundle?.headlines ?? [],
             nanoContext,
             sweptPendingEntry,
+            standingEntry,
             eventReaction,
             btcContext,
             promptLessons,
@@ -2857,7 +2909,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // by asset class, so it uses the leverage-free schema. Ticks with a live
         // conversation chain onto it: in-position ticks manage the trade with
         // memory of the entry thesis and every prior management tick, and flat
-        // ticks re-evaluating a resting pullback limit remember why they placed
+        // ticks re-evaluating a resting entry remember why they placed
         // it ("market moved — is this entry still valid?"). Fresh flat scans
         // carry no thread and stay stateless.
         // Conversation context is provider-scoped: both providers chain through
@@ -2869,71 +2921,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // provider.
         const activeChainProvider = resolveSwingAiProvider();
         const chainedTranscript = aiThreadProvider === activeChainProvider ? aiThreadTranscript : null;
-        // Mechanical entry on a CONFIRMED wake fire (lib/swing/wakeAutoEntry):
-        // a sustained band that fired confirmed —
-        // held for the AI's own window or extended by force — skips the AI
-        // call and executes a synthetic decision through the same pipeline.
-        // The 60d replay (2026-08-29) measured the AI converting its own
-        // confirmed breakout plans at 3.3% while re-arming retest bands in
-        // endless HOLD chains; instant-touch fires (no sustain window) still
-        // go to the AI, since entering those mechanically lost money in the
-        // same replay. Falls through to the normal AI call when the builder
-        // cannot anchor a stop (no usable ATR).
-        const wakeAutoEntryRaw = (() => {
-            if (positionOpen || !cooldownWake || cooldownWake.expired) return null;
-            if (cooldownWake.sustainedMinutes == null && cooldownWake.breakExtensionAtr == null) return null;
-            const atrRaw = Number(indicators?.metrics?.[timeFrame]?.atr);
-            return buildWakeAutoEntryDecision({
-                crossed: cooldownWake.crossed,
-                level: cooldownWake.level,
-                note: cooldownWake.note,
-                sustainedMinutes: cooldownWake.sustainedMinutes ?? null,
-                breakExtensionAtr: cooldownWake.breakExtensionAtr ?? null,
-                price: Number.isFinite(lastPrice) ? lastPrice : effectivePrice,
-                primaryAtr: Number.isFinite(atrRaw) && atrRaw > 0 ? atrRaw : null,
-            });
-        })();
-        let decisionRaw: Record<string, unknown> = {};
-        let aiResponseId: string | null = null;
-        let aiCallProvider = 'openai';
-        let aiCallModel: string | null = null;
-        let aiCallUsage: SwingDecisionCallResult['usage'] = null;
-        let aiAppendTurns: unknown[] | null | undefined = null;
-        // True while this tick is executing the mechanical wake entry; cleared
-        // when a mechanical dead-end falls back to the normal AI call below.
-        let wakeAutoEntryTaken = wakeAutoEntryRaw !== null;
-        const callAiForDecision = () =>
-            callSwingDecision({
-                system,
-                user,
-                schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
-                thread: { transcript: chainedTranscript },
-                // The model gets the full turn; the THREAD keeps the
-                // abbreviated one, so a multi-day hold stops resending a stale
-                // tape per management tick (see computeSwingState userCompact).
-                userForTranscript: userCompact,
-            });
-        if (wakeAutoEntryRaw) {
-            decisionRaw = wakeAutoEntryRaw;
-            // Synthetic id: keeps the thread/persist bookkeeping below on the
-            // same path an AI decision takes (a thread row is required so the
-            // next tick manages the position; it opens stateless by design).
-            aiResponseId = `wake-auto-${Date.now()}`;
-            aiCallProvider = 'wake-auto';
-            aiCallModel = null;
-            aiCallUsage = null;
-            aiAppendTurns = null;
-        } else {
-            ({
-                json: decisionRaw,
-                responseId: aiResponseId,
-                provider: aiCallProvider,
-                model: aiCallModel,
-                usage: aiCallUsage,
-                appendTurns: aiAppendTurns,
-            } = await callAiForDecision());
-        }
-        let decision = postprocessDecision({
+        // A CONFIRMED wake fire — the band held for the model's own confirm
+        // window, or the break extended beyond it by force. This used to skip
+        // the AI and execute a synthetic entry (wakeAutoEntry, deleted
+        // 2026-08-30): a stop order IS "enter when price crosses X", so
+        // emulating one in application code was redundant once the model could
+        // place the real thing. Commitment now lives in orders; a wake always
+        // wakes.
+        //
+        // What survives is the TIMING bypass, and it matters more here than it
+        // did for the synthetic entry. momentum.micro_entry_ok is routinely
+        // false in the first minutes of a genuine break, so without this a
+        // confirmed-break wake would reach the model, get a BUY/SELL, and have
+        // it silently coerced to HOLD by the entry-timing constraint — a
+        // refusal the model never made, and precisely the wake→HOLD chain this
+        // redesign exists to end. The confirmation IS the timing evidence.
+        const confirmedWakeFire =
+            !positionOpen &&
+            !!cooldownWake &&
+            !cooldownWake.expired &&
+            (cooldownWake.sustainedMinutes != null || cooldownWake.breakExtensionAtr != null);
+        const {
+            json: decisionRaw,
+            responseId: aiResponseId,
+            provider: aiCallProvider,
+            model: aiCallModel,
+            usage: aiCallUsage,
+            appendTurns: aiAppendTurns,
+        } = await callSwingDecision({
+            system,
+            user,
+            schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
+            thread: { transcript: chainedTranscript },
+            // The model gets the full turn; the THREAD keeps the abbreviated
+            // one, so a multi-day hold stops resending a stale tape per
+            // management tick (see computeSwingState userCompact).
+            userForTranscript: userCompact,
+        });
+        const decision = postprocessDecision({
             decision: decisionRaw,
             context,
             gates: gatesOut.gates,
@@ -2942,46 +2967,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionContext,
             policy: decisionPolicy,
             lastClosedPosition,
-            confirmedWakeEntry: wakeAutoEntryTaken,
+            confirmedWakeEntry: confirmedWakeFire,
         });
-        if (wakeAutoEntryTaken && decision.action !== 'BUY' && decision.action !== 'SELL') {
-            // A hard constraint (trend guard, re-entry cooldown, base gates)
-            // demoted the synthetic entry. A silent synthetic HOLD would
-            // consume the wake with no look and no re-plan — and enqueue a
-            // refusal investigation for a "refusal" the AI never made. Any
-            // mechanical dead-end falls through to the normal AI call instead:
-            // it cannot enter either (same constraints), but it can arm the
-            // opposite-side plan or a sensible cooldown.
-            wakeAutoEntryTaken = false;
-            ({
-                json: decisionRaw,
-                responseId: aiResponseId,
-                provider: aiCallProvider,
-                model: aiCallModel,
-                usage: aiCallUsage,
-                appendTurns: aiAppendTurns,
-            } = await callAiForDecision());
-            decision = postprocessDecision({
-                decision: decisionRaw,
-                context,
-                gates: gatesOut.gates,
-                positionOpen,
-                recentActions,
-                positionContext,
-                policy: decisionPolicy,
-                lastClosedPosition,
-            });
-        }
-        if (wakeAutoEntryTaken) {
-            // Cohort marker for SQL ("do mechanical wake entries pay?"):
-            // rides ai_decision_json next to risk_sizing.
-            decision.wake_auto_entry = {
-                confirmed_via: cooldownWake?.breakExtensionAtr != null ? 'extension' : 'time',
-                sustained_minutes: cooldownWake?.sustainedMinutes ?? null,
-                break_extension_atr: cooldownWake?.breakExtensionAtr ?? null,
-                level: cooldownWake?.level ?? null,
-            };
-        }
 
         // The profit-lock margin-recycle maneuver is crypto/Bitget only (set-leverage
         // + position TP/SL amend). Null the fields on any other venue so they never
@@ -3030,22 +3017,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 7 * 24 * 3600,
             ).catch((err: unknown) => console.warn(`wake-watch ref stamp failed for ${symbol}:`, err));
         }
-        const entryLimit = sanitizeEntryLimit({
+        const restingEntry = sanitizeRestingEntry({
             action: decision.action,
             positionOpen,
             price: marketAnchor,
             primaryAtr: primaryAtrSane,
             entryLimitPrice: decision.entry_limit_price ?? null,
+            entryStopPrice: decision.entry_stop_price ?? null,
+            platform,
         });
-        decision.entry_limit_price = entryLimit.entryLimitPrice;
-        if (entryLimit.dropEntry && (decision.action === 'BUY' || decision.action === 'SELL')) {
+        // Both legs are rewritten from the sanitized result so exactly one (or
+        // neither) survives — the executor picks its order type off `kind`.
+        decision.entry_limit_price = restingEntry.kind === 'limit' ? restingEntry.price : null;
+        decision.entry_stop_price = restingEntry.kind === 'stop' ? restingEntry.price : null;
+        decision.resting_entry_kind = restingEntry.kind;
+        if (restingEntry.dropEntry && (decision.action === 'BUY' || decision.action === 'SELL')) {
             decision.action = 'HOLD';
-            decision.reason = `${String(decision.reason ?? '')} [entry dropped: ${entryLimit.notes.join(',')}]`.trim();
+            decision.reason =
+                `${String(decision.reason ?? '')} [entry dropped: ${restingEntry.notes.join(',')}]`.trim();
         }
-        // Bracket anchor: for a resting pullback entry the protective stop and
-        // TP must be sized from the LIMIT price (where the position would
-        // actually open), not from the current price.
-        const bracketAnchor = entryLimit.entryLimitPrice ?? marketAnchor;
+        // Bracket anchor: for a resting entry the protective stop and TP must be
+        // sized from the RESTING price (where the position would actually open),
+        // not from the current price.
+        const bracketAnchor = restingEntry.price ?? marketAnchor;
 
         // Exchange-side TP/SL: validate the model's price targets against the
         // bracket anchor + primary ATR (correct side of price, min/max distance;
@@ -3085,7 +3079,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             wakeAbove: rawWakeAbove,
             wakeBelow: rawWakeBelow,
             wakeNote: rawWakeNote,
-            wakeSustainMinutes: decision.cooldown_wake_sustain_minutes,
+            wakeConfirmMinutes: decision.cooldown_wake_confirm_minutes,
         });
         // Wake re-arm ratchet guard: a fresh wake fire that still ends in HOLD
         // may not re-arm a band on the SAME side it just fired on — that is
@@ -3108,7 +3102,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     wakeAbove: null,
                     wakeBelow: null,
                     wakeNote: null,
-                    sustainMinutes: null,
+                    confirmMinutes: null,
                     notes: [...holdCooldownRaw.notes, 'reclaim_look_read_only'],
                 };
             }
@@ -3133,7 +3127,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 wakeAbove,
                 wakeBelow,
                 wakeNote: anyBand ? holdCooldownRaw.wakeNote : null,
-                sustainMinutes: anyBand ? holdCooldownRaw.sustainMinutes : null,
+                confirmMinutes: anyBand ? holdCooldownRaw.confirmMinutes : null,
                 notes: [...holdCooldownRaw.notes, 'wake_rearm_same_side_dropped'],
             };
         })();
@@ -3159,19 +3153,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         decision.cooldown_wake_note = positionOpen ? positionWakeBands.wakeNote : holdCooldown.wakeNote;
         // Sustained confirmation is a flat-band concept only (in-position
         // bands stay instant by design).
-        decision.cooldown_wake_sustain_minutes = positionOpen ? null : holdCooldown.sustainMinutes;
+        decision.cooldown_wake_confirm_minutes = positionOpen ? null : holdCooldown.confirmMinutes;
         const wakeNotes = [...holdCooldown.notes, ...positionWakeBands.notes];
         if (wakeNotes.length) {
             decision.cooldown_notes = wakeNotes;
         }
 
-        // Failed-break watch trigger: side-validate against live price and write
-        // the sanitized value back so history shows what was actually armed.
+        // Failed-break watch trigger: side-validate and write the sanitized
+        // value back so history shows what was actually armed.
         // Persisted after execution (below) — only a placed flat entry arms it.
+        // Anchored at the resting price for the same reason the bracket is: the
+        // trigger must sit behind the position once it EXISTS, not behind live
+        // price now. On a resting STOP the entry opens beyond the level it is
+        // breaking, so at placement time that level is still ahead of price —
+        // validating against `marketAnchor` would drop the failed-break watch on
+        // exactly the entries whose whole thesis is a break.
         const entryTrigger = sanitizeEntryTrigger({
             action: decision.action,
             positionOpen,
-            price: marketAnchor,
+            price: bracketAnchor,
             triggerPrice: decision.entry_trigger_price,
         });
         decision.entry_trigger_price = entryTrigger.triggerPrice;
@@ -3265,7 +3265,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 stopLossPrice = exchangeTpsl.stopLossPrice;
             } else {
                 const primaryAtr = Number(indicators?.metrics?.[timeFrame]?.atr);
-                // Anchored at the pullback limit when one is resting — the stop
+                // Anchored at the resting price when an entry is resting — the stop
                 // protects the position from where it would actually open.
                 const anchor = bracketAnchor;
                 if (Number.isFinite(primaryAtr) && primaryAtr > 0 && Number.isFinite(anchor) && anchor > 0) {
@@ -3351,6 +3351,73 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             }
         }
 
+        // Resting-entry reconcile — the standing commitment's fate, decided by
+        // what the model actually said this tick:
+        //
+        //   HOLD (no withdraw)  -> leave it resting. The default, and the whole
+        //                          point: silence preserves the commitment.
+        //   BUY/SELL            -> supersede. Cancel first, then place, so the
+        //                          new order never stacks on the old one.
+        //   withdraw_resting_entry -> cancel, no position.
+        //
+        // A cancel that races a fill is caught the same way it always was: the
+        // position surfaces and the pending-entry conversation manages it.
+        const supersedesRestingEntry = decision.action === 'BUY' || decision.action === 'SELL';
+        const withdrawsRestingEntry = Boolean((decision as Record<string, unknown>).withdraw_resting_entry);
+        if (!positionOpen && standingEntry && (supersedesRestingEntry || withdrawsRestingEntry) && !dryRun) {
+            const sweep = await sweepPendingEntries();
+            if (await pendingEntryFilledMidTick(sweep)) {
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'pending_entry_filled',
+                    reason: 'pending_entry_filled_during_supersede',
+                    kvMarker: false,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: { ...decision, action: 'HOLD', summary: 'pending_entry_filled' },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+            const sweepFailure = classifyPendingEntrySweep(sweep);
+            if (sweepFailure) {
+                // The old order may still be live — placing now would stack.
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'pending_entry_sweep_failed',
+                    reason: sweepFailure,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: { ...decision, action: 'HOLD', summary: 'pending_entry_sweep_failed' },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_sweep_failed' },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+            standingEntry = null;
+        }
+        // Withdraw is not an entry: the order is gone and this tick ends flat.
+        if (withdrawsRestingEntry && decision.action !== 'BUY' && decision.action !== 'SELL') {
+            decision.reason = `${String(decision.reason ?? '')} [resting entry withdrawn]`.trim();
+        }
+
         const execRes =
             platform === 'capital' || productType === null
                 ? await executeCapitalDecision(
@@ -3374,7 +3441,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const executedAtMs = Date.now();
 
         // Thread lifecycle bookkeeping. An entry that actually placed an order
-        // STARTS or CONTINUES a conversation (pending_entry while a pullback
+        // STARTS or CONTINUES a conversation (pending_entry while a resting
         // limit rests; straight to in_position on a market entry — the upsert
         // replaces any stale row while previous_response_id keeps a re-issued
         // limit on its original conversation). An in-position tick ADVANCES the
@@ -3447,7 +3514,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     wakeAbove: holdCooldown.wakeAbove,
                     wakeBelow: holdCooldown.wakeBelow,
                     wakeNote: holdCooldown.wakeNote,
-                    wakeSustainMinutes: holdCooldown.sustainMinutes,
+                    wakeConfirmMinutes: holdCooldown.confirmMinutes,
                     // Primary ATR at set time — anchors the extension confirm.
                     wakeAtr: primaryAtrSane,
                 });
@@ -3600,10 +3667,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 standing: { takeProfitPrice: currentTakeProfit, stopLossPrice: currentStopLoss },
                 notes: exchangeTpsl.notes,
             },
-            entryLimit: {
-                price: entryLimit.entryLimitPrice,
-                notes: entryLimit.notes,
+            // The resting entry that actually shipped: which tool the model
+            // reached for, where it rested, and any clamp/drop notes. `kind` is
+            // the column that makes "which plays does it pick, and do they
+            // work" answerable in SQL alongside `strategy`.
+            restingEntry: {
+                kind: restingEntry.kind,
+                price: restingEntry.price,
+                notes: restingEntry.notes,
             },
+            strategy: (decision as Record<string, unknown>).strategy ?? null,
         };
 
         await appendDecisionHistory({
@@ -3632,12 +3705,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // No KV marker: the decision row already surfaces this tick on the UI.
         await recordTickOutcome({
             kind: 'ai_call',
-            // 'wake_auto_entry' rows carried no AI call: the decision was the
-            // mechanical confirmed-wake entry (kind stays 'ai_call' — the
-            // tick_log CHECK only knows skip|ai_call, and this IS the tick's
-            // decision row).
-            stage: wakeAutoEntryTaken
-                ? 'wake_auto_entry'
+            // 'confirmed_wake' marks a look the model was handed with the
+            // break already proven (held its confirm window, or extended by
+            // force) — the cohort that used to be entered mechanically. Kept
+            // as its own stage so "does the model convert its own confirmed
+            // plans now that it has stop orders?" stays one SQL query.
+            stage: confirmedWakeFire
+                ? 'confirmed_wake'
                 : reclaimWake
                   ? 'reclaim_wake'
                   : sessionReclaim

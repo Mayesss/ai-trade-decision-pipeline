@@ -26,7 +26,7 @@ import { chartTimeframeToSeconds } from './chartCache';
 // v6: Capital trim chunks are folded into one window per position (with cash
 // on the trim markers) — cached v5 overlays drew trimmed positions as stacked
 // duplicate boxes.
-// v7: fold now groups by span overlap too (pullback-limit fills give one
+// v7: fold now groups by span overlap too (resting-entry fills give one
 // position two entry timestamps: decision ts vs venue fill ts) — v6 overlays
 // could still hold stacked boxes for limit-entered positions.
 const PREFIX = 'swing:chart:overlay:v7';

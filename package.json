@@ -30,7 +30,8 @@
     "test:watch": "vitest",
     "test:unit": "vitest run --project unit",
     "test:contract": "vitest run --project contract",
-    "test:fixtures:capture": "node --import tsx scripts/capture-analyze-fixtures.ts"
+    "test:fixtures:capture": "node --import tsx scripts/capture-analyze-fixtures.ts",
+    "validate:bitget:stop": "node --import tsx scripts/validate-bitget-stop-entry.ts"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.0",

@@ -3,7 +3,7 @@ import { test } from 'vitest';
 
 import {
     breakTriggerFailed,
-    clampWakeSustainMinutes,
+    clampWakeConfirmMinutes,
     emergencyMoveAtr,
     flatWakePlanStale,
     lastClosedBar,
@@ -13,8 +13,8 @@ import {
     wakeBandCrossed,
     WAKE_PLAN_GRACE_MINUTES_DEFAULT,
     WAKE_REF_MAX_AGE_MINUTES_DEFAULT,
-    WAKE_SUSTAIN_MAX_MINUTES,
-    WAKE_SUSTAIN_MIN_MINUTES,
+    WAKE_CONFIRM_MAX_MINUTES,
+    WAKE_CONFIRM_MIN_MINUTES,
 } from '../../../lib/swing/wakeWatch';
 
 const GRACE_MS = WAKE_PLAN_GRACE_MINUTES_DEFAULT * 60_000;
@@ -153,21 +153,21 @@ const NOW = 1_750_000_000_000;
 const sustainedBase = {
     wakeAbove: 105,
     wakeBelow: 95,
-    sustainMinutes: 30,
+    confirmMinutes: 30,
     touchSide: null as 'above' | 'below' | null,
     touchStartedMs: null as number | null,
     touchExtreme: null as number | null,
     nowMs: NOW,
 };
 
-test('clampWakeSustainMinutes: clamps into the bounded window, null for non-positive', () => {
-    assert.equal(clampWakeSustainMinutes(30), 30);
-    assert.equal(clampWakeSustainMinutes(1), WAKE_SUSTAIN_MIN_MINUTES);
-    assert.equal(clampWakeSustainMinutes(500), WAKE_SUSTAIN_MAX_MINUTES);
-    assert.equal(clampWakeSustainMinutes(0), null);
-    assert.equal(clampWakeSustainMinutes(-5), null);
-    assert.equal(clampWakeSustainMinutes(null), null);
-    assert.equal(clampWakeSustainMinutes('abc'), null);
+test('clampWakeConfirmMinutes: clamps into the bounded window, null for non-positive', () => {
+    assert.equal(clampWakeConfirmMinutes(30), 30);
+    assert.equal(clampWakeConfirmMinutes(1), WAKE_CONFIRM_MIN_MINUTES);
+    assert.equal(clampWakeConfirmMinutes(500), WAKE_CONFIRM_MAX_MINUTES);
+    assert.equal(clampWakeConfirmMinutes(0), null);
+    assert.equal(clampWakeConfirmMinutes(-5), null);
+    assert.equal(clampWakeConfirmMinutes(null), null);
+    assert.equal(clampWakeConfirmMinutes('abc'), null);
 });
 
 test('sustainedWakeStep: no cross, no touch → idle', () => {

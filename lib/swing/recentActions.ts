@@ -1,6 +1,6 @@
 // Recent-actions enrichment for the swing prompt: the raw decision history
 // rows say what the model ASKED for (BUY/SELL/CLOSE), not what happened. A
-// resting pullback limit that never filled still reads "SELL", and the same
+// resting entry that never filled still reads "SELL", and the same
 // limit re-issued five consecutive ticks reads as five SELLs — the model
 // believes it recently traded when it didn't. These helpers collapse re-issue
 // chains and attach measured outcomes (never_filled / still_open / closed pnl)
@@ -16,8 +16,14 @@ export type RecentActionEntry = {
     action: string;
     timestamp: number;
     closePct?: number | null;
-    // Pullback limit the entry rested at (null/absent = market entry).
+    // Price the entry rested at (null/absent = market entry).
     entryLimitPrice?: number | null;
+    // Which tool rested there: 'limit' (against the trade) or 'stop' (with it).
+    restingEntryKind?: 'limit' | 'stop' | null;
+    // The play the model named for that decision (SWING_STRATEGIES). Carried
+    // back so it can see which of its own plays worked here, which is the only
+    // way the label becomes feedback rather than bookkeeping.
+    strategy?: string | null;
     // >1 when consecutive identical limit re-issues were collapsed into this row.
     reissueCount?: number;
     // Timestamp of the first re-issue in a collapsed chain.

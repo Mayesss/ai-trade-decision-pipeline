@@ -271,7 +271,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             row.platform === 'capital'
                 ? await fetchCapitalMidPrice(row.symbol)
                 : await fetchBitgetLastPrice(row.symbol);
-        if (!row.sustainMinutes) {
+        if (!row.confirmMinutes) {
             const crossed = wakeBandCrossed(price, row.wakeAbove, row.wakeBelow);
             if (crossed) await maybeFire(row.platform, row.symbol, `wake_band_${crossed}`);
             continue;
@@ -280,7 +280,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             price: Number.isFinite(Number(price)) && Number(price) > 0 ? Number(price) : null,
             wakeAbove: row.wakeAbove,
             wakeBelow: row.wakeBelow,
-            sustainMinutes: row.sustainMinutes,
+            confirmMinutes: row.confirmMinutes,
             touchSide: row.touchSide,
             touchStartedMs: row.touchStartedMs,
             touchExtreme: row.touchExtreme,

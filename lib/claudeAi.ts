@@ -11,7 +11,7 @@
 //   is enforced at the API layer, so the text block is guaranteed parseable.
 //   Claude's structured outputs reject numeric bound keywords (minimum/maximum),
 //   so those are stripped from the OpenAI-shaped schemas; every numeric field
-//   is already clamped in code after parse (sanitizeEntryLimit,
+//   is already clamped in code after parse (sanitizeRestingEntry,
 //   sanitizeExchangeTpSl, leverage clamps), so nothing is lost.
 // - Prompt caching: the system prompt is byte-stable per venue/asset-class
 //   (phase 0), so it carries a 1h-TTL cache breakpoint. At the 15-min cron

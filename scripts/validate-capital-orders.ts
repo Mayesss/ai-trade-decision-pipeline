@@ -1,10 +1,10 @@
-// Capital.com DEMO validation — pullback working orders + bracket-merge PUT.
+// Capital.com DEMO validation — resting working orders + bracket-merge PUT.
 //
 // Validates against https://demo-api-capital.backend-capital.com (never live):
 //   A. session + working-order listing works on the demo environment
-//   B. pullback limit entry via the REAL executeCapitalDecision → resting
+//   B. resting limit entry via the REAL executeCapitalDecision → resting
 //      working order with bracket, visible via listCapitalPendingEntryOrders,
-//      cancelled by cancelCapitalPendingEntryOrders (one-tick TTL sweep)
+//      cancelled by cancelCapitalPendingEntryOrders (supersede/withdraw sweep)
 //   C. bracket-merge fix on updateCapitalPositionLevels: an SL-only amend must
 //      NOT clear the standing TP (Capital's PUT replaces the whole bracket —
 //      the 2026-07-09 COPPER ping-pong bug), and vice versa
@@ -53,7 +53,7 @@ async function main() {
     check('A1 working-order listing works', Array.isArray(initialOrders), { count: initialOrders.length });
 
     try {
-        // ---- Phase B: pullback working order via the real decision path ----
+        // ---- Phase B: resting working order via the real decision path ----
         const limit = price * 0.985;
         const resB: { placed?: boolean; pendingEntry?: boolean } = await capital.executeCapitalDecision(
             symbol,
@@ -64,7 +64,7 @@ async function main() {
             true,
             limit * 1.02, // TP anchored at the limit
         );
-        check('B1 pullback order placed with pendingEntry flag', resB.placed === true && resB.pendingEntry === true, resB);
+        check('B1 resting order placed with pendingEntry flag', resB.placed === true && resB.pendingEntry === true, resB);
         await sleep(2500);
         const pending = await capital.listCapitalPendingEntryOrders(symbol);
         check('B2 resting working order visible', pending.length === 1 && pending[0].level != null, pending);

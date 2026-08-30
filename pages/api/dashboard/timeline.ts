@@ -39,7 +39,7 @@ export type TimelineTick = {
   reason?: string;
   // Responses-API conversation chain: `responseId` is this decision's turn,
   // `previousResponseId` the turn it chained onto (present only on context
-  // calls — in-position ticks and post-fill management of a pullback limit).
+  // calls — in-position ticks and post-fill management of a resting entry limit).
   // The UI links chained ticks with a full-contrast connector segment.
   responseId?: string;
   previousResponseId?: string;

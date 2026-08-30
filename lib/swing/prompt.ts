@@ -11,7 +11,7 @@
 
 import { CONTEXT_TIMEFRAME, DEFAULT_TAKER_FEE_RATE, MACRO_TIMEFRAME, MICRO_TIMEFRAME, NANO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../constants';
 import type { LevelDescriptor, MultiTFIndicators } from '../indicators';
-import { wakePlanGraceMinutes, WAKE_SUSTAIN_MAX_MINUTES, WAKE_SUSTAIN_MIN_MINUTES } from './wakeWatch';
+import { wakePlanGraceMinutes, wakeBreakConfirmAtr, WAKE_CONFIRM_MAX_MINUTES, WAKE_CONFIRM_MIN_MINUTES } from './wakeWatch';
 import type { EventReactionMeasurement } from './eventReaction';
 import type { BtcContext } from './btcContext';
 import type { FearGreedContext } from './fearGreed';
@@ -19,13 +19,17 @@ import type { ForexSessionLevelsContext } from './sessionLevels';
 import type { RecentActionEntry } from './recentActions';
 import { computeWaveGeometry } from './waveGeometry';
 import type { NanoContext } from './waveGeometry';
+import { SWING_STRATEGIES } from './decisionSchema';
 import {
     resolveDecisionPolicy,
     resolveExtensionThresholds,
     ACTIONABILITY_NEAR_ATR,
     ACTIONABILITY_ROOM_ATR,
     REENTRY_COOLDOWN_MIN,
-    PULLBACK_LIMIT_ENABLED,
+    restingEntryKindsFor,
+    RESTING_ENTRY_MAX_AGE_MINUTES,
+    ENTRY_STOP_MIN_ATR,
+    ENTRY_STOP_MAX_ATR,
     SESSION_OFFENSE_ENABLED,
     POSITION_WAKE_ENABLED,
     POSITION_WAKE_MIN_ATR,
@@ -662,9 +666,19 @@ export function computeSwingState(
         news_sentiment: string | null = null,
         news_headlines: string[] = [],
         nano_context: NanoContext | null = null,
-        // The pullback limit from the PREVIOUS evaluation that rested without
-        // filling and was just cancelled for this re-evaluation (flat only).
+        // A standing resting entry that was cancelled by the code-owned age
+        // backstop before this evaluation (flat only). Rare — a resting entry
+        // now SURVIVES evaluations, so this is not the routine case any more.
         cancelled_pending_entry: { side: 'BUY' | 'SELL' | null; price: number | null; age_min: number | null } | null = null,
+        // The entry order resting on the venue RIGHT NOW (flat only). Standing
+        // state, exactly like the in-position bracket: it outlives this
+        // evaluation unless this decision supersedes or withdraws it.
+        resting_entry: {
+            kind: 'limit' | 'stop' | null;
+            side: 'BUY' | 'SELL' | null;
+            price: number | null;
+            age_min: number | null;
+        } | null = null,
         // Quantified price reaction to just-released high-impact events
         // (market.forex_events.recentEvents). Computed by the caller from the
         // nano 15m candles, so it enters here like nano_context does.
@@ -842,7 +856,8 @@ export function computeSwingState(
                   open: false,
                   status: position_status,
                   reentry_cooldown: reentryCooldown,
-                  ...(cancelled_pending_entry && PULLBACK_LIMIT_ENABLED ? { cancelled_pending_entry } : {}),
+                  ...(resting_entry ? { resting_entry } : {}),
+                  ...(cancelled_pending_entry ? { cancelled_pending_entry } : {}),
               },
         closing_guardrails: position_context ? closingGuidance : null,
     };
@@ -876,7 +891,11 @@ export function computeSwingState(
                   };
                   // Measured follow-through (see the recent_actions prose in the
                   // system prompt): what the model asked for vs what happened.
-                  if (a.entryLimitPrice != null) row.entry_limit = a.entryLimitPrice;
+                  if (a.entryLimitPrice != null) {
+                      row.rested_at = a.entryLimitPrice;
+                      if (a.restingEntryKind) row.rested_as = a.restingEntryKind;
+                  }
+                  if (a.strategy) row.strategy = a.strategy;
                   if ((a.reissueCount ?? 1) > 1) row.reissued_count = a.reissueCount;
                   if (a.outcome === 'never_filled' || a.outcome === 'still_open') {
                       row.outcome = a.outcome;
@@ -1110,7 +1129,7 @@ export function computeSwingState(
     const sessionOffenseGuidance =
         (assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index') && hasSessionContext
             ? SESSION_OFFENSE_ENABLED
-                ? `Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow pullback limit resting IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
+                ? `Session liquidity offense (market.forex_session.signals, when present; phase tactics need market.venue_events): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof. When swept*Low=true, do NOT open or rest fresh shorts below that low unless price has ACCEPTED below it (primary close under the level); bullishLiquidityReclaim=true (a swept low reclaimed) is a long trigger AT the extreme — mirror exactly for swept highs (bearishLiquidityRejection). The offensive resting entry around a liquidity event sits BEYOND the level likely to be swept — BUY below the prior-day/session low when primary drift is up, SELL above the swept high when drift is down — so the stop-run itself fills you at the extreme and the snap-back is the trade; stop past the sweep extension, target back inside the range. Never leave a shallow resting entry IN THE PATH of an imminent venue event: it fills exactly when the level breaks against you. Phase tactics (when market.venue_events is present): opening_drive = displacement window — enter WITH the confirmed drive at market, or fade a COMPLETED sweep at an extreme; pre_open / into_close / venue_break / off_hours = thin, gap-prone tape — no fresh momentum entries, sweep-fade at clear levels only, reduced conviction; thin_reopen = the worst spreads of the week, treat fills as suspect and prefer HOLD.`
                 : `Session liquidity (market.forex_session.signals + market.venue_events — DEFENSIVE context for a swing book, not an entry playbook): a sweep of a prior-day/session extreme is REVERSAL fuel, not continuation proof — do NOT open fresh risk in the sweep's direction unless price has ACCEPTED beyond the level (primary close through it), and never chase the sweep itself. During thin phases (pre_open, into_close, venue_break, off_hours, thin_reopen) spreads and gap risk are at their worst: no fresh entries there on session-timing grounds alone — a swing entry must be valid on primary structure regardless of the session clock, and if it is, the phase only argues for waiting, not hurrying.`
             : '';
 
@@ -1159,9 +1178,7 @@ export function computeSwingState(
     // flat ticks are routine scans that never carry it.
     const wakeTriggerGuidance = hasCooldownWake
         ? `Wake-band trigger (market.cooldown_wake): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes or break_extension_atr is present, this wake is already CONFIRMED by construction — price either held beyond your band for the window you asked for, or broke with ≥0.5 primary-ATR of force — so the sweep-vs-break question is answered; weigh entry timing and location instead. RETEST WAKES: when the note marks this as the planned retest entry of an ALREADY-CONFIRMED break, the acceptance question was settled when the break confirmed — do NOT re-demand fresh BOS/acceptance evidence at the retest and do NOT treat the level as an anonymous cross; the confirmed break plus your presence at the level IS the setup you scheduled. Judge only whether structure has GENUINELY changed since confirmation (a primary bar closed back through the level, a regime flip, invalidating news) — otherwise execute the plan. Declining a planned retest entry requires naming the specific structural change, not restating generic location caution. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
-              PULLBACK_LIMIT_ENABLED
-                  ? 'If the move is real but price has already run multiple ATR beyond the level, a pullback limit at the broken level’s retest is the natural tool — you asked to be woken precisely so you would not have to chase later.'
-                  : 'Only if the move is real but price has already run multiple ATR beyond the level, set a fresh wake band at the broken level WITH a note naming the intended entry ("retest of X after breakout → long on hold") so the retest wake arrives with the plan in hand.'
+              'If the move is real but price has already run multiple ATR beyond the level, you have both a resting entry back at the level and a fresh wake band on it WITH a note naming the intended entry ("retest of X after breakout → long on hold"); either beats chasing, and which one fits is yours to judge.'
           } ACT-OR-FOLD: this wake look ends one of exactly three ways — you ENTER (market or a resting entry), you arm the OPPOSITE side (e.g. the broken level’s retest per the retest protocol), or you FOLD the level (HOLD; the symbol returns to the normal cadence). Refusing a wake costs the watch even when you judge the cross a fake-out (the re-armed fired side is dropped — see the hard constraints), so do not spend this look re-scheduling the same rejection; if the level still matters after a fake-out, the evidence will be in wake_band_sweeps and the next scheduled scan can re-derive it.`
         : '';
 
@@ -1192,13 +1209,55 @@ export function computeSwingState(
         ? `LESSONS (user turn): 1-2 line lessons distilled from forensic evaluations of your OWN past trading — losses, wins, and MISSED ENTRIES (setups you declined that then worked) — on this symbol, its asset class, or any instrument. Each carries a [scope | learned from ...] tag showing what taught it: a lesson from losses warns you off a mistake; a lesson from missed entries exists because WAITING cost money — it is there to push you toward action, not away from it; a lesson backed from several sides (losses AND wins or missed entries) is a boundary tested from both directions — trust its bound most. These are patterns from your actual record, not generic advice — before deciding, check the setup against them and note in your reason when one applies. They are cautionary evidence like recent_actions outcomes, never hard rules: current structure and measurements win on conflict. When a lesson states a numeric bound (an ATR distance, a time window, a count), apply the bound EXACTLY as written: a setup OUTSIDE the bound is not blocked by that lesson, and citing a lesson as a reason to skip requires quoting the measured value that puts THIS setup inside its bound — "per lesson" without the number is not a valid refusal. Lessons name the mistake to avoid, not a mandate to never trade the pattern: a setup that satisfies a lesson's stated conditions is CLEARED by it, not merely tolerated.`
         : '';
 
-    // Mechanical wake execution: a sustained band is a CONDITIONAL ORDER, not
-    // a reminder — the model must know what it is signing when it sets
-    // cooldown_wake_sustain_minutes, or it will keep arming casual bands that
-    // place real trades. The sustain/instant choice is the model's plan-time
-    // switch: sustain set = pre-authorized mechanical entry on confirmation;
-    // sustain null = first-touch wake, the model decides.
-    const wakeAutoEntryGuidance = ` EXECUTION CONTRACT: a sustained band is a CONDITIONAL ORDER, not a watch — when it confirms (holds your window, or extends ≥0.5 primary-ATR by force), the system OPENS the break-direction position MECHANICALLY without consulting you (standard risk sizing, ~1.5-ATR disaster stop, far TP backstop, exit owned by the failed-break watch at your level; you manage it from the next look on). So set cooldown_wake_sustain_minutes ONLY at a level where you accept that trade the moment the break confirms — placement quality is entry quality. When you only want to LOOK at a break before committing, leave sustain null: a first-touch wake still reaches you for a normal decision.`;
+
+    // ------------------------------
+    // Resting entries — tools, not tactics
+    // ------------------------------
+    // Both order shapes are handed over unconditionally. WHICH to reach for,
+    // and whether to reach at all, is the model's call from the data. This text
+    // is MECHANICS plus the one selection asymmetry that is a property of the
+    // instruments themselves; it deliberately prescribes no setup. The previous
+    // prescriptive version ("rest a limit when the wave position is bad") is
+    // what every losing post-mortem traced back to — the tool was never the
+    // problem, being told where to point it was.
+    const restingKinds = restingEntryKindsFor(platform);
+    const canRestLimit = restingKinds.includes('limit');
+    const canRestStop = restingKinds.includes('stop');
+    const restingToolList = [
+        canRestLimit
+            ? `entry_limit_price — rests AGAINST your trade (BUY below current price, SELL above), ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR away`
+            : null,
+        canRestStop
+            ? `entry_stop_price — rests WITH your trade (BUY above current price, SELL below), ${ENTRY_STOP_MIN_ATR}–${ENTRY_STOP_MAX_ATR} primary-ATR away`
+            : null,
+    ]
+        .filter(Boolean)
+        .join('; ');
+    // Name only the fields this venue can actually rest. Both keys always exist
+    // in the schema, so an unusable one is called out explicitly — sending it
+    // would drop the entry rather than degrade to the other tool.
+    const restingUsable = [canRestLimit ? 'entry_limit_price' : null, canRestStop ? 'entry_stop_price' : null]
+        .filter(Boolean)
+        .join(' / ');
+    const restingUnusable = [!canRestLimit ? 'entry_limit_price' : null, !canRestStop ? 'entry_stop_price' : null]
+        .filter(Boolean)
+        .join(' / ');
+    const bothKinds = restingKinds.length > 1;
+    const restingEntryFieldRule = restingKinds.length
+        ? `${restingUsable}: on flat BUY/SELL you MAY rest ${bothKinds ? 'ONE of them' : 'it'} instead of taking the market (see resting-entry guidance); null = market now.${bothKinds ? ' Never set both.' : ''}${restingUnusable ? ` ${restingUnusable}: always null — not supported on this venue.` : ''}`
+        : 'entry_limit_price / entry_stop_price: always null (market entries only).';
+    const restingEntryGuidance = restingKinds.length
+        ? `- Resting entry (flat BUY/SELL only) — you have ${bothKinds ? 'three' : 'two'} ways to get filled and they are TOOLS, not strategies: market now (${bothKinds ? 'both fields' : 'the field'} null), or ${bothKinds ? 'ONE resting order' : 'a resting order'}: ${restingToolList}.${bothKinds ? ' Setting both is contradictory and drops the entry.' : ''} The order rests on the venue and is CANCELLED at your next evaluation if unfilled — short-lived, not a standing commitment. take_profit_price and stop_loss_price anchor at the RESTING price, not current price. An invalid request (wrong side for the field you used, inside the minimum window${bothKinds ? ', or both fields set' : ''}) drops the ENTIRE entry for this evaluation and does NOT fall back to market — send null when you actually want market.
+- The one thing worth knowing about the${bothKinds ? ' two' : 'se'} shape${bothKinds ? 's' : ''}, because it is a property of the instruments and not a view about markets: a resting LIMIT is adversely selected — it fills only because someone was willing to trade through your level, so you are filled most reliably exactly when the level is failing. A resting STOP is favourably selected — it triggers only once price has already moved your way — but you pay the spread on a moving market and it is exactly what a liquidity sweep is hunting. Neither fact makes either tool right or wrong here; weigh them against what the current structure, levels and liquidity picture actually show you, and pick the ${bothKinds ? 'one that fits' : 'entry that fits'} the play you are running. Nothing in this prompt tells you which play that should be.
+- A resting entry SURVIVES this evaluation. When state.position.resting_entry is present (kind/side/price/age_min), that order is live on the venue right now and stays live unless THIS decision changes it — exactly like the standing TP/SL bracket in a position, where null means "leave the leg alone". Your options: HOLD leaves it resting (this is the default, and doing nothing is a real choice here, not an omission); a fresh BUY/SELL SUPERSEDES it (the old order is cancelled and yours replaces it — you do not need to cancel first); a BUY/SELL with both price fields null cancels it and enters at market; and withdraw_resting_entry=true on a HOLD takes it back without trading. Because silence keeps it, an order you no longer believe in must be withdrawn ON PURPOSE — read its age_min and ask whether the thesis that placed it still holds. The conversation above is where you placed it; re-validate that thesis against the CURRENT measurements rather than re-deriving it from scratch. A standing entry whose level price has trended away from, or whose structure has broken, is not a free option — it is a live order that will fill on the move that invalidates it.
+- state.position.cancelled_pending_entry means a standing entry was cancelled by the code-owned age backstop (${Math.round(RESTING_ENTRY_MAX_AGE_MINUTES / 60)}h) before this evaluation — not by you. Treat it as a stale idea from a market state you have not re-checked, not as a plan to re-issue reflexively.
+`
+        : '';
+
+    // The model names its own play. Never derived in code, never prescribed
+    // here — the list is a vocabulary so the choice is measurable across
+    // outcomes, not a menu of approved setups.
+    const strategyGuidance = `- strategy: on BUY/SELL name the play you are actually running, one of: ${SWING_STRATEGIES.join(', ')}. This is a LABEL for your own decision, not a constraint on it and not a ranking — no play here is preferred, discouraged, or expected of you, and the code neither checks it against your entry nor treats any value differently. It exists so that which plays work on which instruments becomes measurable over time. Use 'other' rather than forcing a fit; null on HOLD.\n`;
 
     // Cost prose per venue. The live NUMBERS live in state.costs (user turn) —
     // this prose only explains how to read them, so the system prompt stays
@@ -1217,8 +1276,8 @@ export function computeSwingState(
     // variant. The doctrine sections no longer restate these — a rule that code
     // enforces gets one line here, prose explains only the judgment.
     const outputHygieneRow = inPosition
-        ? `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it, and a stop amendment may only TIGHTEN (a level looser than the standing stop is dropped);${POSITION_WAKE_ENABLED ? ` wake bands: cooldown_wake_above must sit above current price and cooldown_wake_below beneath it, a band at/beyond your standing SL/TP is dropped (the bracket fires there first), and a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise);` : ''} cooldown_minutes, cooldown_wake_sustain_minutes and the entry-only fields (entry_limit_price, entry_trigger_price) stay null in a position.`
-        : `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it; cooldown_wake_above must sit above current price and cooldown_wake_below below it (a wrong-side band is dropped, the cooldown stays); cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_sustain_minutes to ${WAKE_SUSTAIN_MIN_MINUTES}–${WAKE_SUSTAIN_MAX_MINUTES}; on a fired wake, a re-armed band on the side that just fired is dropped.`;
+        ? `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it, and a stop amendment may only TIGHTEN (a level looser than the standing stop is dropped);${POSITION_WAKE_ENABLED ? ` wake bands: cooldown_wake_above must sit above current price and cooldown_wake_below beneath it, a band at/beyond your standing SL/TP is dropped (the bracket fires there first), and a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise);` : ''} cooldown_minutes, cooldown_wake_confirm_minutes and the entry-only fields (entry_limit_price, entry_trigger_price) stay null in a position.`
+        : `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it; cooldown_wake_above must sit above current price and cooldown_wake_below below it (a wrong-side band is dropped, the cooldown stays); cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_confirm_minutes to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}; on a fired wake, a re-armed band on the side that just fired is dropped.`;
 
     // Hard constraints, variant-scoped: flat ticks never read in-position rows
     // and vice versa. Numbering is per-variant (nothing references the numbers).
@@ -1249,9 +1308,10 @@ export function computeSwingState(
               leverageTask,
               'exit_size_pct for CLOSE/REVERSE (100 = full close, 30–70 = trim; REVERSE is always 100), else null.',
               'take_profit_price / stop_loss_price: on REVERSE set both for the NEW opposite-side position (TP required — see bracket guidance); on HOLD/partial CLOSE a non-null value amends the standing leg (stop tighten-only), null = unchanged.',
-              'entry_limit_price and entry_trigger_price: always null in a position.',
+              'entry_limit_price, entry_stop_price, withdraw_resting_entry and entry_trigger_price: always null in a position.',
+              'strategy: name the play this POSITION was opened on if you know it, else null.',
               POSITION_WAKE_ENABLED
-                  ? 'cooldown_wake_above / cooldown_wake_below (+ cooldown_wake_note whenever a band is set) arm in-position wake bands (see wake-band guidance); cooldown_minutes and cooldown_wake_sustain_minutes stay null.'
+                  ? 'cooldown_wake_above / cooldown_wake_below (+ cooldown_wake_note whenever a band is set) arm in-position wake bands (see wake-band guidance); cooldown_minutes and cooldown_wake_confirm_minutes stay null.'
                   : 'cooldown_minutes and all cooldown_wake_* fields: always null in a position.',
               'summary ≤3 lines; reason = brief rationale.',
               ...(isCapital
@@ -1267,10 +1327,10 @@ export function computeSwingState(
               leverageTask,
               'exit_size_pct: always null when flat.',
               'take_profit_price: REQUIRED price target on BUY/SELL (resting exchange TP); stop_loss_price: the structural invalidation stop on BUY/SELL (null = wide catastrophe default); both null on HOLD.',
-              PULLBACK_LIMIT_ENABLED
-                  ? 'entry_limit_price: on flat BUY/SELL you MAY rest a pullback limit instead of market (see guidance; cancelled next evaluation if unfilled); else null.'
-                  : 'entry_limit_price: ALWAYS null (market entries only — see guidance).',
-              'cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, cooldown_wake_note whenever a band is set, and cooldown_wake_sustain_minutes for breakout-intent bands that should only wake on a HELD break): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.',
+              restingEntryFieldRule,
+              'strategy: on BUY/SELL, name the play you are running (see the strategy list); null on HOLD.',
+              'withdraw_resting_entry: true only on a flat HOLD to cancel a standing resting entry you no longer want; else null. Omitting it LEAVES the order resting.',
+              'cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, cooldown_wake_note whenever a band is set, and cooldown_wake_confirm_minutes for breakout-intent bands that should only wake on a HELD break): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.',
               'entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.',
               'summary ≤3 lines; reason = brief rationale.',
               ...(isCapital ? [] : ['raise_leverage_to / move_stop_to_be: always null when flat.']),
@@ -1312,13 +1372,13 @@ Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, 
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'}${PULLBACK_LIMIT_ENABLED ? ', your resting pullback limit was swept,' : ''} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
+- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'}, your resting entry order was swept, or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
 - S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
-- market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — entry_limit = the pullback limit that entry rested at; reissued_count = consecutive re-issues of the same limit collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the limit was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested.
+- market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — rested_at / rested_as = the price that entry rested at and which tool rested there (limit or stop), absent when it took the market; strategy = the play you named at the time; reissued_count = consecutive re-issues of the same resting idea collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the resting order was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested. Over several rows this is also feedback on your own play selection and entry mechanics on THIS instrument: if one strategy or one resting tool keeps producing never_filled or quick losses here while another works, that is data about this market, not a rule — read it and adjust.
 - Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections.${situationalBlocks.length ? ' The ones present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions.' : ' This tick carries none beyond the keys described above.'}
 
 DECISION OWNERSHIP
@@ -1328,7 +1388,7 @@ ${hardConstraintsBlock}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
-- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. Do NOT open into a near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) unless the matching breakout/breakdown is confirmed. If both nearest levels are close (location.chop_risk), treat as chop and avoid fresh entries without clean confirmed level logic.
+- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.
 ${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.\n`}- Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none.${!inPosition && hasCooldownWake ? ' This governs ROUTINE scans — this tick is a wake-band evaluation, which has its own extension rule (see SITUATIONAL DOCTRINE).' : ''} RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point.${inPosition ? '' : ' When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure.'} If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
 - ${costChurnLine}${
@@ -1345,9 +1405,7 @@ ${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a count
 ${
         inPosition
             ? ''
-            : PULLBACK_LIMIT_ENABLED
-              ? `- Pullback limit entry (flat BUY/SELL only): when the SETUP is valid but the WAVE POSITION is bad (channel_pos high for a long / low for a short, price at a crest), set entry_limit_price to the pullback level you would rather pay — e.g. the channel low, last_swing_low, or a broken level's retest (BUY below current price, SELL above; usable window ${ENTRY_LIMIT_MIN_ATR}–${ENTRY_LIMIT_MAX_ATR} primary-ATR from price). The order rests on the venue and is CANCELLED at the next evaluation if unfilled — short-lived, not a standing commitment. It is NOT a free option: the market decides your fill, so whoever pushes price through your level is trading against you at that moment. Rest a limit only where being hit by a violent move is what you WANT — deep in structure (a genuine wave trough/crest, a defended swing, a broken level's retest) or beyond a sweepable extreme — never AT a bare trendline price or a shallow retracement, where the only fill available is the break that voids your thesis. Your take_profit_price and stop_loss_price are anchored at the LIMIT price. null = enter at market now. An INVALID limit (wrong side of price, or closer than ${ENTRY_LIMIT_MIN_ATR} ATR) drops the ENTIRE entry for this evaluation — it does NOT fall back to market, so send null when you actually want market. Use market when timing is already good; use the limit instead of HOLDing when only timing is wrong. When state.position.cancelled_pending_entry is present, YOUR previous pullback limit (side/price/age_min) just rested without filling and has been cancelled for this evaluation — decide fresh with that knowledge: re-issue it (same or adjusted level) if the setup still holds, switch to market if the move is confirmed and running without you, or drop the idea if the setup degraded. Do not treat it as a commitment — and do not chase: a third consecutive unfilled re-issue of the same idea while price trends away from the level means the pullback is not coming; commit at market or abandon the idea, don't keep trailing a limit behind the move. When this evaluation continues the conversation in which you placed that limit, your original reasoning is in the turns above — re-validate that thesis against the CURRENT measurements (what changed since you placed it?) instead of re-deriving the setup from scratch.\n`
-              : `- entry_limit_price: ALWAYS null — resting pullback limits are disabled (a resting limit's fill is adversely selected: it fills exactly when the level breaks against the thesis). Entries execute at market, so only enter when the timing is right NOW. If the setup is valid but the wave position is bad, HOLD and set cooldown_wake_above/below at the level you would rather pay — you will be re-evaluated the moment price gets there; entering there at market after a confirmed reaction beats resting blind in the move's path.\n`
+            : restingEntryGuidance + strategyGuidance
     }${
         inPosition
             ? ''
@@ -1355,7 +1413,15 @@ ${
     }${
         inPosition
             ? ''
-            : `- Flat cooldown (flat HOLD only; ignored on any other action — enforced in code): when the setup is far from actionable and you expect nothing decision-relevant for a while, set cooldown_minutes to suppress flat re-evaluations of this symbol. STRONGLY prefer the conditional form: also set cooldown_wake_above and/or cooldown_wake_below — price levels that END the cooldown the moment price crosses them (the breakout/breakdown levels that would change your mind), so a real move still reaches you immediately while chop does not. Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the PLAN the band encodes ("retest of broken 118.4k support → long entry on reclaim", "acceptance above 3.42 resistance → breakout check"). The note is stored with the band and handed back to you as market.cooldown_wake.note when it fires; the wake evaluation is a fresh stateless scan, so without a note your future self receives an anonymous level cross and has to rediscover the idea. For BREAKOUT/BREAKDOWN-intent bands you may ALSO set cooldown_wake_sustain_minutes: the wake then fires only if price is STILL beyond the band that many minutes after first touch — a one-tick stop-run sweep never wakes you, and each failed touch is instead reported back as market.wake_band_sweeps on your next look (a swept level is evidence of a liquidity grab, not acceptance). Keep the window SHORT: observed fakes reject within single minutes, so ~10 is the right default — every extra minute of waiting hands back entry location on the real breaks. You will not be late on runners either way: a break that extends ≥0.5 primary-ATR beyond your band confirms IMMEDIATELY by force, before the clock (such wakes carry market.cooldown_wake.break_extension_atr).${wakeAutoEntryGuidance} Leave sustain null when the touch ITSELF is what you must see immediately (air-pocket breakdown levels, "any tag of X changes my read") — null means the wake fires on first touch, unfiltered. PLACEMENT: arm a band only at a level you would actually be willing to trade when it fires — if the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO; watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection. RETEST PROTOCOL: when a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), do not chase and do not merely arm a continuation band — arm the RETEST of the broken level from the other side with sustain null (the break is already confirmed; the retest touch IS the planned entry moment) and write the note as an executable order to your future self: "break of X CONFIRMED (held Nm / +0.6 ATR); this retest wake is the planned entry — execute unless structure has genuinely changed". The cooldown never mutes in-position management${PULLBACK_LIMIT_ENABLED ? ' or resting-limit re-evaluations' : ''} — only fresh flat scans. null = keep the normal cadence; an unconditional cooldown (no bands) is acceptable only when no nearby level would change your read.\n`
+            : `- Flat plan (flat HOLD only; ignored on any other action — enforced in code). When you are not committing this tick you may still leave a plan behind, built from four fields that each answer ONE question:
+  • cooldown_minutes — how long to stay quiet. Suppresses routine flat re-scans of this symbol only; it never mutes in-position management or resting-entry re-evaluations. Clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}. null = keep the normal cadence.
+  • cooldown_wake_above / cooldown_wake_below — WHERE you want to be looking: the price levels that would change your mind. Crossing one ends the cooldown and brings you back. They are watched roughly once per MINUTE, so place them exactly at your decision levels, with no padding.
+  • cooldown_wake_note — REQUIRED whenever you set a band. One short line stating the plan the band encodes ("acceptance above 3.42 → breakout check", "retest of broken 118.4k → long on reclaim"). The wake evaluation is a fresh stateless scan; without the note your future self receives an anonymous level cross and has to rediscover the idea.
+  • cooldown_wake_confirm_minutes — WHAT COUNTS as an event at that level, and nothing else. Set it and the wake fires only if price is STILL beyond the band that many minutes after first touch; a poke that reclaims sooner never wakes you and comes back instead as market.wake_band_sweeps (evidence of a liquidity grab, not acceptance). About 10 minutes is the measured figure for "the level actually went"; clamps to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}. null = the touch ITSELF is the event, unfiltered — right when any tag of the level changes your read. Either way a break that extends ≥${wakeBreakConfirmAtr()} primary-ATR beyond the band confirms IMMEDIATELY by force, before the clock, so you are never late on a runner.
+- A wake band is a WATCH. It never trades for you — however it fires, it brings you back to decide, and cooldown_wake_confirm_minutes only changes what is worth waking you for. If you want to COMMIT to a break rather than look at it, that is a resting stop order beyond the level: same trigger, placed at the venue, no second decision. Choose deliberately — the band keeps the decision and costs you a beat; the order takes the trade and can be swept. Nothing filters an order the way confirm_minutes filters a band.
+- PLACEMENT: arm a band only at a level you would actually be willing to act on when it fires. If the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO — watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection.
+- When a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), you are not limited to chasing or re-arming: rest an order back at the broken level's retest, or arm the retest band with confirm null and a note saying what you intend there. Re-arming the side that JUST fired is dropped in code — choose a different level or a different tool.
+`
     }- ${leverageGuidance}${inPosition && manageGuidance ? `\n- ${manageGuidance}` : ''}${
         inPosition
             ? `\n- Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.`
@@ -1364,7 +1430,7 @@ ${
 
 OUTPUT (every response)
 - Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys:
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_trigger_price":null|price,"cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line","cooldown_wake_sustain_minutes":null|minutes${leverageJsonField}${manageJsonField}}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_stop_price":null|price,"withdraw_resting_entry":true|false|null,"entry_trigger_price":null|price,"strategy":null|"one of the strategy list","cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line","cooldown_wake_confirm_minutes":null|minutes${leverageJsonField}${manageJsonField}}
 - Field rules:
 ${fieldRulesBlock}
 - Decision policy mode: ${decisionPolicyLabel}.

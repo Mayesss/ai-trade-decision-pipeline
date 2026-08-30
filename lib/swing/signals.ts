@@ -133,12 +133,25 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
         x.primaryBos ||
         (!!x.primaryBreakState && x.primaryBreakState !== 'inside');
     if (confirmed) {
-        // ...but skip if the confirmed direction presses straight into a NEAR, UNBROKEN
-        // MAJOR (context/weekly) opposing wall — the AI reliably HOLDs "confirmed
-        // breakdown but sitting on major weekly support" (and the bullish mirror).
-        // Validated: at 0.3 ATR this drops 104 such HOLD-calls with 0 opens lost.
-        // Scoped to CONTEXT levels (opens push through primary levels) and to unbroken
-        // walls (a broken/retesting level is no longer in the way).
+        // A confirmed direction pressing straight into a NEAR, UNBROKEN MAJOR
+        // (context/weekly) opposing wall used to be a hard skip: the AI reliably
+        // HOLDed "confirmed breakdown but sitting on major weekly support", so
+        // dropping those calls cost nothing (measured: 104 HOLD-calls dropped,
+        // 0 opens lost).
+        //
+        // That held only while a market entry was the sole way in. A wall is
+        // ALSO the highest-quality bounce location on the chart, and with
+        // resting entries available the model can now trade one — fade off it
+        // with a limit, or arm a stop beyond it — instead of being limited to
+        // "take the market here or nothing". The old measurement said the AI
+        // wouldn't ACT on these; it could not have, since it had no tool that
+        // fit. So the wall stops being a gate and becomes what it always
+        // should have been: a measurement the model sees (it already reaches
+        // the prompt as location.context_*_dist_atr) and weighs itself.
+        //
+        // The branch is still NAMED so the skip/decision trail stays queryable
+        // and the ai-bouncer — which runs after this and can still decline the
+        // expensive call — gets the context.
         const confDown =
             x.primaryBreakdownConfirmed ||
             (x.primaryBreakoutRetestOk && x.primaryBreakoutRetestDir === 'down') ||
@@ -156,7 +169,7 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
         const intoWall =
             (dir === 'down' && csd != null && csd <= ACTIONABILITY_WALL_ATR && blocking(x.contextSupportState)) ||
             (dir === 'up' && crd != null && crd <= ACTIONABILITY_WALL_ATR && blocking(x.contextResistanceState));
-        if (intoWall) return { actionable: false, reason: 'into_context_wall' };
+        if (intoWall) return { actionable: true, reason: 'confirmed_primary_structure_into_context_wall' };
         return { actionable: true, reason: 'confirmed_primary_structure' };
     }
     // (b) tight bounce — at one level, opposite level far (room to run), micro turning that way.
@@ -174,28 +187,19 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
         sup != null && res != null && sup <= ACTIONABILITY_NEAR_ATR && res >= ACTIONABILITY_ROOM_ATR && microUp;
     const shortBounce =
         sup != null && res != null && res <= ACTIONABILITY_NEAR_ATR && sup >= ACTIONABILITY_ROOM_ATR && microDown;
-    // Same context-wall rejection as the confirmed branch: a bounce whose room
-    // runs straight into a near, unbroken MAJOR (context/weekly) wall is a HOLD.
-    // (The primary opposing level is already required to be ≥ ROOM away above.)
+    // Same reasoning as the confirmed branch: a bounce whose room runs into a
+    // near, unbroken MAJOR (context/weekly) wall is reported, not rejected. A
+    // short-room bounce is a legitimate trade when the entry is placed AT the
+    // level rather than taken at market — which is now expressible.
     const blockingBounce = (s?: string | null) => !!s && s !== 'broken' && s !== 'retesting';
     const bounceCsd = Number.isFinite(x.contextSupportDistAtr as number) ? (x.contextSupportDistAtr as number) : null;
     const bounceCrd = Number.isFinite(x.contextResistanceDistAtr as number) ? (x.contextResistanceDistAtr as number) : null;
-    if (
-        longBounce &&
-        bounceCrd != null &&
-        bounceCrd <= ACTIONABILITY_WALL_ATR &&
-        blockingBounce(x.contextResistanceState)
-    ) {
-        return { actionable: false, reason: 'bounce_into_context_wall' };
-    }
-    if (
-        shortBounce &&
-        bounceCsd != null &&
-        bounceCsd <= ACTIONABILITY_WALL_ATR &&
-        blockingBounce(x.contextSupportState)
-    ) {
-        return { actionable: false, reason: 'bounce_into_context_wall' };
-    }
+    const longBounceIntoWall =
+        longBounce && bounceCrd != null && bounceCrd <= ACTIONABILITY_WALL_ATR && blockingBounce(x.contextResistanceState);
+    const shortBounceIntoWall =
+        shortBounce && bounceCsd != null && bounceCsd <= ACTIONABILITY_WALL_ATR && blockingBounce(x.contextSupportState);
+    if (longBounceIntoWall) return { actionable: true, reason: 'bounce_long_into_context_wall' };
+    if (shortBounceIntoWall) return { actionable: true, reason: 'bounce_short_into_context_wall' };
     if (longBounce) return { actionable: true, reason: 'bounce_long' };
     if (shortBounce) return { actionable: true, reason: 'bounce_short' };
     // sandwiched / no break → the AI HOLDs these; skip the call.

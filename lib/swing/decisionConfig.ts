@@ -240,19 +240,85 @@ export const REENTRY_COOLDOWN_MIN = (() => {
 // ------------------------------
 // Intraday tactics — flag-gated OFF for the swing model
 // ------------------------------
-// Preserved (not deleted) for a possible future day-trade model. Both default
-// OFF: the swing record showed they were the loss engine — every post-mortem
-// to date blamed a resting pullback limit filled at a bare retest, and the
-// offensive session playbook is what placed those limits in a sweep's path.
+// Preserved (not deleted) for a possible future day-trade model. Defaults
+// OFF: the offensive session playbook is what placed resting limits in a
+// sweep's path, and every post-mortem to date blamed a limit filled at a bare
+// retest. Note what that verdict is ABOUT — WHERE the model was told to rest
+// orders, not whether resting orders should exist. The tool/strategy split
+// below is the correction: the hand is always handed over, the playbook is not.
 // Session/venue FACTS (schedules, levels, sweep measurements) render regardless
 // of these flags; only the tactics prose and mechanisms are gated.
 const flagOn = (raw: unknown) => ['1', 'true', 'yes', 'on'].includes(String(raw ?? '').trim().toLowerCase());
 
 export const flagOff = (raw: unknown) => ['0', 'false', 'no', 'off'].includes(String(raw ?? '').trim().toLowerCase());
 
-// Resting pullback-limit entries (entry_limit_price tool + cancelled_pending_entry
-// context). Off = market entries only; a model-sent limit drops the entry.
-export const PULLBACK_LIMIT_ENABLED = flagOn(process.env.SWING_PULLBACK_LIMIT_ENABLED);
+// ------------------------------
+// Resting entry orders — the TOOL, not a strategy
+// ------------------------------
+// A resting entry is an order parked away from live price. Two kinds, defined
+// purely by geometry relative to the trade's direction:
+//
+//   limit — rests AGAINST the trade (BUY below price, SELL above). Fills when
+//           price comes back to you. Adversely selected: whoever fills you was
+//           willing to trade through your level.
+//   stop  — rests WITH the trade (BUY above price, SELL below). Triggers when
+//           price goes your way. Favourably selected, but pays the spread and
+//           is triggered by sweeps.
+//
+// Neither is a strategy. "Pullback", "breakout", "range fade", "level bounce"
+// are strategies, and which one to run is the model's call from the data — it
+// declares its pick in `strategy` (decisionSchema) so the choice is measurable.
+// Code owns only the ENVELOPE (side validity, distance windows, TTL) and the
+// venue plumbing. Both kinds are handed over unconditionally.
+export type RestingEntryKind = 'limit' | 'stop';
+
+export type RestingEntryMode = 'off' | 'limit' | 'stop' | 'both';
+
+// Deliberately a constant, not an env read: the tools are part of the model's
+// permanent surface, not a rollout knob. Narrow it here to disable a kind.
+export const RESTING_ENTRY_MODE: RestingEntryMode = 'both';
+
+// Per-venue order-type support. Capital rests both kinds on the documented
+// /workingorders endpoint (`type` is LIMIT or STOP). Bitget needs two distinct
+// order books: plain `place-order` for limits, `place-plan-order`
+// (planType normal_plan) for stops. A kind absent here drops the entry rather
+// than degrading to another order type — a stop silently placed as a limit is
+// the OPPOSITE trade.
+// Capital: /workingorders documents `type` as exactly LIMIT or STOP, and both
+// rest, list and cancel through the same endpoint the pipeline already drives.
+//
+// Bitget: validated end-to-end on DEMO 2026-08-30 via
+// scripts/validate-bitget-stop-entry.ts (20/20) — place-plan-order accepted,
+// the venue stored trigger/side/size and BOTH bracket legs, our mapper reads
+// the plan row, ONE sweep returns both order books, the sweep clears both, and
+// a fired trigger opened the position with its TP/SL attached.
+//
+// That run also caught the bug this gate existed for: place-plan-order ACCEPTS
+// presetStopLossPrice / presetStopSurplusPrice (the place-order names) and
+// silently discards them — no error, order rests normally. Shipping on the
+// docs-derived body would have opened every triggered crypto stop entry NAKED.
+// The plan book's own names (stopLossTriggerPrice / stopSurplusTriggerPrice)
+// are what stick; see the comment in executeDecision.
+//
+// A venue absent a kind here DROPS that entry in the sanitizer rather than
+// degrading it to the other order type — a stop placed as a limit is the
+// opposite trade.
+export const RESTING_ENTRY_VENUE_SUPPORT: Record<string, readonly RestingEntryKind[]> = {
+    capital: ['limit', 'stop'],
+    bitget: ['limit', 'stop'],
+};
+
+export function restingEntryKindAllowed(kind: RestingEntryKind, platform?: string | null): boolean {
+    if (RESTING_ENTRY_MODE !== 'both' && RESTING_ENTRY_MODE !== kind) return false;
+    const key = String(platform || '').trim().toLowerCase();
+    if (!key) return true;
+    const supported = RESTING_ENTRY_VENUE_SUPPORT[key];
+    return supported ? supported.includes(kind) : true;
+}
+
+export function restingEntryKindsFor(platform?: string | null): RestingEntryKind[] {
+    return (['limit', 'stop'] as const).filter((kind) => restingEntryKindAllowed(kind, platform));
+}
 
 // Offensive session-liquidity playbook (sweep-capture resting entries,
 // opening-drive tactics) + the sweep-reclaim re-entry-cooldown exception.
@@ -372,14 +438,34 @@ export const TP_MAX_ATR = 10;
 
 export const AMEND_MIN_GAP_ATR = 0.1;
 
-// A pullback limit must be a genuine pullback: at least MIN_ATR below (BUY) /
-// above (SELL) current price. An invalid limit (wrong side, inside the noise
-// band, or unverifiable without ATR) DROPS the entry for this tick instead of
-// silently converting to a market order — the model asked for a patience
-// price, and filling it at market is exactly the chase the prompt forbids
-// (null from the model is the only way to request market). Beyond MAX_ATR the
-// fill odds within the one-tick TTL are negligible and the bracket math
-// distorts, so it clamps.
+// Resting-entry distance envelope, in primary ATR from live price. An invalid
+// resting price (wrong side for its kind, inside the noise band, or
+// unverifiable without ATR) DROPS the entry for this tick instead of silently
+// converting to a market order — the model asked for a specific price, and
+// filling it at market is a different trade than the one it decided on (null
+// from the model is the only way to request market). Beyond MAX the level is so
+// far from price that the bracket math distorts, so it clamps rather than drops
+// — a correction, not a rejection.
 export const ENTRY_LIMIT_MIN_ATR = 0.1;
 
 export const ENTRY_LIMIT_MAX_ATR = 1.5;
+
+// A stop-entry needs more clearance than a limit: it is TRIGGERED by the noise
+// it sits in rather than filled by it, so a stop parked as close as a limit
+// may fire on the current bar's wick before the move it is waiting for exists.
+export const ENTRY_STOP_MIN_ATR = 0.25;
+
+export const ENTRY_STOP_MAX_ATR = 1.5;
+
+export const RESTING_ENTRY_WINDOWS: Record<RestingEntryKind, { minAtr: number; maxAtr: number }> = {
+    limit: { minAtr: ENTRY_LIMIT_MIN_ATR, maxAtr: ENTRY_LIMIT_MAX_ATR },
+    stop: { minAtr: ENTRY_STOP_MIN_ATR, maxAtr: ENTRY_STOP_MAX_ATR },
+};
+
+// A resting entry survives evaluations (it is a standing commitment — see the
+// resting_entry handling in /api/analyze), so nothing else bounds its life if
+// this pipeline stops running. This is the backstop under our OWN outages, not
+// a view on how long an idea stays good: a stop firing two days late on a
+// thesis nobody re-checked is the failure it exists to prevent. The model
+// withdraws or supersedes long before this on any tick that actually runs.
+export const RESTING_ENTRY_MAX_AGE_MINUTES = 48 * 60;

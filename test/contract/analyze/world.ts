@@ -35,7 +35,10 @@ export function flatPrivateWorld(): RequestHandler[] {
     return [
         bitgetGet('/api/v2/mix/position/all-position', []),
         bitgetGet('/api/v2/mix/account/accounts', [ACCOUNT_ROW]),
+        // The TTL sweep reads BOTH entry books: resting limits from the plain
+        // order book, resting stops from the normal_plan trigger book.
         bitgetGet('/api/v2/mix/order/orders-pending', { entrustedList: [] }),
+        bitgetGet('/api/v2/mix/order/orders-plan-pending', { entrustedList: [] }),
         bitgetGet('/api/v2/mix/position/history-position', { list: [] }),
     ];
 }
@@ -172,11 +175,14 @@ export function decisionBase(action: string, summary: string, reason: string): R
         take_profit_price: null,
         stop_loss_price: null,
         entry_limit_price: null,
+        entry_stop_price: null,
+        withdraw_resting_entry: null,
         entry_trigger_price: null,
+        strategy: null,
         cooldown_minutes: null,
         cooldown_wake_above: null,
         cooldown_wake_below: null,
-        cooldown_wake_sustain_minutes: null,
+        cooldown_wake_confirm_minutes: null,
         cooldown_wake_note: null,
     };
 }

@@ -33,10 +33,19 @@ export interface TradeDecision {
     // fields amend the position's standing TP/SL plan orders (null = leave as-is).
     take_profit_price?: number | null;
     stop_loss_price?: number | null;
-    // Pullback limit entry (flat BUY/SELL, sanitized upstream via
-    // sanitizeEntryLimit): rest a LIMIT at this price instead of a market
-    // entry. The caller owns the one-tick TTL (cancelPendingEntryOrders).
+    // Resting entry (flat BUY/SELL, sanitized upstream via
+    // sanitizeRestingEntry): park the entry away from live price instead of
+    // taking the market. Mutually exclusive — entry_limit_price rests AGAINST
+    // the trade (a LIMIT), entry_stop_price rests WITH it (a STOP / trigger
+    // order). `resting_entry_kind` is the sanitizer's verdict and is what the
+    // executor switches on; the two price fields carry the level. The caller
+    // owns the lifecycle (cancelPendingEntryOrders).
     entry_limit_price?: number | null;
+    entry_stop_price?: number | null;
+    resting_entry_kind?: 'limit' | 'stop' | null;
+    // The play the model says it is running (SWING_STRATEGIES). Recorded for
+    // outcome analysis; never branched on in execution.
+    strategy?: string | null;
 }
 
 // Profit-lock margin-recycle feature flags (crypto only). The full sequence —
@@ -423,7 +432,7 @@ export async function updatePositionTpsl(params: {
 }
 
 // ------------------------------
-// Pending entry orders (pullback limit entries, one-tick TTL)
+// Pending entry orders (resting entries)
 // ------------------------------
 
 export type PendingEntryOrder = {
@@ -433,50 +442,80 @@ export type PendingEntryOrder = {
     price: number | null;
     size: string | null;
     createdAtMs: number | null;
+    // Which Bitget order book this row came from. A resting LIMIT entry lives
+    // in the plain order book; a resting STOP entry is a trigger ("plan") order
+    // in a SEPARATE book and needs the plan-specific cancel endpoint. The TTL
+    // sweep must clear both or a resting stop survives into the next tick and
+    // the fresh entry stacks on top of it (the DE40 double fill, 2026-07-13).
+    planOrder: boolean;
 };
 
-// The pipeline is the only writer on this account, so every pending NORMAL
-// order on a symbol is one of our resting pullback entries (TP/SL live as
-// plan orders, listed separately).
-// orders-pending row fields actually read below.
+// Trigger-order planType for resting STOP entries. Deliberately NOT
+// 'profit_loss' — that is the position's standing TP/SL bracket
+// (fetchPositionTpsl), which the entry TTL sweep must never touch.
+const ENTRY_PLAN_TYPE = 'normal_plan';
+
+// The pipeline is the only writer on this account, so every pending order on a
+// symbol is one of our resting entries. Two books hold them: plain pending
+// orders (resting LIMIT entries) and normal_plan trigger orders (resting STOP
+// entries). The position's TP/SL bracket lives in the plan book too, but under
+// planType profit_loss, so it is never returned here.
+// Row fields actually read below (shape is shared by both endpoints; the plan
+// book carries the level as triggerPrice rather than price).
 type BitgetPendingOrderRow = {
     orderId?: unknown;
     clientOid?: unknown;
     side?: unknown;
     price?: unknown;
     priceAvg?: unknown;
+    triggerPrice?: unknown;
     size?: unknown;
     cTime?: unknown;
     ctime?: unknown;
 };
 
-export async function fetchPendingEntryOrders(symbol: string, productType: ProductType): Promise<PendingEntryOrder[]> {
-    const res = await bitgetFetch('GET', '/api/v2/mix/order/orders-pending', {
-        symbol,
-        productType: (productType as string).toUpperCase(),
-    });
-    const list: BitgetPendingOrderRow[] = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
-    return list
-        .map((o): PendingEntryOrder | null => {
-            const orderId = o?.orderId ? String(o.orderId) : null;
-            if (!orderId) return null;
-            const price = Number(o?.price ?? o?.priceAvg);
-            const createdAt = Number(o?.cTime ?? o?.ctime);
-            return {
-                orderId,
-                clientOid: o?.clientOid ? String(o.clientOid) : null,
-                side: o?.side ? String(o.side) : null,
-                price: Number.isFinite(price) && price > 0 ? price : null,
-                size: o?.size != null ? String(o.size) : null,
-                createdAtMs: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
-            };
-        })
-        .filter((o: PendingEntryOrder | null): o is PendingEntryOrder => o !== null);
+function mapPendingEntryRow(o: BitgetPendingOrderRow, planOrder: boolean): PendingEntryOrder | null {
+    const orderId = o?.orderId ? String(o.orderId) : null;
+    if (!orderId) return null;
+    const price = Number(planOrder ? o?.triggerPrice : (o?.price ?? o?.priceAvg));
+    const createdAt = Number(o?.cTime ?? o?.ctime);
+    return {
+        orderId,
+        clientOid: o?.clientOid ? String(o.clientOid) : null,
+        side: o?.side ? String(o.side) : null,
+        price: Number.isFinite(price) && price > 0 ? price : null,
+        size: o?.size != null ? String(o.size) : null,
+        createdAtMs: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
+        planOrder,
+    };
 }
 
-// Cancel all resting entry orders for a symbol (one-tick TTL / supersede-on-
-// new-evaluation). Never throws; per-order failures are surfaced so the caller
-// can detect the filled-while-cancelling race via the error text.
+// Both books, always. Fetched in parallel and concatenated — a caller that saw
+// only one book would report a clean sweep while an order still rested.
+export async function fetchPendingEntryOrders(symbol: string, productType: ProductType): Promise<PendingEntryOrder[]> {
+    const params = { symbol, productType: (productType as string).toUpperCase() };
+    const [plain, plan] = await Promise.all([
+        bitgetFetch('GET', '/api/v2/mix/order/orders-pending', params),
+        bitgetFetch('GET', '/api/v2/mix/order/orders-plan-pending', { ...params, planType: ENTRY_PLAN_TYPE }),
+    ]);
+    const rows: PendingEntryOrder[] = [];
+    for (const [res, isPlan] of [
+        [plain, false],
+        [plan, true],
+    ] as const) {
+        const list: BitgetPendingOrderRow[] = Array.isArray(res?.entrustedList) ? res.entrustedList : [];
+        for (const o of list) {
+            const mapped = mapPendingEntryRow(o, isPlan);
+            if (mapped) rows.push(mapped);
+        }
+    }
+    return rows;
+}
+
+// Cancel all resting entry orders for a symbol. Called when a decision
+// supersedes or withdraws the standing entry, or when the age backstop fires —
+// NOT on every evaluation. Never throws; per-order failures are surfaced so the
+// caller can detect the filled-while-cancelling race via the error text.
 export async function cancelPendingEntryOrders(
     symbol: string,
     productType: ProductType,
@@ -491,11 +530,20 @@ export async function cancelPendingEntryOrders(
     const errors: string[] = [];
     for (const order of orders) {
         try {
-            await bitgetFetch('POST', '/api/v2/mix/order/cancel-order', {}, {
-                symbol,
-                productType: (productType as string).toUpperCase(),
-                orderId: order.orderId,
-            });
+            // Each book has its own cancel endpoint; a plan order sent to
+            // cancel-order is simply not found and would be counted as a
+            // failure while it kept resting.
+            await bitgetFetch(
+                'POST',
+                order.planOrder ? '/api/v2/mix/order/cancel-plan-order' : '/api/v2/mix/order/cancel-order',
+                {},
+                {
+                    symbol,
+                    productType: (productType as string).toUpperCase(),
+                    orderId: order.orderId,
+                    ...(order.planOrder ? { planType: ENTRY_PLAN_TYPE } : {}),
+                },
+            );
             cancelled++;
         } catch (err) {
             errors.push(err instanceof Error ? err.message : String(err));
@@ -772,14 +820,78 @@ export async function executeDecision(
     // BUY / SELL
     if (decision.action === 'BUY' || decision.action === 'SELL') {
         const holdSide: 'long' | 'short' = decision.action === 'BUY' ? 'long' : 'short';
-        const entryLimitPrice =
-            Number.isFinite(decision.entry_limit_price as number) && (decision.entry_limit_price as number) > 0
-                ? Number(decision.entry_limit_price)
-                : null;
+        // Resting entry (sanitized upstream). A LIMIT rests in the plain order
+        // book via place-order; a STOP is a trigger order in the plan book via
+        // place-plan-order. Both are cancelled by the caller's sweep, which
+        // reads both books.
+        const restingKind = decision.resting_entry_kind === 'stop' ? 'stop' : 'limit';
+        const restingRaw = restingKind === 'stop' ? decision.entry_stop_price : decision.entry_limit_price;
+        const restingPrice =
+            Number.isFinite(restingRaw as number) && (restingRaw as number) > 0 ? Number(restingRaw) : null;
+        const entryLimitPrice = restingKind === 'limit' ? restingPrice : null;
+        const entryStopPrice = restingKind === 'stop' ? restingPrice : null;
         const leverageResult = await applyLeverage({ symbol, productType, leverage: targetLeverage, holdSide, dryRun });
         if (dryRun) return { placed: false, orderId: null, clientOid, leverage: leverageResult.leverage };
         const orderNotionalUSDT = deriveOrderNotional(sideSizeUSDT, targetLeverage);
         const size = await computeOrderSize(symbol, orderNotionalUSDT, productType);
+
+        // Resting STOP entry: a normal_plan trigger order in the plan book.
+        // Separate endpoint, separate book, separate cancel path — the TTL
+        // sweep (fetchPendingEntryOrders) reads both, so this is cleaned up on
+        // the next evaluation exactly like a resting limit.
+        if (entryStopPrice != null) {
+            const planMeta = await fetchSymbolMeta(symbol, productType);
+            const planPlace = Number.isFinite(Number(planMeta.pricePlace)) ? Number(planMeta.pricePlace) : 2;
+            const px = (v: number) => v.toFixed(Math.max(0, planPlace));
+            const planBody: Record<string, unknown> = {
+                planType: ENTRY_PLAN_TYPE,
+                symbol,
+                productType,
+                marginMode: 'isolated',
+                marginCoin: 'USDT',
+                size: size.toString(),
+                triggerPrice: px(entryStopPrice),
+                // mark price, not last: a wick on the last-price feed should not
+                // trigger an entry the mark never confirmed.
+                triggerType: 'mark_price',
+                side: decision.action.toLowerCase(),
+                // Fills at market once triggered — the trigger IS the entry
+                // condition, so a second limit condition on top of it would
+                // just reintroduce the miss this tool exists to avoid.
+                orderType: 'market',
+                clientOid,
+            };
+            // The plan book uses DIFFERENT bracket field names from place-order.
+            // presetStopLossPrice / presetStopSurplusPrice (the place-order
+            // names) are accepted by place-plan-order and then SILENTLY
+            // DROPPED — the order rests with no bracket and a trigger opens the
+            // position naked. Verified on demo 2026-08-30
+            // (scripts/validate-bitget-stop-entry.ts, phase B): only the
+            // stopLoss*/stopSurplus* trigger fields echo back in
+            // orders-plan-pending. Execute prices are left empty = fill at
+            // market when the leg triggers, which is what a protective bracket
+            // wants.
+            if (Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0) {
+                planBody.stopLossTriggerPrice = px(Number(stopLossPrice));
+                planBody.stopLossTriggerType = 'mark_price';
+            }
+            if (Number.isFinite(takeProfitPrice as number) && (takeProfitPrice as number) > 0) {
+                planBody.stopSurplusTriggerPrice = px(Number(takeProfitPrice));
+                planBody.stopSurplusTriggerType = 'mark_price';
+            }
+            const planRes = await bitgetFetch('POST', '/api/v2/mix/order/place-plan-order', {}, planBody);
+            return {
+                placed: true,
+                orderId: planRes?.orderId || planRes?.order_id || null,
+                clientOid,
+                leverage: leverageResult.leverage,
+                leverageApplied: leverageResult.applied,
+                leverageError: leverageResult.error,
+                pendingEntry: true,
+                entryStopPrice,
+                restingEntryKind: 'stop' as const,
+            };
+        }
 
         const body: PlaceOrderBody = {
             symbol,
@@ -787,9 +899,11 @@ export async function executeDecision(
             marginCoin: 'USDT',
             marginMode: 'isolated',
             side: decision.action.toLowerCase(),
-            // Pullback limit entry: rest at the sanitized limit instead of
+            // Resting LIMIT entry: rest at the sanitized level instead of
             // taking the market. The caller cancels it at the next evaluation
-            // if unfilled (one-tick TTL).
+            // when a later decision supersedes or withdraws it. A resting STOP
+            // takes the plan-order
+            // path below instead and never reaches this body.
             orderType: entryLimitPrice != null ? 'limit' : 'market',
             size: size.toString(),
             clientOid,
@@ -802,7 +916,7 @@ export async function executeDecision(
         // stop plus a resting take-profit, so the position is bounded — and the
         // upside captured — during the gap between AI evaluations. Both are
         // sized and placed on the correct side of entry by the caller (anchored
-        // at the limit price for pullback entries); here we just quantize them
+        // at the resting price when one is resting); here we just quantize them
         // to the symbol's price precision.
         const hasSl = Number.isFinite(stopLossPrice as number) && (stopLossPrice as number) > 0;
         const hasTp = Number.isFinite(takeProfitPrice as number) && (takeProfitPrice as number) > 0;

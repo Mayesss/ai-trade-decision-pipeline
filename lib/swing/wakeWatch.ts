@@ -77,7 +77,7 @@ export function wakeBandCrossed(
 // Sustained wake confirmation. A flat wake band mostly encodes a breakout/
 // breakdown plan, and the first touch of such a level is the moment of MAX
 // ambiguity — a stop-run sweep and a real break look identical for the first
-// minutes. The model may therefore attach cooldown_wake_sustain_minutes to a
+// minutes. The model may therefore attach cooldown_wake_confirm_minutes to a
 // band: the wake fires only if price is STILL beyond the band that many
 // minutes after first touch. A touch that reclaims earlier never wakes the
 // model at all — it is recorded as a SWEEP on the cooldown row and handed to
@@ -89,8 +89,8 @@ export function wakeBandCrossed(
 // position, where an instant look is right whether the break is real or fake.
 // ---------------------------------------------------------------------------
 
-export const WAKE_SUSTAIN_MIN_MINUTES = 5;
-export const WAKE_SUSTAIN_MAX_MINUTES = 60;
+export const WAKE_CONFIRM_MIN_MINUTES = 5;
+export const WAKE_CONFIRM_MAX_MINUTES = 60;
 
 // Distance-based early confirmation: a stop-run sweep by definition does not
 // TRAVEL far beyond the level (observed sweep depths ≤ ~0.3%), so a break that
@@ -104,10 +104,10 @@ export function wakeBreakConfirmAtr(): number {
     return Number.isFinite(raw) && raw > 0 ? raw : WAKE_BREAK_CONFIRM_ATR_DEFAULT;
 }
 
-export function clampWakeSustainMinutes(raw: unknown): number | null {
+export function clampWakeConfirmMinutes(raw: unknown): number | null {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return null;
-    return Math.min(WAKE_SUSTAIN_MAX_MINUTES, Math.max(WAKE_SUSTAIN_MIN_MINUTES, Math.round(n)));
+    return Math.min(WAKE_CONFIRM_MAX_MINUTES, Math.max(WAKE_CONFIRM_MIN_MINUTES, Math.round(n)));
 }
 
 export type WakeSweepEvent = {
@@ -188,7 +188,7 @@ export function sustainedWakeStep(params: {
     price: number | null;
     wakeAbove: number | null;
     wakeBelow: number | null;
-    sustainMinutes: number;
+    confirmMinutes: number;
     touchSide: 'above' | 'below' | null;
     touchStartedMs: number | null;
     touchExtreme: number | null;
@@ -197,7 +197,7 @@ export function sustainedWakeStep(params: {
     // — enables the extension confirm. Null/absent = time-only confirmation.
     atr?: number | null;
 }): SustainedWakeStep {
-    const { price, wakeAbove, wakeBelow, sustainMinutes, touchSide, touchStartedMs, touchExtreme, nowMs, atr } = params;
+    const { price, wakeAbove, wakeBelow, confirmMinutes, touchSide, touchStartedMs, touchExtreme, nowMs, atr } = params;
     const touching = touchSide !== null && Number.isFinite(Number(touchStartedMs)) && Number(touchStartedMs) > 0;
     // Unusable price = the market is UNOBSERVABLE this minute, not "back
     // inside the bands" — a failed ticker fetch must never record a false
@@ -258,7 +258,7 @@ export function sustainedWakeStep(params: {
     }
 
     const heldMs = nowMs - Number(touchStartedMs);
-    if (heldMs >= sustainMinutes * 60_000) {
+    if (heldMs >= confirmMinutes * 60_000) {
         return {
             kind: 'fire',
             side: crossed,

@@ -564,10 +564,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     overlayLoadMs = Date.now() - overlayLoadStartedAt;
 
-    // Resting pullback limit entries, drawn as dotted entry-level lines on the
-    // chart. Always read live (never cached): they carry a one-tick TTL and are
-    // cancelled/superseded on every evaluation. Best-effort — a broker error
-    // just omits the lines.
+    // Resting entry orders, drawn as dotted entry-level lines on the
+    // chart. Always read live (never cached): a standing entry survives
+    // evaluations but can be superseded or withdrawn by any of them, so a
+    // cached copy goes stale silently. Best-effort — a broker error just omits
+    // the lines.
     let pendingOrders: Array<{
       side: 'buy' | 'sell' | null;
       price: number;
@@ -599,7 +600,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       pendingOrders = [];
     }
 
-    // Resting-limit windows: each pullback limit entry drawn as a side-colored
+    // Resting-entry windows: each resting entry drawn as a side-colored
     // dashed segment at its limit price, spanning the time it actually rested.
     // Historical windows come from the indexed BUY/SELL rows carrying an
     // entry_limit_price; consecutive re-issues of the same limit merge into one

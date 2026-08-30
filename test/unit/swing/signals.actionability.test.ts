@@ -39,7 +39,10 @@ test('confirmed primary structure is actionable with the context wall far away',
     assert.deepEqual(out, { actionable: true, reason: 'confirmed_primary_structure' });
 });
 
-test('confirmed breakout pressing into a near unbroken context wall is rejected at 0.5 ATR', () => {
+// Walls no longer gate: they are location information the model weighs, and
+// with resting entries available a wall is a tradeable place, not a veto. The
+// branch stays NAMED so the decision trail remains queryable.
+test('confirmed breakout pressing into a near unbroken context wall is reported, not rejected', () => {
     const out = evaluateActionability({
         ...base,
         primaryBreakoutConfirmed: true,
@@ -47,7 +50,7 @@ test('confirmed breakout pressing into a near unbroken context wall is rejected 
         contextResistanceDistAtr: 0.45,
         contextResistanceState: 'approaching',
     });
-    assert.deepEqual(out, { actionable: false, reason: 'into_context_wall' });
+    assert.deepEqual(out, { actionable: true, reason: 'confirmed_primary_structure_into_context_wall' });
 });
 
 test('the same wall just beyond 0.5 ATR does not block', () => {
@@ -83,7 +86,7 @@ test('bounce long: at support, room above, micro turning up', () => {
     assert.deepEqual(out, { actionable: true, reason: 'bounce_long' });
 });
 
-test('bounce long into a near unbroken context resistance is rejected', () => {
+test('bounce long into a near unbroken context resistance is reported, not rejected', () => {
     const out = evaluateActionability({
         ...base,
         primarySupportDistAtr: 0.3,
@@ -93,10 +96,10 @@ test('bounce long into a near unbroken context resistance is rejected', () => {
         contextResistanceDistAtr: 0.4,
         contextResistanceState: 'approaching',
     });
-    assert.deepEqual(out, { actionable: false, reason: 'bounce_into_context_wall' });
+    assert.deepEqual(out, { actionable: true, reason: 'bounce_long_into_context_wall' });
 });
 
-test('bounce short into a near unbroken context support is rejected', () => {
+test('bounce short into a near unbroken context support is reported, not rejected', () => {
     const out = evaluateActionability({
         ...base,
         primaryResistanceDistAtr: 0.3,
@@ -106,7 +109,7 @@ test('bounce short into a near unbroken context support is rejected', () => {
         contextSupportDistAtr: 0.35,
         contextSupportState: 'at_level',
     });
-    assert.deepEqual(out, { actionable: false, reason: 'bounce_into_context_wall' });
+    assert.deepEqual(out, { actionable: true, reason: 'bounce_short_into_context_wall' });
 });
 
 test('bounce survives a near context wall that is already broken', () => {

@@ -5,6 +5,45 @@
 // carries model-chosen leverage, the Capital one omits it because the broker
 // fixes leverage per asset class.
 
+// The strategy the model says it is running. Named by the MODEL, never derived
+// in code and never prescribed by the prompt — the point is to record which
+// play it chose from the data so the choice becomes measurable per outcome.
+// `other` exists so the enum can never force a mislabel, and null covers
+// actions with no entry thesis (HOLD, CLOSE, trims).
+export const SWING_STRATEGIES = [
+    'breakout',
+    'breakout_retest',
+    'pullback',
+    'level_bounce',
+    'range_fade',
+    'sweep_reclaim',
+    'momentum_continuation',
+    'reversal',
+    'other',
+] as const;
+
+export type SwingStrategy = (typeof SWING_STRATEGIES)[number];
+
+const STRATEGY_PROPERTY = {
+    type: ['string', 'null'],
+    enum: [...SWING_STRATEGIES, null],
+} as const;
+
+// Resting entry (see lib/swing/decisionConfig.ts). Two mutually exclusive
+// tools, distinguished only by which side of live price they rest on:
+// entry_limit_price rests AGAINST the trade, entry_stop_price rests WITH it.
+// Both null = market. Both set, wrong side for the named kind, or outside the
+// ATR window → the entry is dropped for the tick (sanitizeRestingEntry).
+// withdraw_resting_entry: a resting entry SURVIVES evaluations, so silence
+// leaves it standing. This is how the model takes one back without entering —
+// true on a flat HOLD cancels the standing order. Ignored on BUY/SELL, which
+// already supersede it, and in a position, where nothing rests.
+const RESTING_ENTRY_PROPERTIES = {
+    entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+    entry_stop_price: { type: ['number', 'null'], minimum: 0 },
+    withdraw_resting_entry: { type: ['boolean', 'null'] },
+} as const;
+
 // Strict Structured-Outputs schema for the swing decision. Mirrors the JSON the prompt
 // asks for; strict mode requires every property in `required` and additionalProperties:false.
 // Nullable fields use a type union (e.g. ['integer','null']).
@@ -24,17 +63,21 @@ export const SWING_DECISION_SCHEMA = {
             'take_profit_price',
             'stop_loss_price',
             'entry_limit_price',
+            'entry_stop_price',
+            'withdraw_resting_entry',
             'entry_trigger_price',
+            'strategy',
             'cooldown_minutes',
             'cooldown_wake_above',
             'cooldown_wake_below',
             'cooldown_wake_note',
-            'cooldown_wake_sustain_minutes',
+            'cooldown_wake_confirm_minutes',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
             reason: { type: 'string' },
+            strategy: STRATEGY_PROPERTY,
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
             leverage: { type: ['integer', 'null'], minimum: 5, maximum: 10 },
             // Profit-lock margin-recycle maneuver (crypto only). Execution clamps
@@ -49,13 +92,9 @@ export const SWING_DECISION_SCHEMA = {
             // (side/distance vs live price+ATR) is enforced in code after parse.
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
-            // Pullback limit entry (flat BUY/SELL, only when the
-            // SWING_PULLBACK_LIMIT_ENABLED day-trade flag is on): rest a LIMIT
-            // at this price instead of entering at market. One-tick TTL —
-            // cancelled at the next evaluation if unfilled. null = market;
-            // with the flag off (swing default) a non-null value drops the
-            // entry (sanitizeEntryLimit).
-            entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Resting entry, flat BUY/SELL only. One-tick TTL — cancelled at
+            // the next evaluation if unfilled. See RESTING_ENTRY_PROPERTIES.
+            ...RESTING_ENTRY_PROPERTIES,
             // Failed-break watch: on a breakout/breakdown-thesis entry, the
             // trigger level whose break justifies the trade. Code watches it —
             // a later primary bar closing back through it wakes the model with
@@ -70,10 +109,11 @@ export const SWING_DECISION_SCHEMA = {
             // One-line plan the band encodes — persisted with the cooldown row
             // and echoed back as market.cooldown_wake.note when the band fires.
             cooldown_wake_note: { type: ['string', 'null'] },
-            // Sustained confirmation for breakout-intent bands: wake only if
-            // price still beyond the band this many minutes after first touch
-            // (code-clamped; flat bands only). null = instant touch wake.
-            cooldown_wake_sustain_minutes: { type: ['integer', 'null'], minimum: 0 },
+            // What counts as an event at the band: wake only if price is still
+            // beyond it this many minutes after first touch (code-clamped; flat
+            // bands only). null = the touch itself wakes. A filter on ATTENTION
+            // only — it never authorizes a trade.
+            cooldown_wake_confirm_minutes: { type: ['integer', 'null'], minimum: 0 },
         },
     },
 } as const;
@@ -94,22 +134,28 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             'take_profit_price',
             'stop_loss_price',
             'entry_limit_price',
+            'entry_stop_price',
+            'withdraw_resting_entry',
             'entry_trigger_price',
+            'strategy',
             'cooldown_minutes',
             'cooldown_wake_above',
             'cooldown_wake_below',
             'cooldown_wake_note',
-            'cooldown_wake_sustain_minutes',
+            'cooldown_wake_confirm_minutes',
         ],
         properties: {
             action: { type: 'string', enum: ['BUY', 'SELL', 'HOLD', 'CLOSE', 'REVERSE'] },
             summary: { type: 'string' },
             reason: { type: 'string' },
+            // Model-named play (see SWING_DECISION_SCHEMA).
+            strategy: STRATEGY_PROPERTY,
             exit_size_pct: { type: ['number', 'null'], minimum: 0, maximum: 100 },
             // Exchange-side bracket (see SWING_DECISION_SCHEMA).
             take_profit_price: { type: ['number', 'null'], minimum: 0 },
             stop_loss_price: { type: ['number', 'null'], minimum: 0 },
-            entry_limit_price: { type: ['number', 'null'], minimum: 0 },
+            // Resting entry (see SWING_DECISION_SCHEMA).
+            ...RESTING_ENTRY_PROPERTIES,
             // Failed-break watch (see SWING_DECISION_SCHEMA).
             entry_trigger_price: { type: ['number', 'null'], minimum: 0 },
             // Flat-HOLD cooldown (see SWING_DECISION_SCHEMA).
@@ -117,8 +163,8 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
             cooldown_wake_above: { type: ['number', 'null'], minimum: 0 },
             cooldown_wake_below: { type: ['number', 'null'], minimum: 0 },
             cooldown_wake_note: { type: ['string', 'null'] },
-            // Sustained confirmation (see SWING_DECISION_SCHEMA).
-            cooldown_wake_sustain_minutes: { type: ['integer', 'null'], minimum: 0 },
+            // Confirmation window (see SWING_DECISION_SCHEMA).
+            cooldown_wake_confirm_minutes: { type: ['integer', 'null'], minimum: 0 },
         },
     },
 } as const;
