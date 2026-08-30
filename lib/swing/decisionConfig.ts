@@ -305,7 +305,7 @@ export type ActionabilityInputs = {
 };
 
 export type PromptDecisionContext = {
-    // Populated on the context returned by buildPrompt; absent on the input passed
+    // Populated on the context returned by computeSwingState; absent on the input passed
     // to computeSignalStrength (which produces it).
     signal_strength?: 'LOW' | 'MEDIUM' | 'HIGH';
     micro_bias_calc: string;

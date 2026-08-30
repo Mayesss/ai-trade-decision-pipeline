@@ -141,7 +141,7 @@ type MarketPayload = {
     venue_events?: CapitalMarketContextForPrompt['venue_events'];
 };
 
-// Derivation half of the old buildPrompt: computes signal_strength + the decision
+// Two-phase by design: computes signal_strength + the decision
 // context (cheap), and returns an `assemble(news)` closure that builds the actual
 // STATE/MARKET prompt strings (the expensive JSON.stringify + template work).
 // Callers can read the actionability gate BEFORE assembling — so non-actionable
@@ -1492,53 +1492,4 @@ MARKET: ${JSON.stringify(compactMarket)}`;
     });
 
     return { signalStrength, context, assemble, actionability };
-}
-
-// Backward-compatible wrapper: original buildPrompt behavior (derive + assemble in
-// one call). The hourly swing path uses computeSwingState directly so it can gate on
-// signal_strength before assembling/fetching news.
-export async function buildPrompt(
-    symbol: string,
-    timeframe: string,
-    bundle: SwingMarketBundle,
-    analytics: SwingAnalytics,
-    position_status: string = 'none',
-    news_sentiment: string | null = null,
-    news_headlines: string[] = [],
-    forex_event_context: ForexEventContextForPrompt | null = null,
-    forex_session_context: ForexSessionLevelsContext | null = null,
-    indicators: MultiTFIndicators,
-    gates: SwingGatesInput,
-    position_context: PositionContext | null = null,
-    momentumSignalsOverride?: MomentumSignals,
-    recentActions: RecentActionEntry[] = [],
-    realizedRoiPct?: number | null,
-    dryRun?: boolean,
-    spreadBpsOverride?: number,
-    decisionPolicy?: DecisionPolicy,
-    category?: string | null,
-    platform?: string | null,
-) {
-    const { context, assemble } = computeSwingState(
-        symbol,
-        timeframe,
-        bundle,
-        analytics,
-        position_status,
-        forex_event_context,
-        forex_session_context,
-        indicators,
-        gates,
-        position_context,
-        momentumSignalsOverride,
-        recentActions,
-        realizedRoiPct,
-        dryRun,
-        spreadBpsOverride,
-        decisionPolicy,
-        category,
-        platform,
-    );
-    const { system, user } = assemble(news_sentiment, news_headlines);
-    return { system, user, context };
 }
