@@ -2852,7 +2852,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   candles: nanoCandles,
               })
             : null;
-        const { system, user } = swingState.assemble(
+        const { system, user, userCompact } = swingState.assemble(
             newsBundle?.sentiment ?? null,
             newsBundle?.headlines ?? [],
             nanoContext,
@@ -2920,6 +2920,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 user,
                 schema: platform === 'capital' ? SWING_DECISION_SCHEMA_NO_LEVERAGE : SWING_DECISION_SCHEMA,
                 thread: { transcript: chainedTranscript },
+                // The model gets the full turn; the THREAD keeps the
+                // abbreviated one, so a multi-day hold stops resending a stale
+                // tape per management tick (see computeSwingState userCompact).
+                userForTranscript: userCompact,
             });
         if (wakeAutoEntryRaw) {
             decisionRaw = wakeAutoEntryRaw;

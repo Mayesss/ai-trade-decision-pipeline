@@ -63,6 +63,10 @@ export async function callSwingDecision(params: {
     user: string;
     schema?: { name: string; schema: Record<string, unknown> };
     thread?: SwingThreadContext | null;
+    // Abbreviated record of this turn to STORE in the transcript in place of
+    // the full `user` (computeSwingState's userCompact). The model always
+    // receives `user`; this only shrinks what a chained thread resends later.
+    userForTranscript?: string | null;
 }): Promise<SwingDecisionCallResult> {
     const provider = resolveSwingAiProvider();
     // Every failure leaves here as a typed AiCallError (billing/config/
@@ -77,7 +81,10 @@ export async function callSwingDecision(params: {
                 params.system,
                 params.user,
                 params.schema,
-                { transcript: params.thread?.transcript ?? null },
+                {
+                    transcript: params.thread?.transcript ?? null,
+                    userForTranscript: params.userForTranscript ?? null,
+                },
             );
             result = { json, responseId, provider, model, usage, appendTurns };
         } else {
@@ -85,7 +92,10 @@ export async function callSwingDecision(params: {
                 params.system,
                 params.user,
                 params.schema,
-                { transcript: params.thread?.transcript ?? null },
+                {
+                    transcript: params.thread?.transcript ?? null,
+                    userForTranscript: params.userForTranscript ?? null,
+                },
             );
             result = { json, responseId, provider, model, usage, appendTurns };
         }

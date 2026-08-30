@@ -170,7 +170,11 @@ export async function callClaudeSwingDecision(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
-    opts?: { transcript?: unknown[] | null },
+    // userForTranscript: the abbreviated record to ARCHIVE for this turn (see
+    // computeSwingState's userCompact). The model still receives the full
+    // `user`; only the stored copy is slimmed, so a long hold stops resending
+    // dozens of stale tapes on every management tick.
+    opts?: { transcript?: unknown[] | null; userForTranscript?: string | null },
 ): Promise<ClaudeSwingCallResult> {
     const client = claudeClient();
     const priorTurns = withConversationBreakpoint(sanitizeTranscript(opts?.transcript));
@@ -179,6 +183,10 @@ export async function callClaudeSwingDecision(
         role: 'user',
         content: [{ type: 'text', text: user }],
     };
+    // What gets persisted for this turn — abbreviated when the caller asked.
+    const userTurnForTranscript: Anthropic.MessageParam = opts?.userForTranscript
+        ? { role: 'user', content: [{ type: 'text', text: opts.userForTranscript }] }
+        : userTurn;
 
     const outputConfig: Anthropic.OutputConfig = { effort: resolveClaudeEffort() };
     if (schema) {
@@ -234,7 +242,7 @@ export async function callClaudeSwingDecision(
         json,
         responseId: typeof response.id === 'string' && response.id ? response.id : null,
         model: typeof response.model === 'string' && response.model ? response.model : null,
-        appendTurns: [userTurn, { role: 'assistant', content: response.content }],
+        appendTurns: [userTurnForTranscript, { role: 'assistant', content: response.content }],
         usage: {
             input_tokens: response.usage.input_tokens,
             output_tokens: response.usage.output_tokens,

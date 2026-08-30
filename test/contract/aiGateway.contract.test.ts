@@ -103,3 +103,42 @@ test('Claude path: Messages API call with cache breakpoints and echoed thinking 
 
     await expect(await conversation()).toMatchFileSnapshot('./__snapshots__/ai-claude-thread.txt');
 });
+
+// Transcript compaction, at the provider seam: the model must receive the FULL
+// turn while the thread archives the abbreviated one. Asserted per dialect
+// because the two clients build appendTurns differently (OpenAI plain string
+// content, Claude MessageParam text blocks) — a regression in either silently
+// stores the wrong text, and only shows up as an oversized thread days later.
+const ABBREVIATED = '[ABBREVIATED EARLIER TURN — tape dropped]\nSTATE: {"price":1}';
+
+test('OpenAI path: archives the abbreviated turn, sends the full one', async () => {
+    vi.stubEnv('SWING_AI_PROVIDER', 'openai');
+
+    const result = await callSwingDecision({
+        system: SYSTEM,
+        user: USER,
+        schema: SCHEMA,
+        userForTranscript: ABBREVIATED,
+    });
+
+    expect(result.appendTurns?.[0]).toEqual({ role: 'user', content: ABBREVIATED });
+    // …while the request that actually went out carried the full turn.
+    expect(await conversation()).toContain(USER);
+});
+
+test('Claude path: archives the abbreviated turn, sends the full one', async () => {
+    vi.stubEnv('SWING_AI_PROVIDER', 'claude');
+
+    const result = await callSwingDecision({
+        system: SYSTEM,
+        user: USER,
+        schema: SCHEMA,
+        userForTranscript: ABBREVIATED,
+    });
+
+    expect(result.appendTurns?.[0]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: ABBREVIATED }],
+    });
+    expect(await conversation()).toContain(USER);
+});

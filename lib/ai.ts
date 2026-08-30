@@ -1797,7 +1797,7 @@ ${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a count
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point.${inPosition ? '' : ' When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure.'} If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
 - ${costChurnLine}${
         inPosition
-            ? `\n- PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.\n- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), (b) the thesis completing at/near the target, or (c) a failed break-entry trigger (market.failed_break, when it appears). Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure.`
+            ? `\n- PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.\n- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), (b) the thesis completing at/near the target, or (c) a failed break-entry trigger (market.failed_break, when it appears). Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure. Those earlier user turns are ABBREVIATED records (marked as such): they keep the readings each past decision rested on, but their candles, orderbook, geometry and news were dropped as stale. That is by design, not missing data — never treat a field's absence THERE as a change in the market, and read every current measurement from the STATE/MARKET of THIS turn, which is complete.`
             : ''
     }
 - Exchange-side TP/SL bracket (${bracketVenueNote}):
@@ -1859,7 +1859,54 @@ ${
 Decide now per the OUTPUT contract in your system instructions — strict JSON only.
 `;
 
-        return { system: sys, user };
+    // ---- Abbreviated form of THIS turn, for the stored transcript ----------
+    // A chained in-position thread resends its whole transcript every call, and
+    // each stored turn used to carry the full STATE/MARKET tape — measured at
+    // 14.4K avg / 33K peak input tokens on in-position ticks vs 7.4K flat. The
+    // tape is worthless eight turns later (those candles, walls and trendlines
+    // describe a market that no longer exists); what the model actually manages
+    // against is its own past REASONING plus the readings that reasoning rested
+    // on. So the LIVE turn stays complete and only the ARCHIVED copy is slimmed.
+    //
+    // Kept: the decision-relevant readings (bias/structure/momentum/location/
+    // levels/position) and any TRIGGER block, which is why the decision came out
+    // the way it did. Dropped: geometry, candles, orderbook, volume profile,
+    // recent_actions (the transcript IS that history), and the per-tick colour
+    // (news headlines, sentiment digest, lessons, calendars) that is re-fetched
+    // fresh every tick anyway. Same key names as the live turn so the shape
+    // stays familiar — just fewer of them.
+    const compactState: Record<string, unknown> = {
+        time: { iso_utc: state.time.iso_utc },
+        biases: state.biases,
+        trend: state.trend,
+        structure: state.structure,
+        momentum: { rsi: state.momentum.rsi, micro_entry_ok: state.momentum.micro_entry_ok },
+        extension_atr: state.extension_atr,
+        volatility: { atr_pct: state.volatility.atr_pct },
+        location: state.location,
+        levels: state.levels,
+        position: state.position,
+    };
+    if (state.closing_guardrails) compactState.closing_guardrails = state.closing_guardrails;
+
+    const compactMarket: Record<string, unknown> = { price: market.price };
+    // Trigger blocks only — the reason THIS look happened.
+    for (const key of [
+        'cooldown_wake',
+        'wake_band_sweeps',
+        'reclaim_wake',
+        'session_reclaim',
+        'failed_break',
+        'position_wake',
+    ] as const) {
+        if (market[key] !== undefined) compactMarket[key] = market[key];
+    }
+
+    const userCompact = `[ABBREVIATED EARLIER TURN — the full STATE/MARKET tape from this evaluation has been dropped to keep this conversation small. These are the readings the decision below rested on.]
+STATE: ${JSON.stringify(compactState)}
+MARKET: ${JSON.stringify(compactMarket)}`;
+
+        return { system: sys, user, userCompact };
     };
 
     const context = {
@@ -2941,7 +2988,11 @@ export async function callAIThread(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
-    opts?: { transcript?: unknown[] | null },
+    // userForTranscript: what to ARCHIVE for this turn instead of what was
+    // sent — the abbreviated record (computeSwingState's userCompact). The full
+    // `user` still goes to the model; only the stored copy is slimmed, so a long
+    // hold does not resend dozens of stale tapes. Defaults to `user`.
+    opts?: { transcript?: unknown[] | null; userForTranscript?: string | null },
 ): Promise<AiThreadCallResult> {
     const apiKey = resolveAiGatewayKey('openai');
 
@@ -3038,7 +3089,9 @@ export async function callAIThread(
             model,
             usage,
             appendTurns: [
-                { role: 'user', content: user },
+                // Archive the abbreviated turn when the caller supplied one —
+                // the model already received the full `user` above.
+                { role: 'user', content: opts?.userForTranscript || user },
                 { role: 'assistant', content: text },
             ],
         };
