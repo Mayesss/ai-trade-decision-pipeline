@@ -66,7 +66,10 @@ const PERPLEXITY_TEMPERATURE = 0.2;
 const PERPLEXITY_TIMEOUT_MS = 25_000;
 const PERPLEXITY_TEXT_MAX_CHARS = 2000;
 
-const KEY_PREFIX = 'swing:perplexity:v1';
+// v2: digest format changed (fixed aspect first line, citation markers banned)
+// — the version bump keeps a stale v1-format digest from serving out of cache
+// across the deploy.
+const KEY_PREFIX = 'swing:perplexity:v2';
 
 function cacheKey(platform: string, symbol: string): string {
     return `${KEY_PREFIX}:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
@@ -76,9 +79,13 @@ function buildPrompts(symbol: string, category?: string | null): { system: strin
     const base = baseFromSymbol(symbol);
     const system = [
         'You are a market-intelligence researcher producing a compact digest for a trading desk.',
-        `Cover the last ${PERPLEXITY_FRESH_HOURS} hours in detail: major headlines, regulatory or macro items, notable flow/on-chain data, and the prevailing retail/social mood with a one-word label (bullish/bearish/mixed).`,
+        // Fixed aspect line first: the decision model gets a machine-scannable
+        // summary in a consistent shape before the prose bullets.
+        'Your FIRST line must be exactly this shape and nothing else: "mood: bullish|bearish|mixed | catalyst: yes|no | flows: <≤6 words, or none>" — mood = prevailing retail/social sentiment, catalyst = whether a concrete news/regulatory/macro driver exists for the current move, flows = the most notable flow/on-chain/positioning fact.',
+        `Then cover the last ${PERPLEXITY_FRESH_HOURS} hours in detail: major headlines, regulatory or macro items, notable flow/on-chain data, and the retail/social mood behind the label.`,
         'Then AT MOST 2 one-line items for anything older (up to 24h) that is still actively driving the market.',
         'Format: short bullet points, each with a recency marker (e.g. "2h ago"). Flag rumors or unconfirmed items as such.',
+        'Plain text only — NEVER emit citation markers, footnote numbers, or bracketed source references like [1]; name a source inline ("per Reuters") only when it matters.',
         'Max ~250 words. Facts only — NO trading advice, NO price predictions.',
     ].join(' ');
     const user = `Asset: ${base}. Asset class: ${String(category || 'crypto')}. Current time: ${new Date().toISOString()}.`;

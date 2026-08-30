@@ -89,4 +89,9 @@ Object.assign(process.env, {
     CAPITAL_MAX_REQUESTS_PER_SECOND: '1000',
     CAPITAL_RATE_LIMIT_SAFETY_MS: '0',
     CAPITAL_MAX_429_RETRIES: '0',
+    // Fear/greed is default-ON in prod (free, fails open) — but here it would
+    // hit alternative.me on every crypto AI tick and trip the harness's
+    // unhandled-request error. Off by default; tests that cover it stub 'true'
+    // and provide the fearGreedIndex world handler.
+    SWING_FEAR_GREED_ENABLED: 'false',
 });

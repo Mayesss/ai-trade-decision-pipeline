@@ -37,6 +37,7 @@ import { recordSwingLastScan } from '../../lib/swing/lastScan';
 import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
 import { loadBtcContext } from '../../lib/swing/btcContext';
 import { loadPerplexityContext } from '../../lib/swing/perplexity';
+import { loadFearGreedContext } from '../../lib/swing/fearGreed';
 import { runAiBouncer, swingAiBouncerEnabled, type AiBouncerVerdict } from '../../lib/swing/aiBouncer';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
@@ -2796,7 +2797,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the BTC regime context (measured correlation/beta + BTC state). All
         // deferred to here so gated ticks never pay for them; each fails open
         // (prompt just omits the block).
-        const [newsBundleRes, nanoRes, btcContext, promptLessons, perplexityContext] = await Promise.all([
+        const [newsBundleRes, nanoRes, btcContext, promptLessons, perplexityContext, fearGreedContext] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
             (async () => {
                 try {
@@ -2826,6 +2827,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // the AI gateway, KV-cached). SWING_PERPLEXITY_ENABLED opt-in;
             // fails open to null like the rest of the bundle.
             loadPerplexityContext(symbol, { platform, category }),
+            // Daily crypto Fear & Greed index (alternative.me, KV-cached 1h,
+            // market-wide so one value serves every symbol). Crypto only;
+            // default-on with SWING_FEAR_GREED_ENABLED as kill switch; fails
+            // open to null like the rest of the bundle.
+            category === 'crypto' ? loadFearGreedContext() : Promise.resolve(null),
         ]);
         newsBundle = newsBundleRes;
         // Nano (15m) geometry is an ENTRY-TIMING tool: injected into the prompt
@@ -2855,6 +2861,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             btcContext,
             promptLessons,
             perplexityContext,
+            fearGreedContext,
         );
 
         // 7) Query AI via the provider switch (SWING_AI_PROVIDER; post-parse

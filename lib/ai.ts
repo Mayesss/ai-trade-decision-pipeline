@@ -20,6 +20,7 @@ import {
 } from './swing/wakeWatch';
 import type { EventReactionMeasurement } from './swing/eventReaction';
 import type { BtcContext } from './swing/btcContext';
+import type { FearGreedContext } from './swing/fearGreed';
 import type { ForexSessionLevelsContext } from './swing/sessionLevels';
 import type { RecentActionEntry } from './swing/recentActions';
 import type { TradeDecision } from './trading';
@@ -203,6 +204,7 @@ type MarketPayload = {
     forex_session?: ForexSessionLevelsContext;
     event_reaction?: EventReactionMeasurement[];
     btc_context?: BtcContext;
+    fear_greed?: FearGreedContext;
     cooldown_wake?: {
         crossed: 'above' | 'below';
         level: number;
@@ -1133,6 +1135,10 @@ export function computeSwingState(
         // replaces it. Rendered in the USER turn (cached system prefix stays
         // byte-stable); null omits the block.
         perplexity_context: { text: string; fetchedAtMs: number } | null = null,
+        // Daily crypto Fear & Greed index (lib/swing/fearGreed.ts), fetched by
+        // the caller post-gates on crypto ticks only. Market-wide, not
+        // per-symbol; null omits the block.
+        fear_greed: FearGreedContext | null = null,
     ) => {
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
@@ -1349,6 +1355,9 @@ export function computeSwingState(
     if (btc_context && typeof btc_context === 'object') {
         market.btc_context = btc_context;
     }
+    if (fear_greed && typeof fear_greed === 'object') {
+        market.fear_greed = fear_greed;
+    }
     if (cooldownWake && Number.isFinite(cooldownWake.level)) {
         const wakeNowMs = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
         market.cooldown_wake = {
@@ -1490,7 +1499,7 @@ export function computeSwingState(
     // Keep prose aligned with the data or it misleads.
     const assetNote =
         assetClass === 'crypto'
-            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
+            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. market.fear_greed (when present) is the daily market-wide crypto Fear & Greed index (0=extreme fear … 100=extreme greed, with recent daily history for direction/persistence) — broad mood context whose extremes are contrarian conditions, never a standalone trigger. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
             : assetClass === 'forex'
               ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
               : assetClass === 'commodity'
