@@ -10,7 +10,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { callAIThread, computeSwingState } from '../../lib/ai';
+import { computeSwingState } from '../../lib/ai';
+import { callAIThread } from '../../lib/openAi';
 
 const NOW_MS = 1_750_000_000_000;
 const bundle: any = {

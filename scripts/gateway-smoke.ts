@@ -1,10 +1,10 @@
-// Live smoke test for the OpenAI path (lib/ai.ts callAIThread) through the
+// Live smoke test for the OpenAI path (lib/openAi.ts callAIThread) through the
 // Vercel AI Gateway. Makes 2 small real calls. Verifies: structured outputs
 // (json_schema strict), JSON validity, and client-side transcript chaining
 // (the gateway's Responses endpoint is stateless, so memory rides on the
 // replayed transcript).
 // Run: node scripts/with-db-env.mjs node --import tsx scripts/gateway-smoke.ts
-import { callAIThread } from '../lib/ai';
+import { callAIThread } from '../lib/openAi';
 
 const SCHEMA = {
     name: 'smoke_decision',

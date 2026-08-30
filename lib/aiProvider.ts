@@ -6,9 +6,9 @@
 // client in lib/claudeAi.ts (phase 2). Call sites are provider-agnostic — they
 // pass system/user/schema plus a thread context and get parsed JSON back.
 
-import { callAIThread } from './ai';
 import { coerceAiCallError } from './aiError';
 import { callClaudeSwingDecision } from './claudeAi';
+import { callAIThread } from './openAi';
 import { providerForAiModel } from './aiModel';
 import { DEFAULT_AI_MODEL } from './constants';
 import { reportSwingAiFailure, reportSwingAiSuccess } from './swing/aiHealth';
