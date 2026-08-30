@@ -267,7 +267,7 @@ const buildUserPrompt = (positionWake: any) => {
 };
 
 const parseMarket = (user: string) =>
-    JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
 
 test('computeSwingState: a fired band surfaces as market.position_wake with age and note', () => {
     const market = parseMarket(

@@ -141,7 +141,7 @@ const buildWakeUserPrompt = (cooldownWake: any) => {
 
 test('computeSwingState: a crossed wake band surfaces as market.cooldown_wake with its age', () => {
     const user = buildWakeUserPrompt({ crossed: 'above', level: 105, setAtMs: NOW_MS - 76 * 60_000 });
-    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
     assert.deepEqual(market.cooldown_wake, { crossed: 'above', level: 105, set_minutes_ago: 76 });
 });
 
@@ -152,7 +152,7 @@ test('computeSwingState: the wake note is echoed back in market.cooldown_wake', 
         setAtMs: NOW_MS - 30 * 60_000,
         note: '  acceptance above 105 → breakout check  ',
     });
-    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
     assert.deepEqual(market.cooldown_wake, {
         crossed: 'above',
         level: 105,
@@ -163,7 +163,7 @@ test('computeSwingState: the wake note is echoed back in market.cooldown_wake', 
 
 test('computeSwingState: unknown set time yields set_minutes_ago null', () => {
     const user = buildWakeUserPrompt({ crossed: 'below', level: 95, setAtMs: null });
-    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
     assert.deepEqual(market.cooldown_wake, { crossed: 'below', level: 95, set_minutes_ago: null });
 });
 
@@ -180,7 +180,7 @@ test('computeSwingState: an expired wake is flagged so the note reads as a stale
         note: 'breakdown below 4092.31 → short check',
         expired: true,
     });
-    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
     assert.deepEqual(market.cooldown_wake, {
         crossed: 'below',
         level: 4092.31,
@@ -192,7 +192,7 @@ test('computeSwingState: an expired wake is flagged so the note reads as a stale
 
 test('computeSwingState: a fresh wake carries no expired field', () => {
     const user = buildWakeUserPrompt({ crossed: 'above', level: 105, setAtMs: NOW_MS - 30 * 60_000, expired: false });
-    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0]);
+    const market = JSON.parse(user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0]);
     assert.equal('expired' in market.cooldown_wake, false);
 });
 

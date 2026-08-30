@@ -103,7 +103,7 @@ test('computeSwingState: a failed break surfaces as market.failed_break with bar
         barClosedAtMs: NOW_MS - 4 * 60_000,
     });
     const market = JSON.parse(
-        user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nTASKS:')[0],
+        user.slice(user.indexOf('MARKET (raw inputs):') + 'MARKET (raw inputs):'.length).split('\n\nDecide now')[0],
     );
     assert.deepEqual(market.failed_break, {
         side: 'long',
