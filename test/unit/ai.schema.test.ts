@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { SWING_DECISION_SCHEMA } from '../../lib/ai';
+import { SWING_DECISION_SCHEMA } from '../../lib/swing/decisionSchema';
 
 // ---------------------------------------------------------------------------
 // Minimal JSON-Schema validator covering only the features SWING_DECISION_SCHEMA

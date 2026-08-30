@@ -1,4 +1,4 @@
-import { PositionContext, MomentumSignals } from './ai';
+import { MomentumSignals, PositionContext } from './swing/decisionConfig';
 import { TradeDecision } from './trading';
 import type { CapturedLeverage } from './analytics';
 import { upsertSwingDecision } from './swing/pg';

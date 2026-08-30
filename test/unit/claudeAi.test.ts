@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
 import { toClaudeSchema, truncateClaudeTranscript } from '../../lib/claudeAi';
-import { SWING_DECISION_SCHEMA } from '../../lib/ai';
+import { SWING_DECISION_SCHEMA } from '../../lib/swing/decisionSchema';
 
 function pair(i: number): any[] {
     return [

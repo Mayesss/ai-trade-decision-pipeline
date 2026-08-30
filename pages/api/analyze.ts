@@ -44,24 +44,12 @@ import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
 
-import {
-    computeSwingState,
-    computeMomentumSignals,
-    postprocessDecision,
-    resolveDecisionPolicy,
-    resolveExtensionThresholds,
-    sanitizeEntryLimit,
-    sanitizeEntryTrigger,
-    sanitizeExchangeTpSl,
-    sanitizeHoldCooldown,
-    sanitizePositionWake,
-    POSITION_WAKE_ENABLED,
-    REENTRY_COOLDOWN_MIN,
-    resolveReentryCooldown,
-    SWING_DECISION_SCHEMA,
-    SWING_DECISION_SCHEMA_NO_LEVERAGE,
-} from '../../lib/ai';
-import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/ai';
+import { POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
+import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
+import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
+import { computeSwingState } from '../../lib/swing/prompt';
+import { postprocessDecision, sanitizeEntryLimit, sanitizeEntryTrigger, sanitizeExchangeTpSl, sanitizeHoldCooldown, sanitizePositionWake } from '../../lib/swing/decisionRules';
+import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/swing/decisionConfig';
 import { AiCallError } from '../../lib/aiError';
 import { callSwingDecision, resolveSwingAiProvider, type SwingDecisionCallResult } from '../../lib/aiProvider';
 import { truncateClaudeTranscript } from '../../lib/claudeAi';

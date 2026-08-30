@@ -7,8 +7,8 @@ import {
     WAKE_AUTO_ENTRY_SL_ATR,
     WAKE_AUTO_ENTRY_TP_ATR,
 } from '../../../lib/swing/wakeAutoEntry';
-import { postprocessDecision } from '../../../lib/ai';
-import type { PromptDecisionContext } from '../../../lib/ai';
+import { postprocessDecision } from '../../../lib/swing/decisionRules';
+import type { PromptDecisionContext } from '../../../lib/swing/decisionConfig';
 
 test('builder: confirmed breakout above -> BUY with ATR-anchored bracket and failed-break trigger at the level', () => {
     const d = buildWakeAutoEntryDecision({

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { sanitizeExchangeTpSl } from '../../lib/ai';
+import { sanitizeExchangeTpSl } from '../../lib/swing/decisionRules';
 
 // Anchor: price 100, primary ATR 2. Entry fallback TP = 3×ATR = ±6.
 const PRICE = 100;

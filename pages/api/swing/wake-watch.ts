@@ -42,7 +42,7 @@ export const config = { runtime: 'nodejs', maxDuration: 300 };
 // when the lease expires instead of losing it until the next primary close.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { POSITION_WAKE_ENABLED } from '../../../lib/ai';
+import { POSITION_WAKE_ENABLED } from '../../../lib/swing/decisionConfig';
 import { requireAdminAccess } from '../../../lib/admin';
 import { bitgetFetch } from '../../../lib/bitget';
 import {

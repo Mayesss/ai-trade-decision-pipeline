@@ -3,7 +3,7 @@
 // Verifies: stripped-schema acceptance by structured outputs, JSON validity,
 // transcript chaining (thinking-block echo on turn 2), prompt-cache write/read.
 import { callClaudeSwingDecision, toClaudeSchema } from '../lib/claudeAi';
-import { SWING_DECISION_SCHEMA } from '../lib/ai';
+import { SWING_DECISION_SCHEMA } from '../lib/swing/decisionSchema';
 
 // Padding pushes the system prompt past Opus 4.8's 4096-token minimum
 // cacheable prefix so the cache_control breakpoint actually engages.

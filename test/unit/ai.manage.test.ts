@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { postprocessDecision } from '../../lib/ai';
-import type { PromptDecisionContext } from '../../lib/ai';
+import { postprocessDecision } from '../../lib/swing/decisionRules';
+import type { PromptDecisionContext } from '../../lib/swing/decisionConfig';
 
 // Margin-recycle field coercion in postprocessDecision. The flag is read at
 // CALL time (process.env.ENABLE_CRYPTO_MARGIN_RECYCLE), so tests toggle it

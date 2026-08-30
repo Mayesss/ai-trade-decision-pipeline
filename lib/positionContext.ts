@@ -1,6 +1,6 @@
 // lib/positionContext.ts
 
-import type { PositionContext } from './ai';
+import type { PositionContext } from './swing/decisionConfig';
 import type { PositionInfo } from './analytics';
 import { DEFAULT_TAKER_FEE_RATE } from './constants';
 

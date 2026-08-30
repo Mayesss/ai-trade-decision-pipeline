@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { computeSwingState, postprocessDecision, sanitizePositionWake, POSITION_WAKE_MIN_ATR } from '../../lib/ai';
-import type { PromptDecisionContext } from '../../lib/ai';
+import { POSITION_WAKE_MIN_ATR } from '../../lib/swing/decisionConfig';
+import { computeSwingState } from '../../lib/swing/prompt';
+import { postprocessDecision, sanitizePositionWake } from '../../lib/swing/decisionRules';
+import type { PromptDecisionContext } from '../../lib/swing/decisionConfig';
 import { isCooldownBandDecision, isPositionWakeBandDecision, isPositionWakeEntry } from '../../lib/history';
 
 // In-position wake bands: sanitizePositionWake is pure (the
