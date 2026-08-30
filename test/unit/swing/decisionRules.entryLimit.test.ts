@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { sanitizeEntryLimit } from '../../lib/swing/decisionRules';
+import { sanitizeEntryLimit } from '../../../lib/swing/decisionRules';
 
 // Anchor: price 100, primary ATR 2. Usable pullback window: 0.1–1.5 ATR.
 // The suite pins pullbackLimitEnabled=true (the day-trade flag); the swing

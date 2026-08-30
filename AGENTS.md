@@ -6,7 +6,15 @@ Guidance for coding agents working in this repository.
 Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and decision logic changes should be observable, reversible, and testable in dry-run mode.
 
 ## Repo Map
-- `lib/ai.ts`: prompt builder (`buildPrompt`), AI call (`callAI`), and decision post-processing (`postprocessDecision`).
+The swing decision is split by concern (there is no `lib/ai.ts` any more). Layers
+depend downward only — `decisionConfig` ← `signals` ← {`prompt`, `decisionRules`}:
+- `lib/swing/decisionConfig.ts`: every domain type, env-tunable threshold and feature flag. Leaf module — start here to learn the vocabulary.
+- `lib/swing/signals.ts`: pure derivation (`computeMomentumSignals`, `evaluateActionability`, `computeSignalStrength`, `resolveReentryCooldown`).
+- `lib/swing/prompt.ts`: `computeSwingState` — builds the STATE/MARKET payloads and the system/user turns.
+- `lib/swing/decisionRules.ts`: what happens to the model's answer (`postprocessDecision` + the field sanitizers). The prompt's "enforced in code" claims ARE these functions.
+- `lib/swing/decisionSchema.ts`: the response JSON schemas (leverage / no-leverage variants).
+- `lib/aiProvider.ts`: provider switch (`callSwingDecision`) — the single choke point for all swing AI traffic.
+- `lib/openAi.ts` / `lib/claudeAi.ts`: transport only. Same Vercel AI Gateway, different dialects (Responses vs Messages); `SWING_AI_PROVIDER` picks one.
 - `pages/api/analyze.ts`: single-symbol analysis pipeline.
 - `lib/trading.ts`: execution layer (market orders, close/reverse handling, leverage).
 - `pages/api/evaluate.ts`: LLM-based evaluation/audit of recent decisions.
@@ -49,20 +57,26 @@ Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and d
    - client-side live recomputation in `pages/index.tsx` and open overlay refresh in `components/ChartPanel.tsx`.
 
 ## Prompt-Change Workflow
-1. Edit `lib/ai.ts` only where needed.
-2. Keep output JSON schema stable unless user asks to change it.
+1. Edit `lib/swing/prompt.ts` only where needed. Thresholds quoted in the prose live in
+   `lib/swing/decisionConfig.ts` — reference the constant, never retype the number, or the
+   prompt will drift away from the rule the sanitizers enforce.
+2. Keep output JSON schema (`lib/swing/decisionSchema.ts`) stable unless user asks to change it.
 3. Verify downstream assumptions in:
-   - `postprocessDecision` in `lib/ai.ts`
+   - `postprocessDecision` + the sanitizers in `lib/swing/decisionRules.ts`
    - execution expectations in `lib/trading.ts`
    - evaluation parsing in `pages/api/evaluate.ts`
 4. Run a dry-run request and inspect stored prompt/decision via history/evaluation routes.
+5. Contract snapshots under `test/contract/analyze/__snapshots__/` capture the full outgoing
+   conversation, so any prompt edit shows up as a snapshot diff. Re-baseline with
+   `npm test -- -u` only after reading the diff — an UNEXPECTED snapshot change means the
+   edit reached further than intended.
 
 ## Temporary Debug Pattern
 When debugging prompt/decision issues:
 1. Add targeted logs at boundaries:
-   - after `buildPrompt`
-   - after `callAI`
-   - after `postprocessDecision`
+   - after `computeSwingState(...).assemble(...)` (`lib/swing/prompt.ts`)
+   - after `callSwingDecision` (`lib/aiProvider.ts`)
+   - after `postprocessDecision` (`lib/swing/decisionRules.ts`)
 2. Keep logs short and structured (single-line JSON where possible).
 3. Gate verbose logging behind a temporary flag (query/env) when practical.
 4. Remove debug-only logs before finishing unless user asks to keep them.

@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { computeSwingState } from '../../lib/swing/prompt';
+import { computeSwingState } from '../../../lib/swing/prompt';
 
 const NOW_MS = 1_750_000_000_000;
 const bundle: any = { ticker: [{ lastPr: '100', change24h: '0' }], candles: [] };

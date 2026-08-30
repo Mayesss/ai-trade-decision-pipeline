@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { HOLD_COOLDOWN_MAX_MINUTES, HOLD_COOLDOWN_MIN_MINUTES } from '../../lib/swing/decisionConfig';
-import { computeSwingState } from '../../lib/swing/prompt';
-import { sanitizeHoldCooldown } from '../../lib/swing/decisionRules';
+import { HOLD_COOLDOWN_MAX_MINUTES, HOLD_COOLDOWN_MIN_MINUTES } from '../../../lib/swing/decisionConfig';
+import { computeSwingState } from '../../../lib/swing/prompt';
+import { sanitizeHoldCooldown } from '../../../lib/swing/decisionRules';
 
 const base = { action: 'HOLD', positionOpen: false, price: 100 };
 

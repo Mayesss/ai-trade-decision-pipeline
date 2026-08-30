@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { evaluateActionability } from '../../lib/swing/signals';
-import type { ActionabilityInputs } from '../../lib/swing/decisionConfig';
+import { evaluateActionability } from '../../../lib/swing/signals';
+import type { ActionabilityInputs } from '../../../lib/swing/decisionConfig';
 
 // Defaults chosen so nothing is confirmed and nothing is near a level; each
 // case overrides just what it exercises. Wall default = 0.5 ATR (2026-07-08

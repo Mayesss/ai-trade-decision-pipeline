@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { computeSwingState } from '../../lib/swing/prompt';
-import { sanitizeEntryTrigger } from '../../lib/swing/decisionRules';
+import { computeSwingState } from '../../../lib/swing/prompt';
+import { sanitizeEntryTrigger } from '../../../lib/swing/decisionRules';
 
 // ---- entry_trigger_price sanitation ----
 

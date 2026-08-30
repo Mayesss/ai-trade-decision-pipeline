@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { REENTRY_COOLDOWN_MIN } from '../../lib/swing/decisionConfig';
-import { resolveReentryCooldown } from '../../lib/swing/signals';
-import { postprocessDecision } from '../../lib/swing/decisionRules';
-import type { PromptDecisionContext } from '../../lib/swing/decisionConfig';
+import { REENTRY_COOLDOWN_MIN } from '../../../lib/swing/decisionConfig';
+import { resolveReentryCooldown } from '../../../lib/swing/signals';
+import { postprocessDecision } from '../../../lib/swing/decisionRules';
+import type { PromptDecisionContext } from '../../../lib/swing/decisionConfig';
 
 // A context that leaves BUY/SELL untouched by the other hard constraints, so the
 // tests isolate the re-entry cooldown coercion.
