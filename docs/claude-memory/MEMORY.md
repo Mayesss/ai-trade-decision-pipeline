@@ -1,0 +1,11 @@
+- [Forex/scalp cleanup plan](forex-scalp-cleanup-plan.md) — COMPLETE 2026-08-28 incl. DB drops (DB 5.3GB→98MB); recovery branch pre-scalp-drop-2026-08-28 on Neon
+- [No software installs](no-software-installs.md) — corporate machine: no winget/binaries/PATH edits; GitHub API via git-credential token + curl (no gh CLI)
+- [Vercel/Neon CLI access](vercel-neon-access.md) — both CLIs authenticated locally; Vercel project linked; scalp-free build live since 2026-08-28
+- [AI Gateway migration](ai-gateway-migration.md) — COMPLETE & verified in prod 2026-08-28 ~22:45 (AI_GATEWAY_API_KEY set; OIDC never injected — don't rely on it); gateway /v1/responses is stateless (important!)
+- [Test & lint roadmap](test-and-lint-roadmap.md) — COMPLETE 2026-08-29: harness, contract nets, ESLint strict with VANILLA config (no overrides, test/** unlinted, accepted cases inline-disabled with comments); 0 errors / 0 warnings; commits not pushed
+- [Perplexity + ai-bouncer](perplexity-and-ai-bouncer.md) — DEPLOYED; SWING_PERPLEXITY_ENABLED ON in prod (verified 2026-08-30); digest thin on low-coverage assets (BGB)
+- [Wake/retest refusal loop](wake-retest-refusal-loop.md) — DB-proven 2026-08-29: sustained-confirmed wakes convert 3.3%; AI re-arms retest bands in endless HOLD chains
+- [Reclaim-wake roadmap](reclaim-wake-roadmap.md) — COMPLETE & DEPLOYED (9a7a378 + c5bdc5b live in prod, verified 2026-08-30); remaining: watch cohorts in tick_log
+- [Decision module layout](decision-module-layout.md) — lib/ai.ts is GONE: split into lib/openAi.ts + lib/swing/{decisionConfig,signals,prompt,decisionRules,decisionSchema}
+- [AI provider dialects](ai-provider-dialects.md) — lib/claudeAi.ts is NOT gateway leftover: it's the Anthropic-Messages dialect on the same gateway; 141 real prod decisions ran on it — cover both dialects
+- [System prompt growth](system-prompt-growth.md) — grew 4.2K→28.7K chars, then CUT to 16.0K flat / 13.3K in-position (2026-08-30) via state variants + payload-gated SITUATIONAL DOCTRINE tail; cache = cross-symbol sweep sharing

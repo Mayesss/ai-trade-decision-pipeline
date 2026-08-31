@@ -123,8 +123,25 @@ export function resolveReentryCooldown(
 }
 
 export function evaluateActionability(x: ActionabilityInputs): { actionable: boolean; reason: string } {
-    // Entry timing is a hard prerequisite (all opens had it).
-    if (!x.microEntryOk) return { actionable: false, reason: 'micro_entry_ok_false' };
+    // micro_entry_ok is NOT a gate any more (removed 2026-08-30). It asks "is
+    // price at a sane place to take the market right now" — the only question
+    // worth asking when a market fill was the only way in. With resting entries
+    // available, a good setup at bad timing has an answer (rest a limit back at
+    // the mean) that this gate used to delete.
+    //
+    // The measured case for it was thin anyway: 328 skips in 90 days, 0.39% of
+    // all ticks and 6.4% of this gate's skips, with micro_entry_ok true on ~94%
+    // of ticks that reached it — the union
+    // (nearPrimaryEMA20 || nearMicroEMA20 || rsiMicro<=40 || rsiMicro>=60)
+    // excludes little. Its stated support, "all opens had it", is evidence it
+    // never blocked a good trade, not evidence it blocked a bad one. Extension
+    // (state.extension_atr) measures the same thing more directly and keeps its
+    // own gate.
+    //
+    // It survives as a MEASUREMENT: momentum.micro_entry_ok still reaches the
+    // prompt for the model to weigh. boxed_or_unconfirmed below is what actually
+    // carries this gate (78% of its skips).
+    //
     // (a) confirmed primary structure — the universal opener (17/18 opens, all asset classes).
     const confirmed =
         x.primaryBreakoutConfirmed ||

@@ -8,7 +8,6 @@ import type { ActionabilityInputs } from '../../../lib/swing/decisionConfig';
 // case overrides just what it exercises. Wall default = 0.5 ATR (2026-07-08
 // re-validation), NEAR = 0.6, ROOM = 1.5.
 const base: ActionabilityInputs = {
-    microEntryOk: true,
     primaryBreakoutConfirmed: false,
     primaryBreakdownConfirmed: false,
     primaryBreakoutRetestOk: false,
@@ -29,10 +28,11 @@ const base: ActionabilityInputs = {
     contextResistanceState: 'rejected',
 };
 
-test('micro entry gate is a hard prerequisite', () => {
-    const out = evaluateActionability({ ...base, microEntryOk: false, primaryBreakoutConfirmed: true });
-    assert.deepEqual(out, { actionable: false, reason: 'micro_entry_ok_false' });
-});
+// micro_entry_ok is deliberately absent from ActionabilityInputs. It was a hard
+// prerequisite here until 2026-08-30, on the premise "you must take the market
+// at this price" — which stopped being true once the model could rest an order
+// at a better one. It is now a measurement in the prompt, not a gate, so there
+// is nothing left to assert about it.
 
 test('confirmed primary structure is actionable with the context wall far away', () => {
     const out = evaluateActionability({ ...base, primaryBreakoutConfirmed: true, primaryBreakState: 'above' });

@@ -56,14 +56,6 @@ export function postprocessDecision(params: {
     // Test seam for the sweep-reclaim re-entry exception; production callers
     // rely on the env-derived default.
     sessionOffenseEnabled?: boolean;
-    // This tick is a CONFIRMED wake fire: the band held for the model's own
-    // confirm window, or the break extended beyond it by force. Bypasses ONLY
-    // the micro_entry_ok timing block below — momentum timing is routinely
-    // false in the first minutes of a real break, and the confirmation IS the
-    // timing evidence. Without this, a confirmed-break wake would be answered
-    // with a BUY/SELL and silently coerced to HOLD. Trend guard, re-entry
-    // cooldown and base gates still apply.
-    confirmedWakeEntry?: boolean;
 }) {
     const {
         decision,
@@ -75,7 +67,6 @@ export function postprocessDecision(params: {
         policy,
         lastClosedPosition,
         sessionOffenseEnabled,
-        confirmedWakeEntry,
     } = params;
     const resolvedDecisionPolicy = resolveDecisionPolicy(policy);
     const strictPolicy = resolvedDecisionPolicy === 'strict';
@@ -111,14 +102,12 @@ export function postprocessDecision(params: {
         if (!allowCounterTrend) action = 'HOLD';
     }
 
-    if (!positionOpen && !context.micro_entry_ok && !confirmedWakeEntry && (action === 'BUY' || action === 'SELL')) {
-        const allowException =
-            (signalStrength === 'HIGH' && context.breakout_retest_ok_primary) ||
-            (!strictPolicy &&
-                signalStrength !== 'LOW' &&
-                (context.breakout_retest_ok_primary || context.aligned_driver_count >= 4));
-        if (!allowException) action = 'HOLD';
-    }
+    // (No entry-timing coercion. micro_entry_ok used to force a flat BUY/SELL to
+    // HOLD when price sat far from its EMA20 — a guard on taking the MARKET at a
+    // bad moment. The model can now rest an order instead of taking the market,
+    // so on a good setup at bad timing this silently deleted the correct answer
+    // rather than letting the model reach for it. Demoted to a measurement the
+    // prompt shows; see the note in evaluateActionability for the numbers.)
 
     // Re-entry cooldown: when flat, block re-opening the direction that just closed.
     // Opposite-direction entries stay allowed (a reversal thesis is a new trade).

@@ -2507,7 +2507,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             emitGateDebug('actionability_gate', {
                 gate: 'ACTIONABILITY',
                 reason: actionability.reason,
-                microEntryOk: context.micro_entry_ok,
                 positionOpen,
             });
             return res.status(200).json({
@@ -2929,13 +2928,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // place the real thing. Commitment now lives in orders; a wake always
         // wakes.
         //
-        // What survives is the TIMING bypass, and it matters more here than it
-        // did for the synthetic entry. momentum.micro_entry_ok is routinely
-        // false in the first minutes of a genuine break, so without this a
-        // confirmed-break wake would reach the model, get a BUY/SELL, and have
-        // it silently coerced to HOLD by the entry-timing constraint — a
-        // refusal the model never made, and precisely the wake→HOLD chain this
-        // redesign exists to end. The confirmation IS the timing evidence.
+        // This once needed a timing bypass too: micro_entry_ok reads false in
+        // the first minutes of a genuine break, and the entry-timing constraint
+        // would have coerced the model's BUY straight to HOLD. That constraint
+        // is gone (demoted to a measurement), so nothing needs waiving — the
+        // flag now only labels the cohort for measurement.
         const confirmedWakeFire =
             !positionOpen &&
             !!cooldownWake &&
@@ -2967,7 +2964,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionContext,
             policy: decisionPolicy,
             lastClosedPosition,
-            confirmedWakeEntry: confirmedWakeFire,
         });
 
         // The profit-lock margin-recycle maneuver is crypto/Bitget only (set-leverage

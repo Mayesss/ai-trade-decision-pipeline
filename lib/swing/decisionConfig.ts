@@ -197,6 +197,13 @@ export function resolveExtensionThresholds(policy?: DecisionPolicy | string | nu
 // This gate fires only when a trade is plausible → backtest: 100% recall on opens,
 // ~76% fewer AI calls than the old signal_strength≥MEDIUM gate. Thresholds are the
 // ATR proximity ("at a level") and room-to-run distance; both env-tunable.
+//
+// Narrowed 2026-08-30 to structure only. It used to also veto on entry timing
+// (micro_entry_ok) and on pressing into a near context wall; both premises
+// assumed a market fill was the only way in, so both deleted the answer the
+// model can now give — rest an order at the level instead of paying it. The
+// sandwiched/no-break branch is what carries the gate in practice (78% of its
+// skips); the wall branches are reported in the reason but no longer reject.
 export const ACTIONABILITY_NEAR_ATR = (() => {
     const n = Number(process.env.SWING_ACTIONABILITY_NEAR_ATR);
     return Number.isFinite(n) && n > 0 ? n : 0.6;
@@ -347,7 +354,6 @@ export type LastClosedPosition = {
 };
 
 export type ActionabilityInputs = {
-    microEntryOk: boolean;
     primaryBreakoutConfirmed: boolean;
     primaryBreakdownConfirmed: boolean;
     primaryBreakoutRetestOk: boolean;

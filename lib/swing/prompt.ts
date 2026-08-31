@@ -1099,9 +1099,7 @@ export function computeSwingState(
     const trendGuardException = strictPolicy
         ? 'no exceptions'
         : 'rare exception: a confirmed primary breakout/breakdown in the new direction';
-    const microEntryException = strictPolicy
-        ? 'unless a confirmed primary breakout-retest'
-        : 'unless a confirmed primary breakout-retest, or strong multi-factor structure+location alignment';
+    // (microEntryException is gone with the entry-timing constraint it qualified.)
     const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
     const antiFlipStrength = strictPolicy ? 'strong conviction' : 'at least moderate conviction';
 
@@ -1277,7 +1275,7 @@ export function computeSwingState(
     // enforces gets one line here, prose explains only the judgment.
     const outputHygieneRow = inPosition
         ? `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it, and a stop amendment may only TIGHTEN (a level looser than the standing stop is dropped);${POSITION_WAKE_ENABLED ? ` wake bands: cooldown_wake_above must sit above current price and cooldown_wake_below beneath it, a band at/beyond your standing SL/TP is dropped (the bracket fires there first), and a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise);` : ''} cooldown_minutes, cooldown_wake_confirm_minutes and the entry-only fields (entry_limit_price, entry_trigger_price) stay null in a position.`
-        : `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it; cooldown_wake_above must sit above current price and cooldown_wake_below below it (a wrong-side band is dropped, the cooldown stays); cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_confirm_minutes to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}; on a fired wake, a re-armed band on the side that just fired is dropped.`;
+        : `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it; cooldown_wake_above must sit above current price and cooldown_wake_below below it (a wrong-side band is dropped, the cooldown stays); cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_confirm_minutes to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}; on a fired wake, a re-armed band on the side that just fired is dropped. Resting entries drop the WHOLE entry rather than clamping: a price on the wrong side for the field you used, closer than its minimum window, both price fields set at once, or a tool this venue cannot rest — each of those turns your BUY/SELL into a HOLD, so re-read the resting-entry guidance before using one.`;
 
     // Hard constraints, variant-scoped: flat ticks never read in-position rows
     // and vice versa. Numbering is per-variant (nothing references the numbers).
@@ -1286,9 +1284,13 @@ export function computeSwingState(
             ? 'Allowed actions (you are IN A POSITION): HOLD/CLOSE/REVERSE only.'
             : 'Allowed actions (you are FLAT): BUY/SELL/HOLD.',
         `Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).`,
+        // Flat entries have no timing constraint any more: micro_entry_ok was
+        // demoted to a measurement (see evaluateActionability). Nothing replaces
+        // the row — claiming a constraint that no longer coerces would spend the
+        // model's caution on a rule that cannot fire.
         ...(inPosition
             ? [`Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.`]
-            : [`Entry timing: when flat and momentum.micro_entry_ok=false, entries are blocked (${microEntryException}).`]),
+            : []),
         'Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.',
         ...(!inPosition && REENTRY_COOLDOWN_MIN > 0
             ? [
@@ -1372,7 +1374,8 @@ Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, 
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'}, your resting entry order was swept, or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
+- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
+- A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.
 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
@@ -1389,7 +1392,8 @@ ${hardConstraintsBlock}
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
 - Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.
-${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.\n`}- Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none.${!inPosition && hasCooldownWake ? ' This governs ROUTINE scans — this tick is a wake-band evaluation, which has its own extension rule (see SITUATIONAL DOCTRINE).' : ''} RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
+${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.\n`}- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean "do not enter": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.
+- Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none.${!inPosition && hasCooldownWake ? ' This governs ROUTINE scans — this tick is a wake-band evaluation, which has its own extension rule (see SITUATIONAL DOCTRINE).' : ''} RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
 - Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point.${inPosition ? '' : ' When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure.'} If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
 - ${costChurnLine}${
         inPosition
@@ -1536,7 +1540,6 @@ MARKET: ${JSON.stringify(compactMarket)}`;
     };
 
     const actionability = evaluateActionability({
-        microEntryOk: Boolean(momentumSignals.info?.microEntryOk),
         primaryBreakoutConfirmed,
         primaryBreakdownConfirmed,
         primaryBreakoutRetestOk: breakoutRetestOk4h,
