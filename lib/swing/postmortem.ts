@@ -333,6 +333,9 @@ type DecisionDigest = {
     take_profit_price: number | null;
     stop_loss_price: number | null;
     entry_limit_price: number | null;
+    entry_stop_price: number | null;
+    resting_entry_kind: string | null;
+    strategy: string | null;
     exit_size_pct: number | null;
     cooldown_minutes: number | null;
     exec: Record<string, unknown> | null;
@@ -394,6 +397,9 @@ function digestDecision(d: SwingDecisionFullRow): DecisionDigest {
         take_profit_price: numOrNull(ai.take_profit_price),
         stop_loss_price: numOrNull(ai.stop_loss_price),
         entry_limit_price: numOrNull(ai.entry_limit_price),
+        entry_stop_price: numOrNull(ai.entry_stop_price),
+        resting_entry_kind: typeof ai.resting_entry_kind === 'string' ? ai.resting_entry_kind : null,
+        strategy: typeof ai.strategy === 'string' ? ai.strategy : null,
         exit_size_pct: numOrNull(ai.exit_size_pct),
         cooldown_minutes: numOrNull(ai.cooldown_minutes),
         exec: Object.keys(execDigest).length ? execDigest : null,

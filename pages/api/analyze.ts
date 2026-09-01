@@ -3473,10 +3473,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 if (fullCloseExecuted) {
                     await endSwingAiThread(platform, symbol);
                 } else if (entryPlacedNow) {
+                    // Whether an order is RESTING comes from execution, not from
+                    // guessing at which price field was used. Both venues report
+                    // pendingEntry for a limit AND a stop; a market entry omits
+                    // it. Sniffing decision.entry_limit_price (as this did until
+                    // 2026-08-31) marked every resting STOP as in_position with
+                    // no position on the venue — which hid it from the
+                    // dashboard's pending-entry pill and, worse, made the
+                    // wake-watcher's close-detection (step 4: in_position thread
+                    // + flat venue ⇒ position closed) fire analyze against a
+                    // symbol that had simply never entered.
+                    const restingAfterExec = (execRes as Record<string, unknown> | null)?.pendingEntry === true;
                     await upsertSwingAiThread({
                         platform,
                         symbol,
-                        status: decision.entry_limit_price != null ? 'pending_entry' : 'in_position',
+                        status: restingAfterExec ? 'pending_entry' : 'in_position',
                         lastResponseId: aiResponseId,
                         provider: activeProvider,
                         transcript: nextTranscript,

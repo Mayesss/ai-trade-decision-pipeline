@@ -22,6 +22,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
 import { PRIMARY_TIMEFRAME } from '../../lib/constants';
+import { RESTING_ENTRY_MAX_AGE_MINUTES } from '../../lib/swing/decisionConfig';
 import { timeframeToMs } from '../../lib/swing/wakeWatch';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
@@ -601,13 +602,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Resting-entry windows: each resting entry drawn as a side-colored
-    // dashed segment at its limit price, spanning the time it actually rested.
-    // Historical windows come from the indexed BUY/SELL rows carrying an
-    // entry_limit_price; consecutive re-issues of the same limit merge into one
-    // segment. An issue rests until the next indexed decision superseded it,
-    // capped at 65min (the hourly tick always sweeps resting entries), and a
-    // fill clips the segment at the position's entry. Live resting orders
-    // extend their chain (or open a fresh segment) up to now.
+    // dashed segment at its resting price, spanning the time it actually rested.
+    // Historical windows come from the indexed BUY/SELL rows carrying EITHER
+    // resting price — a stop entry (entry_stop_price) rests exactly like a limit
+    // and must draw the same way; reading only entry_limit_price left every stop
+    // entry invisible here. Consecutive re-issues of the same price merge into
+    // one segment. An issue rests until the next indexed decision superseded it,
+    // capped at REST_MAX, and a fill clips the segment at the position's entry.
+    // Live resting orders extend their chain (or open a fresh segment) up to now.
     type LimitOrderSegment = {
       side: 'buy' | 'sell';
       price: number;
@@ -615,17 +617,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       toTime: number;
       filled: boolean;
     };
-    const LIMIT_REST_MAX_MS = 65 * 60_000;
+    // A standing entry survives evaluations and is bounded only by the age
+    // backstop, so the segment must be allowed to span that. 65min was the old
+    // one-tick-TTL assumption and truncated every long-resting order.
+    const LIMIT_REST_MAX_MS = RESTING_ENTRY_MAX_AGE_MINUTES * 60_000;
     const limitRows = (indexedHistory || [])
       .filter((h) => {
         if (h?.dryRun === true) return false;
         const a = String(h?.aiDecision?.action || '').toUpperCase();
-        const limit = Number(h?.aiDecision?.entry_limit_price);
-        return (a === 'BUY' || a === 'SELL') && Number.isFinite(limit) && limit > 0;
+        const rest = Number(h?.aiDecision?.entry_limit_price ?? h?.aiDecision?.entry_stop_price);
+        return (a === 'BUY' || a === 'SELL') && Number.isFinite(rest) && rest > 0;
       })
       .map((h) => ({
         side: (String(h.aiDecision?.action).toUpperCase() === 'SELL' ? 'sell' : 'buy') as 'buy' | 'sell',
-        price: Number(h.aiDecision.entry_limit_price),
+        price: Number(h.aiDecision.entry_limit_price ?? h.aiDecision.entry_stop_price),
         tsMs: Number(h.timestamp),
       }))
       .sort((a, b) => a.tsMs - b.tsMs);
