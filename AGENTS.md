@@ -29,6 +29,10 @@ depend downward only — `decisionConfig` ← `signals` ← {`prompt`, `decision
 2. Always pass `dryRun=true` for manual tests unless the user explicitly requests live execution.
 3. Never log secrets or full API keys. If needed, log only key presence or short masked prefixes.
 4. Avoid widening live-trading behavior by default in docs or code.
+5. Never publish or upload anything from this repo to an external service — no
+   hosted pages, shared links, or third-party tools. This is a private personal
+   project with live credentials and real positions: deliverables (plans,
+   reports, analyses) are local files, `docs/` for documents.
 
 ## Current API Contract (important)
 - `GET /api/analyze` (not POST).

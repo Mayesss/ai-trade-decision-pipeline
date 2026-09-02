@@ -34,7 +34,7 @@ import {
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 import { resolveSwingCategory } from '../../lib/swing/category';
 import { loadSwingCronControlState } from '../../lib/swing/cronControl';
-import { recordSwingLastScan } from '../../lib/swing/lastScan';
+import { recordSwingLastScan, stampSwingScanStarted } from '../../lib/swing/lastScan';
 import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
 import { loadBtcContext } from '../../lib/swing/btcContext';
 import { loadPerplexityContext } from '../../lib/swing/perplexity';
@@ -471,7 +471,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // AWAITED (not fire-and-forget): on serverless a void'd promise gets
         // dropped when the response ends first, which erased timeline dots.
         // recordSwingLastScan never throws, so this can't fail the tick.
-        if (automationCron) await recordSwingLastScan(platform, symbol);
+        if (automationCron) await stampSwingScanStarted(platform, symbol);
         const tickCadence = automationCron ? (quarterTick ? 'quarter' : 'hourly') : 'manual';
         tickErrorContext = { symbol, platform, cadence: tickCadence, dryRun };
         // Durable per-tick outcome (swing.tick_log): EVERY tick that ends —

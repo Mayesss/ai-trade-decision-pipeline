@@ -22,7 +22,7 @@
 import { kvGetJson, kvSetJson } from '../kv';
 import type { AiCallError, AiCallProvider, AiErrorKind } from '../aiError';
 
-const SWING_AI_HEALTH_KEY = 'swing:ai:health:v1';
+export const SWING_AI_HEALTH_KEY = 'swing:ai:health:v1';
 const TRANSIENT_DEGRADE_THRESHOLD = 5;
 
 export interface SwingAiHealthState {
@@ -76,6 +76,13 @@ function normalizeState(value: unknown): SwingAiHealthState {
         lastOkAtMs: num(row.lastOkAtMs),
         consecutiveFailures: Math.max(0, Math.floor(Number(row.consecutiveFailures) || 0)),
     };
+}
+
+// Normalize a raw KV value into health state — exported so a caller reading
+// this key inside a batched MGET (the warm-status endpoint) gets exactly what
+// loadSwingAiHealth would have returned.
+export function parseSwingAiHealth(raw: unknown): SwingAiHealthState {
+    return normalizeState(raw);
 }
 
 export async function loadSwingAiHealth(): Promise<SwingAiHealthState> {

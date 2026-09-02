@@ -21,25 +21,6 @@ POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
   [
-    "LTRIM",
-    "swing:scanTicks:v1:bitget:ETHUSDT",
-    0,
-    399
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "EXPIRE",
-    "swing:scanTicks:v1:bitget:ETHUSDT",
-    604800
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
     "GET",
     "swing:cron:control:v1"
   ]
@@ -380,25 +361,6 @@ POST https://kv.boundary.test/
     "LPUSH",
     "swing:scanTicks:v1:bitget:ETHUSDT",
     "{\"ts\":<NOW_MS>,\"stage\":\"primary_close_gate\",\"reason\":\"flat_skip_until_primary_close\"}"
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "LTRIM",
-    "swing:scanTicks:v1:bitget:ETHUSDT",
-    0,
-    399
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "EXPIRE",
-    "swing:scanTicks:v1:bitget:ETHUSDT",
-    604800
   ]
 
 SQL neon-postgres

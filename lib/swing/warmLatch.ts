@@ -35,7 +35,14 @@ export async function recordSwingAnalyzeFinished(cycleId: number): Promise<boole
   const expected = getCronSymbolConfigs().length;
   if (expected <= 0) return false;
   const count = await kvIncr(latchKey(cycleId));
-  await kvExpire(latchKey(cycleId), LATCH_TTL_SECONDS).catch(() => undefined);
+  // The TTL only needs setting once per cycle key, not on all ~25 increments
+  // (Upstash bills per command). Stamped on the first increment, and again on
+  // the finisher so a failed first EXPIRE cannot leave the key TTL-less: cycle
+  // ids never repeat, so at worst a stale latch key lingers instead of
+  // colliding with anything.
+  if (count === 1 || count === expected) {
+    await kvExpire(latchKey(cycleId), LATCH_TTL_SECONDS).catch(() => undefined);
+  }
   return count === expected;
 }
 
@@ -43,14 +50,26 @@ export async function recordSwingAnalyzeFinished(cycleId: number): Promise<boole
 // endpoint): unlike the per-cycle done flag it lives under one stable key and
 // never expires, so a client can poll it cheaply and refresh exactly when the
 // warmedAtMs moves forward.
-const LAST_WARM_KEY = 'swing:warm:last';
+export const SWING_WARM_LAST_KEY = 'swing:warm:last';
 
 export type SwingWarmLast = { warmedAtMs: number; cycleId: number };
+
+// Shape check for a raw KV value, so callers that read this key inside a
+// batched MGET (see the warm-status endpoint) get the same result they would
+// from readSwingWarmLast below.
+export function parseSwingWarmLast(raw: unknown): SwingWarmLast | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const warmedAtMs = Number(row.warmedAtMs);
+  const cycleId = Number(row.cycleId);
+  if (!Number.isFinite(warmedAtMs) || warmedAtMs <= 0) return null;
+  return { warmedAtMs, cycleId: Number.isFinite(cycleId) ? cycleId : 0 };
+}
 
 export async function markSwingWarmDone(cycleId: number): Promise<void> {
   const stamp: SwingWarmLast = { warmedAtMs: Date.now(), cycleId };
   await kvSetJson(doneKey(cycleId), stamp, LATCH_TTL_SECONDS);
-  await kvSetJson(LAST_WARM_KEY, stamp).catch(() => undefined);
+  await kvSetJson(SWING_WARM_LAST_KEY, stamp).catch(() => undefined);
 }
 
 export async function isSwingWarmDone(cycleId: number): Promise<boolean> {
@@ -59,5 +78,5 @@ export async function isSwingWarmDone(cycleId: number): Promise<boolean> {
 }
 
 export async function readSwingWarmLast(): Promise<SwingWarmLast | null> {
-  return kvGetJson<SwingWarmLast>(LAST_WARM_KEY).catch(() => null);
+  return kvGetJson<SwingWarmLast>(SWING_WARM_LAST_KEY).catch(() => null);
 }

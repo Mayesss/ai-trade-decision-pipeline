@@ -1043,30 +1043,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "DEL",
-    "swing:dashboard:summary:v6:1D"
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "DEL",
-    "swing:dashboard:summary:v6:7D"
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "DEL",
-    "swing:dashboard:summary:v6:30D"
-  ]
-
-POST https://kv.boundary.test/
-  authorization: Bearer <TOKEN>
-  content-type: application/json
-  [
-    "DEL",
+    "swing:dashboard:summary:v6:1D",
+    "swing:dashboard:summary:v6:7D",
+    "swing:dashboard:summary:v6:30D",
     "swing:dashboard:summary:v6:6M"
   ]
 

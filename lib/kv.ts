@@ -133,8 +133,12 @@ async function kvSet(key: string, value: string) {
     return kvCommand('SET', key, value);
 }
 
-export async function kvDel(key: string) {
-    return kvCommand('DEL', key);
+// DEL takes many keys as ONE billed Upstash command, so callers dropping a
+// group of keys should pass them together rather than looping.
+export async function kvDel(...keys: string[]) {
+    const safeKeys = keys.map((key) => String(key || '').trim()).filter((key) => Boolean(key));
+    if (!safeKeys.length) return null;
+    return kvCommand('DEL', ...safeKeys);
 }
 
 // Atomic increment — exactly one concurrent caller observes any given count,

@@ -20,7 +20,7 @@ import {
   type FoldedCapitalWindow,
 } from '../../../lib/swing/capitalWindows';
 import { loadDecisionHistory, extractCapturedLeverages, type DecisionHistoryEntry } from '../../../lib/history';
-import { readSwingLastScan } from '../../../lib/swing/lastScan';
+import { readSwingLastScan, readSwingLastScanMany, type LastScanMarker } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
 import { kvGetJson, kvSetJson } from '../../../lib/kv';
@@ -325,9 +325,54 @@ function resolveSummaryRange(raw: unknown): SummaryRangeKey {
   return '7D';
 }
 
+// Decision rows read per symbol. Deliberately range-independent: the widest
+// range needs no more than this, and every range derives its numbers from the
+// same rows — which is what makes the prefetch below sound.
+const HISTORY_ROWS_PER_SYMBOL = 120;
+
+// The per-symbol KV reads a summary build needs, hoisted so the four range
+// blobs can share one set. Keyed by `platform:symbol`.
+export type SummarySymbolReads = Map<string, { history: DecisionHistoryEntry[]; lastScan: LastScanMarker | null }>;
+
+function symbolReadKey(platform: string, symbol: string): string {
+  return `${String(platform || 'bitget').toLowerCase()}:${String(symbol).toUpperCase()}`;
+}
+
+// Read every symbol's decision history and scan marker ONCE. The four range
+// blobs ask for identical rows (HISTORY_ROWS_PER_SYMBOL does not vary by range),
+// so building them independently re-issued the same ~375 KV commands three
+// extra times per warm — the single largest line on the Upstash bill. Markers
+// come back in one MGET on top of that.
+export async function prefetchSummarySymbolReads(): Promise<SummarySymbolReads> {
+  const configs = getCronSymbolConfigs();
+  const [histories, markers] = await Promise.all([
+    Promise.all(
+      configs.map((config) =>
+        loadDecisionHistory(config.symbol, HISTORY_ROWS_PER_SYMBOL, config.platform).catch(() => [] as DecisionHistoryEntry[]),
+      ),
+    ),
+    readSwingLastScanMany(configs.map((config) => ({ platform: config.platform, symbol: config.symbol }))).catch(
+      () => configs.map(() => null),
+    ),
+  ]);
+  const reads: SummarySymbolReads = new Map();
+  configs.forEach((config, i) => {
+    reads.set(symbolReadKey(config.platform, config.symbol), {
+      history: histories[i] ?? [],
+      lastScan: markers[i] ?? null,
+    });
+  });
+  return reads;
+}
+
 // Compute the summary for a range and write it to KV. Shared by the HTTP handler
-// (on cache miss) and the warm cron, so the two paths can never drift.
-export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise<CachedSummary> {
+// (on cache miss) and the warm cron, so the two paths can never drift. `prefetched`
+// lets the warm reuse one set of per-symbol reads across all four ranges; the
+// on-demand path passes nothing and reads for itself.
+export async function buildAndCacheSwingSummary(
+  range: SummaryRangeKey,
+  prefetched?: SummarySymbolReads,
+): Promise<CachedSummary> {
   const lookbackHours = SUMMARY_RANGE_LOOKBACK_HOURS[range];
   const configs = getCronSymbolConfigs();
   const symbols = configs.map((item) => item.symbol);
@@ -398,10 +443,13 @@ export async function buildAndCacheSwingSummary(range: SummaryRangeKey): Promise
       let lastScanReason: string | null = null;
 
       try {
-        const [history, lastScan] = await Promise.all([
-          loadDecisionHistory(symbol, 120, platform),
-          readSwingLastScan(platform, symbol),
-        ]);
+        const shared = prefetched?.get(symbolReadKey(platform, symbol));
+        const [history, lastScan] = shared
+          ? [shared.history, shared.lastScan]
+          : await Promise.all([
+              loadDecisionHistory(symbol, HISTORY_ROWS_PER_SYMBOL, platform),
+              readSwingLastScan(platform, symbol),
+            ]);
         lastScanAt = lastScan?.ts ?? null;
         lastScanStage = lastScan?.stage ?? null;
         lastScanReason = lastScan?.reason ?? null;
@@ -694,10 +742,16 @@ const ALL_SUMMARY_RANGES: SummaryRangeKey[] = ['1D', '7D', '30D', '6M'];
 // already tolerate). Best-effort per range — a failure just falls back to an
 // on-demand rebuild on the next dashboard load.
 export async function warmAllSwingSummaries(): Promise<Array<{ range: SummaryRangeKey; ok: boolean; symbols: number }>> {
+  // One set of per-symbol reads for all four ranges (see prefetchSummarySymbolReads).
+  // Best-effort: an empty prefetch just sends each range back to reading for itself.
+  const prefetched = await prefetchSummarySymbolReads().catch((err) => {
+    console.warn('summary symbol prefetch failed; ranges will read individually:', err);
+    return undefined;
+  });
   return Promise.all(
     ALL_SUMMARY_RANGES.map(async (range) => {
       try {
-        const { payload } = await buildAndCacheSwingSummary(range);
+        const { payload } = await buildAndCacheSwingSummary(range, prefetched);
         return { range, ok: true, symbols: payload.data.length };
       } catch (err) {
         console.warn(`warm summary failed for ${range}:`, err);
@@ -726,12 +780,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // The blob can be up to an hour old and quarter-tick scans don't
         // invalidate it (they persist no decision rows) — so overlay the live
         // last-scan markers, which are the whole point of scan freshness.
-        // 13 cheap KV reads; failures just keep the cached values.
+        // ONE batched KV read for the whole universe (it was a GET per symbol,
+        // i.e. 26 commands to serve a cached blob); failures keep the cached values.
         try {
           const rows = Array.isArray(cached.payload.data) ? cached.payload.data : [];
-          const markers = await Promise.all(
-            rows.map((row) => readSwingLastScan(String(row.lastPlatform || 'bitget'), row.symbol).catch(() => null)),
-          );
+          const markers = await readSwingLastScanMany(
+            rows.map((row) => ({ platform: String(row.lastPlatform || 'bitget'), symbol: row.symbol })),
+          ).catch(() => rows.map(() => null));
           markers.forEach((marker, i) => {
             if (!marker) return;
             rows[i].lastScanAt = marker.ts;

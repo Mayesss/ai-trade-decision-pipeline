@@ -13,9 +13,9 @@ export function swingSummaryCacheKey(range: string): string {
 }
 
 // Drop all range variants so the next dashboard load recomputes once with fresh
-// data. Best-effort — never throws into the trading path.
+// data. One multi-key DEL — Upstash bills per command, so four separate DELs
+// cost four commands on every persisted decision (~228/day). Best-effort —
+// never throws into the trading path.
 export async function invalidateSwingSummaryCache(): Promise<void> {
-  await Promise.all(
-    SUMMARY_RANGES.map((range) => kvDel(swingSummaryCacheKey(range)).catch(() => undefined)),
-  );
+  await kvDel(...SUMMARY_RANGES.map((range) => swingSummaryCacheKey(range))).catch(() => undefined);
 }

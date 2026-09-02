@@ -4,7 +4,7 @@
 // This tiny KV marker records "the cron looked at this symbol at T" on EVERY
 // automation tick — including ones that end in an unpersisted skip — so the UI
 // can surface scan freshness without polluting the decision history.
-import { kvExpire, kvGetJson, kvListPushJson, kvListRangeJson, kvListTrim, kvSetJson } from '../kv';
+import { kvExpire, kvGetJson, kvListPushJson, kvListRangeJson, kvListTrim, kvMGetJson, kvSetJson } from '../kv';
 
 const KEY_PREFIX = 'swing:lastScan:v1';
 // Long enough to survive weekend market closures without the marker vanishing.
@@ -37,17 +37,23 @@ function tickLogKey(platform: string, symbol: string): string {
     return `${TICK_LOG_KEY_PREFIX}:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
 }
 
-// Best-effort, never throws — a lost marker only costs UI freshness info.
-export async function recordSwingLastScan(
+// Ring-buffer housekeeping (LTRIM + EXPIRE) is amortized to roughly once an
+// hour per symbol instead of once per write, which is what a tick used to pay
+// twice over. It is observably identical: readers take LRANGE 0..399, so a list
+// that briefly holds 404 entries still hands back the same newest 400, and the
+// TTL is 7 days against a cadence that refreshes it every hour. The rule is the
+// tick's own minute-of-hour so it stays deterministic (contract snapshots record
+// every KV command) — the :00 cron firing of each hour does the housekeeping.
+function housekeepingDue(tsMs: number): boolean {
+    return new Date(tsMs).getUTCMinutes() < 15;
+}
+
+async function writeScanMarker(
     platform: string,
     symbol: string,
-    info?: { stage?: string; reason?: string },
+    entry: LastScanMarker,
+    opts: { housekeep: boolean },
 ): Promise<void> {
-    const entry: LastScanMarker = {
-        ts: Date.now(),
-        ...(info?.stage ? { stage: info.stage } : {}),
-        ...(info?.reason ? { reason: info.reason } : {}),
-    };
     try {
         await kvSetJson<LastScanMarker>(key(platform, symbol), entry, TTL_SECONDS);
     } catch (err) {
@@ -60,11 +66,45 @@ export async function recordSwingLastScan(
     try {
         const logKey = tickLogKey(platform, symbol);
         await kvListPushJson<ScanTickEntry>(logKey, entry);
-        await kvListTrim(logKey, 0, TICK_LOG_MAX_ENTRIES - 1);
-        await kvExpire(logKey, TTL_SECONDS);
+        if (opts.housekeep) {
+            await kvListTrim(logKey, 0, TICK_LOG_MAX_ENTRIES - 1);
+            await kvExpire(logKey, TTL_SECONDS);
+        }
     } catch (err) {
         console.warn(`scan tick log write failed for ${symbol}:`, err);
     }
+}
+
+// Tick-start stamp: "the cron picked this symbol up". Never does the ring-buffer
+// housekeeping — the tick's outcome call below lands seconds later and owns it.
+export async function stampSwingScanStarted(platform: string, symbol: string): Promise<void> {
+    return writeScanMarker(platform, symbol, { ts: Date.now() }, { housekeep: false });
+}
+
+// Tick-outcome stamp, carrying the gate stage that would have been a decision
+// row on an hourly tick. Best-effort, never throws — a lost marker only costs
+// UI freshness info.
+export async function recordSwingLastScan(
+    platform: string,
+    symbol: string,
+    info?: { stage?: string; reason?: string },
+): Promise<void> {
+    const entry: LastScanMarker = {
+        ts: Date.now(),
+        ...(info?.stage ? { stage: info.stage } : {}),
+        ...(info?.reason ? { reason: info.reason } : {}),
+    };
+    return writeScanMarker(platform, symbol, entry, { housekeep: housekeepingDue(entry.ts) });
+}
+
+// Every symbol's marker in ONE command. MGET is a single billed Upstash
+// command whatever the key count, so summary builds (25 symbols, four range
+// blobs) read markers here instead of one GET per symbol.
+export async function readSwingLastScanMany(
+    pairs: Array<{ platform: string; symbol: string }>,
+): Promise<Array<LastScanMarker | null>> {
+    if (!pairs.length) return [];
+    return kvMGetJson<LastScanMarker>(pairs.map((pair) => key(pair.platform, pair.symbol)));
 }
 
 export async function readSwingLastScan(platform: string, symbol: string): Promise<LastScanMarker | null> {
