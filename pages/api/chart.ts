@@ -22,7 +22,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
 import { PRIMARY_TIMEFRAME } from '../../lib/constants';
-import { RESTING_ENTRY_MAX_AGE_MINUTES } from '../../lib/swing/decisionConfig';
+import { buildRestingEntryWindows } from '../../lib/swing/restingEntryWindows';
 import { timeframeToMs } from '../../lib/swing/wakeWatch';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
@@ -601,91 +601,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       pendingOrders = [];
     }
 
-    // Resting-entry windows: each resting entry drawn as a side-colored
-    // dashed segment at its resting price, spanning the time it actually rested.
-    // Historical windows come from the indexed BUY/SELL rows carrying EITHER
-    // resting price — a stop entry (entry_stop_price) rests exactly like a limit
-    // and must draw the same way; reading only entry_limit_price left every stop
-    // entry invisible here. Consecutive re-issues of the same price merge into
-    // one segment. An issue rests until the next indexed decision superseded it,
-    // capped at REST_MAX, and a fill clips the segment at the position's entry.
-    // Live resting orders extend their chain (or open a fresh segment) up to now.
-    type LimitOrderSegment = {
-      side: 'buy' | 'sell';
-      price: number;
-      fromTime: number;
-      toTime: number;
-      filled: boolean;
-    };
-    // A standing entry survives evaluations and is bounded only by the age
-    // backstop, so the segment must be allowed to span that. 65min was the old
-    // one-tick-TTL assumption and truncated every long-resting order.
-    const LIMIT_REST_MAX_MS = RESTING_ENTRY_MAX_AGE_MINUTES * 60_000;
-    const limitRows = (indexedHistory || [])
-      .filter((h) => {
-        if (h?.dryRun === true) return false;
-        const a = String(h?.aiDecision?.action || '').toUpperCase();
-        const rest = Number(h?.aiDecision?.entry_limit_price ?? h?.aiDecision?.entry_stop_price);
-        return (a === 'BUY' || a === 'SELL') && Number.isFinite(rest) && rest > 0;
-      })
-      .map((h) => ({
-        side: (String(h.aiDecision?.action).toUpperCase() === 'SELL' ? 'sell' : 'buy') as 'buy' | 'sell',
-        price: Number(h.aiDecision.entry_limit_price ?? h.aiDecision.entry_stop_price),
-        tsMs: Number(h.timestamp),
-      }))
-      .sort((a, b) => a.tsMs - b.tsMs);
-    const indexedTimesMs = (indexedHistory || [])
-      .map((h) => Number(h.timestamp))
-      .filter((t) => Number.isFinite(t))
-      .sort((a, b) => a - b);
-    const positionEntryTimesMs = positions
-      .map((p) => (Number.isFinite(Number(p.entryTime)) ? Number(p.entryTime) * 1000 : null))
-      .filter((t: number | null): t is number => t !== null);
-    const limitChains: Array<{ side: 'buy' | 'sell'; price: number; firstMs: number; lastMs: number }> = [];
-    for (const row of limitRows) {
-      const prev = limitChains[limitChains.length - 1];
-      if (prev && prev.side === row.side && prev.price === row.price && row.tsMs - prev.lastMs <= 75 * 60_000) {
-        prev.lastMs = row.tsMs;
-      } else {
-        limitChains.push({ side: row.side, price: row.price, firstMs: row.tsMs, lastMs: row.tsMs });
-      }
-    }
-    const limitOrders: LimitOrderSegment[] = limitChains.map((chain) => {
-      const nextDecisionMs = indexedTimesMs.find((t) => t > chain.lastMs);
-      let endMs = Math.min(nextDecisionMs ?? Infinity, chain.lastMs + LIMIT_REST_MAX_MS, nowMs);
-      const fillMs = positionEntryTimesMs.find((t) => t >= chain.firstMs - 2 * 60_000 && t <= endMs + 2 * 60_000);
-      if (fillMs !== undefined) endMs = Math.min(Math.max(fillMs, chain.firstMs + 60_000), nowMs);
-      return {
-        side: chain.side,
-        price: chain.price,
-        fromTime: Math.floor(chain.firstMs / 1000),
-        toTime: Math.floor(endMs / 1000),
-        filled: fillMs !== undefined,
-      };
+    // Resting-entry windows (side-colored dashed segments at the resting price),
+    // built from the indexed decisions, the position overlays and the live
+    // resting orders — see lib/swing/restingEntryWindows.ts for the rest rules.
+    const limitOrders = buildRestingEntryWindows({
+      nowMs,
+      history: indexedHistory,
+      positions,
+      pendingOrders,
     });
-    for (const order of pendingOrders) {
-      if (!order.side) continue;
-      const chain = limitOrders.find(
-        (s) =>
-          !s.filled &&
-          s.side === order.side &&
-          s.price === order.price &&
-          (order.createdAtMs == null || order.createdAtMs / 1000 <= s.toTime + 120),
-      );
-      if (chain) {
-        chain.toTime = Math.floor(nowMs / 1000);
-      } else {
-        const createdMs = order.createdAtMs ?? nowMs - 15 * 60_000;
-        limitOrders.push({
-          side: order.side,
-          price: order.price,
-          fromTime: Math.floor(createdMs / 1000),
-          toTime: Math.floor(nowMs / 1000),
-          filled: false,
-        });
-      }
-    }
-    limitOrders.sort((a, b) => a.fromTime - b.fromTime);
 
     // Cooldown wake bands: each flat-HOLD cooldown draws its wake_above/below
     // levels as gray dashed horizontal segments spanning the cooldown window
