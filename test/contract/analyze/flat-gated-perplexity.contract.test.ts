@@ -1,7 +1,15 @@
-// Contract: SWING_PERPLEXITY_ENABLED must not change what a GATED tick talks
-// to — the digest fetch lives in the post-gates bundle, so a tick the
-// actionability gate stops never pays for it. Same world as flat-gated (no AI,
-// no news, no perplexity handler): any leak fails via msw error-on-unhandled.
+// Contract: SWING_PERPLEXITY_ENABLED must not change what a SKIPPED tick talks
+// to — the digest fetch lives in the post-gates bundle, so a tick stopped by a
+// pre-AI gate never pays for it. The world registers no AI, news or perplexity
+// handler: any leak fails via msw error-on-unhandled.
+//
+// The gate used here is the cron-only primary-close gate (the fixture is 18:24
+// UTC, a quarter tick off the 4H close), NOT the actionability gate. Until
+// 2026-09-03 this fixture was `boxed_or_unconfirmed` and the actionability gate
+// supplied the skip; the anchor door now admits that market (see
+// flat-anchor-door.contract.test.ts) and no captured fixture is still water, so
+// the invariant is pinned on a gate that still fires. What is under test is the
+// ORDERING — bundle after gates — which is gate-agnostic.
 
 import { expect, test, vi } from 'vitest';
 
@@ -27,10 +35,15 @@ startBoundary(
 test('gated tick with the flag on: no perplexity (or any gateway) request goes out', async () => {
     vi.stubEnv('SWING_PERPLEXITY_ENABLED', 'true');
 
-    const out = await runAnalyzeTick({ symbol: 'ETHUSDT', platform: 'bitget', dryRun: 'true' });
+    const out = await runAnalyzeTick(
+        { symbol: 'ETHUSDT', platform: 'bitget', dryRun: 'true' },
+        { 'x-vercel-cron': '1' },
+    );
 
     expect(out.statusCode).toBe(200);
-    expect((out.body as Record<string, any>).promptSkipped).toBe(true);
+    const body = out.body as Record<string, any>;
+    expect(body.promptSkipped).toBe(true);
+    expect(body.decision.summary).toBe('not_primary_close');
 
     const summary = await conversationSummary();
     expect(summary.some((line) => line.includes('ai-gateway.vercel.sh'))).toBe(false);

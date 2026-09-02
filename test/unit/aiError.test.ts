@@ -55,19 +55,19 @@ test('5xx and network errors stay transient', () => {
 test('AiCallError self-classifies from status/code when kind omitted', () => {
     const err = new AiCallError({
         message: 'AI error: 429 - You exceeded your current quota',
-        provider: 'openai',
+        dialect: 'responses',
         status: 429,
         code: 'insufficient_quota',
     });
     assert.equal(err.kind, 'billing');
-    assert.equal(err.provider, 'openai');
+    assert.equal(err.dialect, 'responses');
 });
 
 test('coerceAiCallError wraps plain errors as transient and passes typed ones through', () => {
-    const wrapped = coerceAiCallError(new TypeError('fetch failed'), 'openai');
+    const wrapped = coerceAiCallError(new TypeError('fetch failed'), 'responses');
     assert.ok(wrapped instanceof AiCallError);
     assert.equal(wrapped.kind, 'transient');
 
-    const typed = new AiCallError({ message: 'Missing OPENAI_API_KEY', provider: 'openai', kind: 'config' });
-    assert.equal(coerceAiCallError(typed, 'openai'), typed);
+    const typed = new AiCallError({ message: 'Missing OPENAI_API_KEY', dialect: 'responses', kind: 'config' });
+    assert.equal(coerceAiCallError(typed, 'responses'), typed);
 });

@@ -161,7 +161,6 @@ function decide(decision: Record<string, unknown>, positionOpen: boolean, flagOn
             context: openContext,
             gates: gatesOk,
             positionOpen,
-            recentActions: [],
             positionContext: null,
             policy: 'balanced',
         });

@@ -20,11 +20,9 @@ import type { RecentActionEntry } from './recentActions';
 import { computeWaveGeometry } from './waveGeometry';
 import type { NanoContext } from './waveGeometry';
 import { SWING_STRATEGIES } from './decisionSchema';
+import { RISK_EQUITY_PCT, EXPOSURE_CAP_EQUITY_MULT } from './riskSizing';
 import {
     resolveDecisionPolicy,
-    resolveExtensionThresholds,
-    ACTIONABILITY_NEAR_ATR,
-    ACTIONABILITY_ROOM_ATR,
     REENTRY_COOLDOWN_MIN,
     restingEntryKindsFor,
     RESTING_ENTRY_MAX_AGE_MINUTES,
@@ -36,9 +34,6 @@ import {
     HOLD_COOLDOWN_MIN_MINUTES,
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
-    EXCHANGE_SL_MAX_ATR_MULT,
-    ENTRY_TP_MIN_ATR,
-    ENTRY_SL_MIN_ATR,
     ENTRY_LIMIT_MIN_ATR,
     ENTRY_LIMIT_MAX_ATR,
 } from './decisionConfig';
@@ -597,14 +592,14 @@ export function computeSwingState(
         ? { blocked_side: cooldownNow.blockedSide, minutes_left: cooldownNow.minutesLeft }
         : null;
 
-    // Extension thresholds: single source of truth (shared with the pre-AI
-    // extension hard gate in /api/analyze). Referenced in the soft-judgment
-    // guidance below so the prose can never drift from the numbers we actually use.
-    const {
-        microAvoid: extensionMicroAvoid,
-        microNoEntry: extensionMicroNoEntry,
-        primaryAvoid: extensionPrimaryAvoid,
-    } = resolveExtensionThresholds(resolvedDecisionPolicy);
+    // No extension threshold reaches the prompt any more (it used to quote
+    // resolveExtensionThresholds, shared with the pre-AI gate in /api/analyze).
+    // Quoting one meant asserting what that gate had already filtered — but it is
+    // bypassed on wake ticks (analyze.ts, `&& !cooldownWakeActive`) and never
+    // runs in a position, so the claim was false on exactly the paths where
+    // extension is most likely to be extreme. The number is a market
+    // measurement the model reads from state.extension_atr; the pipeline's
+    // handling of it is not the model's business.
 
     const modeLabel = dryRun ? 'simulation' : 'live';
     const baseSymbol = symbol.replace(/USDT$/i, '');
@@ -613,7 +608,7 @@ export function computeSwingState(
     // not pick it. Only crypto (Bitget) takes a model-chosen 5–10 leverage.
     const leverageGuidance = isCapital
         ? 'Leverage: do NOT set it — on this venue leverage is broker-defined per asset class, not chosen here. Always output leverage=null.'
-        : `Leverage 5–10 (crypto): position size is computed in code from fixed dollar risk ÷ your stop distance, so leverage does NOT change what a stop-out costs — it only sets how much margin the position locks (higher = less margin tied up, liquidation nearer). Prefer 5–6 when volatility is elevated or near major ${contextTimeframe} levels; null on HOLD/CLOSE.`;
+        : `Leverage 5–10 (crypto): notional is set by your stop distance (see DECISION OWNERSHIP), so leverage does NOT change what a stop-out costs — it only sets how much margin the position locks (higher = less margin tied up, liquidation nearer). Pick it for the margin/liquidation trade-off you want; null on HOLD/CLOSE.`;
     const leverageTask = isCapital
         ? 'do NOT output a leverage field — leverage is broker-defined per asset class on this venue.'
         : inPosition
@@ -633,12 +628,15 @@ export function computeSwingState(
     const manageGuidance = isCapital
         ? ''
         : marginRecycleEnabled
-          ? 'Margin recycle: winners are AUTO-RECYCLED by the system — once the profit cushion is large enough it moves the stop to breakeven and raises leverage to a liquidation-safe cap, freeing isolated margin for other symbols WITHOUT cutting size (a stop already tighter than breakeven is never loosened back). You MAY additionally request it earlier, on HOLD or a partial CLOSE, with a smaller cushion: move_stop_to_be=true and/or raise_leverage_to (the system clamps your value to [current leverage, the liq-safe cap]). The natural pairing on a winner reaching a major opposite level is ONE decision: exit_size_pct 30–70 + a tightened stop_loss_price (raise_leverage_to optional — auto covers it) — the system executes breakeven-stop → leverage raise → trim → your stop, and applies your stop only when it is TIGHTER than the breakeven trigger (a looser one is dropped, the breakeven floor stands). A leverage raise always forces breakeven protection first; if that stop cannot rest, the raise is aborted. Not in profit → null both.'
+          ? 'Margin recycle: winners are AUTO-RECYCLED by the system — once the profit cushion is large enough it moves the stop to breakeven and raises leverage to a liquidation-safe cap, freeing isolated margin for other symbols WITHOUT cutting size (a stop already tighter than breakeven is never loosened back). You MAY additionally request it earlier, on HOLD or a partial CLOSE, with a smaller cushion: move_stop_to_be=true and/or raise_leverage_to (the system clamps your value to [current leverage, the liq-safe cap]). These combine in ONE decision — e.g. a partial exit_size_pct + a tightened stop_loss_price (raise_leverage_to optional — auto covers it) — the system executes breakeven-stop → leverage raise → trim → your stop, and applies your stop only when it is TIGHTER than the breakeven trigger (a looser one is dropped, the breakeven floor stands). A leverage raise always forces breakeven protection first; if that stop cannot rest, the raise is aborted. Not in profit → null both.'
           : '';
 
-    // signal_strength is OWNED BY CODE (computeSignalStrength). It is NOT shown to the
-    // model (we don't want it anchoring the model's analysis) — it drives only the
-    // pre-prompt budget gate and postprocessDecision's exception thresholds.
+    // signal_strength is OWNED BY CODE (computeSignalStrength). It is NOT shown to
+    // the model (we don't want it anchoring the model's analysis). Its only
+    // remaining consumer is the pre-prompt budget gate (signal_strength_gate):
+    // the trend-guard and anti-flip exception thresholds it used to unlock were
+    // removed 2026-09-02, so postprocessDecision now just echoes it onto the
+    // decision row for later analysis.
     const signalStrength = computeSignalStrength({
         micro_bias_calc: microBiasLabel,
         primary_bias: primaryBias,
@@ -1096,12 +1094,6 @@ export function computeSwingState(
                   ? "Asset class: index. Session-driven and gap-prone around the cash open/close. market.forex_events carries the index's home-economy macro calendar. Use market.forex_session levels + events as location and risk context, not standalone triggers; avoid initiating new risk into an imminent high-impact event."
                   : `Asset class: ${assetClass}. No session or event context is provided; judge on structure, regime, location and cost.`;
 
-    const trendGuardException = strictPolicy
-        ? 'no exceptions'
-        : 'rare exception: a confirmed primary breakout/breakdown in the new direction';
-    // (microEntryException is gone with the entry-timing constraint it qualified.)
-    const antiFlipWindow = strictPolicy ? 'the last 2 calls' : 'the previous call';
-    const antiFlipStrength = strictPolicy ? 'strong conviction' : 'at least moderate conviction';
 
     // Venue-session note — rendered only on ticks that CARRY market.venue_session
     // (the venue is inside a session), in the situational tail.
@@ -1175,7 +1167,7 @@ export function computeSwingState(
     // How to read a FIRED wake band. Gated on market.cooldown_wake: ~78% of
     // flat ticks are routine scans that never carry it.
     const wakeTriggerGuidance = hasCooldownWake
-        ? `Wake-band trigger (market.cooldown_wake): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip (the routine-scan extension rule does not apply here). Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes or break_extension_atr is present, this wake is already CONFIRMED by construction — price either held beyond your band for the window you asked for, or broke with ≥0.5 primary-ATR of force — so the sweep-vs-break question is answered; weigh entry timing and location instead. RETEST WAKES: when the note marks this as the planned retest entry of an ALREADY-CONFIRMED break, the acceptance question was settled when the break confirmed — do NOT re-demand fresh BOS/acceptance evidence at the retest and do NOT treat the level as an anonymous cross; the confirmed break plus your presence at the level IS the setup you scheduled. Judge only whether structure has GENUINELY changed since confirmation (a primary bar closed back through the level, a regime flip, invalidating news) — otherwise execute the plan. Declining a planned retest entry requires naming the specific structural change, not restating generic location caution. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
+        ? `Wake-band trigger (market.cooldown_wake): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip. Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes or break_extension_atr is present, this wake is already CONFIRMED by construction — price either held beyond your band for the window you asked for, or broke with ≥0.5 primary-ATR of force — so the sweep-vs-break question is answered; weigh entry timing and location instead. RETEST WAKES: when the note marks this as the planned retest entry of an ALREADY-CONFIRMED break, the acceptance question was settled when the break confirmed — do NOT re-demand fresh BOS/acceptance evidence at the retest and do NOT treat the level as an anonymous cross; the confirmed break plus your presence at the level IS the setup you scheduled. Judge only whether structure has GENUINELY changed since confirmation (a primary bar closed back through the level, a regime flip, invalidating news) — otherwise execute the plan. Declining a planned retest entry requires naming the specific structural change, not restating generic location caution. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
               'If the move is real but price has already run multiple ATR beyond the level, you have both a resting entry back at the level and a fresh wake band on it WITH a note naming the intended entry ("retest of X after breakout → long on hold"); either beats chasing, and which one fits is yours to judge.'
           } ACT-OR-FOLD: this wake look ends one of exactly three ways — you ENTER (market or a resting entry), you arm the OPPOSITE side (e.g. the broken level’s retest per the retest protocol), or you FOLD the level (HOLD; the symbol returns to the normal cadence). Refusing a wake costs the watch even when you judge the cross a fake-out (the re-armed fired side is dropped — see the hard constraints), so do not spend this look re-scheduling the same rejection; if the level still matters after a fake-out, the evidence will be in wake_band_sweeps and the next scheduled scan can re-derive it.`
         : '';
@@ -1263,19 +1255,36 @@ export function computeSwingState(
     // may be absent are described with "when present" so the prose never claims
     // a measurement that wasn't taken this tick.
     const costChurnLine = isCapital
-        ? `Cost/churn: no commission on this venue; round-trip cost = state.costs.total_cost_bps (spread crossed once over entry+exit, + slippage; null = no live quote was measured this tick — spread unknown, see market.liquidity.spread_bps). Holding cost: state.costs.overnight_fee_pct_per_day, when present, accrues each night held (per side; negative = you pay) — over a multi-day swing it can rival the round-trip cost, so weigh it on HOLD vs CLOSE and when choosing direction. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`
-        : `Cost/churn: round-trip cost = state.costs.total_cost_bps. Perp funding (state.costs.funding, present only when measured this tick): rate_pct_per_interval accrues each funding settlement (every interval_hours hours when given; next charge at next_funding_at_utc when given) while held — positive = longs pay shorts, negative = shorts pay longs. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction. If the expected swing is not clearly larger than cost, or the setup is unclear/MED-LOW quality, prefer HOLD.`;
+        ? `Cost/churn: no commission on this venue; round-trip cost = state.costs.total_cost_bps (spread crossed once over entry+exit, + slippage; null = no live quote was measured this tick — spread unknown, see market.liquidity.spread_bps). Holding cost: state.costs.overnight_fee_pct_per_day, when present, accrues each night held (per side; negative = you pay) — over a multi-day swing it can rival the round-trip cost, so weigh it on HOLD vs CLOSE and when choosing direction. Cost is one term in the trade, not a veto — weigh it against what you expect the move to pay.`
+        : `Cost/churn: round-trip cost = state.costs.total_cost_bps. Perp funding (state.costs.funding, present only when measured this tick): rate_pct_per_interval accrues each funding settlement (every interval_hours hours when given; next charge at next_funding_at_utc when given) while held — positive = longs pay shorts, negative = shorts pay longs. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction. Cost is one term in the trade, not a veto — weigh it against what you expect the move to pay.`;
 
-    const bracketVenueNote = isCapital
-        ? 'rests on the venue between these evaluations, but fills ONLY while the venue is open — a reopening gap can jump the stop and fill worse than the stop level'
-        : 'fills 24/7 between these evaluations';
+    const bracketFillNote = isCapital
+        ? 'Exchange-side TP/SL bracket: rests on the venue between these evaluations, but fills ONLY while the venue is open — a reopening gap can jump the stop and fill worse than the stop level.'
+        : 'Exchange-side TP/SL bracket: fills 24/7 between these evaluations.';
 
     // Code-enforced value clamps, collected in ONE hard-constraint row per
     // variant. The doctrine sections no longer restate these — a rule that code
     // enforces gets one line here, prose explains only the judgment.
     const outputHygieneRow = inPosition
-        ? `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it, and a stop amendment may only TIGHTEN (a level looser than the standing stop is dropped);${POSITION_WAKE_ENABLED ? ` wake bands: cooldown_wake_above must sit above current price and cooldown_wake_below beneath it, a band at/beyond your standing SL/TP is dropped (the bracket fires there first), and a band closer than ~${POSITION_WAKE_MIN_ATR} primary-ATR to current price is dropped (noise);` : ''} cooldown_minutes, cooldown_wake_confirm_minutes and the entry-only fields (entry_limit_price, entry_trigger_price) stay null in a position.`
-        : `Output hygiene — invalid values are silently clamped or dropped in code, don't waste them: take_profit_price/stop_loss_price must sit on the correct side of current price, a stop never wider than ${EXCHANGE_SL_MAX_ATR_MULT}×ATR from it; cooldown_wake_above must sit above current price and cooldown_wake_below below it (a wrong-side band is dropped, the cooldown stays); cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_confirm_minutes to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}; on a fired wake, a re-armed band on the side that just fired is dropped. Resting entries drop the WHOLE entry rather than clamping: a price on the wrong side for the field you used, closer than its minimum window, both price fields set at once, or a tool this venue cannot rest — each of those turns your BUY/SELL into a HOLD, so re-read the resting-entry guidance before using one.`;
+        ? `Output hygiene: prices must sit on the correct side of current price and clear it by more than noise, and a stop amendment may only TIGHTEN.${POSITION_WAKE_ENABLED ? ` A wake band at/beyond your standing SL/TP, or within ~${POSITION_WAKE_MIN_ATR} primary-ATR of price, is dropped.` : ''} Entry-only and cooldown fields stay null in a position.`
+        : `Output hygiene: prices must sit on the correct side of current price and clear it by more than noise; cooldown_minutes clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES} and cooldown_wake_confirm_minutes to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}; re-arming the wake side that just fired is dropped. A resting entry is the one field that drops the WHOLE entry when invalid (wrong side for the field used, inside its minimum window, both set at once, or unsupported here) — it becomes a HOLD rather than a market order. One more way an entry can vanish: size comes from your stop distance, so a stop wide enough to put the position under this venue's minimum order size drops the entry to HOLD as well (recorded in the reason). Nothing bounds how wide a stop you may set — but past a point the trade stops existing rather than getting smaller.`;
+
+    // Sizing ownership. Stop distance sets the notional only at the moment a
+    // position is OPENED, so the "tighter stop = smaller position" half is true
+    // for an entry and false for a stop amendment on a live position — the size
+    // is already fixed there, and only the loss shrinks. In-position ticks get
+    // the amendment-true version, plus the entry version scoped to REVERSE,
+    // which is the one in-position action that opens a position.
+    const capBindsUnderPct = RISK_EQUITY_PCT / EXPOSURE_CAP_EQUITY_MULT;
+    const entrySizingRule =
+        `notional = ${RISK_EQUITY_PCT}% of equity ÷ (stop distance as a fraction of entry), capped at ` +
+        `${EXPOSURE_CAP_EQUITY_MULT}× equity in exposure. That cap binds for any stop tighter than ` +
+        `${capBindsUnderPct}% of entry — i.e. almost always — and while it binds a stop-out costs ` +
+        `${EXPOSURE_CAP_EQUITY_MULT} × your stop distance in equity, so a TIGHTER STOP IS A SMALLER ` +
+        `POSITION AND A SMALLER LOSS, not the same loss at better R`;
+    const sizingOwnershipLine = inPosition
+        ? ` Sizing is already settled for this position — it was fixed from the stop distance at entry, and amending a stop does NOT resize it (a tighter stop shrinks the remaining loss, not the exposure; only exit_size_pct changes size). On a REVERSE the new position is sized fresh: ${entrySizingRule}.`
+        : ` Position size is computed in code from your stop distance: ${entrySizingRule}. Place the stop where the setup is actually invalidated; do not shrink it to buy nominal R, and do not widen it to buy size. Your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.`;
 
     // Hard constraints, variant-scoped: flat ticks never read in-position rows
     // and vice versa. Numbering is per-variant (nothing references the numbers).
@@ -1283,15 +1292,22 @@ export function computeSwingState(
         inPosition
             ? 'Allowed actions (you are IN A POSITION): HOLD/CLOSE/REVERSE only.'
             : 'Allowed actions (you are FLAT): BUY/SELL/HOLD.',
-        `Trend guard: no counter-trend entry/flip against an aligned primary+micro trend (${trendGuardException}).`,
         // Flat entries have no timing constraint any more: micro_entry_ok was
         // demoted to a measurement (see evaluateActionability). Nothing replaces
         // the row — claiming a constraint that no longer coerces would spend the
         // model's caution on a rule that cannot fire.
-        ...(inPosition
-            ? [`Anti-flip: a repeated CLOSE/REVERSE within ${antiFlipWindow} is blocked unless ${antiFlipStrength}.`]
-            : []),
-        'Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD and risk-off forced while in a position.',
+        // Mirrors postprocessDecision's base-gate block exactly, per variant and
+        // per policy: flat is always HOLD; in a position `strict` forces CLOSE
+        // while `balanced` only demotes REVERSE→CLOSE and otherwise leaves the
+        // action alone. Stating "risk-off forced" under `balanced` (the default
+        // since 2026-09-02) would claim a coercion that cannot fire.
+        inPosition
+            ? `Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → ${
+                  strictPolicy
+                      ? 'the position is force-CLOSED whatever you answer'
+                      : 'a REVERSE is demoted to CLOSE; HOLD and CLOSE stand as you set them'
+              }.`
+            : 'Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD.',
         ...(!inPosition && REENTRY_COOLDOWN_MIN > 0
             ? [
                   `Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).${SESSION_OFFENSE_ENABLED ? ' Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.' : ''}`,
@@ -1357,6 +1373,26 @@ export function computeSwingState(
         btcContextGuidance,
         lessonsGuidance,
     ].filter((block) => !!block);
+    // VENUE & ASSET CLASS: the only per-INSTRUMENT prose in these instructions,
+    // collected in the TAIL next to the situational blocks. Prompt caching
+    // matches on PREFIX and a cron sweep mixes asset classes within one cache
+    // window, so the single asset-class line that used to sit at the TOP gave
+    // every asset class its own prefix — it diverged at char 103 of a ~20K
+    // system prompt and the measured cache-read rate was 13% overall (0 on a
+    // typical tick). Everything ABOVE this section is byte-identical for every
+    // symbol of the same variant, whatever the asset class. Keep it that way:
+    // anything per-instrument or per-tick belongs here or below, never above.
+    const venueSection = `\nVENUE & ASSET CLASS (fixed facts about this instrument — read alongside YOUR JOB)\n${[
+        assetNote,
+        costChurnLine,
+        bracketFillNote,
+        leverageGuidance,
+        inPosition ? manageGuidance : '',
+    ]
+        .filter((row) => !!row)
+        .map((row) => `- ${row}`)
+        .join('\n')}`;
+
     const situationalSection = situationalBlocks.length
         ? `\n\nSITUATIONAL DOCTRINE (optional blocks that ARE present on this tick — read alongside YOUR JOB)\n${situationalBlocks
               .map((block) => `- ${block}`)
@@ -1366,15 +1402,13 @@ export function computeSwingState(
     const sys = `
 You are an expert swing-trading market-structure analyst. Decide one action and size it.
 
-${assetNote}${venueSessionNote}${venueEventsNote}
-
 TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${inPosition ? '' : `, nano=${NANO_TIMEFRAME} (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal)`}.
-Strategy: ${primaryTimeframe} swing setups with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location. Holding horizon ~1–10 days. Prefer fewer, higher-quality trades; avoid churn.
+Scale: ${primaryTimeframe} is the execution timeframe and you are consulted on its bar close, so a position typically lives days rather than minutes. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed, and trust HOLD + a wake band over a marginal entry taken "so you don't miss it". Plan levels; do not plan to watch.
+- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.
 - A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.
 
 INPUTS
@@ -1382,26 +1416,25 @@ INPUTS
 - S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 - market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — rested_at / rested_as = the price that entry rested at and which tool rested there (limit or stop), absent when it took the market; strategy = the play you named at the time; reissued_count = consecutive re-issues of the same resting idea collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the resting order was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested. Over several rows this is also feedback on your own play selection and entry mechanics on THIS instrument: if one strategy or one resting tool keeps producing never_filled or quick losses here while another works, that is data about this market, not a rule — read it and adjust.
-- Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections.${situationalBlocks.length ? ' The ones present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions.' : ' This tick carries none beyond the keys described above.'}
+- Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections. Any present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions; when that section is absent this tick carries none beyond the keys described above.
 
 DECISION OWNERSHIP
-- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${isCapital ? '' : ' Position size is computed in code from a fixed dollar risk and your stop distance — your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.'}
+- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to.${sizingOwnershipLine}
 - The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:
 ${hardConstraintsBlock}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
-- Pick the highest-quality action consistent with STATE, then size it. Structure (BOS/CHoCH/breakout-retest) outweighs raw momentum.
-- Location vs regime: prefer entries aligned with macro+context. Counter-regime only at extreme location with clean invalidation. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.
-${inPosition ? '' : `- Level-bounce entries are a first-class setup, NOT a counter-regime fade: at one primary level (dist_atr ≤ ~${ACTIONABILITY_NEAR_ATR}) with the opposite level far (≥ ~${ACTIONABILITY_ROOM_ATR} ATR of room) and micro structure turning that way, an entry toward the room is legitimate even when macro/context lean against it. Judge it on the level's strength/state and the micro turn; invalidation sits just beyond the level, so the risk is defined. Do not reject these solely for regime misalignment.\n`}- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean "do not enter": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.
-- Extension (risk control, not a signal): |state.extension_atr.micro| ≥ ${extensionMicroAvoid} or |state.extension_atr.primary| ≥ ${extensionPrimaryAvoid} → avoid fresh entries; micro > ${extensionMicroNoEntry} → strongly prefer none.${!inPosition && hasCooldownWake ? ' This governs ROUTINE scans — this tick is a wake-band evaluation, which has its own extension rule (see SITUATIONAL DOCTRINE).' : ''} RSI extremes are NOT a counter-trend trigger by themselves — only "permission" once structure shows damage/flip.
-- Wave position (state.geometry — WHERE in the wave to act; structure/levels still decide WHETHER): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high), slope_atr is its drift per bar. Time entries into the wave, not onto its crest: in an up-sloping channel prefer longs near the channel low / last_swing_low (channel_pos ≲ 0.4) and AVOID fresh longs at channel_pos ≳ 0.75 or right at last_swing_high without a confirmed break — mirror for shorts in a down-slope. support_trendline / resistance_trendline give the live trendline price and slope; a close through them plus a structure signal = break, a touch alone = reaction point.${inPosition ? '' : ' When geometry.nano is present, use it to fine-time the trigger (nano wave trough in an up leg beats a nano crest) — never as a standalone reason to trade against micro/primary structure.'} If a good setup sits at a bad wave position, HOLD and wait for the pullback rather than paying the crest.
-- ${costChurnLine}${
+- Decide the action from STATE and place its bracket. STATE gives you structure (BOS/CHoCH/breakout-retest), momentum, location and regime as separate measurements; how you weigh them against each other is the judgment this call exists to make, and nothing here ranks them for you.
+- Location vs regime: state.biases.macro / .context are the higher-timeframe lean, and alignment with them is a measurement you weigh, not a requirement — a counter-regime entry at a well-defined level with clean invalidation is a normal trade, not an exception that needs justifying. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.
+- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean "do not enter": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.
+- Extension: state.extension_atr is how far price has travelled from its EMA20, in ATRs — the distance a market fill would be paying up for, and the distance a pullback would give back. What to do with it is yours.
+- Wave position (state.geometry): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high) and slope_atr is its drift per bar, so together they say where in the current leg price sits and which way the leg is going. support_trendline / resistance_trendline give the live trendline price and slope; a close through one plus a structure signal is a break, a touch alone is a reaction point.${inPosition ? '' : ' geometry.nano is the same measurement one timeframe down, for fine-timing.'} Whether a given position in the wave is a place to buy, to fade, or to wait is a read, and it is yours.${
         inPosition
-            ? `\n- PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.\n- In-position discipline (this is a SWING trade — the resting TP/SL bracket is the exit plan, your job is to protect it, not to re-litigate it every look): the DEFAULT action is HOLD, tightening stop_loss_price behind structure as profit builds (tighten-only, enforced). A full CLOSE is justified ONLY by (a) a CONFIRMED primary-timeframe structure flip against the position (BOS/CHoCH against you, or the primary breakout/breakdown that founded the entry decisively unwound), (b) the thesis completing at/near the target, or (c) a failed break-entry trigger (market.failed_break, when it appears). Proximity to an opposite level that has NOT rejected, micro-timeframe wiggles, an event on the calendar, or impatience are NOT close reasons — near a level the correct tools are a stop tighten or, after meaningful gains into a MAJOR opposite level, a 30–70% trim (exit_size_pct). Every early full exit forfeits the multi-ATR target the entry's risk was sized against. REVERSE = full close then open opposite (exit_size_pct=100, no partials) and only on a confirmed primary structure flip.\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure. Those earlier user turns are ABBREVIATED records (marked as such): they keep the readings each past decision rested on, but their candles, orderbook, geometry and news were dropped as stale. That is by design, not missing data — never treat a field's absence THERE as a change in the market, and read every current measurement from the STATE/MARKET of THIS turn, which is complete.`
+            ? `\n- PnL scales — state.position.unrealized_pnl_pct_on_margin (and max_drawdown_pct/max_profit_pct) are leverage-multiplied return on margin; price_move_pct and closing_guardrails.price_vs_breakeven_pct are on PRICE scale. Judge "how far has this actually moved" on price scale, not margin scale.\n- Managing the position: you have four moves and they are not ranked — HOLD (leave the standing bracket to work), amend a leg, trim part of it (exit_size_pct under 100), or close it (100). The bracket you left last time is already an exit plan that works without you between looks, so HOLD is what happens if you do nothing, not a recommendation. What is worth knowing: an exit forfeits whatever the remaining target was worth, and a re-entry later pays the round trip again — both are costs to weigh, neither is a rule. REVERSE is a full close plus an opposite open in one action (exit_size_pct=100, no partials).\n- Entry thesis: earlier turns of this conversation are your own entry decision and management ticks for this position — manage against that thesis: HOLD while it stays intact; trim/CLOSE when it is invalidated or has played out. Weigh it as context, not a command: current structure wins on conflict. If this conversation has no earlier turns (position adopted mid-life), judge purely from current structure. Those earlier user turns are ABBREVIATED records (marked as such): they keep the readings each past decision rested on, but their candles, orderbook, geometry and news were dropped as stale. That is by design, not missing data — never treat a field's absence THERE as a change in the market, and read every current measurement from the STATE/MARKET of THIS turn, which is complete.`
             : ''
     }
-- Exchange-side TP/SL bracket (${bracketVenueNote}):
-  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} ALWAYS set take_profit_price: a structural price target (next opposing level from state.levels, measured move, or value-area edge), at least ~${ENTRY_TP_MIN_ATR} primary-ATR away. It rests on the exchange until it fills or a later evaluation amends it. If you output null, the system attaches a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default. You SHOULD also set stop_loss_price: the structural invalidation level (just past the swing/level that voids the setup), ${ENTRY_SL_MIN_ATR}–${EXCHANGE_SL_MAX_ATR_MULT} primary-ATR from entry. If you output null (or the level is invalid), a wide ${EXCHANGE_SL_MAX_ATR_MULT}×ATR catastrophe stop is attached instead — a real structural stop is almost always better than that default.${
+- Exchange-side TP/SL bracket:
+  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. Their distances are yours: no minimum on either, and no required ratio between them. A tight stop with a near target and a wide stop with a far one are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
         inPosition
             ? `\n  • On HOLD or partial CLOSE, you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.`
             : ''
@@ -1426,11 +1459,11 @@ ${
 - PLACEMENT: arm a band only at a level you would actually be willing to act on when it fires. If the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO — watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection.
 - When a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), you are not limited to chasing or re-arming: rest an order back at the broken level's retest, or arm the retest band with confirm null and a note saying what you intend there. Re-arming the side that JUST fired is dropped in code — choose a different level or a different tool.
 `
-    }- ${leverageGuidance}${inPosition && manageGuidance ? `\n- ${manageGuidance}` : ''}${
+    }${
         inPosition
-            ? `\n- Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.`
+            ? `- Position truthfulness: never describe a position as winning when unrealized_pnl_pct_on_margin < 0 or price_vs_breakeven_pct is on the losing side.\n`
             : ''
-    }${situationalSection}
+    }${venueSection}${situationalSection}
 
 OUTPUT (every response)
 - Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys:
@@ -1539,6 +1572,13 @@ MARKET: ${JSON.stringify(compactMarket)}`;
         forex_session_context,
     };
 
+    const trendlineDistAtr = (priceNow?: number | null): number | null => {
+        const atrP = Number(atr_primary);
+        if (!Number.isFinite(priceNow as number) || !Number.isFinite(atrP) || atrP <= 0) return null;
+        if (!Number.isFinite(last) || last <= 0) return null;
+        return Math.abs(last - (priceNow as number)) / atrP;
+    };
+
     const actionability = evaluateActionability({
         primaryBreakoutConfirmed,
         primaryBreakdownConfirmed,
@@ -1558,6 +1598,11 @@ MARKET: ${JSON.stringify(compactMarket)}`;
         contextSupportState: contextSR?.support?.level_state ?? null,
         contextResistanceDistAtr: contextSR?.resistance?.dist_in_atr ?? null,
         contextResistanceState: contextSR?.resistance?.level_state ?? null,
+        // Geometry door inputs. Trendlines carry price_now, not a distance, so
+        // the ATR normalization happens here where `last` and `atr_primary` live.
+        primaryChannelPos: primaryGeometry?.channel_pos ?? null,
+        primarySupportTrendlineDistAtr: trendlineDistAtr(primaryGeometry?.support_trendline?.price_now),
+        primaryResistanceTrendlineDistAtr: trendlineDistAtr(primaryGeometry?.resistance_trendline?.price_now),
     });
 
     return { signalStrength, context, assemble, actionability };

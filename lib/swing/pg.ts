@@ -166,6 +166,8 @@ async function ensureSwingSchema(): Promise<void> {
               symbol           TEXT NOT NULL,
               status           TEXT NOT NULL,
               last_response_id TEXT NOT NULL,
+              -- Dialect that wrote the transcript ('responses' | 'messages').
+              -- Legacy rows/default carry 'openai' — read as 'responses'.
               provider         TEXT NOT NULL DEFAULT 'openai',
               transcript       JSONB,
               turns            INT NOT NULL DEFAULT 1,
@@ -555,11 +557,13 @@ export type SwingAiThread = {
     status: SwingAiThreadStatus;
     lastResponseId: string;
     turns: number;
-    // 'openai' (conversation lives server-side, lastResponseId is the chain
-    // head) or 'claude' (conversation is the transcript below). Rows written
-    // before the provider column default to 'openai'.
-    provider: string;
-    // Claude only: full message history ({role, content}[]) resent each tick.
+    // Which DIALECT wrote the transcript below — 'responses' or 'messages'
+    // (lib/aiError.ts). The two formats are not interchangeable, so a tick
+    // only chains onto a thread whose dialect matches the active one. Rows
+    // written before the rename carry 'openai'/'claude' and are read as the
+    // dialect each implied; the column keeps its old name.
+    dialect: string;
+    // Messages dialect only: full message history ({role, content}[]) resent each tick.
     transcript: unknown[] | null;
     // In-position wake bands (see schema comment) — null when none armed.
     wakeAbove: number | null;
@@ -596,7 +600,7 @@ export async function getSwingAiThread(platform: string, symbol: string): Promis
         status,
         lastResponseId: row.last_response_id,
         turns: Number(row.turns) || 1,
-        provider: row.provider === 'claude' ? 'claude' : 'openai',
+        dialect: row.provider === 'claude' || row.provider === 'messages' ? 'messages' : 'responses',
         transcript: Array.isArray(row.transcript) ? row.transcript : null,
         wakeAbove: finitePos(row.wake_above),
         wakeBelow: finitePos(row.wake_below),
@@ -606,22 +610,22 @@ export async function getSwingAiThread(platform: string, symbol: string): Promis
 }
 
 // Insert or advance the conversation. A fresh entry decision REPLACES any prior
-// thread outright (new conversation); an in-position tick advances turns.
-// OpenAI advances the chain head only; Claude also replaces the stored
-// transcript with the caller-provided continuation (already truncated).
+// thread outright (new conversation); an in-position tick advances turns. The
+// Responses dialect advances the chain head only; Messages also replaces the
+// stored transcript with the caller-provided continuation (already truncated).
 export async function upsertSwingAiThread(params: {
     platform: string;
     symbol: string;
     status: SwingAiThreadStatus;
     lastResponseId: string;
-    provider?: string;
+    dialect?: string;
     transcript?: unknown[] | null;
 }): Promise<void> {
     if (!isSwingPgConfigured()) return;
     if (!params.lastResponseId) return;
     await ensureSwingSchema();
     const db = swingPg();
-    const provider = params.provider === 'claude' ? 'claude' : 'openai';
+    const provider = params.dialect === 'messages' || params.dialect === 'claude' ? 'messages' : 'responses';
     const transcriptJson = Array.isArray(params.transcript) && params.transcript.length ? JSON.stringify(params.transcript) : null;
     await db.$executeRaw(sql`
         INSERT INTO swing.ai_threads (platform, symbol, status, last_response_id, provider, transcript)

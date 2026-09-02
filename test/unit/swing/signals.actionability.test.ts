@@ -125,13 +125,101 @@ test('bounce survives a near context wall that is already broken', () => {
     assert.deepEqual(out, { actionable: true, reason: 'bounce_long' });
 });
 
-test('sandwiched with no break stays non-actionable', () => {
+// ---------------------------------------------------------------------------
+// Doors (c) anchor and (d) geometry, added 2026-09-03. Doors (a) and (b) both
+// key on a move that has already happened; these key on whether there is a risk
+// anchor near price, which is what the location-first strategies need.
+// ---------------------------------------------------------------------------
+
+test('the symmetric box is actionable — this is the range fade, not still water', () => {
+    // Was the headline `boxed_or_unconfirmed` case until the anchor door: both
+    // levels inside NEAR, so the bounce door's ROOM requirement can never be met
+    // however the micro turns. Exactly the trade dropping ENTRY_TP_MIN_ATR was
+    // meant to make expressible.
     const out = evaluateActionability({
         ...base,
         primarySupportDistAtr: 0.3,
         primaryResistanceDistAtr: 0.4,
         microBos: true,
         microBosDir: 'up',
+    });
+    assert.deepEqual(out, { actionable: true, reason: 'at_primary_level_boxed' });
+});
+
+test('at one level with no room and no micro turn is actionable, and names its side', () => {
+    // The bounce door needs BOTH room and a micro turn; the anchor door needs
+    // neither — the level alone defines invalidation.
+    const atSup = evaluateActionability({ ...base, primarySupportDistAtr: 0.4, primaryResistanceDistAtr: 1.0 });
+    assert.deepEqual(atSup, { actionable: true, reason: 'at_primary_support' });
+    const atRes = evaluateActionability({ ...base, primarySupportDistAtr: 1.0, primaryResistanceDistAtr: 0.5 });
+    assert.deepEqual(atRes, { actionable: true, reason: 'at_primary_resistance' });
+});
+
+test('the confirmed and bounce doors still win over the anchor door', () => {
+    // Ordering matters for the skip/decision trail: a tick that is BOTH at a
+    // level and confirmed must keep reporting the stronger reason.
+    const confirmed = evaluateActionability({
+        ...base,
+        primarySupportDistAtr: 0.3,
+        primaryResistanceDistAtr: 0.4,
+        primaryBreakoutConfirmed: true,
+        primaryBreakState: 'above',
+    });
+    assert.equal(confirmed.reason, 'confirmed_primary_structure');
+    const bounce = evaluateActionability({
+        ...base,
+        primarySupportDistAtr: 0.3,
+        primaryResistanceDistAtr: 2.0,
+        microBos: true,
+        microBosDir: 'up',
+    });
+    assert.equal(bounce.reason, 'bounce_long');
+});
+
+test('deep pullback to the channel floor is actionable with no level in reach', () => {
+    // primaryBreakState flips to 'inside' once price comes back through the last
+    // swing extreme, so without the geometry door the DEEP pullback — the better
+    // entry — is dropped while the shallow one passes.
+    const low = evaluateActionability({ ...base, primaryChannelPos: 0.1 });
+    assert.deepEqual(low, { actionable: true, reason: 'channel_low' });
+    const high = evaluateActionability({ ...base, primaryChannelPos: 0.92 });
+    assert.deepEqual(high, { actionable: true, reason: 'channel_high' });
+});
+
+test('mid-channel is not a geometry door', () => {
+    assert.equal(evaluateActionability({ ...base, primaryChannelPos: 0.5 }).actionable, false);
+    assert.equal(evaluateActionability({ ...base, primaryChannelPos: 0.7 }).actionable, false);
+});
+
+test('a trendline within NEAR_ATR is an anchor even with no swing level near', () => {
+    const sup = evaluateActionability({ ...base, primarySupportTrendlineDistAtr: 0.3 });
+    assert.deepEqual(sup, { actionable: true, reason: 'at_support_trendline' });
+    const res = evaluateActionability({ ...base, primaryResistanceTrendlineDistAtr: 0.55 });
+    assert.deepEqual(res, { actionable: true, reason: 'at_resistance_trendline' });
+    const far = evaluateActionability({ ...base, primarySupportTrendlineDistAtr: 1.2 });
+    assert.equal(far.actionable, false);
+});
+
+test('still water is still the only skip: no break, no level, no edge, no trendline', () => {
+    const out = evaluateActionability({
+        ...base,
+        primarySupportDistAtr: 1.0,
+        primaryResistanceDistAtr: 1.0,
+        primaryChannelPos: 0.5,
+        primarySupportTrendlineDistAtr: 2.0,
+        primaryResistanceTrendlineDistAtr: 2.2,
+    });
+    assert.deepEqual(out, { actionable: false, reason: 'boxed_or_unconfirmed' });
+});
+
+test('absent geometry never opens a door on its own', () => {
+    // Short candle history → computeWaveGeometry returns null → every geometry
+    // field arrives null. That must read as "not measured", not "at the edge".
+    const out = evaluateActionability({
+        ...base,
+        primaryChannelPos: null,
+        primarySupportTrendlineDistAtr: null,
+        primaryResistanceTrendlineDistAtr: null,
     });
     assert.deepEqual(out, { actionable: false, reason: 'boxed_or_unconfirmed' });
 });

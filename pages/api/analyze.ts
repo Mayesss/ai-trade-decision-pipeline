@@ -52,7 +52,8 @@ import { computeSwingState } from '../../lib/swing/prompt';
 import { postprocessDecision, sanitizeRestingEntry, sanitizeEntryTrigger, sanitizeExchangeTpSl, sanitizeHoldCooldown, sanitizePositionWake } from '../../lib/swing/decisionRules';
 import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../lib/swing/decisionConfig';
 import { AiCallError } from '../../lib/aiError';
-import { callSwingDecision, resolveSwingAiProvider } from '../../lib/aiProvider';
+import { callSwingDecision, resolveSwingAiDialect } from '../../lib/aiProvider';
+import { vendorForAiModel } from '../../lib/aiModel';
 import { truncateClaudeTranscript } from '../../lib/claudeAi';
 import { getGates } from '../../lib/gates';
 
@@ -929,7 +930,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // (row written by the other model family) degrades the CONVERSATION to
         // stateless at the call site, but thread lifecycle (pending-entry flag,
         // sweeps) is provider-independent and keeps using the row as-is.
-        let aiThreadProvider: string | null = null;
+        let aiThreadDialect: string | null = null;
         let aiThreadTranscript: unknown[] | null = null;
         // In-position wake bands armed on this thread by a previous management
         // look (ENABLE_POSITION_WAKE_BANDS) — checked against live price below
@@ -949,7 +950,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             await markSwingAiThreadInPosition(platform, symbol);
                         }
                         aiThreadResponseId = aiThread.lastResponseId;
-                        aiThreadProvider = aiThread.provider;
+                        aiThreadDialect = aiThread.dialect;
                         aiThreadTranscript = aiThread.transcript;
                         if (POSITION_WAKE_ENABLED && (aiThread.wakeAbove !== null || aiThread.wakeBelow !== null)) {
                             threadWake = {
@@ -978,7 +979,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         }
                     } else {
                         aiThreadResponseId = aiThread.lastResponseId;
-                        aiThreadProvider = aiThread.provider;
+                        aiThreadDialect = aiThread.dialect;
                         aiThreadTranscript = aiThread.transcript;
                     }
                 }
@@ -2583,10 +2584,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // 6d) Extension hard gate: flat + price extremely extended from EMA20 → no
-        // AI call. The prompt already tells the model to avoid fresh entries beyond
-        // these thresholds (same numbers via resolveExtensionThresholds), and it
-        // complies: every extension-flavored flat HOLD observed (micro |ext| 2.7–5.5
-        // ATR, RSI 12–29 / 69–79) was the AI re-deriving this rule — a wasted call.
+        // AI call. The justification is now purely empirical and NO LONGER rests on
+        // the prompt agreeing: every extension-flavored flat HOLD observed (micro
+        // |ext| 2.7–5.5 ATR, RSI 12–29 / 69–79) was the model declining on its own,
+        // so the call bought nothing. The prompt used to state these thresholds and
+        // stopped on 2026-09-02 — which makes this a gate the model cannot see, and
+        // the measurement above is the whole case for it. If flat entries at high
+        // extension start looking attractive, re-measure rather than assuming
+        // compliance that is no longer being asked for.
         // Flat entries only — in-position ticks always proceed (exits/trims can be
         // needed regardless, and extension often argues FOR taking profit).
         const extThresholds = resolveExtensionThresholds(decisionPolicy);
@@ -2918,8 +2923,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // stateless — the prompt's "position adopted mid-life" branch covers it —
         // and this tick's persist below re-anchors the thread on the active
         // provider.
-        const activeChainProvider = resolveSwingAiProvider();
-        const chainedTranscript = aiThreadProvider === activeChainProvider ? aiThreadTranscript : null;
+        const activeChainDialect = resolveSwingAiDialect();
+        const chainedTranscript = aiThreadDialect === activeChainDialect ? aiThreadTranscript : null;
         // A CONFIRMED wake fire — the band held for the model's own confirm
         // window, or the break extended beyond it by force. This used to skip
         // the AI and execute a synthetic entry (wakeAutoEntry, deleted
@@ -2941,7 +2946,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const {
             json: decisionRaw,
             responseId: aiResponseId,
-            provider: aiCallProvider,
             model: aiCallModel,
             usage: aiCallUsage,
             appendTurns: aiAppendTurns,
@@ -2960,7 +2964,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             context,
             gates: gatesOut.gates,
             positionOpen,
-            recentActions,
             positionContext,
             policy: decisionPolicy,
             lastClosedPosition,
@@ -2984,11 +2987,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // and is meaningful only when this tick actually chained.
         decision.response_id = aiResponseId;
         decision.previous_response_id =
-            aiThreadProvider === activeChainProvider ? aiThreadResponseId : null;
+            aiThreadDialect === activeChainDialect ? aiThreadResponseId : null;
         // Which provider/model served this call and what it cost (cache activity
         // included) — rides in ai_decision_json next to response_id, so every
         // decision row is self-describing for post-mortems and token audits.
-        decision.ai_provider = aiCallProvider;
+        // WHO answered (the model's vendor — 'zai', 'openai', 'anthropic'),
+        // not which dialect carried it: the dialect no longer identifies the
+        // vendor, and this row is what a post-mortem reads back.
+        decision.ai_provider = aiCallModel ? vendorForAiModel(aiCallModel) : null;
         decision.ai_model = aiCallModel;
         decision.ai_usage = aiCallUsage;
 
@@ -3462,7 +3468,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // turn + assistant response) to the transcript the tick chained
                 // onto, capped so a long-lived position can't grow the row
                 // unboundedly.
-                const activeProvider = resolveSwingAiProvider();
+                const activeDialect = resolveSwingAiDialect();
                 const nextTranscript =
                     Array.isArray(aiAppendTurns) && aiAppendTurns.length
                         ? truncateClaudeTranscript([
@@ -3489,7 +3495,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         symbol,
                         status: restingAfterExec ? 'pending_entry' : 'in_position',
                         lastResponseId: aiResponseId,
-                        provider: activeProvider,
+                        dialect: activeDialect,
                         transcript: nextTranscript,
                     });
                 } else if (positionOpen) {
@@ -3498,7 +3504,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         symbol,
                         status: 'in_position',
                         lastResponseId: aiResponseId,
-                        provider: activeProvider,
+                        dialect: activeDialect,
                         transcript: nextTranscript,
                     });
                 } else if (aiThreadResponseId) {

@@ -1,37 +1,40 @@
 // lib/aiProvider.ts
 //
-// Provider switch for every swing AI call. Which model family gets prompted is
-// decided by SWING_AI_PROVIDER (env), not by the call sites: 'openai' routes to
-// the GPT Responses-API client in lib/ai.ts, 'claude' to the Anthropic Messages
-// client in lib/claudeAi.ts (phase 2). Call sites are provider-agnostic — they
-// pass system/user/schema plus a thread context and get parsed JSON back.
+// Dialect switch for every swing AI call — WHICH WIRE FORMAT, not which
+// vendor: 'responses' routes to the OpenAI Responses client in lib/openAi.ts
+// (which carries whatever vendor DEFAULT_AI_MODEL names — zai/glm-5.3 today),
+// 'messages' to the Anthropic Messages client in lib/claudeAi.ts. Decided by
+// SWING_AI_PROVIDER (env, legacy name — it takes the legacy 'openai'/'claude'
+// values as well as the dialect names) or else inferred from the model id.
+// Call sites are dialect-agnostic: they pass system/user/schema plus a thread
+// context and get parsed JSON back.
 
-import { coerceAiCallError } from './aiError';
+import { coerceAiCallError, type AiDialect } from './aiError';
 import { callClaudeSwingDecision } from './claudeAi';
 import { callAIThread } from './openAi';
-import { providerForAiModel } from './aiModel';
+import { dialectForAiModel } from './aiModel';
 import { DEFAULT_AI_MODEL } from './constants';
 import { reportSwingAiFailure, reportSwingAiSuccess } from './swing/aiHealth';
 
-export type SwingAiProvider = 'openai' | 'claude';
-
-export function resolveSwingAiProvider(): SwingAiProvider {
+export function resolveSwingAiDialect(): AiDialect {
     const raw = String(process.env.SWING_AI_PROVIDER || '')
         .trim()
         .toLowerCase();
-    if (raw === 'claude') return 'claude';
-    if (raw === 'openai') return 'openai';
-    // No env override: the provider is whoever owns DEFAULT_AI_MODEL
+    // 'claude'/'openai' are the values already set in prod — kept as aliases
+    // so the env var does not have to be edited in lockstep with a deploy.
+    if (raw === 'messages' || raw === 'claude' || raw === 'anthropic') return 'messages';
+    if (raw === 'responses' || raw === 'openai') return 'responses';
+    // No env override: the dialect is the one DEFAULT_AI_MODEL speaks
     // (inferred from the model id — lib/constants.ts).
-    return providerForAiModel(DEFAULT_AI_MODEL);
+    return dialectForAiModel(DEFAULT_AI_MODEL);
 }
 
 // Conversation context for a threaded (per-order) decision call. Both
-// providers are stateless through the AI Gateway, so both chain through the
-// stored transcript (swing.ai_threads.transcript) resent every tick — Claude
-// stores full MessageParam turns (thinking blocks included), OpenAI plain
-// {role, content} text turns. Formats differ per provider, so a transcript
-// written by the other model family must not be passed here.
+// dialects are stateless through the AI Gateway, so both chain through the
+// stored transcript (swing.ai_threads.transcript) resent every tick — the
+// Messages dialect stores full MessageParam turns (thinking blocks included),
+// the Responses dialect plain {role, content} text turns. The formats differ,
+// so a transcript written by the OTHER dialect must not be passed here.
 export type SwingThreadContext = {
     transcript?: unknown[] | null;
 };
@@ -41,10 +44,11 @@ export type SwingDecisionCallResult = {
     // Provider id of THIS call (OpenAI `resp_...`, Claude `msg_...`) — persisted
     // on the decision row; chained decisions link through it on the dashboard.
     responseId: string | null;
-    // Which provider/model actually served the call plus its token accounting
-    // (provider-uniform field names) — persisted on the decision row so
-    // post-mortems can reconstruct exactly what ran and what it cost.
-    provider: SwingAiProvider;
+    // Which dialect carried the call and which model actually answered, plus
+    // token accounting in dialect-uniform field names. The decision row keeps
+    // the MODEL (and the vendor read off it) — that, not the dialect, is what
+    // a post-mortem needs to know about what ran and what it cost.
+    dialect: AiDialect;
     model: string | null;
     usage: {
         input_tokens: number;
@@ -68,7 +72,7 @@ export async function callSwingDecision(params: {
     // receives `user`; this only shrinks what a chained thread resends later.
     userForTranscript?: string | null;
 }): Promise<SwingDecisionCallResult> {
-    const provider = resolveSwingAiProvider();
+    const dialect = resolveSwingAiDialect();
     // Every failure leaves here as a typed AiCallError (billing/config/
     // transient — lib/aiError.ts) and updates the global health flag
     // (lib/swing/aiHealth.ts). This is the single choke point for all swing AI
@@ -76,7 +80,7 @@ export async function callSwingDecision(params: {
     // instead of dying as an anonymous 500 per symbol.
     try {
         let result: SwingDecisionCallResult;
-        if (provider === 'claude') {
+        if (dialect === 'messages') {
             const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
                 params.system,
                 params.user,
@@ -86,7 +90,7 @@ export async function callSwingDecision(params: {
                     userForTranscript: params.userForTranscript ?? null,
                 },
             );
-            result = { json, responseId, provider, model, usage, appendTurns };
+            result = { json, responseId, dialect, model, usage, appendTurns };
         } else {
             const { json, responseId, model, usage, appendTurns } = await callAIThread(
                 params.system,
@@ -97,18 +101,18 @@ export async function callSwingDecision(params: {
                     userForTranscript: params.userForTranscript ?? null,
                 },
             );
-            result = { json, responseId, provider, model, usage, appendTurns };
+            result = { json, responseId, dialect, model, usage, appendTurns };
         }
         await reportSwingAiSuccess();
         return result;
     } catch (err) {
-        const aiErr = coerceAiCallError(err, provider);
+        const aiErr = coerceAiCallError(err, dialect);
         await reportSwingAiFailure(aiErr);
         throw aiErr;
     }
 }
 
-// Stateless convenience path (forex advisor, evaluations): same provider
+// Stateless convenience path (forex advisor, evaluations): same dialect
 // switch, no thread, parsed JSON only.
 export async function callStatelessAI(
     system: string,

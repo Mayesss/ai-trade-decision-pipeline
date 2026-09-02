@@ -7,7 +7,13 @@
 // (decisionRules.ts) reason with.
 
 import type { MultiTFIndicators } from '../indicators';
-import { ACTIONABILITY_NEAR_ATR, ACTIONABILITY_ROOM_ATR, ACTIONABILITY_WALL_ATR, REENTRY_COOLDOWN_MIN } from './decisionConfig';
+import {
+    ACTIONABILITY_NEAR_ATR,
+    ACTIONABILITY_ROOM_ATR,
+    ACTIONABILITY_WALL_ATR,
+    ACTIONABILITY_CHANNEL_EDGE,
+    REENTRY_COOLDOWN_MIN,
+} from './decisionConfig';
 import type { MomentumSignals, SwingGatesInput, LastClosedPosition, ActionabilityInputs, PromptDecisionContext } from './decisionConfig';
 
 const indicatorRegexCache = new Map<string, RegExp>();
@@ -219,7 +225,58 @@ export function evaluateActionability(x: ActionabilityInputs): { actionable: boo
     if (shortBounceIntoWall) return { actionable: true, reason: 'bounce_short_into_context_wall' };
     if (longBounce) return { actionable: true, reason: 'bounce_long' };
     if (shortBounce) return { actionable: true, reason: 'bounce_short' };
-    // sandwiched / no break → the AI HOLDs these; skip the call.
+
+    // (c) ANCHOR door — at a primary level, either side, with no room or micro
+    // requirement. Doors (a) and (b) both key on the same thing: a move that has
+    // already happened. Every strategy that starts from LOCATION rather than
+    // momentum fails them, so relaxing their thresholds only ever admits weaker
+    // breakouts and weaker bounces. This door keys on a different measurement —
+    // is there a defined risk anchor near price — which is what a range fade, a
+    // reversal at a level and a bounce with no room all actually need, and which
+    // is strategy-neutral by construction.
+    //
+    // Concretely this is what admits the SYMMETRIC range: (b) demands
+    // ACTIONABILITY_ROOM_ATR on the far side, so a tight box never reached the
+    // model even after the entry TP floor was dropped to make range trading
+    // expressible (docs/measured-hold-causes.md §4).
+    const atSupport = sup != null && sup <= ACTIONABILITY_NEAR_ATR;
+    const atResistance = res != null && res <= ACTIONABILITY_NEAR_ATR;
+    if (atSupport || atResistance) {
+        const both = atSupport && atResistance;
+        return {
+            actionable: true,
+            reason: both ? 'at_primary_level_boxed' : atSupport ? 'at_primary_support' : 'at_primary_resistance',
+        };
+    }
+
+    // (d) GEOMETRY door — the wave's own structure, for setups with no swing S/R
+    // nearby at all. primaryBreakState is "last close beyond the last swing
+    // extreme", so it stays true while price holds out there: a SHALLOW pullback
+    // still passes (a), but a DEEP one — price back at the channel floor or the
+    // trendline, the better-priced entry — flips to 'inside' and then needs a
+    // level within NEAR_ATR to survive. Without this door the gate systematically
+    // admits price that has LEFT a level and drops price that has come BACK to
+    // one, which is a bias toward chasing, not toward breakouts as such.
+    const channelPos = Number.isFinite(x.primaryChannelPos as number) ? (x.primaryChannelPos as number) : null;
+    const atChannelLow = channelPos != null && channelPos <= ACTIONABILITY_CHANNEL_EDGE;
+    const atChannelHigh = channelPos != null && channelPos >= 1 - ACTIONABILITY_CHANNEL_EDGE;
+    if (atChannelLow) return { actionable: true, reason: 'channel_low' };
+    if (atChannelHigh) return { actionable: true, reason: 'channel_high' };
+
+    const supTl = Number.isFinite(x.primarySupportTrendlineDistAtr as number)
+        ? (x.primarySupportTrendlineDistAtr as number)
+        : null;
+    const resTl = Number.isFinite(x.primaryResistanceTrendlineDistAtr as number)
+        ? (x.primaryResistanceTrendlineDistAtr as number)
+        : null;
+    if (supTl != null && supTl <= ACTIONABILITY_NEAR_ATR) return { actionable: true, reason: 'at_support_trendline' };
+    if (resTl != null && resTl <= ACTIONABILITY_NEAR_ATR) return { actionable: true, reason: 'at_resistance_trendline' };
+
+    // Still water: no break, no level within NEAR_ATR on either side, not at a
+    // channel edge, no trendline in reach. Nothing to anchor invalidation to, so
+    // there is no trade to price — this is the only case code decides alone.
+    // Everything admitted above still faces the ai-bouncer, which prices the call
+    // and may decline it; a cost filter may skip work, never override a gate.
     return { actionable: false, reason: 'boxed_or_unconfirmed' };
 }
 

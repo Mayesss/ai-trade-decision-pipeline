@@ -40,7 +40,6 @@ function decide(decision: Record<string, unknown>, flagOn: boolean) {
             context: openContext,
             gates: gatesOk,
             positionOpen: true,
-            recentActions: [],
             positionContext: null,
             policy: 'balanced',
         });

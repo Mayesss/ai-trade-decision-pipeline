@@ -232,22 +232,6 @@ GET https://api-capital.backend-capital.com/api/v1/prices/EURUSD?max=40&resoluti
   x-cap-api-key: test-capital-key
   x-security-token: test-security-token
 
-SQL neon-postgres
-  {
-    "text": "SELECT position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage FROM swing.positions WHERE status = 'closed' AND ($1::text IS NULL OR platform = $2) AND ($3::text IS NULL OR symbol = $4) AND ( (exit_ts_ms IS NOT NULL AND exit_ts_ms >= $5 AND exit_ts_ms <= $6) OR (exit_ts_ms IS NULL AND entry_ts_ms IS NOT NULL AND entry_ts_ms >= $7 AND entry_ts_ms <= $8) ) ORDER BY COALESCE(exit_ts_ms, entry_ts_ms, 0) ASC LIMIT $9;",
-    "values": [
-      "capital",
-      "capital",
-      "EURUSD",
-      "EURUSD",
-      1787928994241,
-      <NOW_MS>,
-      1787928994241,
-      <NOW_MS>,
-      10
-    ]
-  }
-
 POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Acapital%3AEURUSD/0/11
   authorization: Bearer <TOKEN>
 

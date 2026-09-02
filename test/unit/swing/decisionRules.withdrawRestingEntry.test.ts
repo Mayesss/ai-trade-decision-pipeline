@@ -36,7 +36,6 @@ const run = (decision: Record<string, unknown>, positionOpen = false) =>
         context,
         gates: gatesOk,
         positionOpen,
-        recentActions: [],
         positionContext: positionOpen ? { side: 'long', hold_minutes: 60 } : null,
     }) as Record<string, unknown>;
 
@@ -64,23 +63,21 @@ test('in a position the field is inert — nothing rests', () => {
 });
 
 test('a withdraw on a HOLD coerced from an entry still applies', () => {
-    // The trend guard demotes this BUY to HOLD. The model asked to withdraw and
-    // is now flat-HOLD, so the withdraw is honoured on the coerced action rather
+    // Base gates demote this BUY to HOLD (the trend guard that used to be the
+    // example here was removed 2026-09-02). The model asked to withdraw and is
+    // now flat-HOLD, so the withdraw is honoured on the coerced action rather
     // than silently lost with the entry.
-    const demoted = run({
-        action: 'BUY',
-        withdraw_resting_entry: true,
-    });
-    assert.equal(demoted.action, 'BUY');
-    // ...and when the guard actually fires, the action is HOLD and withdraw holds.
-    const guarded = postprocessDecision({
+    const ungated = run({ action: 'BUY', withdraw_resting_entry: true });
+    assert.equal(ungated.action, 'BUY');
+    assert.equal(ungated.withdraw_resting_entry, false);
+
+    const gated = postprocessDecision({
         decision: { action: 'BUY', withdraw_resting_entry: true },
-        context: { ...context, primary_trend_down: true, micro_bias_calc: 'DOWN' },
-        gates: gatesOk,
+        context,
+        gates: { spread_ok: true, liquidity_ok: false, atr_ok: true, slippage_ok: true },
         positionOpen: false,
-        recentActions: [],
         positionContext: null,
     }) as Record<string, unknown>;
-    assert.equal(guarded.action, 'HOLD');
-    assert.equal(guarded.withdraw_resting_entry, true);
+    assert.equal(gated.action, 'HOLD');
+    assert.equal(gated.withdraw_resting_entry, true);
 });

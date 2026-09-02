@@ -51,7 +51,7 @@ test('OpenAI path: Responses API call with replayed transcript', async () => {
     });
 
     expect(result.json).toEqual(DECISION);
-    expect(result.provider).toBe('openai');
+    expect(result.dialect).toBe('responses');
     expect(result.responseId).toBe('resp_test-1');
     expect(result.usage).toEqual({
         input_tokens: 1000,
@@ -83,7 +83,7 @@ test('Claude path: Messages API call with cache breakpoints and echoed thinking 
     });
 
     expect(result.json).toEqual(DECISION);
-    expect(result.provider).toBe('claude');
+    expect(result.dialect).toBe('messages');
     expect(result.responseId).toBe('msg_test-1');
     expect(result.usage).toEqual({
         input_tokens: 1000,

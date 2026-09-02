@@ -162,17 +162,29 @@ export type CapitalMarketContextForPrompt = {
 };
 
 export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
-    const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'strict')
+    // Default flipped strict -> balanced 2026-09-02. `strict` existed mainly to
+    // remove the trend guard's exception (the guard is gone) and to tighten the
+    // anti-flip lookback (also gone). What it still changes: the extension
+    // thresholds below, and forcing CLOSE rather than HOLD when base gates fail
+    // in a position — and forcing an exit into a market whose spread/liquidity
+    // just failed is the worse of the two.
+    const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'balanced')
         .trim()
         .toLowerCase();
     return raw === 'balanced' ? 'balanced' : 'strict';
 }
 
 // Extension (distance from EMA20, in ATRs) thresholds per decision policy.
-// Single source of truth for BOTH the prompt's soft-judgment prose and the
-// pre-AI extension hard gate in /api/analyze: beyond `avoid` the prompt tells
-// the model to avoid fresh entries — empirically it always HOLDs there, so the
-// gate skips the call entirely when flat.
+// Sole consumer since 2026-09-02: the pre-AI extension hard gate in
+// /api/analyze. It used to also feed prompt prose ("avoid fresh entries beyond
+// X") — that prose is gone, so these numbers are no longer stated to the model
+// and nothing in the prompt can drift from them.
+//
+// NOTE: the strict -> balanced default flip (resolveDecisionPolicy) moves every
+// number here, so it loosened the extension gate 2.5 -> 2.8 ATR as a side
+// effect. Deliberate but incidental: it was not part of the case for the flip,
+// and it is the one behavioural change the flip makes on ticks that never reach
+// the model at all.
 export function resolveExtensionThresholds(policy?: DecisionPolicy | string | null): {
     microAvoid: number;
     microNoEntry: number;
@@ -214,9 +226,24 @@ export const ACTIONABILITY_ROOM_ATR = (() => {
     return Number.isFinite(n) && n > 0 ? n : 1.5;
 })();
 
+// Door 4 (geometry): how close to the channel edge counts as "at the edge".
+// channel_pos is 0 at the channel low and 1 at the high, so 0.15 admits the
+// outer ~15% at either end — a pullback to the channel floor in an up-slope,
+// or its mirror. Deliberately tighter than a "wave position" read: this only
+// decides whether the tick is worth a call, not whether the trade is good.
+export const ACTIONABILITY_CHANNEL_EDGE = (() => {
+    const n = Number(process.env.SWING_ACTIONABILITY_CHANNEL_EDGE);
+    return Number.isFinite(n) && n > 0 && n < 0.5 ? n : 0.15;
+})();
+
 // A setup pressing within this ATR distance of a near, unbroken MAJOR (context)
-// opposing level is rejected (the AI HOLDs those: "confirmed breakdown but
-// sitting on major weekly support" and the bullish mirror). Re-validated
+// opposing level. This NO LONGER REJECTS — since 2026-08-30 the wall branches
+// return actionable:true and only name the wall in the reason, so the trail
+// stays queryable and the model weighs the wall itself (it reaches the prompt
+// as location.context_*_dist_atr). The threshold now only decides which of two
+// actionable reasons gets recorded. The measurement that once justified
+// rejecting, kept because it is what would have to be re-argued to bring the
+// rejection back: re-validated
 // 2026-07-08 over 8 weeks / 800 flat AI calls: at 0.5 the check (applied to
 // both the confirmed and bounce branches) skips 72 more S/R-flavored HOLD
 // calls than 0.3 and blocks exactly 1 recorded open — a GOLD short into weekly
@@ -239,9 +266,16 @@ export const ACTIONABILITY_WALL_ATR = (() => {
 // the decision history: same-direction re-opens within hours of a close were fee
 // bleed (e.g. 3 NATURALGAS SELLs and 3 US100 BUYs on single days). One primary bar
 // (4H) by default; 0 disables.
+// Default 240 -> 0 (off) 2026-09-02. The anti-churn case was real (repeat
+// same-day opens bled fees) but it is a blanket directional block: it also eats
+// the reclaim re-entry after a stop-out, which is the highest-edge version of
+// the same trade, and its exception is gated behind SWING_SESSION_OFFENSE_ENABLED
+// which is off for swing. market.recent_actions already shows the model its own
+// recent closes and their PnL, so it can decline a churn re-entry itself.
+// Set SWING_REENTRY_COOLDOWN_MIN=240 to restore it if churn reappears.
 export const REENTRY_COOLDOWN_MIN = (() => {
     const n = Number(process.env.SWING_REENTRY_COOLDOWN_MIN);
-    return Number.isFinite(n) && n >= 0 ? n : 240;
+    return Number.isFinite(n) && n >= 0 ? n : 0;
 })();
 
 // ------------------------------
@@ -374,6 +408,11 @@ export type ActionabilityInputs = {
     contextSupportState?: string | null;
     contextResistanceDistAtr?: number | null;
     contextResistanceState?: string | null;
+    // Primary wave geometry — the anchor/geometry doors (see evaluateActionability).
+    // Distances are ABSOLUTE primary-ATR from current price.
+    primaryChannelPos?: number | null;
+    primarySupportTrendlineDistAtr?: number | null;
+    primaryResistanceTrendlineDistAtr?: number | null;
 };
 
 export type PromptDecisionContext = {
@@ -424,25 +463,42 @@ export const HOLD_COOLDOWN_MAX_MINUTES = (() => {
 // exchange-side bracket instead of an unbounded upside leg.
 export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
 
-// A stop may never sit wider than the catastrophe distance from CURRENT price,
-// and an amendment may never sit further from price than the STANDING stop —
-// amendments tighten protection, never loosen it (blocks walking the stop away
-// on a losing position).
-export const EXCHANGE_SL_MAX_ATR_MULT = 3;
+// (No stop-WIDTH ceiling. EXCHANGE_SL_MAX_ATR_MULT = 3 capped how far a stop
+// could sit from price — a leftover from stop-blind fixed-notional sizing.
+// Sizing is now risk-based (notional = riskUsd / stopDistancePct), so a wider
+// stop is already a proportionally smaller position at identical dollar risk:
+// the cap did no risk work, it only overrode structure. It never fired once in
+// 2,435 calls. Amendments are still tighten-only, which is the guard that
+// actually blocks walking a stop away from a losing position.)
 
-// Swing floors: a 1–10 day hold has to survive many 4H bars, so a target
-// closer than 2 primary-ATR isn't a swing target and a stop inside 1 ATR sits
-// in routine oscillation (live record: 0.46%-avg stops were swept in minutes —
-// trades <1h old carried the entire system loss).
-export const ENTRY_TP_MIN_ATR = 2;
+// Bracket geometry is the MODEL's, not ours. The two floors that used to sit
+// here — ENTRY_TP_MIN_ATR=2 and ENTRY_SL_MIN_ATR=1 — were removed 2026-09-02.
+// Both looked like risk control and were really strategy: together they made any
+// trade inside a sub-2-ATR range inexpressible, which is the breakout bias
+// written as arithmetic. Measured over 45 days (docs/measured-hold-causes.md):
+// 84.5% of AI calls were HOLD, 23.8% naming room/reward/target as the blocker —
+// one verbatim, "limiting a compliant swing target". They also failed backwards:
+// a violating leg was DROPPED and replaced by the wide default, so asking for a
+// near target produced a far one.
+//
+// What code still owns after this is exactly three things — legs on the correct
+// side of price, a noise floor (BRACKET_MIN_GAP_ATR), and tighten-only stop
+// amends. All three are mechanical facts about the venue, not views on the
+// trade. Whether a target pays for its stop is a judgment made with the levels
+// in view, so it sits with the model, which has them.
+//
+// Sizing absorbs the tight stops this admits: notional = riskUsd /
+// stopDistancePct is capped at EXPOSURE_CAP_EQUITY_MULT× equity (riskSizing.ts),
+// a ceiling that already bound at the old 1-ATR floor, so removing it lowers
+// realized risk rather than raising it.
 
-// An entry stop closer than this is inside ordinary bar noise and would likely
-// be wicked out immediately — dropped in favour of the catastrophe default.
-export const ENTRY_SL_MIN_ATR = 1;
+// (No TP ceiling either. TP_MAX_ATR = 10 never fired, and a target too far to
+// reach is inert rather than dangerous — it simply does not fill.)
 
-export const TP_MAX_ATR = 10;
-
-export const AMEND_MIN_GAP_ATR = 0.1;
+// The only distance a bracket leg must clear, entry or amendment: enough to be
+// a price rather than noise sitting on top of the current print. Not a view on
+// whether the target is any good — that judgment is the model's.
+export const BRACKET_MIN_GAP_ATR = 0.1;
 
 // Resting-entry distance envelope, in primary ATR from live price. An invalid
 // resting price (wrong side for its kind, inside the noise band, or

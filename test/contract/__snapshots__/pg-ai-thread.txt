@@ -6,7 +6,7 @@ SQL neon-postgres
       "EURUSD",
       "in_position",
       "resp_test-1",
-      "openai",
+      "responses",
       "[{\"role\":\"user\",\"content\":\"this tick state\"}]"
     ]
   }

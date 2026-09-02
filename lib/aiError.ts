@@ -12,25 +12,30 @@
 // - 'transient' — rate limits, 5xx, network, malformed model output. Expected
 //                 to clear on its own; only a streak of these is noteworthy.
 
-export type AiCallProvider = 'openai' | 'claude';
+// WHICH WIRE FORMAT the call speaks, named after the gateway endpoint it hits
+// (/v1/responses, /v1/messages) — NOT which vendor served it. The two are
+// independent: the gateway speaks the OpenAI Responses dialect for every
+// provider it hosts, so zai/glm-5.3 and openai/gpt-5.6-sol both ride
+// 'responses'. Vendor is a property of the MODEL ID (vendorForAiModel).
+export type AiDialect = 'responses' | 'messages';
 export type AiErrorKind = 'billing' | 'config' | 'transient';
 
 export class AiCallError extends Error {
-    readonly provider: AiCallProvider;
+    readonly dialect: AiDialect;
     readonly status: number | null;
     readonly code: string | null;
     readonly kind: AiErrorKind;
 
     constructor(params: {
         message: string;
-        provider: AiCallProvider;
+        dialect: AiDialect;
         status?: number | null;
         code?: string | null;
         kind?: AiErrorKind;
     }) {
         super(params.message);
         this.name = 'AiCallError';
-        this.provider = params.provider;
+        this.dialect = params.dialect;
         this.status = params.status ?? null;
         this.code = params.code ?? null;
         this.kind =
@@ -81,8 +86,8 @@ export function classifyAiFailure(params: {
 // Wraps anything a provider client can throw (network TypeError, JSON-parse
 // Error, ...) so callers can rely on every AI failure being an AiCallError.
 // Already-typed errors pass through untouched.
-export function coerceAiCallError(err: unknown, provider: AiCallProvider): AiCallError {
+export function coerceAiCallError(err: unknown, dialect: AiDialect): AiCallError {
     if (err instanceof AiCallError) return err;
     const message = err instanceof Error ? err.message : String(err);
-    return new AiCallError({ message, provider, kind: 'transient' });
+    return new AiCallError({ message, dialect, kind: 'transient' });
 }

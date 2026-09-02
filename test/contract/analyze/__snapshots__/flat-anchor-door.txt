@@ -1,0 +1,961 @@
+GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/account/accounts?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.account_snapshots ( platform, symbol, captured_at_ms, leverage, equity, available, margin_used, open_position_json ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8::jsonb );",
+    "values": [
+      "bitget",
+      "ETHUSDT",
+      <NOW_MS>,
+      null,
+      10000,
+      null,
+      null,
+      null
+    ]
+  }
+
+GET https://api.bitget.com/api/v2/mix/account/accounts?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/order/orders-pending?productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/order/orders-plan-pending?planType=normal_plan&productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/ticker?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=4H&limit=30&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/orderbook?limit=100&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/current-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/history-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/open-interest?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/funding-time?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1H&limit=200&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1D&limit=200&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1W&limit=200&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=4H&limit=200&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://kv.boundary.test/ZREVRANGEBYSCORE/decision%3Amarkers%3Abitget%3AETHUSDT/<NOW_MS>/1772130256422/LIMIT/0/1200
+  authorization: Bearer <TOKEN>
+
+GET https://api.bitget.com/api/v2/mix/market/ticker?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=15m&limit=106&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/orderbook?limit=100&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/current-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/history-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/open-interest?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/funding-time?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "SELECT position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage FROM swing.positions WHERE status = 'closed' AND ($1::text IS NULL OR platform = $2) AND ($3::text IS NULL OR symbol = $4) AND ( (exit_ts_ms IS NOT NULL AND exit_ts_ms >= $5 AND exit_ts_ms <= $6) OR (exit_ts_ms IS NULL AND entry_ts_ms IS NOT NULL AND entry_ts_ms >= $7 AND entry_ts_ms <= $8) ) ORDER BY COALESCE(exit_ts_ms, entry_ts_ms, 0) ASC LIMIT $9;",
+    "values": [
+      "bitget",
+      "bitget",
+      "ETHUSDT",
+      "ETHUSDT",
+      1772130256422,
+      <NOW_MS>,
+      1772130256422,
+      <NOW_MS>,
+      1000
+    ]
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:candles:v1:bitget:ETHUSDT:15m:1986601",
+    1200,
+    "[{\"time\":1787846400,\"open\":2520.45,\"high\":2526,\"low\":2515.01,\"close\":2522.65},{\"time\":1787847300,\"open\":2522.65,\"high\":2527.19,\"low\":2520.59,\"close\":2520.83},{\"time\":1787848200,\"open\":2520.83,\"high\":2532.25,\"low\":2517.27,\"close\":2529.75},{\"time\":1787849100,\"open\":2529.75,\"high\":2530,\"low\":2520.71,\"close\":2520.76},{\"time\":1787850000,\"open\":2520.76,\"high\":2530.75,\"low\":2514.63,\"close\":2528.09},{\"time\":1787850900,\"open\":2528.09,\"high\":2532.65,\"low\":2522.51,\"close\":2522.9},{\"time\":1787851800,\"open\":2522.9,\"high\":2525.6,\"low\":2516.4,\"close\":2517.26},{\"time\":1787852700,\"open\":2517.26,\"high\":2521.18,\"low\":2514.01,\"close\":2516.86},{\"time\":1787853600,\"open\":2516.86,\"high\":2517.36,\"low\":2492,\"close\":2499.05},{\"time\":1787854500,\"open\":2499.05,\"high\":2502.07,\"low\":2487.11,\"close\":2492.27},{\"time\":1787855400,\"open\":2492.27,\"high\":2496.78,\"low\":2490.01,\"close\":2495.86},{\"time\":1787856300,\"open\":2495.86,\"high\":2506.07,\"low\":2494.02,\"close\":2505.66},{\"time\":1787857200,\"open\":2505.66,\"high\":2511.34,\"low\":2503.88,\"close\":2508.77},{\"time\":1787858100,\"open\":2508.77,\"high\":2510.72,\"low\":2505.9,\"close\":2510.61},{\"time\":1787859000,\"open\":2510.61,\"high\":2513.04,\"low\":2506.37,\"close\":2509.11},{\"time\":1787859900,\"open\":2509.11,\"high\":2510.44,\"low\":2496,\"close\":2496.76},{\"time\":1787860800,\"open\":2496.76,\"high\":2499.7,\"low\":2493.29,\"close\":2495.13},{\"time\":1787861700,\"open\":2495.13,\"high\":2504.43,\"low\":2494.46,\"close\":2501.95},{\"time\":1787862600,\"open\":2501.95,\"high\":2505.6,\"low\":2501.29,\"close\":2504.91},{\"time\":1787863500,\"open\":2504.91,\"high\":2506.88,\"low\":2500.17,\"close\":2506.88},{\"time\":1787864400,\"open\":2506.88,\"high\":2507.79,\"low\":2502.2,\"close\":2504.38},{\"time\":1787865300,\"open\":2504.38,\"high\":2504.67,\"low\":2499.11,\"close\":2500.76},{\"time\":1787866200,\"open\":2500.76,\"high\":2503.5,\"low\":2497.72,\"close\":2498.67},{\"time\":1787867100,\"open\":2498.67,\"high\":2503.88,\"low\":2497.43,\"close\":2503.1},{\"time\":1787868000,\"open\":2503.1,\"high\":2511.7,\"low\":2503.09,\"close\":2508.51},{\"time\":1787868900,\"open\":2508.51,\"high\":2516.45,\"low\":2508.47,\"close\":2511.63},{\"time\":1787869800,\"open\":2511.63,\"high\":2513.5,\"low\":2509.05,\"close\":2511.8},{\"time\":1787870700,\"open\":2511.8,\"high\":2514.7,\"low\":2509.94,\"close\":2513.83},{\"time\":1787871600,\"open\":2513.83,\"high\":2516.37,\"low\":2509.4,\"close\":2510.12},{\"time\":1787872500,\"open\":2510.12,\"high\":2514.93,\"low\":2507.65,\"close\":2513.02},{\"time\":1787873400,\"open\":2513.02,\"high\":2513.46,\"low\":2509.5,\"close\":2509.77},{\"time\":1787874300,\"open\":2509.77,\"high\":2511.65,\"low\":2508.14,\"close\":2509.9},{\"time\":1787875200,\"open\":2509.9,\"high\":2510.5,\"low\":2504.62,\"close\":2507.02},{\"time\":1787876100,\"open\":2507.02,\"high\":2512.97,\"low\":2506.71,\"close\":2512.01},{\"time\":1787877000,\"open\":2512.01,\"high\":2518.07,\"low\":2508.75,\"close\":2514.51},{\"time\":1787877900,\"open\":2514.51,\"high\":2519.34,\"low\":2511.62,\"close\":2514.55},{\"time\":1787878800,\"open\":2514.55,\"high\":2524.5,\"low\":2514.46,\"close\":2520.6},{\"time\":1787879700,\"open\":2520.6,\"high\":2528.77,\"low\":2519.03,\"close\":2527.56},{\"time\":1787880600,\"open\":2527.56,\"high\":2534.44,\"low\":2516.69,\"close\":2518},{\"time\":1787881500,\"open\":2518,\"high\":2519,\"low\":2506.4,\"close\":2511.28},{\"time\":1787882400,\"open\":2511.28,\"high\":2511.5,\"low\":2501.93,\"close\":2502.01},{\"time\":1787883300,\"open\":2502.01,\"high\":2504.27,\"low\":2490.57,\"close\":2493.86},{\"time\":1787884200,\"open\":2493.86,\"high\":2499.53,\"low\":2489.04,\"close\":2495.92},{\"time\":1787885100,\"open\":2495.92,\"high\":2496.11,\"low\":2484.79,\"close\":2491.33},{\"time\":1787886000,\"open\":2491.33,\"high\":2492.5,\"low\":2485.25,\"close\":2489.37},{\"time\":1787886900,\"open\":2489.37,\"high\":2494.75,\"low\":2489.16,\"close\":2491.51},{\"time\":1787887800,\"open\":2491.51,\"high\":2494,\"low\":2488,\"close\":2488.38},{\"time\":1787888700,\"open\":2488.38,\"high\":2491.98,\"low\":2487.76,\"close\":2489},{\"time\":1787889600,\"open\":2489,\"high\":2491.4,\"low\":2475.51,\"close\":2491.4},{\"time\":1787890500,\"open\":2491.4,\"high\":2495.8,\"low\":2486.2,\"close\":2489.14},{\"time\":1787891400,\"open\":2489.14,\"high\":2489.56,\"low\":2482.02,\"close\":2485.74},{\"time\":1787892300,\"open\":2485.74,\"high\":2487.55,\"low\":2483.77,\"close\":2485},{\"time\":1787893200,\"open\":2485,\"high\":2487.22,\"low\":2480.63,\"close\":2484.47},{\"time\":1787894100,\"open\":2484.47,\"high\":2489.62,\"low\":2481.83,\"close\":2488.8},{\"time\":1787895000,\"open\":2488.8,\"high\":2494.93,\"low\":2488.27,\"close\":2493.98},{\"time\":1787895900,\"open\":2493.98,\"high\":2497.01,\"low\":2490.87,\"close\":2492.54},{\"time\":1787896800,\"open\":2492.54,\"high\":2503,\"low\":2492.53,\"close\":2502.55},{\"time\":1787897700,\"open\":2502.55,\"high\":2502.58,\"low\":2499.69,\"close\":2500.38},{\"time\":1787898600,\"open\":2500.38,\"high\":2501.9,\"low\":2498.01,\"close\":2500.21},{\"time\":1787899500,\"open\":2500.21,\"high\":2504.67,\"low\":2499.95,\"close\":2502.17},{\"time\":1787900400,\"open\":2502.17,\"high\":2502.62,\"low\":2493,\"close\":2495.87},{\"time\":1787901300,\"open\":2495.87,\"high\":2498.53,\"low\":2494.1,\"close\":2497.9},{\"time\":1787902200,\"open\":2497.9,\"high\":2498.39,\"low\":2494.1,\"close\":2494.25},{\"time\":1787903100,\"open\":2494.25,\"high\":2496.45,\"low\":2494.24,\"close\":2495.63},{\"time\":1787904000,\"open\":2495.63,\"high\":2503.55,\"low\":2495.63,\"close\":2496.43},{\"time\":1787904900,\"open\":2496.43,\"high\":2501.46,\"low\":2496.43,\"close\":2497.1},{\"time\":1787905800,\"open\":2497.1,\"high\":2498.16,\"low\":2493.75,\"close\":2493.75},{\"time\":1787906700,\"open\":2493.75,\"high\":2494.59,\"low\":2485.74,\"close\":2487.61},{\"time\":1787907600,\"open\":2487.61,\"high\":2492.6,\"low\":2482.37,\"close\":2488.68},{\"time\":1787908500,\"open\":2488.68,\"high\":2492.41,\"low\":2488.68,\"close\":2490.57},{\"time\":1787909400,\"open\":2490.57,\"high\":2492.4,\"low\":2487.39,\"close\":2488.42},{\"time\":1787910300,\"open\":2488.42,\"high\":2490.98,\"low\":2487.8,\"close\":2489.28},{\"time\":1787911200,\"open\":2489.28,\"high\":2490,\"low\":2481.4,\"close\":2486.97},{\"time\":1787912100,\"open\":2486.97,\"high\":2488.62,\"low\":2483.7,\"close\":2488.44},{\"time\":1787913000,\"open\":2488.44,\"high\":2494.47,\"low\":2488.43,\"close\":2493.01},{\"time\":1787913900,\"open\":2493.01,\"high\":2509.05,\"low\":2492.72,\"close\":2506},{\"time\":1787914800,\"open\":2506,\"high\":2511.26,\"low\":2504.78,\"close\":2508.88},{\"time\":1787915700,\"open\":2508.88,\"high\":2510.06,\"low\":2503.68,\"close\":2504.89},{\"time\":1787916600,\"open\":2504.89,\"high\":2507.71,\"low\":2501.6,\"close\":2504.65},{\"time\":1787917500,\"open\":2504.65,\"high\":2505.88,\"low\":2501.9,\"close\":2504.29},{\"time\":1787918400,\"open\":2504.29,\"high\":2505.93,\"low\":2499.01,\"close\":2500.62},{\"time\":1787919300,\"open\":2500.62,\"high\":2507.51,\"low\":2499.49,\"close\":2500.16},{\"time\":1787920200,\"open\":2500.16,\"high\":2500.29,\"low\":2494.16,\"close\":2498.1},{\"time\":1787921100,\"open\":2498.1,\"high\":2498.52,\"low\":2495.16,\"close\":2498.15},{\"time\":1787922000,\"open\":2498.15,\"high\":2503.24,\"low\":2496,\"close\":2499.56},{\"time\":1787922900,\"open\":2499.56,\"high\":2500.51,\"low\":2494.19,\"close\":2497.58},{\"time\":1787923800,\"open\":2497.58,\"high\":2504.45,\"low\":2495.11,\"close\":2496.51},{\"time\":1787924700,\"open\":2496.51,\"high\":2518.5,\"low\":2495.33,\"close\":2508.33},{\"time\":1787925600,\"open\":2508.33,\"high\":2525.45,\"low\":2466.68,\"close\":2476.68},{\"time\":1787926500,\"open\":2476.68,\"high\":2493.08,\"low\":2470.49,\"close\":2490.8},{\"time\":1787927400,\"open\":2490.8,\"high\":2526,\"low\":2485.3,\"close\":2509.24},{\"time\":1787928300,\"open\":2509.24,\"high\":2514.76,\"low\":2499.09,\"close\":2512.53},{\"time\":1787929200,\"open\":2512.53,\"high\":2519,\"low\":2501.14,\"close\":2502.54},{\"time\":1787930100,\"open\":2502.54,\"high\":2512.13,\"low\":2501.53,\"close\":2506.44},{\"time\":1787931000,\"open\":2506.44,\"high\":2507.49,\"low\":2486.41,\"close\":2487.9},{\"time\":1787931900,\"open\":2487.9,\"high\":2494.53,\"low\":2468.57,\"close\":2470.48},{\"time\":1787932800,\"open\":2470.48,\"high\":2472.92,\"low\":2443.7,\"close\":2444.04},{\"time\":1787933700,\"open\":2444.04,\"high\":2449.77,\"low\":2405,\"close\":2430.2},{\"time\":1787934600,\"open\":2430.2,\"high\":2447.09,\"low\":2428.85,\"close\":2436.44},{\"time\":1787935500,\"open\":2436.44,\"high\":2444.92,\"low\":2436.01,\"close\":2441.6},{\"time\":1787936400,\"open\":2441.6,\"high\":2445.13,\"low\":2437,\"close\":2445.13},{\"time\":1787937300,\"open\":2445.13,\"high\":2448.82,\"low\":2437.64,\"close\":2442.28},{\"time\":1787938200,\"open\":2442.28,\"high\":2445.49,\"low\":2436.86,\"close\":2438.5},{\"time\":1787939100,\"open\":2438.5,\"high\":2446.35,\"low\":2438.5,\"close\":2443.4},{\"time\":1787940000,\"open\":2443.4,\"high\":2444.72,\"low\":2438,\"close\":2438.37},{\"time\":1787940900,\"open\":2438.37,\"high\":2439.79,\"low\":2429.32,\"close\":2431.6}]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:candles:v1:bitget:ETHUSDT:1H:496650",
+    3900,
+    "[{\"time\":1787223600,\"open\":2285.88,\"high\":2318.56,\"low\":2281.01,\"close\":2295.47},{\"time\":1787227200,\"open\":2295.47,\"high\":2299.98,\"low\":2266.75,\"close\":2289.48},{\"time\":1787230800,\"open\":2289.48,\"high\":2297.9,\"low\":2255,\"close\":2275.95},{\"time\":1787234400,\"open\":2275.95,\"high\":2288.5,\"low\":2270.24,\"close\":2280.41},{\"time\":1787238000,\"open\":2280.41,\"high\":2337.47,\"low\":2280.41,\"close\":2324.89},{\"time\":1787241600,\"open\":2324.89,\"high\":2359.47,\"low\":2312.69,\"close\":2343.88},{\"time\":1787245200,\"open\":2343.88,\"high\":2350.57,\"low\":2331.23,\"close\":2342.84},{\"time\":1787248800,\"open\":2342.84,\"high\":2346.8,\"low\":2309.25,\"close\":2315.06},{\"time\":1787252400,\"open\":2315.06,\"high\":2331.5,\"low\":2310.63,\"close\":2322.63},{\"time\":1787256000,\"open\":2322.63,\"high\":2330.79,\"low\":2312.55,\"close\":2317.44},{\"time\":1787259600,\"open\":2317.44,\"high\":2325.71,\"low\":2312.25,\"close\":2317.79},{\"time\":1787263200,\"open\":2317.79,\"high\":2318.4,\"low\":2306.16,\"close\":2313.22},{\"time\":1787266800,\"open\":2313.22,\"high\":2339.49,\"low\":2312.09,\"close\":2325.99},{\"time\":1787270400,\"open\":2325.99,\"high\":2351.34,\"low\":2323.5,\"close\":2339.85},{\"time\":1787274000,\"open\":2339.85,\"high\":2381,\"low\":2337.5,\"close\":2358.67},{\"time\":1787277600,\"open\":2358.67,\"high\":2364.56,\"low\":2341.69,\"close\":2344.66},{\"time\":1787281200,\"open\":2344.66,\"high\":2353.65,\"low\":2336,\"close\":2340.02},{\"time\":1787284800,\"open\":2340.02,\"high\":2355.13,\"low\":2340.01,\"close\":2353.32},{\"time\":1787288400,\"open\":2353.32,\"high\":2368,\"low\":2348.18,\"close\":2367.37},{\"time\":1787292000,\"open\":2367.37,\"high\":2384.96,\"low\":2353.87,\"close\":2371.22},{\"time\":1787295600,\"open\":2371.22,\"high\":2397.91,\"low\":2368.01,\"close\":2371.18},{\"time\":1787299200,\"open\":2371.18,\"high\":2449.46,\"low\":2369.76,\"close\":2444.69},{\"time\":1787302800,\"open\":2444.69,\"high\":2446.94,\"low\":2375.19,\"close\":2403.59},{\"time\":1787306400,\"open\":2403.59,\"high\":2411.4,\"low\":2390,\"close\":2394.63},{\"time\":1787310000,\"open\":2394.63,\"high\":2398.65,\"low\":2355.28,\"close\":2370.04},{\"time\":1787313600,\"open\":2370.04,\"high\":2397.1,\"low\":2364.59,\"close\":2388},{\"time\":1787317200,\"open\":2388,\"high\":2406.98,\"low\":2367.1,\"close\":2386.9},{\"time\":1787320800,\"open\":2386.9,\"high\":2396.98,\"low\":2368.19,\"close\":2393.15},{\"time\":1787324400,\"open\":2393.15,\"high\":2407.99,\"low\":2390.45,\"close\":2392.71},{\"time\":1787328000,\"open\":2392.71,\"high\":2412.6,\"low\":2382.57,\"close\":2405.33},{\"time\":1787331600,\"open\":2405.33,\"high\":2426.88,\"low\":2400.61,\"close\":2422.73},{\"time\":1787335200,\"open\":2422.73,\"high\":2431.26,\"low\":2394.25,\"close\":2419.41},{\"time\":1787338800,\"open\":2419.41,\"high\":2420.09,\"low\":2406.1,\"close\":2412.37},{\"time\":1787342400,\"open\":2412.37,\"high\":2447.49,\"low\":2406.94,\"close\":2439.99},{\"time\":1787346000,\"open\":2439.99,\"high\":2522.99,\"low\":2433.21,\"close\":2513.46},{\"time\":1787349600,\"open\":2513.46,\"high\":2548.92,\"low\":2507.05,\"close\":2521.99},{\"time\":1787353200,\"open\":2521.99,\"high\":2547.71,\"low\":2509.1,\"close\":2515.43},{\"time\":1787356800,\"open\":2515.43,\"high\":2522.74,\"low\":2490.22,\"close\":2521.51},{\"time\":1787360400,\"open\":2521.51,\"high\":2528,\"low\":2505.13,\"close\":2505.41},{\"time\":1787364000,\"open\":2505.41,\"high\":2522,\"low\":2494.35,\"close\":2514.93},{\"time\":1787367600,\"open\":2514.93,\"high\":2526.23,\"low\":2510.95,\"close\":2513.77},{\"time\":1787371200,\"open\":2513.77,\"high\":2529.28,\"low\":2504.64,\"close\":2513.18},{\"time\":1787374800,\"open\":2513.18,\"high\":2517.46,\"low\":2381.2,\"close\":2439.3},{\"time\":1787378400,\"open\":2439.3,\"high\":2442.89,\"low\":2410.14,\"close\":2436.92},{\"time\":1787382000,\"open\":2436.92,\"high\":2447.48,\"low\":2425.41,\"close\":2432.1},{\"time\":1787385600,\"open\":2432.1,\"high\":2440.75,\"low\":2410.96,\"close\":2424.87},{\"time\":1787389200,\"open\":2424.87,\"high\":2428.83,\"low\":2410.91,\"close\":2421.52},{\"time\":1787392800,\"open\":2421.52,\"high\":2422.5,\"low\":2387.78,\"close\":2412.43},{\"time\":1787396400,\"open\":2412.43,\"high\":2426.74,\"low\":2404.65,\"close\":2423.59},{\"time\":1787400000,\"open\":2423.59,\"high\":2437.85,\"low\":2418.62,\"close\":2428.05},{\"time\":1787403600,\"open\":2428.05,\"high\":2432.83,\"low\":2420.9,\"close\":2429.36},{\"time\":1787407200,\"open\":2429.36,\"high\":2430.95,\"low\":2408.13,\"close\":2413},{\"time\":1787410800,\"open\":2413,\"high\":2416.18,\"low\":2405,\"close\":2410.17},{\"time\":1787414400,\"open\":2410.17,\"high\":2429.46,\"low\":2408.41,\"close\":2421.95},{\"time\":1787418000,\"open\":2421.95,\"high\":2431.56,\"low\":2416.58,\"close\":2425.92},{\"time\":1787421600,\"open\":2425.92,\"high\":2434.28,\"low\":2420.99,\"close\":2426.66},{\"time\":1787425200,\"open\":2426.66,\"high\":2444,\"low\":2423.43,\"close\":2438.33},{\"time\":1787428800,\"open\":2438.33,\"high\":2443,\"low\":2428.47,\"close\":2430.98},{\"time\":1787432400,\"open\":2430.98,\"high\":2431.1,\"low\":2401.54,\"close\":2406.29},{\"time\":1787436000,\"open\":2406.29,\"high\":2424.44,\"low\":2402.97,\"close\":2413.25},{\"time\":1787439600,\"open\":2413.25,\"high\":2426.46,\"low\":2409.57,\"close\":2421.6},{\"time\":1787443200,\"open\":2421.6,\"high\":2434.94,\"low\":2418.72,\"close\":2430.13},{\"time\":1787446800,\"open\":2430.13,\"high\":2432.44,\"low\":2419.34,\"close\":2422.44},{\"time\":1787450400,\"open\":2422.44,\"high\":2423.73,\"low\":2406.05,\"close\":2416.44},{\"time\":1787454000,\"open\":2416.44,\"high\":2418.63,\"low\":2407.65,\"close\":2413.47},{\"time\":1787457600,\"open\":2413.47,\"high\":2416.87,\"low\":2370.87,\"close\":2378.05},{\"time\":1787461200,\"open\":2378.05,\"high\":2386.92,\"low\":2355.21,\"close\":2372.78},{\"time\":1787464800,\"open\":2372.78,\"high\":2396.88,\"low\":2369.59,\"close\":2389.25},{\"time\":1787468400,\"open\":2389.25,\"high\":2396.7,\"low\":2385.65,\"close\":2388.23},{\"time\":1787472000,\"open\":2388.23,\"high\":2429,\"low\":2385.84,\"close\":2412.72},{\"time\":1787475600,\"open\":2412.72,\"high\":2416.56,\"low\":2404.41,\"close\":2411.14},{\"time\":1787479200,\"open\":2411.14,\"high\":2421.31,\"low\":2410.52,\"close\":2414.99},{\"time\":1787482800,\"open\":2414.99,\"high\":2438.65,\"low\":2414.41,\"close\":2433.35},{\"time\":1787486400,\"open\":2433.35,\"high\":2433.36,\"low\":2418.01,\"close\":2426.58},{\"time\":1787490000,\"open\":2426.58,\"high\":2485.99,\"low\":2426.58,\"close\":2459.26},{\"time\":1787493600,\"open\":2459.26,\"high\":2469.45,\"low\":2387.36,\"close\":2438.08},{\"time\":1787497200,\"open\":2438.08,\"high\":2451.18,\"low\":2420.63,\"close\":2437.45},{\"time\":1787500800,\"open\":2437.45,\"high\":2459.13,\"low\":2437.45,\"close\":2449.71},{\"time\":1787504400,\"open\":2449.71,\"high\":2453.35,\"low\":2430.83,\"close\":2438.99},{\"time\":1787508000,\"open\":2438.99,\"high\":2448.51,\"low\":2433.33,\"close\":2447.27},{\"time\":1787511600,\"open\":2447.27,\"high\":2454.07,\"low\":2435.91,\"close\":2443.65},{\"time\":1787515200,\"open\":2443.65,\"high\":2449.35,\"low\":2433.99,\"close\":2449.1},{\"time\":1787518800,\"open\":2449.1,\"high\":2484.37,\"low\":2449.1,\"close\":2469.2},{\"time\":1787522400,\"open\":2469.2,\"high\":2474.01,\"low\":2450.73,\"close\":2454.24},{\"time\":1787526000,\"open\":2454.24,\"high\":2470,\"low\":2440.44,\"close\":2462.41},{\"time\":1787529600,\"open\":2462.41,\"high\":2465.42,\"low\":2440.57,\"close\":2464.27},{\"time\":1787533200,\"open\":2464.27,\"high\":2465.83,\"low\":2425.19,\"close\":2428.32},{\"time\":1787536800,\"open\":2428.32,\"high\":2450.98,\"low\":2423,\"close\":2442.62},{\"time\":1787540400,\"open\":2442.62,\"high\":2444,\"low\":2425.27,\"close\":2429.67},{\"time\":1787544000,\"open\":2429.67,\"high\":2446.04,\"low\":2427.2,\"close\":2436.95},{\"time\":1787547600,\"open\":2436.95,\"high\":2459.07,\"low\":2432.67,\"close\":2447.9},{\"time\":1787551200,\"open\":2447.9,\"high\":2463.41,\"low\":2442.85,\"close\":2455.36},{\"time\":1787554800,\"open\":2455.36,\"high\":2473.7,\"low\":2451.01,\"close\":2454.08},{\"time\":1787558400,\"open\":2454.08,\"high\":2458.79,\"low\":2435.23,\"close\":2453.26},{\"time\":1787562000,\"open\":2453.26,\"high\":2464.48,\"low\":2452.2,\"close\":2462},{\"time\":1787565600,\"open\":2462,\"high\":2491.25,\"low\":2460.09,\"close\":2464.08},{\"time\":1787569200,\"open\":2464.08,\"high\":2508.38,\"low\":2452.73,\"close\":2493.29},{\"time\":1787572800,\"open\":2493.29,\"high\":2518,\"low\":2473.2,\"close\":2511.64},{\"time\":1787576400,\"open\":2511.64,\"high\":2519.47,\"low\":2474.85,\"close\":2492.36},{\"time\":1787580000,\"open\":2492.36,\"high\":2531,\"low\":2490.04,\"close\":2514.6},{\"time\":1787583600,\"open\":2514.6,\"high\":2532.57,\"low\":2477.46,\"close\":2486.36},{\"time\":1787587200,\"open\":2486.36,\"high\":2504.92,\"low\":2465.76,\"close\":2477},{\"time\":1787590800,\"open\":2477,\"high\":2483,\"low\":2453.11,\"close\":2467.64},{\"time\":1787594400,\"open\":2467.64,\"high\":2482.49,\"low\":2465.66,\"close\":2472.93},{\"time\":1787598000,\"open\":2472.93,\"high\":2476.74,\"low\":2460.07,\"close\":2470.13},{\"time\":1787601600,\"open\":2470.13,\"high\":2478.27,\"low\":2464.02,\"close\":2474.32},{\"time\":1787605200,\"open\":2474.32,\"high\":2489.46,\"low\":2474.15,\"close\":2482.77},{\"time\":1787608800,\"open\":2482.77,\"high\":2484.46,\"low\":2471.11,\"close\":2473.27},{\"time\":1787612400,\"open\":2473.27,\"high\":2486.26,\"low\":2469.48,\"close\":2480.99},{\"time\":1787616000,\"open\":2480.99,\"high\":2504.52,\"low\":2470.69,\"close\":2491.93},{\"time\":1787619600,\"open\":2491.93,\"high\":2503.47,\"low\":2482.61,\"close\":2494.69},{\"time\":1787623200,\"open\":2494.69,\"high\":2533.35,\"low\":2490.84,\"close\":2506.66},{\"time\":1787626800,\"open\":2506.66,\"high\":2513.61,\"low\":2487.33,\"close\":2498.21},{\"time\":1787630400,\"open\":2498.21,\"high\":2503.19,\"low\":2488,\"close\":2493.92},{\"time\":1787634000,\"open\":2493.92,\"high\":2511.34,\"low\":2492.61,\"close\":2507.57},{\"time\":1787637600,\"open\":2507.57,\"high\":2514.7,\"low\":2495.01,\"close\":2499.92},{\"time\":1787641200,\"open\":2499.92,\"high\":2511.99,\"low\":2462.03,\"close\":2478.1},{\"time\":1787644800,\"open\":2478.1,\"high\":2497.91,\"low\":2473.54,\"close\":2484.11},{\"time\":1787648400,\"open\":2484.11,\"high\":2491.65,\"low\":2462.06,\"close\":2473.62},{\"time\":1787652000,\"open\":2473.62,\"high\":2485.28,\"low\":2468.5,\"close\":2481.03},{\"time\":1787655600,\"open\":2481.03,\"high\":2485.42,\"low\":2473.2,\"close\":2477.29},{\"time\":1787659200,\"open\":2477.29,\"high\":2480.71,\"low\":2455.28,\"close\":2472.88},{\"time\":1787662800,\"open\":2472.88,\"high\":2476.36,\"low\":2437.51,\"close\":2459.83},{\"time\":1787666400,\"open\":2459.83,\"high\":2483.5,\"low\":2452.79,\"close\":2475.64},{\"time\":1787670000,\"open\":2475.64,\"high\":2482.54,\"low\":2463.98,\"close\":2481.52},{\"time\":1787673600,\"open\":2481.52,\"high\":2484.31,\"low\":2465.16,\"close\":2469.5},{\"time\":1787677200,\"open\":2469.5,\"high\":2470.23,\"low\":2454.23,\"close\":2469.75},{\"time\":1787680800,\"open\":2469.75,\"high\":2474.24,\"low\":2462.78,\"close\":2466.01},{\"time\":1787684400,\"open\":2466.01,\"high\":2469.18,\"low\":2454,\"close\":2462.15},{\"time\":1787688000,\"open\":2462.15,\"high\":2463.22,\"low\":2432.3,\"close\":2435.39},{\"time\":1787691600,\"open\":2435.39,\"high\":2443.16,\"low\":2413.3,\"close\":2440.77},{\"time\":1787695200,\"open\":2440.77,\"high\":2454.61,\"low\":2440.72,\"close\":2452.76},{\"time\":1787698800,\"open\":2452.76,\"high\":2456.17,\"low\":2435.61,\"close\":2441.61},{\"time\":1787702400,\"open\":2441.61,\"high\":2449.34,\"low\":2434.33,\"close\":2445.17},{\"time\":1787706000,\"open\":2445.17,\"high\":2461,\"low\":2443.76,\"close\":2454.86},{\"time\":1787709600,\"open\":2454.86,\"high\":2469.13,\"low\":2452.79,\"close\":2463.89},{\"time\":1787713200,\"open\":2463.89,\"high\":2467.2,\"low\":2457.34,\"close\":2464.3},{\"time\":1787716800,\"open\":2464.3,\"high\":2471.81,\"low\":2454.26,\"close\":2455.64},{\"time\":1787720400,\"open\":2455.64,\"high\":2467.12,\"low\":2450,\"close\":2463.25},{\"time\":1787724000,\"open\":2463.25,\"high\":2466,\"low\":2452.13,\"close\":2458.75},{\"time\":1787727600,\"open\":2458.75,\"high\":2467.21,\"low\":2456,\"close\":2460.34},{\"time\":1787731200,\"open\":2460.34,\"high\":2468.28,\"low\":2452.01,\"close\":2454.99},{\"time\":1787734800,\"open\":2454.99,\"high\":2459.68,\"low\":2440.61,\"close\":2446.47},{\"time\":1787738400,\"open\":2446.47,\"high\":2474.99,\"low\":2443.05,\"close\":2467.63},{\"time\":1787742000,\"open\":2467.63,\"high\":2472.46,\"low\":2454.89,\"close\":2461.64},{\"time\":1787745600,\"open\":2461.64,\"high\":2470.63,\"low\":2442.03,\"close\":2453.56},{\"time\":1787749200,\"open\":2453.56,\"high\":2461.71,\"low\":2435.19,\"close\":2456.3},{\"time\":1787752800,\"open\":2456.3,\"high\":2461.45,\"low\":2437.71,\"close\":2438.37},{\"time\":1787756400,\"open\":2438.37,\"high\":2454.75,\"low\":2431.19,\"close\":2448.82},{\"time\":1787760000,\"open\":2448.82,\"high\":2454.53,\"low\":2436.21,\"close\":2443.37},{\"time\":1787763600,\"open\":2443.37,\"high\":2466.46,\"low\":2442.28,\"close\":2459.57},{\"time\":1787767200,\"open\":2459.57,\"high\":2473.52,\"low\":2457.44,\"close\":2471.45},{\"time\":1787770800,\"open\":2471.45,\"high\":2483.22,\"low\":2466.68,\"close\":2469.31},{\"time\":1787774400,\"open\":2469.31,\"high\":2473.52,\"low\":2458.56,\"close\":2471.38},{\"time\":1787778000,\"open\":2471.38,\"high\":2504.36,\"low\":2469.21,\"close\":2495.74},{\"time\":1787781600,\"open\":2495.74,\"high\":2514.98,\"low\":2488.29,\"close\":2492.55},{\"time\":1787785200,\"open\":2492.55,\"high\":2511.56,\"low\":2487.12,\"close\":2505.72},{\"time\":1787788800,\"open\":2505.72,\"high\":2509.47,\"low\":2490.57,\"close\":2490.57},{\"time\":1787792400,\"open\":2490.57,\"high\":2504.89,\"low\":2485.5,\"close\":2496.65},{\"time\":1787796000,\"open\":2496.65,\"high\":2503.72,\"low\":2491.02,\"close\":2493.6},{\"time\":1787799600,\"open\":2493.6,\"high\":2497.67,\"low\":2487.56,\"close\":2491.78},{\"time\":1787803200,\"open\":2491.78,\"high\":2494.48,\"low\":2482.39,\"close\":2486.02},{\"time\":1787806800,\"open\":2486.02,\"high\":2496.66,\"low\":2480.01,\"close\":2495.27},{\"time\":1787810400,\"open\":2495.27,\"high\":2495.27,\"low\":2482.02,\"close\":2491.75},{\"time\":1787814000,\"open\":2491.75,\"high\":2497.57,\"low\":2487.31,\"close\":2495.88},{\"time\":1787817600,\"open\":2495.88,\"high\":2545.75,\"low\":2495.72,\"close\":2529.99},{\"time\":1787821200,\"open\":2529.99,\"high\":2566.57,\"low\":2524.06,\"close\":2533.58},{\"time\":1787824800,\"open\":2533.58,\"high\":2539.13,\"low\":2484.93,\"close\":2502.81},{\"time\":1787828400,\"open\":2502.81,\"high\":2509.19,\"low\":2491.19,\"close\":2500.55},{\"time\":1787832000,\"open\":2500.55,\"high\":2506.23,\"low\":2491.07,\"close\":2494.07},{\"time\":1787835600,\"open\":2494.07,\"high\":2505.77,\"low\":2481.3,\"close\":2495.25},{\"time\":1787839200,\"open\":2495.25,\"high\":2522.57,\"low\":2487.62,\"close\":2516.05},{\"time\":1787842800,\"open\":2516.05,\"high\":2530.97,\"low\":2511.78,\"close\":2520.45},{\"time\":1787846400,\"open\":2520.45,\"high\":2532.25,\"low\":2515.01,\"close\":2520.76},{\"time\":1787850000,\"open\":2520.76,\"high\":2532.65,\"low\":2514.01,\"close\":2516.86},{\"time\":1787853600,\"open\":2516.86,\"high\":2517.36,\"low\":2487.11,\"close\":2505.66},{\"time\":1787857200,\"open\":2505.66,\"high\":2513.04,\"low\":2496,\"close\":2496.76},{\"time\":1787860800,\"open\":2496.76,\"high\":2506.88,\"low\":2493.29,\"close\":2506.88},{\"time\":1787864400,\"open\":2506.88,\"high\":2507.79,\"low\":2497.43,\"close\":2503.1},{\"time\":1787868000,\"open\":2503.1,\"high\":2516.45,\"low\":2503.09,\"close\":2513.83},{\"time\":1787871600,\"open\":2513.83,\"high\":2516.37,\"low\":2507.65,\"close\":2509.9},{\"time\":1787875200,\"open\":2509.9,\"high\":2519.34,\"low\":2504.62,\"close\":2514.55},{\"time\":1787878800,\"open\":2514.55,\"high\":2534.44,\"low\":2506.4,\"close\":2511.28},{\"time\":1787882400,\"open\":2511.28,\"high\":2511.5,\"low\":2484.79,\"close\":2491.33},{\"time\":1787886000,\"open\":2491.33,\"high\":2494.75,\"low\":2485.25,\"close\":2489},{\"time\":1787889600,\"open\":2489,\"high\":2495.8,\"low\":2475.51,\"close\":2485},{\"time\":1787893200,\"open\":2485,\"high\":2497.01,\"low\":2480.63,\"close\":2492.54},{\"time\":1787896800,\"open\":2492.54,\"high\":2504.67,\"low\":2492.53,\"close\":2502.17},{\"time\":1787900400,\"open\":2502.17,\"high\":2502.62,\"low\":2493,\"close\":2495.63},{\"time\":1787904000,\"open\":2495.63,\"high\":2503.55,\"low\":2485.74,\"close\":2487.61},{\"time\":1787907600,\"open\":2487.61,\"high\":2492.6,\"low\":2482.37,\"close\":2489.28},{\"time\":1787911200,\"open\":2489.28,\"high\":2509.05,\"low\":2481.4,\"close\":2506},{\"time\":1787914800,\"open\":2506,\"high\":2511.26,\"low\":2501.6,\"close\":2504.29},{\"time\":1787918400,\"open\":2504.29,\"high\":2507.51,\"low\":2494.16,\"close\":2498.15},{\"time\":1787922000,\"open\":2498.15,\"high\":2518.5,\"low\":2494.19,\"close\":2508.33},{\"time\":1787925600,\"open\":2508.33,\"high\":2526,\"low\":2466.68,\"close\":2512.53},{\"time\":1787929200,\"open\":2512.53,\"high\":2519,\"low\":2468.57,\"close\":2470.48},{\"time\":1787932800,\"open\":2470.48,\"high\":2472.92,\"low\":2405,\"close\":2441.6},{\"time\":1787936400,\"open\":2441.6,\"high\":2448.82,\"low\":2436.86,\"close\":2443.4},{\"time\":1787940000,\"open\":2443.4,\"high\":2444.72,\"low\":2429.32,\"close\":2431.6}]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:candles:v1:bitget:ETHUSDT:4H:124162",
+    14700,
+    "[{\"time\":1785067200,\"open\":1884.89,\"high\":1916.63,\"low\":1881.1,\"close\":1913.83},{\"time\":1785081600,\"open\":1913.83,\"high\":1927.5,\"low\":1907.81,\"close\":1913.42},{\"time\":1785096000,\"open\":1913.42,\"high\":1966.46,\"low\":1910.54,\"close\":1953.73},{\"time\":1785110400,\"open\":1953.73,\"high\":1954.59,\"low\":1934.98,\"close\":1948.75},{\"time\":1785124800,\"open\":1948.75,\"high\":1981.7,\"low\":1947.55,\"close\":1963.5},{\"time\":1785139200,\"open\":1963.5,\"high\":1971.5,\"low\":1955.75,\"close\":1958.57},{\"time\":1785153600,\"open\":1958.57,\"high\":1977.23,\"low\":1918.09,\"close\":1926.74},{\"time\":1785168000,\"open\":1926.74,\"high\":1954.62,\"low\":1921.75,\"close\":1947.59},{\"time\":1785182400,\"open\":1947.59,\"high\":1949.68,\"low\":1881,\"close\":1891.42},{\"time\":1785196800,\"open\":1891.42,\"high\":1893.33,\"low\":1865.21,\"close\":1880.4},{\"time\":1785211200,\"open\":1880.4,\"high\":1888.8,\"low\":1875.52,\"close\":1882.89},{\"time\":1785225600,\"open\":1882.89,\"high\":1884.76,\"low\":1870.75,\"close\":1875.82},{\"time\":1785240000,\"open\":1875.82,\"high\":1923.74,\"low\":1855.36,\"close\":1919.04},{\"time\":1785254400,\"open\":1919.04,\"high\":1928.54,\"low\":1892.01,\"close\":1921.54},{\"time\":1785268800,\"open\":1921.54,\"high\":1929.94,\"low\":1903,\"close\":1921.23},{\"time\":1785283200,\"open\":1921.23,\"high\":1928.26,\"low\":1889.82,\"close\":1891.96},{\"time\":1785297600,\"open\":1891.96,\"high\":1924.97,\"low\":1883.42,\"close\":1923.8},{\"time\":1785312000,\"open\":1923.8,\"high\":1924.42,\"low\":1908.52,\"close\":1914.41},{\"time\":1785326400,\"open\":1914.41,\"high\":1914.41,\"low\":1886.22,\"close\":1891.25},{\"time\":1785340800,\"open\":1891.25,\"high\":1934.91,\"low\":1882.76,\"close\":1887.74},{\"time\":1785355200,\"open\":1887.74,\"high\":1912.54,\"low\":1871.49,\"close\":1909.69},{\"time\":1785369600,\"open\":1909.69,\"high\":1921.09,\"low\":1892.7,\"close\":1909.29},{\"time\":1785384000,\"open\":1909.29,\"high\":1910.25,\"low\":1898.39,\"close\":1902.65},{\"time\":1785398400,\"open\":1902.65,\"high\":1925.9,\"low\":1899.66,\"close\":1922.04},{\"time\":1785412800,\"open\":1922.04,\"high\":1936.45,\"low\":1912.28,\"close\":1918.08},{\"time\":1785427200,\"open\":1918.08,\"high\":1928.67,\"low\":1913.78,\"close\":1922.87},{\"time\":1785441600,\"open\":1922.87,\"high\":1935.94,\"low\":1915.06,\"close\":1917.6},{\"time\":1785456000,\"open\":1917.6,\"high\":1935.56,\"low\":1897.94,\"close\":1907.92},{\"time\":1785470400,\"open\":1907.92,\"high\":1910.5,\"low\":1883.04,\"close\":1889.2},{\"time\":1785484800,\"open\":1889.2,\"high\":1892.5,\"low\":1876.7,\"close\":1883.75},{\"time\":1785499200,\"open\":1883.75,\"high\":1889.89,\"low\":1847.62,\"close\":1862.1},{\"time\":1785513600,\"open\":1862.1,\"high\":1877.39,\"low\":1860.29,\"close\":1867.63},{\"time\":1785528000,\"open\":1867.63,\"high\":1870.26,\"low\":1857.53,\"close\":1861.82},{\"time\":1785542400,\"open\":1861.82,\"high\":1869.49,\"low\":1861.76,\"close\":1869.12},{\"time\":1785556800,\"open\":1869.12,\"high\":1871.19,\"low\":1864.3,\"close\":1869.04},{\"time\":1785571200,\"open\":1869.04,\"high\":1870,\"low\":1862.28,\"close\":1866.19},{\"time\":1785585600,\"open\":1866.19,\"high\":1874.79,\"low\":1866.19,\"close\":1869.51},{\"time\":1785600000,\"open\":1869.51,\"high\":1872.95,\"low\":1821.2,\"close\":1836.41},{\"time\":1785614400,\"open\":1836.41,\"high\":1848.57,\"low\":1832.11,\"close\":1844.03},{\"time\":1785628800,\"open\":1844.03,\"high\":1883.95,\"low\":1842.83,\"close\":1876.63},{\"time\":1785643200,\"open\":1876.63,\"high\":1881.81,\"low\":1874,\"close\":1875},{\"time\":1785657600,\"open\":1875,\"high\":1878.22,\"low\":1848.55,\"close\":1851.93},{\"time\":1785672000,\"open\":1851.93,\"high\":1862.97,\"low\":1851.47,\"close\":1857.92},{\"time\":1785686400,\"open\":1857.92,\"high\":1886.85,\"low\":1855.01,\"close\":1881.36},{\"time\":1785700800,\"open\":1881.36,\"high\":1898.23,\"low\":1875.37,\"close\":1884.5},{\"time\":1785715200,\"open\":1884.5,\"high\":1885.28,\"low\":1850.21,\"close\":1856.38},{\"time\":1785729600,\"open\":1856.38,\"high\":1862.55,\"low\":1837.93,\"close\":1843.18},{\"time\":1785744000,\"open\":1843.18,\"high\":1853.7,\"low\":1827.99,\"close\":1839},{\"time\":1785758400,\"open\":1839,\"high\":1873.24,\"low\":1835.71,\"close\":1862.4},{\"time\":1785772800,\"open\":1862.4,\"high\":1875.98,\"low\":1860.61,\"close\":1869.17},{\"time\":1785787200,\"open\":1869.17,\"high\":1875.29,\"low\":1851,\"close\":1859.91},{\"time\":1785801600,\"open\":1859.91,\"high\":1871.73,\"low\":1847.5,\"close\":1863.39},{\"time\":1785816000,\"open\":1863.39,\"high\":1874.54,\"low\":1852.34,\"close\":1863.16},{\"time\":1785830400,\"open\":1863.16,\"high\":1873.7,\"low\":1852.79,\"close\":1871.85},{\"time\":1785844800,\"open\":1871.85,\"high\":1881.14,\"low\":1857.48,\"close\":1872.12},{\"time\":1785859200,\"open\":1872.12,\"high\":1881.48,\"low\":1864.38,\"close\":1874.15},{\"time\":1785873600,\"open\":1874.15,\"high\":1880.56,\"low\":1865.09,\"close\":1868.9},{\"time\":1785888000,\"open\":1868.9,\"high\":1877.42,\"low\":1860.51,\"close\":1867.12},{\"time\":1785902400,\"open\":1867.12,\"high\":1876.76,\"low\":1862.56,\"close\":1871.98},{\"time\":1785916800,\"open\":1871.98,\"high\":1875,\"low\":1865.24,\"close\":1868.22},{\"time\":1785931200,\"open\":1868.22,\"high\":1884.78,\"low\":1854.38,\"close\":1872.93},{\"time\":1785945600,\"open\":1872.93,\"high\":1926.8,\"low\":1872.4,\"close\":1915.59},{\"time\":1785960000,\"open\":1915.59,\"high\":1923.14,\"low\":1902.58,\"close\":1907.78},{\"time\":1785974400,\"open\":1907.78,\"high\":1912.95,\"low\":1894.1,\"close\":1898.23},{\"time\":1785988800,\"open\":1898.23,\"high\":1917.83,\"low\":1895.01,\"close\":1908.57},{\"time\":1786003200,\"open\":1908.57,\"high\":1920.99,\"low\":1895.22,\"close\":1906.98},{\"time\":1786017600,\"open\":1906.98,\"high\":1918.46,\"low\":1891.53,\"close\":1909.7},{\"time\":1786032000,\"open\":1909.7,\"high\":1917.5,\"low\":1903.11,\"close\":1908.86},{\"time\":1786046400,\"open\":1908.86,\"high\":1909.75,\"low\":1897.78,\"close\":1903.2},{\"time\":1786060800,\"open\":1903.2,\"high\":1907.79,\"low\":1895.2,\"close\":1896.6},{\"time\":1786075200,\"open\":1896.6,\"high\":1906.66,\"low\":1893.58,\"close\":1901.48},{\"time\":1786089600,\"open\":1901.48,\"high\":1919.93,\"low\":1901,\"close\":1915.15},{\"time\":1786104000,\"open\":1915.15,\"high\":1943.08,\"low\":1909.6,\"close\":1917.26},{\"time\":1786118400,\"open\":1917.26,\"high\":1924.45,\"low\":1904.48,\"close\":1917.86},{\"time\":1786132800,\"open\":1917.86,\"high\":1921.95,\"low\":1911.5,\"close\":1913.11},{\"time\":1786147200,\"open\":1913.11,\"high\":1918.47,\"low\":1911.18,\"close\":1917.01},{\"time\":1786161600,\"open\":1917.01,\"high\":1918.82,\"low\":1913.02,\"close\":1914.22},{\"time\":1786176000,\"open\":1914.22,\"high\":1922.75,\"low\":1913.71,\"close\":1919.83},{\"time\":1786190400,\"open\":1919.83,\"high\":1925.9,\"low\":1917.54,\"close\":1921.56},{\"time\":1786204800,\"open\":1921.56,\"high\":1925.33,\"low\":1918,\"close\":1919.37},{\"time\":1786219200,\"open\":1919.37,\"high\":1921.56,\"low\":1913.73,\"close\":1916.07},{\"time\":1786233600,\"open\":1916.07,\"high\":1919.33,\"low\":1911.3,\"close\":1913.09},{\"time\":1786248000,\"open\":1913.09,\"high\":1918.86,\"low\":1912.24,\"close\":1917.8},{\"time\":1786262400,\"open\":1917.8,\"high\":1924.37,\"low\":1912.62,\"close\":1918.03},{\"time\":1786276800,\"open\":1918.03,\"high\":1926.29,\"low\":1915.5,\"close\":1925.39},{\"time\":1786291200,\"open\":1925.39,\"high\":1925.93,\"low\":1919.24,\"close\":1921.01},{\"time\":1786305600,\"open\":1921.01,\"high\":1937.31,\"low\":1906.53,\"close\":1909.75},{\"time\":1786320000,\"open\":1909.75,\"high\":1931.12,\"low\":1905.07,\"close\":1916.57},{\"time\":1786334400,\"open\":1916.57,\"high\":1929.8,\"low\":1911.45,\"close\":1924.53},{\"time\":1786348800,\"open\":1924.53,\"high\":1928.69,\"low\":1914,\"close\":1919.51},{\"time\":1786363200,\"open\":1919.51,\"high\":1922.54,\"low\":1871,\"close\":1876.28},{\"time\":1786377600,\"open\":1876.28,\"high\":1879.86,\"low\":1867.27,\"close\":1877.9},{\"time\":1786392000,\"open\":1877.9,\"high\":1880.94,\"low\":1869.24,\"close\":1872.6},{\"time\":1786406400,\"open\":1872.6,\"high\":1881,\"low\":1870.15,\"close\":1880.37},{\"time\":1786420800,\"open\":1880.37,\"high\":1881.3,\"low\":1870.1,\"close\":1877.14},{\"time\":1786435200,\"open\":1877.14,\"high\":1894.78,\"low\":1875,\"close\":1892.02},{\"time\":1786449600,\"open\":1892.02,\"high\":1897.13,\"low\":1852.22,\"close\":1862.21},{\"time\":1786464000,\"open\":1862.21,\"high\":1884.42,\"low\":1859.06,\"close\":1881.18},{\"time\":1786478400,\"open\":1881.18,\"high\":1886.84,\"low\":1878.01,\"close\":1881.48},{\"time\":1786492800,\"open\":1881.48,\"high\":1887.41,\"low\":1879.81,\"close\":1885.61},{\"time\":1786507200,\"open\":1885.61,\"high\":1892.5,\"low\":1884.36,\"close\":1890.68},{\"time\":1786521600,\"open\":1890.68,\"high\":1915.61,\"low\":1888.89,\"close\":1914.77},{\"time\":1786536000,\"open\":1914.77,\"high\":1925.34,\"low\":1883.2,\"close\":1891.97},{\"time\":1786550400,\"open\":1891.97,\"high\":1895.45,\"low\":1876.07,\"close\":1878.64},{\"time\":1786564800,\"open\":1878.64,\"high\":1888.85,\"low\":1872,\"close\":1879.12},{\"time\":1786579200,\"open\":1879.12,\"high\":1888.29,\"low\":1872.51,\"close\":1886.77},{\"time\":1786593600,\"open\":1886.77,\"high\":1899.35,\"low\":1884.67,\"close\":1894.49},{\"time\":1786608000,\"open\":1894.49,\"high\":1896,\"low\":1874.83,\"close\":1879.92},{\"time\":1786622400,\"open\":1879.92,\"high\":1896.88,\"low\":1878.55,\"close\":1879.16},{\"time\":1786636800,\"open\":1879.16,\"high\":1892.3,\"low\":1863,\"close\":1886.73},{\"time\":1786651200,\"open\":1886.73,\"high\":1892.5,\"low\":1883.52,\"close\":1885.47},{\"time\":1786665600,\"open\":1885.47,\"high\":1890.59,\"low\":1881.07,\"close\":1882.35},{\"time\":1786680000,\"open\":1882.35,\"high\":1887.15,\"low\":1871.26,\"close\":1872.5},{\"time\":1786694400,\"open\":1872.5,\"high\":1880.65,\"low\":1868.81,\"close\":1877.43},{\"time\":1786708800,\"open\":1877.43,\"high\":1883.83,\"low\":1863.4,\"close\":1880.53},{\"time\":1786723200,\"open\":1880.53,\"high\":1887.65,\"low\":1872.61,\"close\":1879.72},{\"time\":1786737600,\"open\":1879.72,\"high\":1882.28,\"low\":1875.05,\"close\":1881.59},{\"time\":1786752000,\"open\":1881.59,\"high\":1885.7,\"low\":1880.32,\"close\":1881.86},{\"time\":1786766400,\"open\":1881.86,\"high\":1884.62,\"low\":1878.83,\"close\":1879.46},{\"time\":1786780800,\"open\":1879.46,\"high\":1881.01,\"low\":1875.1,\"close\":1878.78},{\"time\":1786795200,\"open\":1878.78,\"high\":1884.96,\"low\":1877.5,\"close\":1883.96},{\"time\":1786809600,\"open\":1883.96,\"high\":1885.63,\"low\":1881.71,\"close\":1883.7},{\"time\":1786824000,\"open\":1883.7,\"high\":1884.96,\"low\":1881.11,\"close\":1881.93},{\"time\":1786838400,\"open\":1881.93,\"high\":1884.45,\"low\":1876.33,\"close\":1882.35},{\"time\":1786852800,\"open\":1882.35,\"high\":1883.6,\"low\":1878.18,\"close\":1880.8},{\"time\":1786867200,\"open\":1880.8,\"high\":1881.69,\"low\":1878.28,\"close\":1880.12},{\"time\":1786881600,\"open\":1880.12,\"high\":1883.96,\"low\":1878.49,\"close\":1883.09},{\"time\":1786896000,\"open\":1883.09,\"high\":1891.67,\"low\":1881.54,\"close\":1884.99},{\"time\":1786910400,\"open\":1884.99,\"high\":1887,\"low\":1868.23,\"close\":1875.41},{\"time\":1786924800,\"open\":1875.41,\"high\":1907.31,\"low\":1871.81,\"close\":1899.96},{\"time\":1786939200,\"open\":1899.96,\"high\":1911.6,\"low\":1897.01,\"close\":1899.97},{\"time\":1786953600,\"open\":1899.97,\"high\":1908.69,\"low\":1890.71,\"close\":1903.52},{\"time\":1786968000,\"open\":1903.52,\"high\":1914.66,\"low\":1895.03,\"close\":1912.21},{\"time\":1786982400,\"open\":1912.21,\"high\":1913.44,\"low\":1903.55,\"close\":1906.33},{\"time\":1786996800,\"open\":1906.33,\"high\":1917.95,\"low\":1902.66,\"close\":1912.69},{\"time\":1787011200,\"open\":1912.69,\"high\":1913.67,\"low\":1885.01,\"close\":1894},{\"time\":1787025600,\"open\":1894,\"high\":1906,\"low\":1890.72,\"close\":1897.64},{\"time\":1787040000,\"open\":1897.64,\"high\":1904.66,\"low\":1892.52,\"close\":1902.08},{\"time\":1787054400,\"open\":1902.08,\"high\":1922.28,\"low\":1893,\"close\":1916.52},{\"time\":1787068800,\"open\":1916.52,\"high\":1921.61,\"low\":1909.57,\"close\":1912.46},{\"time\":1787083200,\"open\":1912.46,\"high\":1919.31,\"low\":1910.19,\"close\":1917.04},{\"time\":1787097600,\"open\":1917.04,\"high\":1918.32,\"low\":1905.28,\"close\":1911.14},{\"time\":1787112000,\"open\":1911.14,\"high\":1920.31,\"low\":1905.61,\"close\":1914.86},{\"time\":1787126400,\"open\":1914.86,\"high\":1929,\"low\":1913.89,\"close\":1922.04},{\"time\":1787140800,\"open\":1922.04,\"high\":2118.44,\"low\":1921.5,\"close\":2085.31},{\"time\":1787155200,\"open\":2085.31,\"high\":2107.44,\"low\":2065.78,\"close\":2100.83},{\"time\":1787169600,\"open\":2100.83,\"high\":2337.54,\"low\":2100.8,\"close\":2252.05},{\"time\":1787184000,\"open\":2252.05,\"high\":2273.45,\"low\":2222,\"close\":2250.68},{\"time\":1787198400,\"open\":2250.68,\"high\":2266.73,\"low\":2238.16,\"close\":2251.69},{\"time\":1787212800,\"open\":2251.69,\"high\":2318.56,\"low\":2248.85,\"close\":2295.47},{\"time\":1787227200,\"open\":2295.47,\"high\":2337.47,\"low\":2255,\"close\":2324.89},{\"time\":1787241600,\"open\":2324.89,\"high\":2359.47,\"low\":2309.25,\"close\":2322.63},{\"time\":1787256000,\"open\":2322.63,\"high\":2339.49,\"low\":2306.16,\"close\":2325.99},{\"time\":1787270400,\"open\":2325.99,\"high\":2381,\"low\":2323.5,\"close\":2340.02},{\"time\":1787284800,\"open\":2340.02,\"high\":2397.91,\"low\":2340.01,\"close\":2371.18},{\"time\":1787299200,\"open\":2371.18,\"high\":2449.46,\"low\":2355.28,\"close\":2370.04},{\"time\":1787313600,\"open\":2370.04,\"high\":2407.99,\"low\":2364.59,\"close\":2392.71},{\"time\":1787328000,\"open\":2392.71,\"high\":2431.26,\"low\":2382.57,\"close\":2412.37},{\"time\":1787342400,\"open\":2412.37,\"high\":2548.92,\"low\":2406.94,\"close\":2515.43},{\"time\":1787356800,\"open\":2515.43,\"high\":2528,\"low\":2490.22,\"close\":2513.77},{\"time\":1787371200,\"open\":2513.77,\"high\":2529.28,\"low\":2381.2,\"close\":2432.1},{\"time\":1787385600,\"open\":2432.1,\"high\":2440.75,\"low\":2387.78,\"close\":2423.59},{\"time\":1787400000,\"open\":2423.59,\"high\":2437.85,\"low\":2405,\"close\":2410.17},{\"time\":1787414400,\"open\":2410.17,\"high\":2444,\"low\":2408.41,\"close\":2438.33},{\"time\":1787428800,\"open\":2438.33,\"high\":2443,\"low\":2401.54,\"close\":2421.6},{\"time\":1787443200,\"open\":2421.6,\"high\":2434.94,\"low\":2406.05,\"close\":2413.47},{\"time\":1787457600,\"open\":2413.47,\"high\":2416.87,\"low\":2355.21,\"close\":2388.23},{\"time\":1787472000,\"open\":2388.23,\"high\":2438.65,\"low\":2385.84,\"close\":2433.35},{\"time\":1787486400,\"open\":2433.35,\"high\":2485.99,\"low\":2387.36,\"close\":2437.45},{\"time\":1787500800,\"open\":2437.45,\"high\":2459.13,\"low\":2430.83,\"close\":2443.65},{\"time\":1787515200,\"open\":2443.65,\"high\":2484.37,\"low\":2433.99,\"close\":2462.41},{\"time\":1787529600,\"open\":2462.41,\"high\":2465.83,\"low\":2423,\"close\":2429.67},{\"time\":1787544000,\"open\":2429.67,\"high\":2473.7,\"low\":2427.2,\"close\":2454.08},{\"time\":1787558400,\"open\":2454.08,\"high\":2508.38,\"low\":2435.23,\"close\":2493.29},{\"time\":1787572800,\"open\":2493.29,\"high\":2532.57,\"low\":2473.2,\"close\":2486.36},{\"time\":1787587200,\"open\":2486.36,\"high\":2504.92,\"low\":2453.11,\"close\":2470.13},{\"time\":1787601600,\"open\":2470.13,\"high\":2489.46,\"low\":2464.02,\"close\":2480.99},{\"time\":1787616000,\"open\":2480.99,\"high\":2533.35,\"low\":2470.69,\"close\":2498.21},{\"time\":1787630400,\"open\":2498.21,\"high\":2514.7,\"low\":2462.03,\"close\":2478.1},{\"time\":1787644800,\"open\":2478.1,\"high\":2497.91,\"low\":2462.06,\"close\":2477.29},{\"time\":1787659200,\"open\":2477.29,\"high\":2483.5,\"low\":2437.51,\"close\":2481.52},{\"time\":1787673600,\"open\":2481.52,\"high\":2484.31,\"low\":2454,\"close\":2462.15},{\"time\":1787688000,\"open\":2462.15,\"high\":2463.22,\"low\":2413.3,\"close\":2441.61},{\"time\":1787702400,\"open\":2441.61,\"high\":2469.13,\"low\":2434.33,\"close\":2464.3},{\"time\":1787716800,\"open\":2464.3,\"high\":2471.81,\"low\":2450,\"close\":2460.34},{\"time\":1787731200,\"open\":2460.34,\"high\":2474.99,\"low\":2440.61,\"close\":2461.64},{\"time\":1787745600,\"open\":2461.64,\"high\":2470.63,\"low\":2431.19,\"close\":2448.82},{\"time\":1787760000,\"open\":2448.82,\"high\":2483.22,\"low\":2436.21,\"close\":2469.31},{\"time\":1787774400,\"open\":2469.31,\"high\":2514.98,\"low\":2458.56,\"close\":2505.72},{\"time\":1787788800,\"open\":2505.72,\"high\":2509.47,\"low\":2485.5,\"close\":2491.78},{\"time\":1787803200,\"open\":2491.78,\"high\":2497.57,\"low\":2480.01,\"close\":2495.88},{\"time\":1787817600,\"open\":2495.88,\"high\":2566.57,\"low\":2484.93,\"close\":2500.55},{\"time\":1787832000,\"open\":2500.55,\"high\":2530.97,\"low\":2481.3,\"close\":2520.45},{\"time\":1787846400,\"open\":2520.45,\"high\":2532.65,\"low\":2487.11,\"close\":2496.76},{\"time\":1787860800,\"open\":2496.76,\"high\":2516.45,\"low\":2493.29,\"close\":2509.9},{\"time\":1787875200,\"open\":2509.9,\"high\":2534.44,\"low\":2484.79,\"close\":2489},{\"time\":1787889600,\"open\":2489,\"high\":2504.67,\"low\":2475.51,\"close\":2495.63},{\"time\":1787904000,\"open\":2495.63,\"high\":2511.26,\"low\":2481.4,\"close\":2504.29},{\"time\":1787918400,\"open\":2504.29,\"high\":2526,\"low\":2466.68,\"close\":2470.48},{\"time\":1787932800,\"open\":2470.48,\"high\":2472.92,\"low\":2405,\"close\":2431.28}]"
+  ]
+
+POST https://kv.boundary.test/GET/decision%3Amarkers%3Aseeded%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Abitget%3AETHUSDT/0/1199
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/GET/decision%3Asymidx%3Aseeded%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREVRANGE/decision%3Aindex/0/49
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/SETEX/decision%3Asymidx%3Aseeded%3Abitget%3AETHUSDT/604800/1
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/SETEX/decision%3Amarkers%3Aseeded%3Abitget%3AETHUSDT/604800/1
+  authorization: Bearer <TOKEN>
+
+GET https://api.bitget.com/api/v2/mix/position/history-position?endTime=<NOW_MS>&productType=usdt-futures&startTime=1780251856423&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:5m:48",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:15m:96",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:1H:168",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:4H:180",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:1D:183",
+    3900,
+    "[]"
+  ]
+
+GET https://api.bitget.com/api/v2/mix/market/ticker?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=4H&limit=30&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/orderbook?limit=100&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/current-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/history-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/open-interest?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/funding-time?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?after=1477298945530773504&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?after=1477298945530773504&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?after=1477298945530773504&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?after=1477298945530773504&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/fills?after=1477298945530773504&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Abitget%3AETHUSDT/0/11
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/GET/decision%3Asymidx%3Aseeded%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:snapshot:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:meta:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:snapshot:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:meta:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:meta:v1",
+    1209600,
+    "{\"lastFetchAttemptAtMs\":<NOW_MS>,\"lastSuccessAtMs\":null,\"lastFailureAtMs\":null,\"lastError\":null}"
+  ]
+
+GET https://nfs.faireconomy.media/ff_calendar_thisweek.json
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:snapshot:v1",
+    1209600,
+    "{\"source\":\"forexfactory\",\"fetchedAtMs\":<NOW_MS>,\"fromDate\":\"2026-08-27\",\"toDate\":\"2026-09-04\",\"events\":[]}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:forex:events:meta:v1",
+    1209600,
+    "{\"lastFetchAttemptAtMs\":<NOW_MS>,\"lastSuccessAtMs\":<NOW_MS>,\"lastFailureAtMs\":null,\"lastError\":null}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:snapshot:v1"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:forex:events:meta:v1"
+  ]
+
+GET https://api.bitget.com/api/v2/mix/position/history-position?endTime=<NOW_MS>&productType=usdt-futures&startTime=1787855056422&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://kv.boundary.test/GET/news%3Acoindesk%3AETH
+  authorization: Bearer <TOKEN>
+
+GET https://api.bitget.com/api/v2/mix/market/ticker?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=15m&limit=110&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/orderbook?limit=100&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/current-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/history-fund-rate?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/open-interest?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/funding-time?productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1D&limit=95&productType=usdt-futures&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1D&limit=95&productType=usdt-futures&symbol=BTCUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1H&limit=172&productType=usdt-futures&symbol=BTCUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "SELECT id, scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts, status, updated_at FROM swing.lessons WHERE status = 'active' AND ( scope = 'global' OR (scope = 'symbol' AND $1::text IS NOT NULL AND symbol = $2) OR (scope = 'asset_class' AND $3::text IS NOT NULL AND asset_class = $4) ) ORDER BY confidence DESC, support_count DESC, updated_at DESC LIMIT $5;",
+    "values": [
+      "ETHUSDT",
+      "ETHUSDT",
+      "crypto",
+      "crypto",
+      100
+    ]
+  }
+
+GET https://data-api.coindesk.com/news/v1/article/list?categories=ETH&limit=25&lang=EN
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/SETEX/news%3Acoindesk%3AETH/21600/%7B%22timestamp%22%3A1787941456422%2C%22sentiment%22%3A%22NEGATIVE%22%2C%22headlines%22%3A%5B%5D%7D
+  authorization: Bearer <TOKEN>
+
+POST https://ai-gateway.vercel.sh/v1/responses
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  {
+    "input": "\nYou are analyzing ETH for swing trading (mode=simulation, asset_class=crypto).\n\nSTATE (derived signals — single source of truth):\n{\"time\":{\"iso_utc\":\"<TIMESTAMP>\",\"date_utc\":\"2026-08-28\",\"day_of_week_utc\":\"Friday\",\"hour_utc\":18},\"biases\":{\"micro\":\"DOWN\",\"micro_source\":\"ema_slope_rsi\",\"primary\":\"neutral\",\"macro\":\"UP\",\"context\":\"UP\"},\"trend\":{\"primary_up\":false,\"primary_down\":false,\"primary_breakout_confirmed\":false,\"primary_breakdown_confirmed\":false,\"macro_up\":true,\"macro_down\":false},\"structure\":{\"micro\":{\"state\":\"range\",\"break_state\":\"inside\",\"bos\":false,\"bos_dir\":null,\"choch\":false,\"breakout_retest_ok\":false,\"breakout_retest_dir\":null},\"primary\":{\"state\":\"range\",\"break_state\":\"inside\",\"bos\":false,\"bos_dir\":null,\"choch\":false,\"breakout_retest_ok\":false,\"breakout_retest_dir\":null}},\"momentum\":{\"rsi\":{\"micro\":30.4,\"primary\":43.1,\"macro\":72.4},\"slope_micro_pct_per_bar\":-0.062,\"slope_primary_pct_per_bar\":0.075,\"micro_entry_ok\":true},\"extension_atr\":{\"micro\":-2.07,\"primary\":-1.01},\"volatility\":{\"atr_pct\":{\"primary\":1.822,\"macro\":4.589},\"atr_pctile\":{\"primary\":78,\"macro\":100},\"rvol\":{\"primary\":2.1,\"macro\":0.36},\"value_state_macro\":\"above_vah\"},\"location\":{\"context_support_dist_atr\":4.457,\"context_resistance_dist_atr\":0.573,\"context_breakout_confirmed\":false,\"context_breakdown_confirmed\":false,\"chop_risk\":false},\"levels\":{\"primary\":{\"support\":{\"price\":2431.19,\"dist_atr\":0.002,\"strength\":0.907,\"type\":\"swing_pivot\",\"state\":\"at_level\"},\"resistance\":{\"price\":2444,\"dist_atr\":0.287,\"strength\":0.753,\"type\":\"swing_pivot\",\"state\":\"approaching\"}},\"context\":{\"support\":{\"price\":1510.89,\"dist_atr\":4.457,\"strength\":0.933,\"type\":\"swing_pivot\",\"state\":\"rejected\"},\"resistance\":{\"price\":2548.92,\"dist_atr\":0.573,\"strength\":0.987,\"type\":\"swing_pivot\",\"state\":\"approaching\"}}},\"geometry\":{\"micro\":{\"slope_atr\":0.023,\"channel_pos\":0,\"channel_width_atr\":4.9,\"support_trendline\":{\"price_now\":2424.949,\"slope_atr\":-0.126,\"touches\":4},\"resistance_trendline\":{\"price_now\":2515.463,\"slope_atr\":-0.025,\"touches\":4},\"last_swing_high\":{\"price\":2526,\"dist_atr\":3.818,\"bars_ago\":4},\"last_swing_low\":{\"price\":2405,\"dist_atr\":-1.076,\"bars_ago\":2}},\"primary\":{\"slope_atr\":0.222,\"channel_pos\":0,\"channel_width_atr\":11,\"support_trendline\":{\"price_now\":2468.4,\"slope_atr\":0.062,\"touches\":4},\"resistance_trendline\":{\"price_now\":2544.338,\"slope_atr\":0.014,\"touches\":4},\"last_swing_high\":{\"price\":2534.44,\"dist_atr\":2.328,\"bars_ago\":4},\"last_swing_low\":{\"price\":2431.19,\"dist_atr\":-0.002,\"bars_ago\":13}}},\"gates\":{\"spread_ok\":true,\"liquidity_ok\":true,\"atr_ok\":true,\"slippage_ok\":true},\"costs\":{\"round_trip_fee_bps\":12,\"slippage_bps\":2,\"total_cost_bps\":14,\"funding\":{\"rate_pct_per_interval\":0.01,\"interval_hours\":8,\"next_funding_at_utc\":\"<TIMESTAMP>\",\"minutes_to_next_funding\":336},\"recent_realized_pnl_pct\":null},\"position\":{\"open\":false,\"status\":\"none\",\"reentry_cooldown\":null},\"closing_guardrails\":null}\n\nMARKET (raw inputs):\n{\"price\":{\"last\":2431.6,\"change_24h_pct\":-0.02501},\"recent_candles\":[{\"ts\":\"<TIMESTAMP>\",\"open\":2509.9,\"high\":2534.44,\"low\":2484.79,\"close\":2489,\"volume\":154116.11},{\"ts\":\"<TIMESTAMP>\",\"open\":2489,\"high\":2504.67,\"low\":2475.51,\"close\":2495.63,\"volume\":120017.13},{\"ts\":\"<TIMESTAMP>\",\"open\":2495.63,\"high\":2511.26,\"low\":2481.4,\"close\":2504.29,\"volume\":96955.3},{\"ts\":\"<TIMESTAMP>\",\"open\":2504.29,\"high\":2526,\"low\":2466.68,\"close\":2470.48,\"volume\":280765.24},{\"ts\":\"<TIMESTAMP>\",\"open\":2470.48,\"high\":2472.92,\"low\":2405,\"close\":2431.24,\"volume\":299005.38}],\"liquidity\":{\"spread_bps\":0.0411,\"best_bid\":2431.27,\"best_ask\":2431.28,\"bid_walls\":[{\"price\":2429.43,\"size\":516.81},{\"price\":2429.83,\"size\":396.4},{\"price\":2429.5,\"size\":209.14},{\"price\":2429.84,\"size\":188.34},{\"price\":2430.81,\"size\":146.91}],\"ask_walls\":[{\"price\":2433.1,\"size\":171.85},{\"price\":2432.26,\"size\":148.07},{\"price\":2433.27,\"size\":147.26},{\"price\":2431.59,\"size\":146.9},{\"price\":2431.77,\"size\":146.9}]},\"volume_profile\":[{\"price\":2430.38,\"volume\":212.22},{\"price\":2431.6,\"volume\":161.94}],\"news\":{\"sentiment\":\"NEGATIVE\",\"headlines\":[]},\"recent_actions\":[],\"forex_events\":{\"source\":\"forexfactory\",\"pair\":\"USD\",\"status\":\"clear\",\"staleData\":false,\"reasonCodes\":[\"FOREX_EVENT_WINDOW_CLEAR\"],\"generatedAtMs\":<NOW_MS>,\"activeEvents\":[],\"nextEvents\":[],\"recentEvents\":[]}}\n\nDecide now per the OUTPUT contract in your system instructions — strict JSON only.\n",
+    "instructions": "You are an expert swing-trading market-structure analyst. Decide one action and size it.\n\nTIMEFRAMES (fixed)\n- micro=1H (entry timing/confirmation), primary=4H (setup+execution), macro=1D (regime bias), context=1W (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).\nScale: 4H is the execution timeframe and you are consulted on its bar close, so a position typically lives days rather than minutes. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.\n\nCADENCE (how often you are actually consulted)\n- You are evaluated once per 4H bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full 4H bar.\n- Earlier looks happen only when: a wake band you set is crossed (flat or in a position) or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.\n- A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.\n\nINPUTS\n- You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.\n- S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.\n- micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.\n- market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — rested_at / rested_as = the price that entry rested at and which tool rested there (limit or stop), absent when it took the market; strategy = the play you named at the time; reissued_count = consecutive re-issues of the same resting idea collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the resting order was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested. Over several rows this is also feedback on your own play selection and entry mechanics on THIS instrument: if one strategy or one resting tool keeps producing never_filled or quick losses here while another works, that is data about this market, not a rule — read it and adjust.\n- Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections. Any present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions; when that section is absent this tick carries none beyond the keys described above.\n\nDECISION OWNERSHIP\n- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to. Position size is computed in code from your stop distance: notional = 10% of equity ÷ (stop distance as a fraction of entry), capped at 2× equity in exposure. That cap binds for any stop tighter than 5% of entry — i.e. almost always — and while it binds a stop-out costs 2 × your stop distance in equity, so a TIGHTER STOP IS A SMALLER POSITION AND A SMALLER LOSS, not the same loss at better R. Place the stop where the setup is actually invalidated; do not shrink it to buy nominal R, and do not widen it to buy size. Your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.\n- The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:\n  1. Allowed actions (you are FLAT): BUY/SELL/HOLD.\n  2. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD.\n  3. Output hygiene: prices must sit on the correct side of current price and clear it by more than noise; cooldown_minutes clamps to 360–1440 and cooldown_wake_confirm_minutes to 5–60; re-arming the wake side that just fired is dropped. A resting entry is the one field that drops the WHOLE entry when invalid (wrong side for the field used, inside its minimum window, both set at once, or unsupported here) — it becomes a HOLD rather than a market order. One more way an entry can vanish: size comes from your stop distance, so a stop wide enough to put the position under this venue's minimum order size drops the entry to HOLD as well (recorded in the reason). Nothing bounds how wide a stop you may set — but past a point the trade stops existing rather than getting smaller.\n\nYOUR JOB (soft judgment — where your reasoning actually matters)\n- Decide the action from STATE and place its bracket. STATE gives you structure (BOS/CHoCH/breakout-retest), momentum, location and regime as separate measurements; how you weigh them against each other is the judgment this call exists to make, and nothing here ranks them for you.\n- Location vs regime: state.biases.macro / .context are the higher-timeframe lean, and alignment with them is a measurement you weigh, not a requirement — a counter-regime entry at a well-defined level with clean invalidation is a normal trade, not an exception that needs justifying. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.\n- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean \"do not enter\": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.\n- Extension: state.extension_atr is how far price has travelled from its EMA20, in ATRs — the distance a market fill would be paying up for, and the distance a pullback would give back. What to do with it is yours.\n- Wave position (state.geometry): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high) and slope_atr is its drift per bar, so together they say where in the current leg price sits and which way the leg is going. support_trendline / resistance_trendline give the live trendline price and slope; a close through one plus a structure signal is a break, a touch alone is a reaction point. geometry.nano is the same measurement one timeframe down, for fine-timing. Whether a given position in the wave is a place to buy, to fade, or to wait is a read, and it is yours.\n- Exchange-side TP/SL bracket:\n  • On BUY/SELL set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. Their distances are yours: no minimum on either, and no required ratio between them. A tight stop with a near target and a wide stop with a far one are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide 3×ATR default — never the trade you meant, so set both.\n- Resting entry (flat BUY/SELL only) — you have three ways to get filled and they are TOOLS, not strategies: market now (both fields null), or ONE resting order: entry_limit_price — rests AGAINST your trade (BUY below current price, SELL above), 0.1–1.5 primary-ATR away; entry_stop_price — rests WITH your trade (BUY above current price, SELL below), 0.25–1.5 primary-ATR away. Setting both is contradictory and drops the entry. The order rests on the venue and is CANCELLED at your next evaluation if unfilled — short-lived, not a standing commitment. take_profit_price and stop_loss_price anchor at the RESTING price, not current price. An invalid request (wrong side for the field you used, inside the minimum window, or both fields set) drops the ENTIRE entry for this evaluation and does NOT fall back to market — send null when you actually want market.\n- The one thing worth knowing about the two shapes, because it is a property of the instruments and not a view about markets: a resting LIMIT is adversely selected — it fills only because someone was willing to trade through your level, so you are filled most reliably exactly when the level is failing. A resting STOP is favourably selected — it triggers only once price has already moved your way — but you pay the spread on a moving market and it is exactly what a liquidity sweep is hunting. Neither fact makes either tool right or wrong here; weigh them against what the current structure, levels and liquidity picture actually show you, and pick the one that fits the play you are running. Nothing in this prompt tells you which play that should be.\n- A resting entry SURVIVES this evaluation. When state.position.resting_entry is present (kind/side/price/age_min), that order is live on the venue right now and stays live unless THIS decision changes it — exactly like the standing TP/SL bracket in a position, where null means \"leave the leg alone\". Your options: HOLD leaves it resting (this is the default, and doing nothing is a real choice here, not an omission); a fresh BUY/SELL SUPERSEDES it (the old order is cancelled and yours replaces it — you do not need to cancel first); a BUY/SELL with both price fields null cancels it and enters at market; and withdraw_resting_entry=true on a HOLD takes it back without trading. Because silence keeps it, an order you no longer believe in must be withdrawn ON PURPOSE — read its age_min and ask whether the thesis that placed it still holds. The conversation above is where you placed it; re-validate that thesis against the CURRENT measurements rather than re-deriving it from scratch. A standing entry whose level price has trended away from, or whose structure has broken, is not a free option — it is a live order that will fill on the move that invalidates it.\n- state.position.cancelled_pending_entry means a standing entry was cancelled by the code-owned age backstop (48h) before this evaluation — not by you. Treat it as a stale idea from a market state you have not re-checked, not as a plan to re-issue reflexively.\n- strategy: on BUY/SELL name the play you are actually running, one of: breakout, breakout_retest, pullback, level_bounce, range_fade, sweep_reclaim, momentum_continuation, reversal, other. This is a LABEL for your own decision, not a constraint on it and not a ranking — no play here is preferred, discouraged, or expected of you, and the code neither checks it against your entry nor treats any value differently. It exists so that which plays work on which instruments becomes measurable over time. Use 'other' rather than forcing a fit; null on HOLD.\n- entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later 4H bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.\n- Flat plan (flat HOLD only; ignored on any other action — enforced in code). When you are not committing this tick you may still leave a plan behind, built from four fields that each answer ONE question:\n  • cooldown_minutes — how long to stay quiet. Suppresses routine flat re-scans of this symbol only; it never mutes in-position management or resting-entry re-evaluations. Clamps to 360–1440. null = keep the normal cadence.\n  • cooldown_wake_above / cooldown_wake_below — WHERE you want to be looking: the price levels that would change your mind. Crossing one ends the cooldown and brings you back. They are watched roughly once per MINUTE, so place them exactly at your decision levels, with no padding.\n  • cooldown_wake_note — REQUIRED whenever you set a band. One short line stating the plan the band encodes (\"acceptance above 3.42 → breakout check\", \"retest of broken 118.4k → long on reclaim\"). The wake evaluation is a fresh stateless scan; without the note your future self receives an anonymous level cross and has to rediscover the idea.\n  • cooldown_wake_confirm_minutes — WHAT COUNTS as an event at that level, and nothing else. Set it and the wake fires only if price is STILL beyond the band that many minutes after first touch; a poke that reclaims sooner never wakes you and comes back instead as market.wake_band_sweeps (evidence of a liquidity grab, not acceptance). About 10 minutes is the measured figure for \"the level actually went\"; clamps to 5–60. null = the touch ITSELF is the event, unfiltered — right when any tag of the level changes your read. Either way a break that extends ≥0.5 primary-ATR beyond the band confirms IMMEDIATELY by force, before the clock, so you are never late on a runner.\n- A wake band is a WATCH. It never trades for you — however it fires, it brings you back to decide, and cooldown_wake_confirm_minutes only changes what is worth waking you for. If you want to COMMIT to a break rather than look at it, that is a resting stop order beyond the level: same trigger, placed at the venue, no second decision. Choose deliberately — the band keeps the decision and costs you a beat; the order takes the trade and can be swept. Nothing filters an order the way confirm_minutes filters a band.\n- PLACEMENT: arm a band only at a level you would actually be willing to act on when it fires. If the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO — watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection.\n- When a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), you are not limited to chasing or re-arming: rest an order back at the broken level's retest, or arm the retest band with confirm null and a note saying what you intend there. Re-arming the side that JUST fired is dropped in code — choose a different level or a different tool.\n\nVENUE & ASSET CLASS (fixed facts about this instrument — read alongside YOUR JOB)\n- Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. market.fear_greed (when present) is the daily market-wide crypto Fear & Greed index (0=extreme fear … 100=extreme greed, with recent daily history for direction/persistence) — broad mood context whose extremes are contrarian conditions, never a standalone trigger. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.\n- Cost/churn: round-trip cost = state.costs.total_cost_bps. Perp funding (state.costs.funding, present only when measured this tick): rate_pct_per_interval accrues each funding settlement (every interval_hours hours when given; next charge at next_funding_at_utc when given) while held — positive = longs pay shorts, negative = shorts pay longs. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction. Cost is one term in the trade, not a veto — weigh it against what you expect the move to pay.\n- Exchange-side TP/SL bracket: fills 24/7 between these evaluations.\n- Leverage 5–10 (crypto): notional is set by your stop distance (see DECISION OWNERSHIP), so leverage does NOT change what a stop-out costs — it only sets how much margin the position locks (higher = less margin tied up, liquidation nearer). Pick it for the margin/liquidation trade-off you want; null on HOLD/CLOSE.\n\nOUTPUT (every response)\n- Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys:\n{\"action\":\"BUY|SELL|HOLD|CLOSE|REVERSE\",\"summary\":\"≤2 lines\",\"reason\":\"brief rationale\",\"exit_size_pct\":null|0-100,\"take_profit_price\":null|price,\"stop_loss_price\":null|price,\"entry_limit_price\":null|price,\"entry_stop_price\":null|price,\"withdraw_resting_entry\":true|false|null,\"entry_trigger_price\":null|price,\"strategy\":null|\"one of the strategy list\",\"cooldown_minutes\":null|minutes,\"cooldown_wake_above\":null|price,\"cooldown_wake_below\":null|price,\"cooldown_wake_note\":null|\"≤1 short line\",\"cooldown_wake_confirm_minutes\":null|minutes,\"leverage\":null|5|6|7|8|9|10,\"raise_leverage_to\":null|int,\"move_stop_to_be\":true|false|null}\n- Field rules:\n  1) action: exactly one of BUY/SELL/HOLD (see DECISION OWNERSHIP).\n  2) leverage: 5–10 for BUY/SELL, else null.\n  3) exit_size_pct: always null when flat.\n  4) take_profit_price: REQUIRED price target on BUY/SELL (resting exchange TP); stop_loss_price: the structural invalidation stop on BUY/SELL (null = wide catastrophe default); both null on HOLD.\n  5) entry_limit_price / entry_stop_price: on flat BUY/SELL you MAY rest ONE of them instead of taking the market (see resting-entry guidance); null = market now. Never set both.\n  6) strategy: on BUY/SELL, name the play you are running (see the strategy list); null on HOLD.\n  7) withdraw_resting_entry: true only on a flat HOLD to cancel a standing resting entry you no longer want; else null. Omitting it LEAVES the order resting.\n  8) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, cooldown_wake_note whenever a band is set, and cooldown_wake_confirm_minutes for breakout-intent bands that should only wake on a HELD break): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.\n  9) entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.\n  10) summary ≤3 lines; reason = brief rationale.\n  11) raise_leverage_to / move_stop_to_be: always null when flat.\n- Decision policy mode: balanced_guardrails.",
+    "model": "zai/glm-5.3",
+    "reasoning": {
+      "effort": "high"
+    },
+    "text": {
+      "format": {
+        "name": "swing_decision",
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "BUY",
+                "SELL",
+                "HOLD",
+                "CLOSE",
+                "REVERSE"
+              ],
+              "type": "string"
+            },
+            "cooldown_minutes": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cooldown_wake_above": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "cooldown_wake_below": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "cooldown_wake_confirm_minutes": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cooldown_wake_note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entry_limit_price": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "entry_stop_price": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "entry_trigger_price": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "exit_size_pct": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "leverage": {
+              "maximum": 10,
+              "minimum": 5,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "move_stop_to_be": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "raise_leverage_to": {
+              "maximum": 125,
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "stop_loss_price": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "strategy": {
+              "enum": [
+                "breakout",
+                "breakout_retest",
+                "pullback",
+                "level_bounce",
+                "range_fade",
+                "sweep_reclaim",
+                "momentum_continuation",
+                "reversal",
+                "other",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": "string"
+            },
+            "take_profit_price": {
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "withdraw_resting_entry": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "reason",
+            "exit_size_pct",
+            "leverage",
+            "raise_leverage_to",
+            "move_stop_to_be",
+            "take_profit_price",
+            "stop_loss_price",
+            "entry_limit_price",
+            "entry_stop_price",
+            "withdraw_resting_entry",
+            "entry_trigger_price",
+            "strategy",
+            "cooldown_minutes",
+            "cooldown_wake_above",
+            "cooldown_wake_below",
+            "cooldown_wake_note",
+            "cooldown_wake_confirm_minutes"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "json_schema"
+      }
+    },
+    "truncation": "auto"
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:ai:health:v1"
+  ]
+
+POST https://kv.boundary.test/SETEX/decision%3A1787941456422%3Abitget%3AETHUSDT/604800/%7B%22timestamp%22%3A1787941456422%2C%22symbol%22%3A%22ETHUSDT%22%2C%22category%22%3A%22crypto%22%2C%22platform%22%3A%22bitget%22%2C%22instrumentId%22%3A%22bitget%3AETHUSDT%22%2C%22newsSource%22%3A%22coindesk%22%2C%22timeFrame%22%3A%224H%22%2C%22dryRun%22%3Atrue%2C%22prompt%22%3Anull%2C%22aiDecision%22%3A%7B%22action%22%3A%22HOLD%22%2C%22summary%22%3A%22at%204H%20swing%20low%2C%20range%20too%20tight%20to%20pay%22%2C%22reason%22%3A%22waiting%20for%20the%20range%20to%20resolve%22%2C%22exit_size_pct%22%3Anull%2C%22leverage%22%3Anull%2C%22raise_leverage_to%22%3Anull%2C%22move_stop_to_be%22%3Afalse%2C%22take_profit_price%22%3Anull%2C%22stop_loss_price%22%3Anull%2C%22entry_limit_price%22%3Anull%2C%22entry_stop_price%22%3Anull%2C%22withdraw_resting_entry%22%3Afalse%2C%22entry_trigger_price%22%3Anull%2C%22strategy%22%3Anull%2C%22cooldown_minutes%22%3Anull%2C%22cooldown_wake_above%22%3Anull%2C%22cooldown_wake_below%22%3Anull%2C%22cooldown_wake_confirm_minutes%22%3Anull%2C%22cooldown_wake_note%22%3Anull%2C%22signal_strength%22%3A%22MEDIUM%22%2C%22micro_bias%22%3A%22DOWN%22%2C%22primary_bias%22%3A%22NEUTRAL%22%2C%22macro_bias%22%3A%22UP%22%2C%22context_bias%22%3A%22UP%22%2C%22nano_bias%22%3Anull%2C%22response_id%22%3A%22resp_test-1%22%2C%22previous_response_id%22%3Anull%2C%22ai_provider%22%3A%22zai%22%2C%22ai_model%22%3A%22zai%2Fglm-5.3%22%2C%22ai_usage%22%3A%7B%22input_tokens%22%3A1000%2C%22output_tokens%22%3A200%2C%22cache_creation_input_tokens%22%3Anull%2C%22cache_read_input_tokens%22%3A0%7D%2C%22resting_entry_kind%22%3Anull%7D%2C%22execResult%22%3A%7B%22placed%22%3Afalse%2C%22orderId%22%3Anull%2C%22clientOid%22%3A%22cfw-<UUID>%22%7D%2C%22snapshot%22%3A%7B%22category%22%3A%22crypto%22%2C%22platform%22%3A%22bitget%22%2C%22newsSource%22%3A%22coindesk%22%2C%22instrumentId%22%3A%22bitget%3AETHUSDT%22%2C%22price%22%3A2431.6%2C%22change24h%22%3A-0.02501%2C%22spread%22%3A0.04112518506423046%2C%22spreadBps%22%3A0.04112518506423046%2C%22spreadAbs%22%3A0.010000000000218279%2C%22bestBid%22%3A2431.27%2C%22bestAsk%22%3A2431.28%2C%22gates%22%3A%7B%22spread_ok%22%3Atrue%2C%22liquidity_ok%22%3Atrue%2C%22atr_ok%22%3Atrue%2C%22slippage_ok%22%3Atrue%2C%22regime_trend_up%22%3Atrue%2C%22regime_trend_down%22%3Afalse%2C%22tier%22%3A%22ETH%22%7D%2C%22metrics%22%3A%7B%22spreadBpsNow%22%3A0.04112518506423046%2C%22bandBps%22%3A50%2C%22bidBandUsdNow%22%3A9907640.2544%2C%22askBandUsdNow%22%3A7795618.1455%2C%22expectedSlippageBps%22%3A0.02056534122996112%2C%22atrPctNow%22%3A0.04588924400159802%2C%22spreadBpsMax%22%3A4%2C%22depthMinUSD%22%3A250000%2C%22atrPctFloor%22%3A0.0039191835884530846%2C%22atrPctCeil%22%3A0.09797958971132711%2C%22slippageBpsMax%22%3A3%7D%2C%22newsSentiment%22%3A%22NEGATIVE%22%2C%22newsHeadlines%22%3A%5B%5D%2C%22forexEventContext%22%3A%7B%22source%22%3A%22forexfactory%22%2C%22pair%22%3A%22USD%22%2C%22status%22%3A%22clear%22%2C%22staleData%22%3Afalse%2C%22reasonCodes%22%3A%5B%22FOREX_EVENT_WINDOW_CLEAR%22%5D%2C%22generatedAtMs%22%3A1787941456422%2C%22activeEvents%22%3A%5B%5D%2C%22nextEvents%22%3A%5B%5D%2C%22recentEvents%22%3A%5B%5D%7D%2C%22eventReaction%22%3Anull%2C%22btcContext%22%3Anull%2C%22forexSessionContext%22%3Anull%2C%22venueEvents%22%3Anull%2C%22positionContext%22%3Anull%2C%22momentumSignals%22%3A%7B%22macroTrendUp%22%3Atrue%2C%22macroTrendDown%22%3Afalse%2C%22longMomentum%22%3Atrue%2C%22shortMomentum%22%3Afalse%2C%22nearPrimaryEMA20%22%3Afalse%2C%22nearMicroEMA20%22%3Afalse%2C%22primaryRSI%22%3A43.1%2C%22primarySlope%22%3A0.075%2C%22microRSI%22%3A30.4%2C%22primaryAtr%22%3A44.308571428571405%2C%22microExtensionInAtr%22%3A-2.068981454734539%2C%22info%22%3A%7B%22primaryTimeframe%22%3A%224H%22%2C%22microEntryOk%22%3Atrue%7D%7D%2C%22actionability%22%3A%7B%22actionable%22%3Atrue%2C%22reason%22%3A%22at_primary_level_boxed%22%7D%2C%22cooldownWake%22%3Anull%2C%22reclaimWake%22%3Anull%2C%22sessionReclaim%22%3Anull%2C%22positionWake%22%3Anull%2C%22exchangeTpsl%22%3A%7B%22takeProfitPrice%22%3Anull%2C%22stopLossPrice%22%3Anull%2C%22standing%22%3A%7B%22takeProfitPrice%22%3Anull%2C%22stopLossPrice%22%3Anull%7D%2C%22notes%22%3A%5B%22tpsl_not_applicable%22%5D%7D%2C%22restingEntry%22%3A%7B%22kind%22%3Anull%2C%22price%22%3Anull%2C%22notes%22%3A%5B%5D%7D%2C%22strategy%22%3Anull%7D%2C%22biasTimeframes%22%3A%7B%22context%22%3A%221W%22%2C%22macro%22%3A%221D%22%2C%22primary%22%3A%224H%22%2C%22micro%22%3A%221H%22%7D%7D
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZADD/decision%3Aindex/<NOW_MS>/decision%3A1787941456422%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZADD/decision%3Asymidx%3Abitget%3AETHUSDT/<NOW_MS>/decision%3A1787941456422%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREMRANGEBYSCORE/decision%3Aindex/0/1787336656422
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREMRANGEBYSCORE/decision%3Asymidx%3Abitget%3AETHUSDT/0/1787336656422
+  authorization: Bearer <TOKEN>
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.decisions ( decided_at_ms, symbol, platform, category, instrument_id, news_source, time_frame, dry_run, action, applied_leverage, target_leverage, prompt_json, ai_decision_json, exec_result_json, snapshot_json, bias_timeframes_json ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb ) ON CONFLICT (decided_at_ms, platform, symbol) DO UPDATE SET category = EXCLUDED.category, instrument_id = EXCLUDED.instrument_id, news_source = EXCLUDED.news_source, time_frame = EXCLUDED.time_frame, dry_run = EXCLUDED.dry_run, action = EXCLUDED.action, applied_leverage = EXCLUDED.applied_leverage, target_leverage = EXCLUDED.target_leverage, prompt_json = EXCLUDED.prompt_json, ai_decision_json = EXCLUDED.ai_decision_json, exec_result_json = EXCLUDED.exec_result_json, snapshot_json = EXCLUDED.snapshot_json, bias_timeframes_json = EXCLUDED.bias_timeframes_json RETURNING id;",
+    "values": [
+      <NOW_MS>,
+      "ETHUSDT",
+      "bitget",
+      "crypto",
+      "bitget:ETHUSDT",
+      "coindesk",
+      "4H",
+      true,
+      "HOLD",
+      null,
+      null,
+      "{\"system\":\"You are an expert swing-trading market-structure analyst. Decide one action and size it.\\n\\nTIMEFRAMES (fixed)\\n- micro=1H (entry timing/confirmation), primary=4H (setup+execution), macro=1D (regime bias), context=1W (HTF location + major levels, risk lever), nano=15m (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal).\\nScale: 4H is the execution timeframe and you are consulted on its bar close, so a position typically lives days rather than minutes. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.\\n\\nCADENCE (how often you are actually consulted)\\n- You are evaluated once per 4H bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full 4H bar.\\n- Earlier looks happen only when: a wake band you set is crossed (flat or in a position) or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.\\n- A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.\\n\\nINPUTS\\n- You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.\\n- S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.\\n- micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.\\n- market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — rested_at / rested_as = the price that entry rested at and which tool rested there (limit or stop), absent when it took the market; strategy = the play you named at the time; reissued_count = consecutive re-issues of the same resting idea collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the resting order was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested. Over several rows this is also feedback on your own play selection and entry mechanics on THIS instrument: if one strategy or one resting tool keeps producing never_filled or quick losses here while another works, that is data about this market, not a rule — read it and adjust.\\n- Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections. Any present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions; when that section is absent this tick carries none beyond the keys described above.\\n\\nDECISION OWNERSHIP\\n- You own the conviction read: judge setup quality and selectivity yourself from the structure, location, regime and momentum measurements in STATE — there is no pre-computed verdict to defer to. Position size is computed in code from your stop distance: notional = 10% of equity ÷ (stop distance as a fraction of entry), capped at 2× equity in exposure. That cap binds for any stop tighter than 5% of entry — i.e. almost always — and while it binds a stop-out costs 2 × your stop distance in equity, so a TIGHTER STOP IS A SMALLER POSITION AND A SMALLER LOSS, not the same loss at better R. Place the stop where the setup is actually invalidated; do not shrink it to buy nominal R, and do not widen it to buy size. Your conviction is expressed through taking or skipping the trade and through stop/target placement, not through size.\\n- The HARD constraints below are enforced in code AFTER you respond. Do not spend reasoning re-deriving them — if you violate one your action is silently coerced (a wasted call). Just stay inside them:\\n  1. Allowed actions (you are FLAT): BUY/SELL/HOLD.\\n  2. Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD.\\n  3. Output hygiene: prices must sit on the correct side of current price and clear it by more than noise; cooldown_minutes clamps to 360–1440 and cooldown_wake_confirm_minutes to 5–60; re-arming the wake side that just fired is dropped. A resting entry is the one field that drops the WHOLE entry when invalid (wrong side for the field used, inside its minimum window, both set at once, or unsupported here) — it becomes a HOLD rather than a market order. One more way an entry can vanish: size comes from your stop distance, so a stop wide enough to put the position under this venue's minimum order size drops the entry to HOLD as well (recorded in the reason). Nothing bounds how wide a stop you may set — but past a point the trade stops existing rather than getting smaller.\\n\\nYOUR JOB (soft judgment — where your reasoning actually matters)\\n- Decide the action from STATE and place its bracket. STATE gives you structure (BOS/CHoCH/breakout-retest), momentum, location and regime as separate measurements; how you weigh them against each other is the judgment this call exists to make, and nothing here ranks them for you.\\n- Location vs regime: state.biases.macro / .context are the higher-timeframe lean, and alignment with them is a measurement you weigh, not a requirement — a counter-regime entry at a well-defined level with clean invalidation is a normal trade, not an exception that needs justifying. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.\\n- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean \\\"do not enter\\\": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.\\n- Extension: state.extension_atr is how far price has travelled from its EMA20, in ATRs — the distance a market fill would be paying up for, and the distance a pullback would give back. What to do with it is yours.\\n- Wave position (state.geometry): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high) and slope_atr is its drift per bar, so together they say where in the current leg price sits and which way the leg is going. support_trendline / resistance_trendline give the live trendline price and slope; a close through one plus a structure signal is a break, a touch alone is a reaction point. geometry.nano is the same measurement one timeframe down, for fine-timing. Whether a given position in the wave is a place to buy, to fade, or to wait is a read, and it is yours.\\n- Exchange-side TP/SL bracket:\\n  • On BUY/SELL set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. Their distances are yours: no minimum on either, and no required ratio between them. A tight stop with a near target and a wide stop with a far one are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide 3×ATR default — never the trade you meant, so set both.\\n- Resting entry (flat BUY/SELL only) — you have three ways to get filled and they are TOOLS, not strategies: market now (both fields null), or ONE resting order: entry_limit_price — rests AGAINST your trade (BUY below current price, SELL above), 0.1–1.5 primary-ATR away; entry_stop_price — rests WITH your trade (BUY above current price, SELL below), 0.25–1.5 primary-ATR away. Setting both is contradictory and drops the entry. The order rests on the venue and is CANCELLED at your next evaluation if unfilled — short-lived, not a standing commitment. take_profit_price and stop_loss_price anchor at the RESTING price, not current price. An invalid request (wrong side for the field you used, inside the minimum window, or both fields set) drops the ENTIRE entry for this evaluation and does NOT fall back to market — send null when you actually want market.\\n- The one thing worth knowing about the two shapes, because it is a property of the instruments and not a view about markets: a resting LIMIT is adversely selected — it fills only because someone was willing to trade through your level, so you are filled most reliably exactly when the level is failing. A resting STOP is favourably selected — it triggers only once price has already moved your way — but you pay the spread on a moving market and it is exactly what a liquidity sweep is hunting. Neither fact makes either tool right or wrong here; weigh them against what the current structure, levels and liquidity picture actually show you, and pick the one that fits the play you are running. Nothing in this prompt tells you which play that should be.\\n- A resting entry SURVIVES this evaluation. When state.position.resting_entry is present (kind/side/price/age_min), that order is live on the venue right now and stays live unless THIS decision changes it — exactly like the standing TP/SL bracket in a position, where null means \\\"leave the leg alone\\\". Your options: HOLD leaves it resting (this is the default, and doing nothing is a real choice here, not an omission); a fresh BUY/SELL SUPERSEDES it (the old order is cancelled and yours replaces it — you do not need to cancel first); a BUY/SELL with both price fields null cancels it and enters at market; and withdraw_resting_entry=true on a HOLD takes it back without trading. Because silence keeps it, an order you no longer believe in must be withdrawn ON PURPOSE — read its age_min and ask whether the thesis that placed it still holds. The conversation above is where you placed it; re-validate that thesis against the CURRENT measurements rather than re-deriving it from scratch. A standing entry whose level price has trended away from, or whose structure has broken, is not a free option — it is a live order that will fill on the move that invalidates it.\\n- state.position.cancelled_pending_entry means a standing entry was cancelled by the code-owned age backstop (48h) before this evaluation — not by you. Treat it as a stale idea from a market state you have not re-checked, not as a plan to re-issue reflexively.\\n- strategy: on BUY/SELL name the play you are actually running, one of: breakout, breakout_retest, pullback, level_bounce, range_fade, sweep_reclaim, momentum_continuation, reversal, other. This is a LABEL for your own decision, not a constraint on it and not a ranking — no play here is preferred, discouraged, or expected of you, and the code neither checks it against your entry nor treats any value differently. It exists so that which plays work on which instruments becomes measurable over time. Use 'other' rather than forcing a fit; null on HOLD.\\n- entry_trigger_price (flat BUY/SELL only, protective bookkeeping — never an order parameter): when the entry THESIS is a breakout/breakdown (including a breakout-retest continuation), set this to the trigger level whose break justifies the trade — the broken structure level itself (BUY: below current price, SELL: above; wrong-side values are dropped). Code arms a failed-break watch on it: if a later 4H bar CLOSES back through this level, you are woken within minutes with market.failed_break to decide the exit instead of discovering the failure bars later. null when the thesis is not a break (level bounce, range fade, reclaim) — a null on a genuine break entry silently disarms this protection.\\n- Flat plan (flat HOLD only; ignored on any other action — enforced in code). When you are not committing this tick you may still leave a plan behind, built from four fields that each answer ONE question:\\n  • cooldown_minutes — how long to stay quiet. Suppresses routine flat re-scans of this symbol only; it never mutes in-position management or resting-entry re-evaluations. Clamps to 360–1440. null = keep the normal cadence.\\n  • cooldown_wake_above / cooldown_wake_below — WHERE you want to be looking: the price levels that would change your mind. Crossing one ends the cooldown and brings you back. They are watched roughly once per MINUTE, so place them exactly at your decision levels, with no padding.\\n  • cooldown_wake_note — REQUIRED whenever you set a band. One short line stating the plan the band encodes (\\\"acceptance above 3.42 → breakout check\\\", \\\"retest of broken 118.4k → long on reclaim\\\"). The wake evaluation is a fresh stateless scan; without the note your future self receives an anonymous level cross and has to rediscover the idea.\\n  • cooldown_wake_confirm_minutes — WHAT COUNTS as an event at that level, and nothing else. Set it and the wake fires only if price is STILL beyond the band that many minutes after first touch; a poke that reclaims sooner never wakes you and comes back instead as market.wake_band_sweeps (evidence of a liquidity grab, not acceptance). About 10 minutes is the measured figure for \\\"the level actually went\\\"; clamps to 5–60. null = the touch ITSELF is the event, unfiltered — right when any tag of the level changes your read. Either way a break that extends ≥0.5 primary-ATR beyond the band confirms IMMEDIATELY by force, before the clock, so you are never late on a runner.\\n- A wake band is a WATCH. It never trades for you — however it fires, it brings you back to decide, and cooldown_wake_confirm_minutes only changes what is worth waking you for. If you want to COMMIT to a break rather than look at it, that is a resting stop order beyond the level: same trigger, placed at the venue, no second decision. Choose deliberately — the band keeps the decision and costs you a beat; the order takes the trade and can be swept. Nothing filters an order the way confirm_minutes filters a band.\\n- PLACEMENT: arm a band only at a level you would actually be willing to act on when it fires. If the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO — watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection.\\n- When a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), you are not limited to chasing or re-arming: rest an order back at the broken level's retest, or arm the retest band with confirm null and a note saying what you intend there. Re-arming the side that JUST fired is dropped in code — choose a different level or a different tool.\\n\\nVENUE & ASSET CLASS (fixed facts about this instrument — read alongside YOUR JOB)\\n- Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. market.fear_greed (when present) is the daily market-wide crypto Fear & Greed index (0=extreme fear … 100=extreme greed, with recent daily history for direction/persistence) — broad mood context whose extremes are contrarian conditions, never a standalone trigger. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.\\n- Cost/churn: round-trip cost = state.costs.total_cost_bps. Perp funding (state.costs.funding, present only when measured this tick): rate_pct_per_interval accrues each funding settlement (every interval_hours hours when given; next charge at next_funding_at_utc when given) while held — positive = longs pay shorts, negative = shorts pay longs. Over a multi-day hold funding can rival the round-trip fee; weigh it on HOLD vs CLOSE and when choosing direction. Cost is one term in the trade, not a veto — weigh it against what you expect the move to pay.\\n- Exchange-side TP/SL bracket: fills 24/7 between these evaluations.\\n- Leverage 5–10 (crypto): notional is set by your stop distance (see DECISION OWNERSHIP), so leverage does NOT change what a stop-out costs — it only sets how much margin the position locks (higher = less margin tied up, liquidation nearer). Pick it for the margin/liquidation trade-off you want; null on HOLD/CLOSE.\\n\\nOUTPUT (every response)\\n- Strict JSON only, parseable by JSON.parse — no markdown, comments, trailing commas, or extra keys:\\n{\\\"action\\\":\\\"BUY|SELL|HOLD|CLOSE|REVERSE\\\",\\\"summary\\\":\\\"≤2 lines\\\",\\\"reason\\\":\\\"brief rationale\\\",\\\"exit_size_pct\\\":null|0-100,\\\"take_profit_price\\\":null|price,\\\"stop_loss_price\\\":null|price,\\\"entry_limit_price\\\":null|price,\\\"entry_stop_price\\\":null|price,\\\"withdraw_resting_entry\\\":true|false|null,\\\"entry_trigger_price\\\":null|price,\\\"strategy\\\":null|\\\"one of the strategy list\\\",\\\"cooldown_minutes\\\":null|minutes,\\\"cooldown_wake_above\\\":null|price,\\\"cooldown_wake_below\\\":null|price,\\\"cooldown_wake_note\\\":null|\\\"≤1 short line\\\",\\\"cooldown_wake_confirm_minutes\\\":null|minutes,\\\"leverage\\\":null|5|6|7|8|9|10,\\\"raise_leverage_to\\\":null|int,\\\"move_stop_to_be\\\":true|false|null}\\n- Field rules:\\n  1) action: exactly one of BUY/SELL/HOLD (see DECISION OWNERSHIP).\\n  2) leverage: 5–10 for BUY/SELL, else null.\\n  3) exit_size_pct: always null when flat.\\n  4) take_profit_price: REQUIRED price target on BUY/SELL (resting exchange TP); stop_loss_price: the structural invalidation stop on BUY/SELL (null = wide catastrophe default); both null on HOLD.\\n  5) entry_limit_price / entry_stop_price: on flat BUY/SELL you MAY rest ONE of them instead of taking the market (see resting-entry guidance); null = market now. Never set both.\\n  6) strategy: on BUY/SELL, name the play you are running (see the strategy list); null on HOLD.\\n  7) withdraw_resting_entry: true only on a flat HOLD to cancel a standing resting entry you no longer want; else null. Omitting it LEAVES the order resting.\\n  8) cooldown_minutes (+ optional cooldown_wake_above/cooldown_wake_below, cooldown_wake_note whenever a band is set, and cooldown_wake_confirm_minutes for breakout-intent bands that should only wake on a HELD break): on a flat HOLD you MAY request a quiet period (see flat-cooldown guidance); else null.\\n  9) entry_trigger_price: on a flat BUY/SELL with a breakout/breakdown thesis, the trigger level whose break justifies the trade (arms the failed-break watch — see guidance); else null.\\n  10) summary ≤3 lines; reason = brief rationale.\\n  11) raise_leverage_to / move_stop_to_be: always null when flat.\\n- Decision policy mode: balanced_guardrails.\",\"user\":\"\\nYou are analyzing ETH for swing trading (mode=simulation, asset_class=crypto).\\n\\nSTATE (derived signals — single source of truth):\\n{\\\"time\\\":{\\\"iso_utc\\\":\\\"<TIMESTAMP>\\\",\\\"date_utc\\\":\\\"2026-08-28\\\",\\\"day_of_week_utc\\\":\\\"Friday\\\",\\\"hour_utc\\\":18},\\\"biases\\\":{\\\"micro\\\":\\\"DOWN\\\",\\\"micro_source\\\":\\\"ema_slope_rsi\\\",\\\"primary\\\":\\\"neutral\\\",\\\"macro\\\":\\\"UP\\\",\\\"context\\\":\\\"UP\\\"},\\\"trend\\\":{\\\"primary_up\\\":false,\\\"primary_down\\\":false,\\\"primary_breakout_confirmed\\\":false,\\\"primary_breakdown_confirmed\\\":false,\\\"macro_up\\\":true,\\\"macro_down\\\":false},\\\"structure\\\":{\\\"micro\\\":{\\\"state\\\":\\\"range\\\",\\\"break_state\\\":\\\"inside\\\",\\\"bos\\\":false,\\\"bos_dir\\\":null,\\\"choch\\\":false,\\\"breakout_retest_ok\\\":false,\\\"breakout_retest_dir\\\":null},\\\"primary\\\":{\\\"state\\\":\\\"range\\\",\\\"break_state\\\":\\\"inside\\\",\\\"bos\\\":false,\\\"bos_dir\\\":null,\\\"choch\\\":false,\\\"breakout_retest_ok\\\":false,\\\"breakout_retest_dir\\\":null}},\\\"momentum\\\":{\\\"rsi\\\":{\\\"micro\\\":30.4,\\\"primary\\\":43.1,\\\"macro\\\":72.4},\\\"slope_micro_pct_per_bar\\\":-0.062,\\\"slope_primary_pct_per_bar\\\":0.075,\\\"micro_entry_ok\\\":true},\\\"extension_atr\\\":{\\\"micro\\\":-2.07,\\\"primary\\\":-1.01},\\\"volatility\\\":{\\\"atr_pct\\\":{\\\"primary\\\":1.822,\\\"macro\\\":4.589},\\\"atr_pctile\\\":{\\\"primary\\\":78,\\\"macro\\\":100},\\\"rvol\\\":{\\\"primary\\\":2.1,\\\"macro\\\":0.36},\\\"value_state_macro\\\":\\\"above_vah\\\"},\\\"location\\\":{\\\"context_support_dist_atr\\\":4.457,\\\"context_resistance_dist_atr\\\":0.573,\\\"context_breakout_confirmed\\\":false,\\\"context_breakdown_confirmed\\\":false,\\\"chop_risk\\\":false},\\\"levels\\\":{\\\"primary\\\":{\\\"support\\\":{\\\"price\\\":2431.19,\\\"dist_atr\\\":0.002,\\\"strength\\\":0.907,\\\"type\\\":\\\"swing_pivot\\\",\\\"state\\\":\\\"at_level\\\"},\\\"resistance\\\":{\\\"price\\\":2444,\\\"dist_atr\\\":0.287,\\\"strength\\\":0.753,\\\"type\\\":\\\"swing_pivot\\\",\\\"state\\\":\\\"approaching\\\"}},\\\"context\\\":{\\\"support\\\":{\\\"price\\\":1510.89,\\\"dist_atr\\\":4.457,\\\"strength\\\":0.933,\\\"type\\\":\\\"swing_pivot\\\",\\\"state\\\":\\\"rejected\\\"},\\\"resistance\\\":{\\\"price\\\":2548.92,\\\"dist_atr\\\":0.573,\\\"strength\\\":0.987,\\\"type\\\":\\\"swing_pivot\\\",\\\"state\\\":\\\"approaching\\\"}}},\\\"geometry\\\":{\\\"micro\\\":{\\\"slope_atr\\\":0.023,\\\"channel_pos\\\":0,\\\"channel_width_atr\\\":4.9,\\\"support_trendline\\\":{\\\"price_now\\\":2424.949,\\\"slope_atr\\\":-0.126,\\\"touches\\\":4},\\\"resistance_trendline\\\":{\\\"price_now\\\":2515.463,\\\"slope_atr\\\":-0.025,\\\"touches\\\":4},\\\"last_swing_high\\\":{\\\"price\\\":2526,\\\"dist_atr\\\":3.818,\\\"bars_ago\\\":4},\\\"last_swing_low\\\":{\\\"price\\\":2405,\\\"dist_atr\\\":-1.076,\\\"bars_ago\\\":2}},\\\"primary\\\":{\\\"slope_atr\\\":0.222,\\\"channel_pos\\\":0,\\\"channel_width_atr\\\":11,\\\"support_trendline\\\":{\\\"price_now\\\":2468.4,\\\"slope_atr\\\":0.062,\\\"touches\\\":4},\\\"resistance_trendline\\\":{\\\"price_now\\\":2544.338,\\\"slope_atr\\\":0.014,\\\"touches\\\":4},\\\"last_swing_high\\\":{\\\"price\\\":2534.44,\\\"dist_atr\\\":2.328,\\\"bars_ago\\\":4},\\\"last_swing_low\\\":{\\\"price\\\":2431.19,\\\"dist_atr\\\":-0.002,\\\"bars_ago\\\":13}}},\\\"gates\\\":{\\\"spread_ok\\\":true,\\\"liquidity_ok\\\":true,\\\"atr_ok\\\":true,\\\"slippage_ok\\\":true},\\\"costs\\\":{\\\"round_trip_fee_bps\\\":12,\\\"slippage_bps\\\":2,\\\"total_cost_bps\\\":14,\\\"funding\\\":{\\\"rate_pct_per_interval\\\":0.01,\\\"interval_hours\\\":8,\\\"next_funding_at_utc\\\":\\\"<TIMESTAMP>\\\",\\\"minutes_to_next_funding\\\":336},\\\"recent_realized_pnl_pct\\\":null},\\\"position\\\":{\\\"open\\\":false,\\\"status\\\":\\\"none\\\",\\\"reentry_cooldown\\\":null},\\\"closing_guardrails\\\":null}\\n\\nMARKET (raw inputs):\\n{\\\"price\\\":{\\\"last\\\":2431.6,\\\"change_24h_pct\\\":-0.02501},\\\"recent_candles\\\":[{\\\"ts\\\":\\\"<TIMESTAMP>\\\",\\\"open\\\":2509.9,\\\"high\\\":2534.44,\\\"low\\\":2484.79,\\\"close\\\":2489,\\\"volume\\\":154116.11},{\\\"ts\\\":\\\"<TIMESTAMP>\\\",\\\"open\\\":2489,\\\"high\\\":2504.67,\\\"low\\\":2475.51,\\\"close\\\":2495.63,\\\"volume\\\":120017.13},{\\\"ts\\\":\\\"<TIMESTAMP>\\\",\\\"open\\\":2495.63,\\\"high\\\":2511.26,\\\"low\\\":2481.4,\\\"close\\\":2504.29,\\\"volume\\\":96955.3},{\\\"ts\\\":\\\"<TIMESTAMP>\\\",\\\"open\\\":2504.29,\\\"high\\\":2526,\\\"low\\\":2466.68,\\\"close\\\":2470.48,\\\"volume\\\":280765.24},{\\\"ts\\\":\\\"<TIMESTAMP>\\\",\\\"open\\\":2470.48,\\\"high\\\":2472.92,\\\"low\\\":2405,\\\"close\\\":2431.24,\\\"volume\\\":299005.38}],\\\"liquidity\\\":{\\\"spread_bps\\\":0.0411,\\\"best_bid\\\":2431.27,\\\"best_ask\\\":2431.28,\\\"bid_walls\\\":[{\\\"price\\\":2429.43,\\\"size\\\":516.81},{\\\"price\\\":2429.83,\\\"size\\\":396.4},{\\\"price\\\":2429.5,\\\"size\\\":209.14},{\\\"price\\\":2429.84,\\\"size\\\":188.34},{\\\"price\\\":2430.81,\\\"size\\\":146.91}],\\\"ask_walls\\\":[{\\\"price\\\":2433.1,\\\"size\\\":171.85},{\\\"price\\\":2432.26,\\\"size\\\":148.07},{\\\"price\\\":2433.27,\\\"size\\\":147.26},{\\\"price\\\":2431.59,\\\"size\\\":146.9},{\\\"price\\\":2431.77,\\\"size\\\":146.9}]},\\\"volume_profile\\\":[{\\\"price\\\":2430.38,\\\"volume\\\":212.22},{\\\"price\\\":2431.6,\\\"volume\\\":161.94}],\\\"news\\\":{\\\"sentiment\\\":\\\"NEGATIVE\\\",\\\"headlines\\\":[]},\\\"recent_actions\\\":[],\\\"forex_events\\\":{\\\"source\\\":\\\"forexfactory\\\",\\\"pair\\\":\\\"USD\\\",\\\"status\\\":\\\"clear\\\",\\\"staleData\\\":false,\\\"reasonCodes\\\":[\\\"FOREX_EVENT_WINDOW_CLEAR\\\"],\\\"generatedAtMs\\\":<NOW_MS>,\\\"activeEvents\\\":[],\\\"nextEvents\\\":[],\\\"recentEvents\\\":[]}}\\n\\nDecide now per the OUTPUT contract in your system instructions — strict JSON only.\\n\"}",
+      "{\"action\":\"HOLD\",\"summary\":\"at 4H swing low, range too tight to pay\",\"reason\":\"waiting for the range to resolve\",\"exit_size_pct\":null,\"leverage\":null,\"raise_leverage_to\":null,\"move_stop_to_be\":false,\"take_profit_price\":null,\"stop_loss_price\":null,\"entry_limit_price\":null,\"entry_stop_price\":null,\"withdraw_resting_entry\":false,\"entry_trigger_price\":null,\"strategy\":null,\"cooldown_minutes\":null,\"cooldown_wake_above\":null,\"cooldown_wake_below\":null,\"cooldown_wake_confirm_minutes\":null,\"cooldown_wake_note\":null,\"signal_strength\":\"MEDIUM\",\"micro_bias\":\"DOWN\",\"primary_bias\":\"NEUTRAL\",\"macro_bias\":\"UP\",\"context_bias\":\"UP\",\"nano_bias\":null,\"response_id\":\"resp_test-1\",\"previous_response_id\":null,\"ai_provider\":\"zai\",\"ai_model\":\"zai/glm-5.3\",\"ai_usage\":{\"input_tokens\":1000,\"output_tokens\":200,\"cache_creation_input_tokens\":null,\"cache_read_input_tokens\":0},\"resting_entry_kind\":null}",
+      "{\"placed\":false,\"orderId\":null,\"clientOid\":\"cfw-<UUID>\"}",
+      "{\"category\":\"crypto\",\"platform\":\"bitget\",\"newsSource\":\"coindesk\",\"instrumentId\":\"bitget:ETHUSDT\",\"price\":2431.6,\"change24h\":-0.02501,\"spread\":0.04112518506423046,\"spreadBps\":0.04112518506423046,\"spreadAbs\":0.010000000000218279,\"bestBid\":2431.27,\"bestAsk\":2431.28,\"gates\":{\"spread_ok\":true,\"liquidity_ok\":true,\"atr_ok\":true,\"slippage_ok\":true,\"regime_trend_up\":true,\"regime_trend_down\":false,\"tier\":\"ETH\"},\"metrics\":{\"spreadBpsNow\":0.04112518506423046,\"bandBps\":50,\"bidBandUsdNow\":9907640.2544,\"askBandUsdNow\":7795618.1455,\"expectedSlippageBps\":0.02056534122996112,\"atrPctNow\":0.04588924400159802,\"spreadBpsMax\":4,\"depthMinUSD\":250000,\"atrPctFloor\":0.0039191835884530846,\"atrPctCeil\":0.09797958971132711,\"slippageBpsMax\":3},\"newsSentiment\":\"NEGATIVE\",\"newsHeadlines\":[],\"forexEventContext\":{\"source\":\"forexfactory\",\"pair\":\"USD\",\"status\":\"clear\",\"staleData\":false,\"reasonCodes\":[\"FOREX_EVENT_WINDOW_CLEAR\"],\"generatedAtMs\":<NOW_MS>,\"activeEvents\":[],\"nextEvents\":[],\"recentEvents\":[]},\"eventReaction\":null,\"btcContext\":null,\"forexSessionContext\":null,\"venueEvents\":null,\"positionContext\":null,\"momentumSignals\":{\"macroTrendUp\":true,\"macroTrendDown\":false,\"longMomentum\":true,\"shortMomentum\":false,\"nearPrimaryEMA20\":false,\"nearMicroEMA20\":false,\"primaryRSI\":43.1,\"primarySlope\":0.075,\"microRSI\":30.4,\"primaryAtr\":44.308571428571405,\"microExtensionInAtr\":-2.068981454734539,\"info\":{\"primaryTimeframe\":\"4H\",\"microEntryOk\":true}},\"actionability\":{\"actionable\":true,\"reason\":\"at_primary_level_boxed\"},\"cooldownWake\":null,\"reclaimWake\":null,\"sessionReclaim\":null,\"positionWake\":null,\"exchangeTpsl\":{\"takeProfitPrice\":null,\"stopLossPrice\":null,\"standing\":{\"takeProfitPrice\":null,\"stopLossPrice\":null},\"notes\":[\"tpsl_not_applicable\"]},\"restingEntry\":{\"kind\":null,\"price\":null,\"notes\":[]},\"strategy\":null}",
+      "{\"context\":\"1W\",\"macro\":\"1D\",\"primary\":\"4H\",\"micro\":\"1H\"}"
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.tick_log (ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb )",
+    "values": [
+      <NOW_MS>,
+      "ETHUSDT",
+      "bitget",
+      "ai_call",
+      "decision",
+      "HOLD",
+      "manual",
+      true,
+      "{\"spread_ok\":true,\"liquidity_ok\":true,\"atr_ok\":true,\"slippage_ok\":true,\"regime_trend_up\":true,\"regime_trend_down\":false,\"tier\":\"ETH\"}",
+      "{\"spreadBpsNow\":0.04112518506423046,\"bandBps\":50,\"bidBandUsdNow\":9907640.2544,\"askBandUsdNow\":7795618.1455,\"expectedSlippageBps\":0.02056534122996112,\"atrPctNow\":0.04588924400159802,\"spreadBpsMax\":4,\"depthMinUSD\":250000,\"atrPctFloor\":0.0039191835884530846,\"atrPctCeil\":0.09797958971132711,\"slippageBpsMax\":3}"
+    ]
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "DEL",
+    "swing:dashboard:summary:v6:1D",
+    "swing:dashboard:summary:v6:7D",
+    "swing:dashboard:summary:v6:30D",
+    "swing:dashboard:summary:v6:6M"
+  ]
+
+POST https://kv.boundary.test/ZREVRANGEBYSCORE/decision%3Amarkers%3Abitget%3AETHUSDT/<NOW_MS>/1772130256422/LIMIT/0/1200
+  authorization: Bearer <TOKEN>
+
+SQL neon-postgres
+  {
+    "text": "SELECT position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage FROM swing.positions WHERE status = 'closed' AND ($1::text IS NULL OR platform = $2) AND ($3::text IS NULL OR symbol = $4) AND ( (exit_ts_ms IS NOT NULL AND exit_ts_ms >= $5 AND exit_ts_ms <= $6) OR (exit_ts_ms IS NULL AND entry_ts_ms IS NOT NULL AND entry_ts_ms >= $7 AND entry_ts_ms <= $8) ) ORDER BY COALESCE(exit_ts_ms, entry_ts_ms, 0) ASC LIMIT $9;",
+    "values": [
+      "bitget",
+      "bitget",
+      "ETHUSDT",
+      "ETHUSDT",
+      1772130256422,
+      <NOW_MS>,
+      1772130256422,
+      <NOW_MS>,
+      1000
+    ]
+  }
+
+POST https://kv.boundary.test/GET/decision%3Amarkers%3Aseeded%3Abitget%3AETHUSDT
+  authorization: Bearer <TOKEN>
+
+GET https://api.bitget.com/api/v2/mix/position/history-position?endTime=<NOW_MS>&productType=usdt-futures&startTime=1780251856423&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:5m:48",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:15m:96",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:1H:168",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:4H:180",
+    3900,
+    "[]"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:chart:overlay:v7:bitget:ETHUSDT:1D:183",
+    3900,
+    "[]"
+  ]

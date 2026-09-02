@@ -11,6 +11,8 @@ import { conversation, startBoundary } from '../harness';
 
 import type { PgResponder } from '../harness/pg';
 
+// provider: 'openai' is the LEGACY column value (pre-dialect rename) — kept
+// deliberately, so the read-back below covers the back-compat mapping.
 const THREAD_ROW = {
     status: 'in_position',
     last_response_id: 'resp_prev-9',
@@ -43,7 +45,7 @@ test('first access bootstraps the swing schema, then reads the thread', async ()
         status: 'in_position',
         lastResponseId: 'resp_prev-9',
         turns: 3,
-        provider: 'openai',
+        dialect: 'responses',
         transcript: [{ role: 'user', content: 'prior tick state' }],
         wakeAbove: null,
         wakeBelow: null,
@@ -62,7 +64,7 @@ test('a warmed process pays only the queries themselves', async () => {
         symbol: 'EURUSD',
         status: 'in_position',
         lastResponseId: 'resp_test-1',
-        provider: 'openai',
+        dialect: 'responses',
         transcript: [{ role: 'user', content: 'this tick state' }],
     });
     await getSwingAiThread('capital', 'EURUSD');

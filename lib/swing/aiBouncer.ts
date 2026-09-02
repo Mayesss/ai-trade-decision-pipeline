@@ -142,7 +142,7 @@ export async function runAiBouncer(input: AiBouncerInput): Promise<AiBouncerVerd
     if (!swingAiBouncerEnabled()) return null;
     const startedAt = Date.now();
     try {
-        const apiKey = resolveAiGatewayKey('openai');
+        const apiKey = resolveAiGatewayKey('responses');
         let res = await callBouncerModel(apiKey, input, true);
         // Some gateway/provider combos reject response_format for this model
         // family — retry once as plain instruct-JSON (the system prompt already

@@ -1,0 +1,51 @@
+-- Lesson library reset — 2026-09-02
+-- Retires the 18 lessons learned under the pre-2026-09-02 rulebook: the
+-- ENTRY_TP_MIN_ATR / ENTRY_SL_MIN_ATR floors, the trend guard,
+-- anti-flip and re-entry cooldown, and the prompt doctrine all removed that day.
+-- 9 re-imposed rules the prompt no longer states; 12 rested on a single trade;
+-- 13 were breakout/wake-specific; none came from a win.
+-- See docs/measured-hold-causes.md.
+
+-- Snapshot of the retired rows:
+--   #5 [global/BTCUSDT] conf=0.98 sup=8 origin={"loss":3,"refusal":5}
+--     Breakout-retest longs: a held break clears the trigger from the 0.5-ATR opposing-level veto, but if price is still >0.05 primary ATR below that trigger at entry, wait for a reclaim/hold above it or a support-bounce first.
+--   #6 [symbol/BTCUSDT] conf=0.88 sup=1 origin={"loss":1}
+--     After a breakout/breakdown entry, anchor management to the trigger: if the first primary close reclaims that level and the nearest broken structure, exit the failed break instead of deferring to higher-timeframe bias.
+--   #7 [symbol/LINKUSDT] conf=0.87 sup=1 origin={"loss":1}
+--     On a reclaim-failure fade, wait for decisive acceptance back through the trigger or a clear micro structure flip. Do not enter on a marginal slip through the level while the micro breakout-retest bias still points the other way.
+--   #8 [asset_class/ADAUSDT] conf=0.82 sup=2 origin={"loss":2}
+--     On break/retest entries, submit the stop with the order at the nearest structural invalidation, typically 0.2-0.6 primary ATR beyond the trigger or last defended 1H swing; never leave the 3-ATR default stop.
+--   #9 [symbol/BTCUSDT] conf=0.69 sup=1 origin={"loss":1}
+--     Do not short a primary retest while strong context support sits within ~0.6 context ATR and context_breakdown_confirmed is false; wait for that higher-timeframe support to break or cut risk sharply.
+--   #10 [global/BGBUSDT] conf=0.86 sup=3 origin={"loss":2,"refusal":1}
+--     On the first primary close after a break entry, weak follow-through alone is not permission to tuck the stop to the trigger/reclaim zone; keep at least ~0.5-1 primary ATR beyond structural invalidation unless failure is confirmed.
+--   #11 [asset_class/BTCUSDT] conf=0.79 sup=13 origin={"loss":2,"refusal":11}
+--     On breakdown shorts, 0.25 primary ATR below support clears only that support. If the trigger is inside the prior primary bar or within 0.1 ATR of a trendline, require a 1H close and retest-reject.
+--   #12 [symbol/SOLUSDT] conf=0.91 sup=2 origin={"refusal":2}
+--     For breakout-intent wakes, re-check current primary pivots at the wake. If the next opposing primary level is <0.6 primary ATR beyond price, do not buy; move the wake there and enter only after price is >=0.15 ATR through it or after a retest-hold.
+--   #13 [symbol/BNBUSDT] conf=0.79 sup=1 origin={"loss":1}
+--     For breakout-retest longs, if the first or any later 4H close finishes at least 0.1 primary ATR back below the breakout trigger and price has not reclaimed it by decision time, close the trade.
+--   #14 [symbol/SOLUSDT] conf=0.78 sup=1 origin={"loss":1}
+--     On breakdown shorts, if context support is <0.6 context ATR below price and context_breakdown_confirmed=false, do not enter the first break. Wait for a retest-reject or a close >=0.15 primary ATR through that support.
+--   #15 [symbol/US100] conf=0.98 sup=2 origin={"refusal":2}
+--     After a held-break wake fires with ≥30m sustain, micro aligns, extension <1 primary ATR, and next resistance is >0.6 ATR away, do not wait for the next breakout; act or cite a new structural failure.
+--   #16 [symbol/COPPER] conf=0.88 sup=1 origin={"refusal":1}
+--     When a held-break wake fires with sustain >=15m, micro_entry_ok=true, and no contrary primary flip, do not demand a second acceptance at a nearer level; enter or name the structural invalidation.
+--   #17 [symbol/BTCUSDT] conf=0.78 sup=1 origin={"loss":1}
+--     After >=3 failed sweeps through a wake-band trigger within 60 min, do not take the next break entry unless price closes >=0.2 primary ATR beyond the trigger or a retest-reject forms.
+--   #18 [symbol/DE40] conf=0.87 sup=1 origin={"refusal":1}
+--     On a held-break wake (>=5m sustain), do not re-demand a retest if price is <=0.6 primary ATR beyond the trigger, primary extension is <2.8 ATR, and the next opposing level leaves >=1.0 ATR room.
+--   #19 [symbol/BNBUSDT] conf=0.90 sup=1 origin={"loss":1}
+--     For wake-breakout longs, if micro extension is ≥2.8 ATR and unbroken context resistance is within 0.6 primary ATR, do not market-enter; wait for a retest-hold or context breakout.
+--   #20 [symbol/AVAXUSDT] conf=0.78 sup=1 origin={"loss":1}
+--     When 1H channel_pos is ≥0.90 and micro extension is ≥2 ATR, do not market-buy a fresh trigger touch; require a 1H close above it and a defended retest within 0.3 primary ATR.
+--   #21 [symbol/SOLUSDT] conf=0.87 sup=1 origin={"loss":1}
+--     Exit a breakout long on the first 4H review when both 1H and 4H structure turn bearish, the reclaim has failed, and price is within 0.5 primary ATR of the stop; do not wait for a BOS flag.
+--   #22 [symbol/GOLD] conf=0.91 sup=1 origin={"refusal":1}
+--     On confirmed break wakes, execute aligned continuation when price is ≤0.5 primary ATR past the trigger and the next opposing level is ≥0.6 ATR away; do not re-demand a retest absent structural failure.
+
+-- APPLY:
+UPDATE swing.lessons SET status = 'retired' WHERE id IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);
+
+-- UNDO:
+-- UPDATE swing.lessons SET status = 'active' WHERE id IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);

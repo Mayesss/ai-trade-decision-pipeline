@@ -1,4 +1,4 @@
-// Global AI-call health flag (KV). Written from the provider switch
+// Global AI-call health flag (KV). Written from the dialect switch
 // (lib/aiProvider.callSwingDecision), the single choke point every swing AI
 // call goes through — decisions, postmortems, forex advisor, evaluations —
 // so ONE place knows whether the model is reachable at all.
@@ -20,15 +20,17 @@
 // successes pay one GET and only SET when there is actually a streak/flag to
 // clear, so the steady healthy state adds a single read per AI call.
 import { kvGetJson, kvSetJson } from '../kv';
-import type { AiCallError, AiCallProvider, AiErrorKind } from '../aiError';
+import type { AiCallError, AiDialect, AiErrorKind } from '../aiError';
 
 export const SWING_AI_HEALTH_KEY = 'swing:ai:health:v1';
 const TRANSIENT_DEGRADE_THRESHOLD = 5;
 
 export interface SwingAiHealthState {
     degraded: boolean;
-    // Provider + classification of the latest failure (null when healthy).
-    provider: AiCallProvider | null;
+    // Dialect + classification of the latest failure (null when healthy).
+    // WHICH MODEL failed is not stored here: the flag is global and the
+    // decision rows carry the model per tick.
+    dialect: AiDialect | null;
     kind: AiErrorKind | null;
     reason: string | null;
     // Start of the CURRENT consecutive-failure streak (survives while the
@@ -43,7 +45,7 @@ export interface SwingAiHealthState {
 function defaultState(): SwingAiHealthState {
     return {
         degraded: false,
-        provider: null,
+        dialect: null,
         kind: null,
         reason: null,
         sinceMs: null,
@@ -65,10 +67,18 @@ function normalizeState(value: unknown): SwingAiHealthState {
         return t ? t.slice(0, max) : null;
     };
     const kindRaw = String(row.kind || '');
-    const providerRaw = String(row.provider || '');
+    // Rows written before the rename carry the old provider names — read them
+    // as the dialect each one used to imply.
+    const dialectRaw = String(row.dialect || row.provider || '');
+    const dialect: AiDialect | null =
+        dialectRaw === 'messages' || dialectRaw === 'claude'
+            ? 'messages'
+            : dialectRaw === 'responses' || dialectRaw === 'openai'
+              ? 'responses'
+              : null;
     return {
         degraded: row.degraded === true,
-        provider: providerRaw === 'openai' || providerRaw === 'claude' ? providerRaw : null,
+        dialect,
         kind: kindRaw === 'billing' || kindRaw === 'config' || kindRaw === 'transient' ? kindRaw : null,
         reason: text(row.reason, 300),
         sinceMs: num(row.sinceMs),
@@ -103,7 +113,7 @@ export async function reportSwingAiFailure(err: AiCallError): Promise<void> {
         const persistent = err.kind === 'billing' || err.kind === 'config';
         const next: SwingAiHealthState = {
             degraded: prev.degraded || persistent || consecutiveFailures >= TRANSIENT_DEGRADE_THRESHOLD,
-            provider: err.provider,
+            dialect: err.dialect,
             kind: err.kind,
             reason: String(err.message || '').slice(0, 300),
             sinceMs: prev.consecutiveFailures > 0 && prev.sinceMs ? prev.sinceMs : now,

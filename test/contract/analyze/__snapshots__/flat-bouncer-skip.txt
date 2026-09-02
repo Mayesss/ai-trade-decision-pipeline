@@ -426,22 +426,6 @@ GET https://api.bitget.com/api/v2/mix/market/fills?after=1477299394996617220&pro
   content-type: application/json
   locale: en-US
 
-SQL neon-postgres
-  {
-    "text": "SELECT position_key, symbol, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_net, pnl_gross, pnl_pct, pnl_gross_pct, notional, entry_leverage FROM swing.positions WHERE status = 'closed' AND ($1::text IS NULL OR platform = $2) AND ($3::text IS NULL OR symbol = $4) AND ( (exit_ts_ms IS NOT NULL AND exit_ts_ms >= $5 AND exit_ts_ms <= $6) OR (exit_ts_ms IS NULL AND entry_ts_ms IS NOT NULL AND entry_ts_ms >= $7 AND entry_ts_ms <= $8) ) ORDER BY COALESCE(exit_ts_ms, entry_ts_ms, 0) ASC LIMIT $9;",
-    "values": [
-      "bitget",
-      "bitget",
-      "BTCUSDT",
-      "BTCUSDT",
-      1787927145796,
-      <NOW_MS>,
-      1787927145796,
-      <NOW_MS>,
-      10
-    ]
-  }
-
 POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Abitget%3ABTCUSDT/0/11
   authorization: Bearer <TOKEN>
 

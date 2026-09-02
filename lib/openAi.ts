@@ -1,7 +1,9 @@
 // lib/openAi.ts
 //
 // OpenAI Responses API client for the swing decision (SWING_AI_PROVIDER=openai,
-// and the default — DEFAULT_AI_MODEL is a gpt id). Sibling of lib/claudeAi.ts:
+// and the default). The dialect is the gateway's, not the vendor's: it serves
+// the Responses API for every provider, so DEFAULT_AI_MODEL rides this client
+// whatever vendor it names (zai/glm-5.3 today). Sibling of lib/claudeAi.ts:
 // both call the SAME Vercel AI Gateway and differ only in which dialect they
 // speak, and lib/aiProvider.ts is the switch between them.
 //
@@ -16,7 +18,7 @@
 // memory is ours to keep in swing.ai_threads.transcript.
 
 import { AiCallError } from './aiError';
-import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
+import { aiModelForDialect, reasoningEffortForModel, resolveAiGatewayKey } from './aiModel';
 import { AI_BASE_URL } from './constants';
 
 export type AiThreadCallResult = {
@@ -74,7 +76,7 @@ async function readAiErrorDetails(res: Response): Promise<{ details: string; cod
 function openAiCallError(res: Response, details: string, code: string | null): AiCallError {
     return new AiCallError({
         message: `AI error: ${res.status} ${res.statusText}${details}`,
-        provider: 'openai',
+        dialect: 'responses',
         status: res.status,
         code,
     });
@@ -99,11 +101,12 @@ export async function callAIThread(
     // hold does not resend dozens of stale tapes. Defaults to `user`.
     opts?: { transcript?: unknown[] | null; userForTranscript?: string | null },
 ): Promise<AiThreadCallResult> {
-    const apiKey = resolveAiGatewayKey('openai');
+    const apiKey = resolveAiGatewayKey('responses');
 
-    // Whichever of the default/fallback model pair is the gpt-flavored one
-    // (lib/constants.ts) — this client always speaks to OpenAI.
-    const openAiModel = aiModelForProvider('openai');
+    // Whichever of the default/fallback model pair is the non-Anthropic one
+    // (lib/constants.ts) — this client always speaks the OpenAI dialect.
+    const openAiModel = aiModelForDialect('responses');
+    const reasoningEffort = reasoningEffortForModel(openAiModel);
 
     // Structured Outputs (json_schema, strict) guarantees the response shape at the
     // API layer when a caller supplies a schema; otherwise fall back to JSON mode.
@@ -138,9 +141,11 @@ export async function callAIThread(
             // stored transcript, so provider cutovers never replay a stale one).
             instructions: system,
             input: transcript.length ? [...transcript, { role: 'user', content: user }] : user,
-            // gpt-5.x reasoning models only accept the default temperature (1);
-            // determinism comes from reasoning effort + the post-processing gates.
-            reasoning: { effort: 'medium' },
+            // Reasoning models here only accept the default temperature (1);
+            // determinism comes from reasoning effort + the post-processing
+            // gates. Effort is per-model (the scales differ) — see
+            // reasoningEffortForModel; omitted for an unlisted model.
+            ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
             text: { format },
             // Oversized replayed transcripts drop middle turns server-side
             // instead of erroring the tick (the stored transcript is also
@@ -206,4 +211,4 @@ export async function callAIThread(
 }
 
 // Stateless calls (forex advisor, evaluations) go through
-// lib/aiProvider.callStatelessAI — same provider switch as the swing decision.
+// lib/aiProvider.callStatelessAI — same dialect switch as the swing decision.

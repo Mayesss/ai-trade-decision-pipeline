@@ -41,21 +41,16 @@ test('entry BUY keeps a valid structural TP and a valid structural SL', () => {
     assert.equal(out.stopLossPrice, 97);
 });
 
-test('entry SL on the wrong side or inside 1 ATR is dropped (caller falls back to catastrophe stop)', () => {
-    const wrongSide = entry('BUY', 104, 103); // SL above price on a long
-    assert.equal(wrongSide.stopLossPrice, null);
+test('entry SL on the wrong side is dropped; a sub-1-ATR stop is now kept', () => {
+    const wrongSide = entry('BUY', 104, 101);
     assert.ok(wrongSide.notes.includes('sl_wrong_side_dropped'));
-    const tooClose = entry('BUY', 104, 98.5); // 0.75 ATR below — inside swing noise
-    assert.equal(tooClose.stopLossPrice, null);
-    assert.ok(tooClose.notes.includes('sl_too_close_dropped'));
-    const atFloor = entry('BUY', 104, 98); // exactly 1 ATR — kept
-    assert.equal(atFloor.stopLossPrice, 98);
-});
-
-test('entry SL beyond 3 ATR is clamped to the catastrophe distance', () => {
-    const out = entry('SELL', 95, 110); // 5 ATR above on a short
-    assert.equal(out.stopLossPrice, PRICE + 3 * ATR);
-    assert.ok(out.notes.includes('sl_clamped_max_atr'));
+    assert.equal(wrongSide.stopLossPrice, null);
+    const tight = entry('BUY', 104, 99); // 0.5 ATR — previously dropped
+    assert.equal(tight.stopLossPrice, 99);
+    assert.ok(!tight.notes.includes('sl_too_close_dropped'));
+    const noise = entry('BUY', 104, 99.95); // 0.025 ATR — under BRACKET_MIN_GAP_ATR
+    assert.ok(noise.notes.includes('sl_too_close_dropped'));
+    assert.equal(noise.stopLossPrice, null);
 });
 
 test('entry without a TP falls back to 3×ATR on the profit side', () => {
@@ -63,19 +58,81 @@ test('entry without a TP falls back to 3×ATR on the profit side', () => {
     assert.equal(entry('SELL', null).takeProfitPrice, PRICE - 3 * ATR);
 });
 
-test('entry TP on the wrong side or inside 2 ATR is replaced by the fallback', () => {
+test('entry TP on the wrong side is replaced by the fallback', () => {
     const wrongSide = entry('BUY', 95);
     assert.ok(wrongSide.notes.includes('tp_wrong_side_dropped'));
     assert.equal(wrongSide.takeProfitPrice, PRICE + 3 * ATR);
-    const tooClose = entry('SELL', 97); // 1.5 ATR away — not a swing target
-    assert.ok(tooClose.notes.includes('tp_too_close_dropped'));
-    assert.equal(tooClose.takeProfitPrice, PRICE - 3 * ATR);
 });
 
-test('entry TP beyond 10 ATR is clamped', () => {
-    const out = entry('BUY', 200);
-    assert.equal(out.takeProfitPrice, PRICE + 10 * ATR);
-    assert.ok(out.notes.includes('tp_clamped_max_atr'));
+// Floors removed 2026-09-02 (ENTRY_TP_MIN_ATR = 2, ENTRY_SL_MIN_ATR = 1): they
+// made any trade inside a sub-2-ATR range inexpressible, and a violation
+// silently WIDENED the target to the 3×ATR fallback. Bracket geometry is the
+// model's now. Anchor for every case below: PRICE 100, ATR 2.
+test('the tight-stop range trade is expressible — both legs kept as asked', () => {
+    const out = entry('BUY', 102.4, 99.2); // stop 0.4 ATR, target 1.2 ATR = 3R
+    assert.equal(out.stopLossPrice, 99.2);
+    assert.equal(out.takeProfitPrice, 102.4);
+    assert.equal(out.notes.length, 0);
+});
+
+test('a sub-2-ATR target is kept — no minimum distance', () => {
+    const near = entry('SELL', 97, 102.5); // 1.5 ATR target, 1.25 ATR stop
+    assert.equal(near.takeProfitPrice, 97);
+    assert.equal(near.stopLossPrice, 102.5);
+    assert.equal(near.notes.length, 0);
+});
+
+test('a target shorter than its stop is the model\'s call, not an error', () => {
+    // 0.2 ATR target on a 1.5 ATR stop = 0.13R. Sub-1R is not a rejected shape:
+    // no reward:risk ratio is enforced anywhere, so both legs must survive
+    // untouched and the sanitizer must stay silent about it.
+    const out = entry('BUY', 100.4, 97);
+    assert.equal(out.takeProfitPrice, 100.4);
+    assert.equal(out.stopLossPrice, 97);
+    assert.equal(out.notes.length, 0);
+});
+
+test('entry TP inside the noise gap is still dropped to the fallback', () => {
+    const noise = entry('BUY', 100.1); // 0.05 ATR — under BRACKET_MIN_GAP_ATR
+    assert.ok(noise.notes.includes('tp_too_close_dropped'));
+    assert.equal(noise.takeProfitPrice, PRICE + 3 * ATR);
+});
+
+// The anchor above (ATR = 2% of price) is a HIGH-ATR instrument, where the ATR
+// floor is the binding one. These cases use a low-ATR anchor, where it is not.
+test('on a low-ATR instrument the floor is the sizing threshold, not 0.1 ATR', () => {
+    // EURUSD-shaped: price 1.0850, 4H ATR ≈ 0.355% of price. 0.1 ATR ≈ 0.036%
+    // of price — under MIN_SIZEABLE_STOP_PCT (0.05%). A stop in that band used
+    // to survive here and then make resolveRiskBasedSizing return null, which
+    // dropped execution to the legacy stop-blind notional.
+    const price = 1.085;
+    const atr = 0.00385; // 0.355% of price
+    const sanitize = (sl: number) =>
+        sanitizeExchangeTpSl({
+            action: 'BUY',
+            positionOpen: false,
+            side: null,
+            price,
+            primaryAtr: atr,
+            takeProfitPrice: null,
+            stopLossPrice: sl,
+        });
+
+    // 0.12 ATR — clears the ATR floor, still unsizeable (0.043% of entry).
+    const unsizeable = sanitize(price - 0.12 * atr);
+    assert.equal(unsizeable.stopLossPrice, null);
+    assert.ok(unsizeable.notes.includes('sl_below_sizeable_dropped'));
+
+    // 0.2 ATR = 0.071% of entry — over both floors, kept as asked.
+    const ok = price - 0.2 * atr;
+    assert.equal(sanitize(ok).stopLossPrice, ok);
+});
+
+test('on a high-ATR instrument the ATR floor still binds and keeps its own note', () => {
+    // Anchor case: 0.05 ATR = 0.1% of price, sizeable but under 0.1 ATR.
+    const noise = entry('BUY', 104, PRICE - 0.05 * ATR);
+    assert.equal(noise.stopLossPrice, null);
+    assert.ok(noise.notes.includes('sl_too_close_dropped'));
 });
 
 test('in-position amend keeps valid TP/SL on the correct sides', () => {
@@ -93,14 +150,6 @@ test('in-position amend drops wrong-side legs independently', () => {
     assert.equal(out.stopLossPrice, null);
     assert.ok(out.notes.includes('tp_wrong_side_dropped'));
     assert.ok(out.notes.includes('sl_wrong_side_dropped'));
-});
-
-test('stop amendments are clamped to the 3×ATR catastrophe distance from current price', () => {
-    const long = amend('long', null, 80); // 10 ATR away → clamp to 100 - 6
-    assert.equal(long.stopLossPrice, PRICE - 3 * ATR);
-    assert.ok(long.notes.includes('sl_clamped_max_atr'));
-    const short = amend('short', null, 120);
-    assert.equal(short.stopLossPrice, PRICE + 3 * ATR);
 });
 
 test('stop amendments only tighten vs the standing stop', () => {

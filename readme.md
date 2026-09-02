@@ -93,7 +93,7 @@ upstash_payasyougo_KV_REST_API_TOKEN=...
 
 # Optional
 TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
-# AI_DECISION_POLICY=strict     # strict (default) | balanced
+# AI_DECISION_POLICY=balanced   # balanced (default since 2026-09-02) | strict
 # ADMIN_ACCESS_SECRET=...       # enables auth on /api/evaluations and /api/chart
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
 # DEFAULT_AI_MODEL, FALLBACK_AI_MODEL and AI_BASE_URL are set in lib/constants.ts; the provider
@@ -168,7 +168,7 @@ each: the rate limiter serializes calls against the frozen clock.
     - `category` (optional metadata tag, e.g. `forex|crypto|index|commodity|equity`)
     - `dryRun` (`true|false`, default `false`)
     - `notional` (default `100`)
-    - `decisionPolicy` (`strict|balanced`, default `strict`)
+    - `decisionPolicy` (`strict|balanced`, default `balanced`)
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
   - Persists prompt, decision, execution result, and snapshot (including `platform`, `newsSource`, `category`, and instrument identifier).

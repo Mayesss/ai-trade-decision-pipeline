@@ -10,7 +10,6 @@
 
 import { clampWakeConfirmMinutes } from './wakeWatch';
 import { SWING_STRATEGIES } from './decisionSchema';
-import type { RecentActionEntry } from './recentActions';
 import type { TradeDecision } from '../trading';
 import {
     resolveDecisionPolicy,
@@ -22,12 +21,9 @@ import {
     HOLD_COOLDOWN_MIN_MINUTES,
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
-    EXCHANGE_SL_MAX_ATR_MULT,
-    ENTRY_TP_MIN_ATR,
-    ENTRY_SL_MIN_ATR,
-    TP_MAX_ATR,
-    AMEND_MIN_GAP_ATR,
+    BRACKET_MIN_GAP_ATR,
 } from './decisionConfig';
+import { MIN_SIZEABLE_STOP_PCT } from './riskSizing';
 import type {
     PositionContext,
     DecisionPolicy,
@@ -49,7 +45,6 @@ export function postprocessDecision(params: {
     context: PromptDecisionContext;
     gates: { spread_ok: boolean; liquidity_ok: boolean; atr_ok: boolean; slippage_ok: boolean };
     positionOpen: boolean;
-    recentActions: RecentActionEntry[];
     positionContext: PositionContext | null;
     policy?: DecisionPolicy;
     lastClosedPosition?: LastClosedPosition | null;
@@ -62,7 +57,6 @@ export function postprocessDecision(params: {
         context,
         gates,
         positionOpen,
-        recentActions,
         positionContext,
         policy,
         lastClosedPosition,
@@ -93,14 +87,16 @@ export function postprocessDecision(params: {
                       : null
                 : null;
 
-    if (desiredSide === 'short' && context.primary_trend_up && microBias === 'UP') {
-        const allowCounterTrend = !strictPolicy && signalStrength === 'HIGH' && context.primary_breakdown_confirmed;
-        if (!allowCounterTrend) action = 'HOLD';
-    }
-    if (desiredSide === 'long' && context.primary_trend_down && microBias === 'DOWN') {
-        const allowCounterTrend = !strictPolicy && signalStrength === 'HIGH' && context.primary_breakout_confirmed;
-        if (!allowCounterTrend) action = 'HOLD';
-    }
+    // (No trend guard. It forced any entry against an aligned primary+micro
+    // trend to HOLD — under the default `strict` policy with no exception at
+    // all — so counter-trend and mean-reverting entries were unreachable in
+    // production regardless of what the model saw. Measured 2026-09-02: it had
+    // exposure on 48% of AI calls, and ~200 HOLDs narrated it back at us
+    // ("a short is blocked absent confirmed bearish structure"). It also
+    // contradicted the prompt's own level-bounce paragraph, which promises
+    // "do not reject these solely for regime misalignment" — the guard rejected
+    // exactly those, silently. Regime stays in STATE as a measurement; whether
+    // to trade against it is the model's call.)
 
     // (No entry-timing coercion. micro_entry_ok used to force a flat BUY/SELL to
     // HOLD when price sat far from its EMA20 — a guard on taking the MARKET at a
@@ -131,17 +127,12 @@ export function postprocessDecision(params: {
         }
     }
 
-    if (action === 'CLOSE' || action === 'REVERSE') {
-        const antiFlipLookback = strictPolicy ? 2 : 1;
-        const recent = (recentActions || [])
-            .slice(-antiFlipLookback)
-            .map((a) => String(a.action || '').toUpperCase())
-            .filter((a) => a);
-        const strongEnoughForRepeat = signalStrength === 'HIGH' || (!strictPolicy && signalStrength === 'MEDIUM');
-        if (!strongEnoughForRepeat && recent.includes(action)) {
-            action = 'HOLD';
-        }
-    }
+    // (No anti-flip guard. It blocked a repeated CLOSE/REVERSE unless conviction
+    // was high — but REVERSE has never once been emitted in 2,435 calls, so it
+    // only ever guarded a repeated CLOSE on a position that is still open, i.e.
+    // an exit the model asked for twice. market.recent_actions already shows it
+    // its own recent decisions and their outcomes; re-deciding an exit with that
+    // in view is judgment, not churn.)
 
     const baseGatesOk = Boolean(gates?.spread_ok && gates?.liquidity_ok && gates?.atr_ok && gates?.slippage_ok);
     if (!baseGatesOk) {
@@ -602,9 +593,10 @@ export function sanitizeExchangeTpSl(params: {
           : (params.side as 'long' | 'short');
     const dir = side === 'long' ? 1 : -1;
 
-    // Take profit: must sit on the profit side of price; entries need real
-    // swing room (≥ENTRY_TP_MIN_ATR) so the target pays for the stop, amends
-    // just need to clear the current price by a noise buffer.
+    // Take profit: on the profit side of price, clearing it by more than noise.
+    // That is the whole check — no minimum distance, no maximum, no minimum R.
+    // Whether a target pays for its stop is the model's call, made with the
+    // levels in view (see the floors-removed note in decisionConfig.ts).
     let tp = Number.isFinite(params.takeProfitPrice as number) && (params.takeProfitPrice as number) > 0 ? Number(params.takeProfitPrice) : null;
     if (tp != null) {
         if (dir * (tp - price) <= 0) {
@@ -612,13 +604,9 @@ export function sanitizeExchangeTpSl(params: {
             tp = null;
         } else if (atr) {
             const distAtr = Math.abs(tp - price) / atr;
-            const minAtr = isEntry ? ENTRY_TP_MIN_ATR : AMEND_MIN_GAP_ATR;
-            if (distAtr < minAtr) {
+            if (distAtr < BRACKET_MIN_GAP_ATR) {
                 notes.push('tp_too_close_dropped');
                 tp = null;
-            } else if (distAtr > TP_MAX_ATR) {
-                tp = price + dir * TP_MAX_ATR * atr;
-                notes.push('tp_clamped_max_atr');
             }
         }
     }
@@ -631,24 +619,32 @@ export function sanitizeExchangeTpSl(params: {
     }
     if (tp != null && !(tp > 0)) tp = null;
 
-    // Stop loss: entries may attach a structural invalidation stop (the caller
-    // falls back to the code-owned 3×ATR catastrophe stop when absent/dropped);
-    // amends must be protective vs current price, never wider than the
-    // catastrophe distance, and never looser than the standing stop.
+    // Stop loss: same shape as the TP — correct side of price, clearing it by
+    // more than noise. Distance in either direction is the model's call; the
+    // caller falls back to the catastrophe stop when absent or dropped, and
+    // amends are additionally tighten-only.
+    //
+    // The noise floor here is expressed in ATR, but a stop ALSO has to be wide
+    // enough for resolveRiskBasedSizing to size against (MIN_SIZEABLE_STOP_PCT
+    // of entry). Those are different units, and on a low-ATR instrument the ATR
+    // floor is the looser of the two — EURUSD 4H ATR ≈ 0.355% of price, so
+    // 0.1 ATR ≈ 0.036%, under the 0.05% the sizer needs. A stop landing in that
+    // band used to pass here, make sizing return null, and drop execution back
+    // to the legacy stop-blind notional. Taking the max closes it: such a stop
+    // is dropped and the caller's catastrophe default (a sizeable width) is
+    // attached instead, so the entry survives and stays risk-sized.
     let sl = Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0 ? Number(params.stopLossPrice) : null;
     if (sl != null) {
         if (dir * (price - sl) <= 0) {
             notes.push('sl_wrong_side_dropped');
             sl = null;
-        } else if (atr) {
-            const distAtr = Math.abs(price - sl) / atr;
-            const minAtr = isEntry ? ENTRY_SL_MIN_ATR : AMEND_MIN_GAP_ATR;
-            if (distAtr < minAtr) {
-                notes.push('sl_too_close_dropped');
+        } else {
+            const minByAtr = atr ? BRACKET_MIN_GAP_ATR * atr : 0;
+            const minBySizing = price > 0 ? MIN_SIZEABLE_STOP_PCT * price : 0;
+            const minDist = Math.max(minByAtr, minBySizing);
+            if (minDist > 0 && Math.abs(price - sl) < minDist) {
+                notes.push(minBySizing > minByAtr ? 'sl_below_sizeable_dropped' : 'sl_too_close_dropped');
                 sl = null;
-            } else if (distAtr > EXCHANGE_SL_MAX_ATR_MULT) {
-                sl = price - dir * EXCHANGE_SL_MAX_ATR_MULT * atr;
-                notes.push('sl_clamped_max_atr');
             }
         }
         // Tighten-only guard on amends: a new stop below the standing stop

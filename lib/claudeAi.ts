@@ -20,14 +20,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { AiCallError } from './aiError';
-import { aiModelForProvider, resolveAiGatewayKey } from './aiModel';
+import { aiModelForDialect, resolveAiGatewayKey } from './aiModel';
 import { AI_GATEWAY_ANTHROPIC_BASE_URL } from './constants';
 
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
 
 function resolveClaudeModel(): string {
-    return String(process.env.SWING_AI_CLAUDE_MODEL || '').trim() || aiModelForProvider('claude');
+    return String(process.env.SWING_AI_CLAUDE_MODEL || '').trim() || aiModelForDialect('messages');
 }
 
 // GPT ran reasoning effort 'medium'; start there and sweep later (phase 5).
@@ -44,7 +44,7 @@ function resolveClaudeEffort(): ClaudeEffort {
 let cachedClient: Anthropic | null = null;
 let cachedClientKey: string | null = null;
 function claudeClient(): Anthropic {
-    const apiKey = resolveAiGatewayKey('claude');
+    const apiKey = resolveAiGatewayKey('messages');
     if (cachedClient && cachedClientKey === apiKey) return cachedClient;
     cachedClient = new Anthropic({ apiKey, baseURL: AI_GATEWAY_ANTHROPIC_BASE_URL });
     cachedClientKey = apiKey;
@@ -219,7 +219,7 @@ export async function callClaudeSwingDecision(
         if (err instanceof Anthropic.APIError) {
             throw new AiCallError({
                 message: `Claude AI error: ${err.status ?? '?'} - ${err.message}`,
-                provider: 'claude',
+                dialect: 'messages',
                 status: typeof err.status === 'number' ? err.status : null,
                 code: (err.error as { error?: { type?: string | null } } | null | undefined)?.error?.type ?? null,
             });

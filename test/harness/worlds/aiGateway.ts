@@ -25,7 +25,7 @@ export function openAiDecides(
     return http.post(`${AI_GATEWAY_HOST}/v1/responses`, () =>
         HttpResponse.json({
             id: opts.responseId ?? 'resp_test-1',
-            model: opts.model ?? 'openai/gpt-5.6-sol',
+            model: opts.model ?? 'zai/glm-5.3',
             output: [
                 { type: 'reasoning', summary: [] },
                 {

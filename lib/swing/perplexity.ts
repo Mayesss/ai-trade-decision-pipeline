@@ -111,7 +111,7 @@ export async function loadPerplexityContext(
     }
 
     try {
-        const apiKey = resolveAiGatewayKey('openai');
+        const apiKey = resolveAiGatewayKey('responses');
         const { system, user } = buildPrompts(symbol, opts.category);
         const res = await fetch(`${AI_BASE_URL}/chat/completions`, {
             method: 'POST',

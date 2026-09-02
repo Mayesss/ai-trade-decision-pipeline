@@ -414,13 +414,13 @@ export default function Home() {
     useState<SwingCronControlState | null>(null);
   const [swingCronControlUpdating, setSwingCronControlUpdating] =
     useState(false);
-  // AI provider health (swing:ai:health:v1) — rides on the warm-status poll.
+  // AI health (swing:ai:health:v1) — rides on the warm-status poll.
   // degraded with kind billing/config means AI calls fail until a human acts
   // (pay the subscription / fix the key); open positions run on their
   // exchange-side TP/SL bracket only.
   const [swingAiHealth, setSwingAiHealth] = useState<{
     degraded: boolean;
-    provider: string | null;
+    dialect: string | null;
     kind: string | null;
     reason: string | null;
     sinceMs: number | null;
@@ -1167,7 +1167,7 @@ export default function Home() {
         if (health && typeof health === "object") {
           setSwingAiHealth({
             degraded: health.degraded === true,
-            provider: typeof health.provider === "string" ? health.provider : null,
+            dialect: typeof health.dialect === "string" ? health.dialect : null,
             kind: typeof health.kind === "string" ? health.kind : null,
             reason: typeof health.reason === "string" ? health.reason : null,
             sinceMs:

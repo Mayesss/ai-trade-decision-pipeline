@@ -92,8 +92,11 @@ const openPosition = { side: 'long', hold_minutes: 10, unrealized_pnl_pct_on_mar
 test('a routine tick renders NO situational section at all', () => {
     const sys = systemFor({ symbol: 'BTCUSDT' });
     assert.ok(!sys.includes(HEADER), 'routine tick should carry no situational section');
-    // …and the INPUTS pointer stays honest rather than dangling.
-    assert.ok(sys.includes('This tick carries none beyond the keys described above.'));
+    // …and the INPUTS pointer stays honest rather than dangling. The pointer is
+    // deliberately WORDED THE SAME on every tick (it sits in the byte-stable
+    // prefix — see venueSection in lib/swing/prompt.ts), so it must cover the
+    // absent-section case itself instead of switching text.
+    assert.ok(sys.includes('when that section is absent this tick carries none beyond the keys described above.'));
 });
 
 // Each case: the payload that must summon the block, and a phrase unique to it.

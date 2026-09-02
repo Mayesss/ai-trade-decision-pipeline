@@ -31,7 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     cycleId: last?.cycleId ?? null,
     aiHealth: {
       degraded: aiHealth.degraded,
-      provider: aiHealth.provider,
+      dialect: aiHealth.dialect,
       kind: aiHealth.kind,
       reason: aiHealth.reason,
       sinceMs: aiHealth.sinceMs,
