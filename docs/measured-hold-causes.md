@@ -278,14 +278,15 @@ and which is strategy-neutral by construction.
 `boxed_or_unconfirmed` survives as the name of the **only** remaining rejection:
 no break, no level in reach either side, not at a channel edge, no trendline —
 nothing to anchor invalidation to, so there is no trade to price. Still water,
-and the only thing code decides alone. Everything admitted still faces the
-ai-bouncer, which prices the call and may decline it — a cost filter may skip
-work, never override a gate.
+and the only thing code decides alone. (Everything admitted used to face the
+ai-bouncer, which priced the call and could decline it. Removed 2026-09-03 —
+see `opinionation-and-learning-loop.md`; the hard gates are the whole filter
+now.)
 
 **Cost:** the gate's 4,174 skips are ~1.7× the 2,435 calls actually made, so an
 unbounded opening could have neared 3× the AI spend. The doors are deliberately
-narrow (a level within 0.6 ATR, the outer 15% of the channel) and the bouncer is
-the backstop. **Measure the admission mix before tuning anything** — the reason
+narrow (a level within 0.6 ATR, the outer 15% of the channel), and since the
+bouncer's removal they are the only backstop. **Measure the admission mix before tuning anything** — the reason
 string is on every decision row, so per-door volume and per-door outcome are one
 query.
 

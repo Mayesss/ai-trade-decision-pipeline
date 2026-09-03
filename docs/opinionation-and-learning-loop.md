@@ -28,7 +28,7 @@ no trace of a decision the model would have made. The flat-scan stack in
 | 2 | signal_strength LOW | `analyze.ts:2535` + `computeSignalStrength` `signals.ts:228` | A hand-tuned integer score (aligned≥5→+3, regime≥0.5→+1, location≥0.6→+1, ext≥2.5→−1, cutoffs at 2 and 4). Presented as a budget gate; it is a strategy filter with unvalidated weights. |
 | 3 | overextension | `analyze.ts:2592-2609` | Beyond `microAvoid`/`primaryAvoid` no fresh entry is even considered. Justified in the comment by "the AI always HOLDs there" — which was measured when a market fill was the only way in. Resting entries changed that premise (the same argument already retired the wall branch and `micro_entry_ok`); this gate has not been re-examined since. |
 | 4 | same-setup dedupe | `analyze.ts:2703` | A repeated setup that already got a HOLD is not re-asked. |
-| 5 | ai-bouncer | `lib/swing/aiBouncer.ts` | A second, cheaper LLM with *its own prompt and its own opinion*, allowed to cancel the expensive call. Correctly scoped (it can only skip — see the scope rule), but it is a second uninspected worldview in the path. |
+| 5 | ~~ai-bouncer~~ | *removed 2026-09-03* | A second, cheaper LLM with *its own prompt and its own opinion*, allowed to cancel the expensive call. Correctly scoped (it could only skip), but a second uninspected worldview in the path — and the concern in item 7 below is why it is gone: it declined 13 of 71 calls while spending a 1.8k-token, 6.4s reasoning call on all 71, with no scorecard on what it killed. The hard gates above are now the whole filter.
 
 Honest counterweight: several of these numbers *were* validated against
 recorded history (`ACTIONABILITY_WALL_ATR`, `decisionConfig.ts:220`, re-checked
@@ -150,8 +150,10 @@ time" (`prompt.ts:1258`). Nothing measures it. The digest segments by
 side/platform/symbol only, and no strategy performance ever returns to the
 prompt.
 
-**7. The bouncer has no scorecard.** It cancels expensive calls and nothing
-checks whether the setups it killed would have paid.
+**7. The bouncer had no scorecard.** It cancelled expensive calls and nothing
+checked whether the setups it killed would have paid. Resolved on 2026-09-03 by
+removing it rather than by building the scorecard — the measured skip rate (13
+of 71) did not justify a second opinion in the path.
 
 ### The sample-size constraint (read before building anything)
 

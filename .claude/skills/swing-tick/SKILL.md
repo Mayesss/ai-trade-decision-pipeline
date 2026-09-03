@@ -62,8 +62,8 @@ the same code path the cron takes. To reproduce cron cadence behaviour, add
 `enforcePrimaryCloseGate=true`; to reproduce a quarter-tick scan you cannot —
 `quarterTick` requires `automationCron`.
 
-Other gates still apply and will set `promptSkipped: true` (ai-bouncer, venue
-closed, cooldown, hard deactivation). `promptSkipped: true` means **no AI call
+Other gates still apply and will set `promptSkipped: true` (venue closed,
+cooldown, actionability, hard deactivation). `promptSkipped: true` means **no AI call
 happened** — the decision in the response is synthetic. Check it before drawing
 any conclusion about model behaviour.
 

@@ -149,11 +149,6 @@ export type ChartTimelineTick = {
   previousResponseId?: string;
 };
 
-// ai-bouncer skips (cheap-model triage said "not worth the expensive call")
-// get their own hue so the user can tell a soft AI close from a hard-gate
-// close at a glance.
-export const isBouncerStage = (stage?: string | null): boolean => stage === 'ai_bouncer';
-
 const timelineDotFillClass = (tick: ChartTimelineTick): string =>
   tick.kind === 'action'
     ? tick.action === 'BUY'
@@ -165,9 +160,7 @@ const timelineDotFillClass = (tick: ChartTimelineTick): string =>
       ? 'timeline-dot-postmortem'
       : tick.kind === 'ai_call'
         ? 'timeline-dot-ai'
-        : isBouncerStage(tick.stage)
-          ? 'timeline-dot-bouncer'
-          : 'timeline-dot-skip';
+        : 'timeline-dot-skip';
 
 // Analyst family of a post-mortem tick. `analysisKind` travels on the tick;
 // verdict lists are the fallback for payloads cached before the field existed.
@@ -240,11 +233,9 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
           }`
         : tick.kind === 'ai_call'
           ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
-          : isBouncerStage(tick.stage)
-            ? ` · AI bouncer skip: ${tick.reason || 'not worth the call'}`
-            : tick.stage
-              ? ` · skipped: ${tick.reason || tick.stage}`
-              : ' · scanned'
+          : tick.stage
+            ? ` · skipped: ${tick.reason || tick.stage}`
+            : ' · scanned'
   }`;
 };
 

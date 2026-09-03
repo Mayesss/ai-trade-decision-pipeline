@@ -44,9 +44,8 @@ export function openAiDecides(
 }
 
 // Third dialect on the same host: POST /v1/chat/completions (OpenAI-compatible)
-// — used by lib/swing/perplexity.ts (perplexity/* models) and
-// lib/swing/aiBouncer.ts (spacexai/* models). Both hit the SAME URL, so these
-// handlers discriminate on the request body's `model` prefix and fall through
+// — used by lib/swing/perplexity.ts (perplexity/* models). Handlers
+// discriminate on the request body's `model` prefix and fall through
 // (passthrough to the next handler) otherwise.
 
 function chatCompletionEnvelope(content: string, model: string, opts: { inputTokens?: number; outputTokens?: number }) {
@@ -70,22 +69,6 @@ export function perplexityReports(
         const body = (await request.clone().json()) as { model?: string };
         if (!String(body?.model || '').startsWith('perplexity/')) return undefined;
         return HttpResponse.json(chatCompletionEnvelope(text, opts.model ?? 'perplexity/sonar', opts));
-    });
-}
-
-export function bouncerDecides(
-    verdict: { proceed: boolean; confidence: number; reason: string },
-    opts: { model?: string; inputTokens?: number; outputTokens?: number; status?: number } = {},
-): RequestHandler {
-    return http.post(`${AI_GATEWAY_HOST}/v1/chat/completions`, async ({ request }) => {
-        const body = (await request.clone().json()) as { model?: string };
-        if (!String(body?.model || '').startsWith('spacexai/')) return undefined;
-        if (opts.status && opts.status >= 400) {
-            return HttpResponse.json({ error: 'canned failure' }, { status: opts.status });
-        }
-        return HttpResponse.json(
-            chatCompletionEnvelope(JSON.stringify(verdict), opts.model ?? 'spacexai/grok-4.1-fast-reasoning', opts),
-        );
     });
 }
 

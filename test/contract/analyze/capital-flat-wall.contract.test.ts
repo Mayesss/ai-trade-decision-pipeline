@@ -7,8 +7,7 @@
 // as data (location.context_*_dist_atr) instead of adjudicated in code.
 //
 // The branch is still named in the actionability reason so the decision trail
-// stays queryable, and the ai-bouncer still runs after this point and can
-// decline the expensive call on its own judgment.
+// stays queryable.
 //
 // The snapshot carries the whole capital preamble — session handshake, epic
 // probe, tradeability read, position/account/working-order state, the price

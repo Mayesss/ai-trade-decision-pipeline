@@ -57,7 +57,7 @@ So health is never inferred from "recent rows exist" — it needs a call that
 
 | Symptom | Likely cause | Confirm with |
 | --- | --- | --- |
-| Decisions stop, ticks continue | gate skipping everything (bouncer, cooldown, venue closed) | step 3 + `debugGates=true` tick |
+| Decisions stop, ticks continue | gate skipping everything (cooldown, venue closed, actionability) | step 3 + `debugGates=true` tick |
 | Decisions stop, ticks stop too | cron/deploy problem, or hard deactivation | step 4, step 5 |
 | AI errors in logs | gateway auth or credits | step 2, step 3 |
 | Stale dashboard only | warm/cache layer | step 4, `warm-status` |
