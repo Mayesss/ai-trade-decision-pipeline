@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
 import { computeSwingState } from '../../../lib/swing/prompt';
-import { callAIThread } from '../../../lib/openAi';
+import { callResponsesDecision } from '../../../lib/gatewayResponses';
 
 const NOW_MS = 1_750_000_000_000;
 const bundle: any = {
@@ -126,7 +126,7 @@ test('the LIVE turn is untouched — only the archived copy is slimmed', () => {
     );
 });
 
-test('callAIThread archives the abbreviated turn but SENDS the full one', async () => {
+test('callResponsesDecision archives the abbreviated turn but SENDS the full one', async () => {
     const originalFetch = globalThis.fetch;
     let sentBody: any = null;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -143,7 +143,7 @@ test('callAIThread archives the abbreviated turn but SENDS the full one', async 
     }) as typeof fetch;
     process.env.AI_GATEWAY_API_KEY = 'test-key';
     try {
-        const out = await callAIThread('SYSTEM', 'FULL USER TURN', undefined, {
+        const out = await callResponsesDecision('SYSTEM', 'FULL USER TURN', undefined, {
             userForTranscript: 'SHORT RECORD',
         });
         assert.equal(sentBody.input, 'FULL USER TURN', 'the model must receive the full turn');
@@ -157,7 +157,7 @@ test('callAIThread archives the abbreviated turn but SENDS the full one', async 
     }
 });
 
-test('callAIThread falls back to the sent turn when no abbreviated copy is given', async () => {
+test('callResponsesDecision falls back to the sent turn when no abbreviated copy is given', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>
         new Response(
@@ -171,7 +171,7 @@ test('callAIThread falls back to the sent turn when no abbreviated copy is given
         )) as typeof fetch;
     process.env.AI_GATEWAY_API_KEY = 'test-key';
     try {
-        const out = await callAIThread('SYSTEM', 'FULL USER TURN');
+        const out = await callResponsesDecision('SYSTEM', 'FULL USER TURN');
         assert.equal(out.appendTurns[0].content, 'FULL USER TURN');
     } finally {
         globalThis.fetch = originalFetch;

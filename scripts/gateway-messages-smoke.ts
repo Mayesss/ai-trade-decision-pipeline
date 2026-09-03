@@ -1,8 +1,8 @@
-// Live smoke test for lib/claudeAi.ts (SWING_AI_PROVIDER=claude path).
-// Makes 2 real (cheap) API calls. Run: node --import tsx scripts/claude-smoke.ts
+// Live smoke test for lib/gatewayMessages.ts (SWING_AI_PROVIDER=claude path).
+// Makes 2 real (cheap) API calls. Run: node --import tsx scripts/gateway-messages-smoke.ts
 // Verifies: stripped-schema acceptance by structured outputs, JSON validity,
 // transcript chaining (thinking-block echo on turn 2), prompt-cache write/read.
-import { callClaudeSwingDecision, toClaudeSchema } from '../lib/claudeAi';
+import { callMessagesDecision, toMessagesSchema } from '../lib/gatewayMessages';
 import { SWING_DECISION_SCHEMA } from '../lib/swing/decisionSchema';
 
 // Padding pushes the system prompt past Opus 4.8's 4096-token minimum
@@ -40,10 +40,10 @@ const REQUIRED_KEYS = [
 async function main() {
     console.log(
         'stripped leverage schema (bounds removed):',
-        JSON.stringify((toClaudeSchema(SWING_DECISION_SCHEMA.schema) as { properties: Record<string, unknown> }).properties.leverage),
+        JSON.stringify((toMessagesSchema(SWING_DECISION_SCHEMA.schema) as { properties: Record<string, unknown> }).properties.leverage),
     );
 
-    const first = await callClaudeSwingDecision(SYSTEM, USER_1, SWING_DECISION_SCHEMA);
+    const first = await callMessagesDecision(SYSTEM, USER_1, SWING_DECISION_SCHEMA);
     console.log('--- call 1 (stateless, schema-enforced) ---');
     console.log('responseId:', `${first.responseId?.slice(0, 8)}…`);
     console.log('decision:', JSON.stringify(first.json));
@@ -54,7 +54,7 @@ async function main() {
     );
     console.log('usage:', JSON.stringify(first.usage));
 
-    const second = await callClaudeSwingDecision(SYSTEM, USER_2, SWING_DECISION_SCHEMA, {
+    const second = await callMessagesDecision(SYSTEM, USER_2, SWING_DECISION_SCHEMA, {
         transcript: first.appendTurns,
     });
     console.log('--- call 2 (chained transcript incl. thinking echo) ---');

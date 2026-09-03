@@ -1,6 +1,6 @@
 // Global AI-call health flag (KV). Written from the dialect switch
 // (lib/aiProvider.callSwingDecision), the single choke point every swing AI
-// call goes through — decisions, postmortems, forex advisor, evaluations —
+// call goes through — decisions, postmortems, evaluations —
 // so ONE place knows whether the model is reachable at all.
 //
 // Why it exists: when the OpenAI subscription lapsed (2026-07) every tick

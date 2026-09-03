@@ -1,5 +1,5 @@
 // Contract: lib/aiProvider.callSwingDecision — the single choke point for all
-// swing AI traffic. Both providers ride the same gateway host; both replay
+// swing AI traffic. Both dialects ride the same gateway host; both replay
 // the stored transcript (the gateway is stateless). The snapshot captures the
 // FULL outgoing prompt — this is the prompt regression net: any change to
 // system/user assembly or transcript replay shows up as a snapshot diff.
@@ -9,7 +9,7 @@ import { expect, test, vi } from 'vitest';
 
 import { callSwingDecision } from '../../lib/aiProvider';
 import { conversation, startBoundary } from '../harness';
-import { claudeDecides, openAiDecides } from '../harness/worlds/aiGateway';
+import { messagesDecides, responsesDecides } from '../harness/worlds/aiGateway';
 import { kvWorld } from '../harness/worlds/kv';
 
 const DECISION = { action: 'HOLD', summary: 'no edge at this level', confidence: 55 };
@@ -32,10 +32,10 @@ const SYSTEM = 'You are the swing trading desk.';
 const USER = 'STATE: flat. MARKET: rangebound chop around VWAP.';
 
 startBoundary(() => ({
-    http: [...kvWorld(), openAiDecides(DECISION), claudeDecides(DECISION)],
+    http: [...kvWorld(), responsesDecides(DECISION), messagesDecides(DECISION)],
 }));
 
-test('OpenAI path: Responses API call with replayed transcript', async () => {
+test('Responses dialect: forced tool call with replayed transcript', async () => {
     vi.stubEnv('SWING_AI_PROVIDER', 'openai');
 
     const result = await callSwingDecision({
@@ -64,10 +64,10 @@ test('OpenAI path: Responses API call with replayed transcript', async () => {
         { role: 'assistant', content: JSON.stringify(DECISION) },
     ]);
 
-    await expect(await conversation()).toMatchFileSnapshot('./__snapshots__/ai-openai-thread.txt');
+    await expect(await conversation()).toMatchFileSnapshot('./__snapshots__/ai-responses-thread.txt');
 });
 
-test('Claude path: Messages API call with cache breakpoints and echoed thinking blocks', async () => {
+test('Messages dialect: call with cache breakpoints and echoed thinking blocks', async () => {
     vi.stubEnv('SWING_AI_PROVIDER', 'claude');
 
     const result = await callSwingDecision({
@@ -101,17 +101,17 @@ test('Claude path: Messages API call with cache breakpoints and echoed thinking 
         ],
     });
 
-    await expect(await conversation()).toMatchFileSnapshot('./__snapshots__/ai-claude-thread.txt');
+    await expect(await conversation()).toMatchFileSnapshot('./__snapshots__/ai-messages-thread.txt');
 });
 
-// Transcript compaction, at the provider seam: the model must receive the FULL
+// Transcript compaction, at the dialect seam: the model must receive the FULL
 // turn while the thread archives the abbreviated one. Asserted per dialect
-// because the two clients build appendTurns differently (OpenAI plain string
-// content, Claude MessageParam text blocks) — a regression in either silently
+// because the two clients build appendTurns differently (responses plain string
+// content, messages MessageParam text blocks) — a regression in either silently
 // stores the wrong text, and only shows up as an oversized thread days later.
 const ABBREVIATED = '[ABBREVIATED EARLIER TURN — tape dropped]\nSTATE: {"price":1}';
 
-test('OpenAI path: archives the abbreviated turn, sends the full one', async () => {
+test('Responses dialect: archives the abbreviated turn, sends the full one', async () => {
     vi.stubEnv('SWING_AI_PROVIDER', 'openai');
 
     const result = await callSwingDecision({
@@ -126,7 +126,7 @@ test('OpenAI path: archives the abbreviated turn, sends the full one', async () 
     expect(await conversation()).toContain(USER);
 });
 
-test('Claude path: archives the abbreviated turn, sends the full one', async () => {
+test('Messages dialect: archives the abbreviated turn, sends the full one', async () => {
     vi.stubEnv('SWING_AI_PROVIDER', 'claude');
 
     const result = await callSwingDecision({

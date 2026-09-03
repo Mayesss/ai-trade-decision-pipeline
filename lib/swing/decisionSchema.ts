@@ -169,6 +169,6 @@ export const SWING_DECISION_SCHEMA_NO_LEVERAGE = {
     },
 } as const;
 
-// Transport lives in the provider clients: lib/openAi.ts (Responses API) and
-// lib/claudeAi.ts (Messages API), switched by lib/aiProvider.ts. This module is
+// Transport lives in the provider clients: lib/gatewayResponses.ts (Responses API) and
+// lib/gatewayMessages.ts (Messages API), switched by lib/aiProvider.ts. This module is
 // the swing-decision DOMAIN — prompt assembly, post-processing and schemas.

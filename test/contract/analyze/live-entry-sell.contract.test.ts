@@ -11,7 +11,7 @@ import { expect, test } from 'vitest';
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, conversationSummary, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { bitgetPost } from '../../harness/worlds/bitget';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
@@ -40,7 +40,7 @@ startBoundary(
             ...kvWorld(),
             coindeskNews([{ title: 'Bitcoin loses range support', sentiment: 'NEGATIVE' }]),
             forexFactoryCalendar([]),
-            openAiDecides(SELL),
+            responsesDecides(SELL),
             bitgetPost('/api/v2/mix/account/set-margin-mode', {}),
             bitgetPost('/api/v2/mix/account/set-leverage', { symbol: 'BTCUSDT', leverage: '5' }),
             bitgetPost('/api/v2/mix/order/place-order', { orderId: 'order-live-1', clientOid: 'echo' }),

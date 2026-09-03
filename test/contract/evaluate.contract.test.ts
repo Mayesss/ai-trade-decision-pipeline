@@ -12,7 +12,7 @@ import { appendDecisionHistory } from '../../lib/history';
 import { conversation, FIXED_NOW_MS, startBoundary } from '../harness';
 import { createApiRequest, createApiResponse } from '../harness/next';
 import { resetEntries } from '../harness/recorder';
-import { openAiDecides } from '../harness/worlds/aiGateway';
+import { responsesDecides } from '../harness/worlds/aiGateway';
 import { kvWorld } from '../harness/worlds/kv';
 
 import type { PgResponder } from '../harness/pg';
@@ -65,7 +65,7 @@ const EVALUATION = {
 };
 
 startBoundary(() => ({
-    http: [...kvWorld(), openAiDecides(EVALUATION)],
+    http: [...kvWorld(), responsesDecides(EVALUATION)],
     db: evaluatePg,
 }));
 

@@ -17,14 +17,17 @@ POST https://ai-gateway.vercel.sh/v1/responses
       }
     ],
     "instructions": "You are the swing trading desk.",
+    "max_output_tokens": 16000,
     "model": "zai/glm-5.3",
     "reasoning": {
       "effort": "high"
     },
-    "text": {
-      "format": {
+    "tool_choice": "required",
+    "tools": [
+      {
+        "description": "Record the trading decision. Calling this function is the ONLY way to answer; every field is decided here, not in prose.",
         "name": "swing_decision",
-        "schema": {
+        "parameters": {
           "additionalProperties": false,
           "properties": {
             "action": {
@@ -45,9 +48,9 @@ POST https://ai-gateway.vercel.sh/v1/responses
           "type": "object"
         },
         "strict": true,
-        "type": "json_schema"
+        "type": "function"
       }
-    },
+    ],
     "truncation": "auto"
   }
 

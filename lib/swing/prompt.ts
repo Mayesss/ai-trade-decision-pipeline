@@ -6,7 +6,7 @@
 // non-actionable flat tick can be gated out before paying for prompt assembly
 // or a news fetch.
 //
-// Transport lives in lib/openAi.ts and lib/claudeAi.ts; what happens to the
+// Transport lives in lib/gatewayResponses.ts and lib/gatewayMessages.ts; what happens to the
 // model's ANSWER lives in decisionRules.ts.
 
 import { CONTEXT_TIMEFRAME, DEFAULT_TAKER_FEE_RATE, MACRO_TIMEFRAME, MICRO_TIMEFRAME, NANO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../constants';

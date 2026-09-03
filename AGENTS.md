@@ -14,7 +14,7 @@ depend downward only — `decisionConfig` ← `signals` ← {`prompt`, `decision
 - `lib/swing/decisionRules.ts`: what happens to the model's answer (`postprocessDecision` + the field sanitizers). The prompt's "enforced in code" claims ARE these functions.
 - `lib/swing/decisionSchema.ts`: the response JSON schemas (leverage / no-leverage variants).
 - `lib/aiProvider.ts`: provider switch (`callSwingDecision`) — the single choke point for all swing AI traffic.
-- `lib/openAi.ts` / `lib/claudeAi.ts`: transport only. Same Vercel AI Gateway, different dialects (Responses vs Messages); `SWING_AI_PROVIDER` picks one.
+- `lib/gatewayResponses.ts` / `lib/gatewayMessages.ts`: transport only. Same Vercel AI Gateway, different dialects (Responses vs Messages); `SWING_AI_PROVIDER` picks one.
 - `pages/api/analyze.ts`: single-symbol analysis pipeline.
 - `lib/trading.ts`: execution layer (market orders, close/reverse handling, leverage).
 - `pages/api/evaluate.ts`: LLM-based evaluation/audit of recent decisions.

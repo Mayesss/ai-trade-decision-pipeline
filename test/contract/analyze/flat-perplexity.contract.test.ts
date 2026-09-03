@@ -9,7 +9,7 @@ import { expect, test, vi } from 'vitest';
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, startBoundary } from '../../harness';
-import { openAiDecides, perplexityReports } from '../../harness/worlds/aiGateway';
+import { responsesDecides, perplexityReports } from '../../harness/worlds/aiGateway';
 import { bitgetMarketWorld } from '../../harness/worlds/recordedMarkets';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
@@ -32,7 +32,7 @@ startBoundary(
             coindeskNews([{ title: 'Bitcoin consolidates below resistance', sentiment: 'NEUTRAL' }]),
             forexFactoryCalendar([]),
             perplexityReports(DIGEST),
-            openAiDecides(HOLD),
+            responsesDecides(HOLD),
         ],
         db: analyzePg,
     }),

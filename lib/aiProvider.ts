@@ -1,17 +1,17 @@
 // lib/aiProvider.ts
 //
 // Dialect switch for every swing AI call — WHICH WIRE FORMAT, not which
-// vendor: 'responses' routes to the OpenAI Responses client in lib/openAi.ts
+// vendor: 'responses' routes to the Responses client in lib/gatewayResponses.ts
 // (which carries whatever vendor DEFAULT_AI_MODEL names — zai/glm-5.3 today),
-// 'messages' to the Anthropic Messages client in lib/claudeAi.ts. Decided by
+// 'messages' to the Messages client in lib/gatewayMessages.ts. Decided by
 // SWING_AI_PROVIDER (env, legacy name — it takes the legacy 'openai'/'claude'
 // values as well as the dialect names) or else inferred from the model id.
 // Call sites are dialect-agnostic: they pass system/user/schema plus a thread
 // context and get parsed JSON back.
 
 import { coerceAiCallError, type AiDialect } from './aiError';
-import { callClaudeSwingDecision } from './claudeAi';
-import { callAIThread } from './openAi';
+import { callMessagesDecision } from './gatewayMessages';
+import { callResponsesDecision } from './gatewayResponses';
 import { dialectForAiModel } from './aiModel';
 import { DEFAULT_AI_MODEL } from './constants';
 import { reportSwingAiFailure, reportSwingAiSuccess } from './swing/aiHealth';
@@ -41,7 +41,7 @@ export type SwingThreadContext = {
 
 export type SwingDecisionCallResult = {
     json: Record<string, unknown>;
-    // Provider id of THIS call (OpenAI `resp_...`, Claude `msg_...`) — persisted
+    // Gateway id of THIS call (Responses `resp_...`, Messages `msg_...`) — persisted
     // on the decision row; chained decisions link through it on the dashboard.
     responseId: string | null;
     // Which dialect carried the call and which model actually answered, plus
@@ -57,8 +57,8 @@ export type SwingDecisionCallResult = {
         cache_read_input_tokens: number | null;
     } | null;
     // The turns this call appends to the stored transcript — the sent user
-    // turn plus the assistant response (Claude: full content with thinking
-    // blocks, echoed back verbatim next tick; OpenAI: plain text turns).
+    // turn plus the assistant response (messages: full content with thinking
+    // blocks, echoed back verbatim next tick; responses: plain text turns).
     appendTurns?: unknown[] | null;
 };
 
@@ -81,7 +81,7 @@ export async function callSwingDecision(params: {
     try {
         let result: SwingDecisionCallResult;
         if (dialect === 'messages') {
-            const { json, responseId, model, usage, appendTurns } = await callClaudeSwingDecision(
+            const { json, responseId, model, usage, appendTurns } = await callMessagesDecision(
                 params.system,
                 params.user,
                 params.schema,
@@ -92,7 +92,7 @@ export async function callSwingDecision(params: {
             );
             result = { json, responseId, dialect, model, usage, appendTurns };
         } else {
-            const { json, responseId, model, usage, appendTurns } = await callAIThread(
+            const { json, responseId, model, usage, appendTurns } = await callResponsesDecision(
                 params.system,
                 params.user,
                 params.schema,
@@ -112,8 +112,9 @@ export async function callSwingDecision(params: {
     }
 }
 
-// Stateless convenience path (forex advisor, evaluations): same dialect
-// switch, no thread, parsed JSON only.
+// Stateless convenience path (pages/api/evaluate.ts): same dialect switch, no
+// thread, parsed JSON only. Callers may pass a schema — evaluate does not, so
+// it is the one path with no shape enforcement (see lib/gatewayResponses.ts).
 export async function callStatelessAI(
     system: string,
     user: string,

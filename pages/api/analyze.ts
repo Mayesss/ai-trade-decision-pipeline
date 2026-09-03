@@ -53,7 +53,7 @@ import type { DecisionPolicy, LastClosedPosition, MomentumSignals } from '../../
 import { AiCallError } from '../../lib/aiError';
 import { callSwingDecision, resolveSwingAiDialect } from '../../lib/aiProvider';
 import { vendorForAiModel } from '../../lib/aiModel';
-import { truncateClaudeTranscript } from '../../lib/claudeAi';
+import { truncateMessagesTranscript } from '../../lib/gatewayMessages';
 import { getGates } from '../../lib/gates';
 
 import {
@@ -920,12 +920,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         //     tick's evaluation chains onto the order's conversation ("market
         //     moved since you placed this — still valid?"). The sweep below
         //     still cancels the order and deletes the row; a re-issue upserts a
-        //     new head that CONTINUES the same OpenAI chain via this id.
+        //     new head that CONTINUES the same Responses chain via this id.
         // Best-effort: a thread hiccup degrades the tick to stateless, never fails it.
         let aiThreadResponseId: string | null = null;
         // Which provider wrote the thread row + the Claude transcript (captured
         // in memory here so it survives the sweep deleting the row mid-tick —
-        // same semantics as the OpenAI chain head above). A provider mismatch
+        // same semantics as the Responses chain head above). A dialect mismatch
         // (row written by the other model family) degrades the CONVERSATION to
         // stateless at the call site, but thread lifecycle (pending-entry flag,
         // sweeps) is provider-independent and keeps using the row as-is.
@@ -1053,7 +1053,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // ROW (no order is resting anymore, so the pendingEntry flag
                 // must drop) — but the CONVERSATION survives: this tick's AI
                 // call chains via the head captured above, and a re-issue
-                // upserts a new row continuing the same OpenAI chain. A cancel
+                // upserts a new row continuing the same Responses chain. A cancel
                 // that raced a fill (cancelled < found) is handled by the caller
                 // via pendingEntryFilledMidTick.
                 if (!dryRun && result.found > 0 && result.cancelled >= result.found) {
@@ -2392,7 +2392,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // schedule means the schedule disagrees with marketStatus or is unreadable —
         // feeding its timestamps would mislabel the NEXT session's close as the
         // current one). Timestamps are ISO UTC; durations in minutes. The prompt
-        // prose in lib/ai.ts is conditional on each field being present.
+        // prose in lib/swing/prompt.ts is conditional on each field being present.
         const capitalNowMs = Date.now();
         const venueSession =
             platform === 'capital' &&
@@ -2476,7 +2476,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // trade is plausible. Backtest: 100% recall on real opens, ~76% fewer calls than
         // the old signal_strength≥MEDIUM gate. Flat entries only — in-position ticks
         // always proceed (exits/trims can be needed regardless). Predicate:
-        // evaluateActionability in lib/ai.ts.
+        // evaluateActionability in lib/swing/signals.ts.
         if (!positionOpen && !actionability.actionable && !cooldownWakeActive) {
             const decision: TradeDecision & Record<string, unknown> = {
                 action: 'HOLD',
@@ -2827,7 +2827,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // carry no thread and stay stateless.
         // Conversation context is provider-scoped: both providers chain through
         // the stored transcript, but the formats differ (Claude MessageParam
-        // turns vs OpenAI plain text turns), so a thread row written by the
+        // turns vs Responses plain text turns), so a thread row written by the
         // OTHER provider (mid-position cutover/rollback) degrades this tick to
         // stateless — the prompt's "position adopted mid-life" branch covers it —
         // and this tick's persist below re-anchors the thread on the active
@@ -3380,10 +3380,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const activeDialect = resolveSwingAiDialect();
                 const nextTranscript =
                     Array.isArray(aiAppendTurns) && aiAppendTurns.length
-                        ? truncateClaudeTranscript([
+                        ? truncateMessagesTranscript([
                               ...(Array.isArray(chainedTranscript) ? chainedTranscript : []),
                               ...aiAppendTurns,
-                          ] as Parameters<typeof truncateClaudeTranscript>[0])
+                          ] as Parameters<typeof truncateMessagesTranscript>[0])
                         : null;
                 if (fullCloseExecuted) {
                     await endSwingAiThread(platform, symbol);

@@ -10,7 +10,8 @@
 //
 // NOT tested is HOW that comes about internally. That is why the net survives
 // refactorings: moving modules, renaming functions, lint autofixes over
-// lib/ai.ts — as long as the same conversation goes out, it stays green.
+// the gateway clients — as long as the same conversation goes out, it stays
+// green.
 
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest';
@@ -182,7 +183,7 @@ server.events.on('request:start', ({ request }) => {
  * Call once at the top level of a test file. Registers the lifecycle hooks and
  * returns `use()` to swap responses for a single test.
  *
- *   const boundary = startBoundary(() => ({ http: [...kvWorld(), openAiDecides(HOLD)] }));
+ *   const boundary = startBoundary(() => ({ http: [...kvWorld(), responsesDecides(HOLD)] }));
  *
  * Per-test env overrides go through vi.stubEnv() — the harness unstubs them
  * after every test. Only env read lazily can be stubbed this way; the

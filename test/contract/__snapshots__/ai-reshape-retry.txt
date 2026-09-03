@@ -1,0 +1,102 @@
+POST https://ai-gateway.vercel.sh/v1/responses
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  {
+    "input": "STATE: flat. MARKET: rangebound chop around VWAP.",
+    "instructions": "You are the swing trading desk.",
+    "max_output_tokens": 16000,
+    "model": "zai/glm-5.3",
+    "reasoning": {
+      "effort": "high"
+    },
+    "tool_choice": "required",
+    "tools": [
+      {
+        "description": "Record the trading decision. Calling this function is the ONLY way to answer; every field is decided here, not in prose.",
+        "name": "swing_decision",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "confidence"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "truncation": "auto"
+  }
+
+POST https://ai-gateway.vercel.sh/v1/responses
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  {
+    "input": [
+      {
+        "content": "STATE: flat. MARKET: rangebound chop around VWAP.",
+        "role": "user"
+      },
+      {
+        "content": "Your previous reply did not call the required function. Do not explain, do not think out loud in the answer: reply ONLY by calling the function with the decision as its arguments.",
+        "role": "user"
+      }
+    ],
+    "instructions": "You are the swing trading desk.",
+    "max_output_tokens": 16000,
+    "model": "zai/glm-5.3",
+    "reasoning": {
+      "effort": "high"
+    },
+    "tool_choice": "required",
+    "tools": [
+      {
+        "description": "Record the trading decision. Calling this function is the ONLY way to answer; every field is decided here, not in prose.",
+        "name": "swing_decision",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "summary",
+            "confidence"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ],
+    "truncation": "auto"
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:ai:health:v1"
+  ]

@@ -9,7 +9,7 @@ import { expect, test, vi } from 'vitest';
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { bitgetMarketWorld } from '../../harness/worlds/recordedMarkets';
 import { fearGreedIndex } from '../../harness/worlds/fearGreed';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
@@ -40,7 +40,7 @@ startBoundary(
                     timestampMs: fixture.capturedAtMs - i * 86_400_000,
                 })),
             ),
-            openAiDecides(HOLD),
+            responsesDecides(HOLD),
         ],
         db: analyzePg,
     }),

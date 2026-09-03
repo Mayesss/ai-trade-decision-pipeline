@@ -12,7 +12,7 @@
 // latch the global AI-health flag that guards the main decision path.
 //
 // Gateway compatibility note: sonar is called via the OpenAI-compatible
-// /chat/completions endpoint (the /responses path used by lib/ai.ts is
+// /chat/completions endpoint (the /responses path used by lib/gatewayResponses.ts is
 // unverified for perplexity/* ids). Sonar accepts ONLY max_tokens/temperature/
 // stop — no tools, no json_schema — so the output is treated as plain prose.
 

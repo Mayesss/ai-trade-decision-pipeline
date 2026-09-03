@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
 import handler from '../../pages/api/swing/postmortem';
 import { createApiRequest, createApiResponse } from '../harness/next';
 import { conversation, FIXED_NOW_MS, startBoundary } from '../harness';
-import { openAiDecides } from '../harness/worlds/aiGateway';
+import { responsesDecides } from '../harness/worlds/aiGateway';
 import { bitgetGet } from '../harness/worlds/bitget';
 import { kvWorld } from '../harness/worlds/kv';
 
@@ -116,7 +116,7 @@ const REPORT = {
 const POST_EXIT_CANDLES = [[String(EXIT_MS + 15 * 60_000), '60760', '60900', '60700', '60850', '120', '7290000']];
 
 startBoundary({
-    http: [...kvWorld(), bitgetGet('/api/v2/mix/market/candles', POST_EXIT_CANDLES), openAiDecides(REPORT)],
+    http: [...kvWorld(), bitgetGet('/api/v2/mix/market/candles', POST_EXIT_CANDLES), responsesDecides(REPORT)],
     db: postmortemPg,
 });
 

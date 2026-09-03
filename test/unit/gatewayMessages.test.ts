@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { toClaudeSchema, truncateClaudeTranscript } from '../../lib/claudeAi';
+import { toMessagesSchema, truncateMessagesTranscript } from '../../lib/gatewayMessages';
 import { SWING_DECISION_SCHEMA } from '../../lib/swing/decisionSchema';
 
 function pair(i: number): any[] {
@@ -11,8 +11,8 @@ function pair(i: number): any[] {
     ];
 }
 
-test('toClaudeSchema strips numeric bounds recursively, keeps structure', () => {
-    const stripped: any = toClaudeSchema(SWING_DECISION_SCHEMA.schema);
+test('toMessagesSchema strips numeric bounds recursively, keeps structure', () => {
+    const stripped: any = toMessagesSchema(SWING_DECISION_SCHEMA.schema);
     assert.equal(stripped.additionalProperties, false);
     assert.deepEqual(stripped.properties.leverage, { type: ['integer', 'null'] });
     assert.deepEqual(stripped.properties.exit_size_pct, { type: ['number', 'null'] });
@@ -22,15 +22,15 @@ test('toClaudeSchema strips numeric bounds recursively, keeps structure', () => 
     assert.equal((SWING_DECISION_SCHEMA.schema.properties as any).leverage.minimum, 5);
 });
 
-test('truncateClaudeTranscript: under the cap is returned as-is', () => {
+test('truncateMessagesTranscript: under the cap is returned as-is', () => {
     const transcript = [...pair(1), ...pair(2)];
-    assert.equal(truncateClaudeTranscript(transcript as any, 62), transcript);
+    assert.equal(truncateMessagesTranscript(transcript as any, 62), transcript);
 });
 
-test('truncateClaudeTranscript: keeps entry pair + most recent pairs, alternation intact', () => {
+test('truncateMessagesTranscript: keeps entry pair + most recent pairs, alternation intact', () => {
     const transcript: any[] = [];
     for (let i = 0; i < 50; i++) transcript.push(...pair(i)); // 100 messages
-    const out = truncateClaudeTranscript(transcript as any, 10);
+    const out = truncateMessagesTranscript(transcript as any, 10);
     assert.equal(out.length, 10);
     // entry pair survives
     assert.equal((out[0] as any).content[0].text, 'tick 0');

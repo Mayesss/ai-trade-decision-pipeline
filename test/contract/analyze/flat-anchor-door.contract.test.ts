@@ -20,7 +20,7 @@ import { expect, test } from 'vitest';
 import ethFixtureJson from '../fixtures/bitget-ETHUSDT.json';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { bitgetMarketWorld } from '../../harness/worlds/recordedMarkets';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
@@ -40,7 +40,7 @@ startBoundary(
             ...kvWorld(),
             coindeskNews([]),
             forexFactoryCalendar([]),
-            openAiDecides(HOLD),
+            responsesDecides(HOLD),
         ],
         db: analyzePg,
     }),

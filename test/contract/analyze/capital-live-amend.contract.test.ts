@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
 import eurusdFixtureJson from '../fixtures/capital-EURUSD.json';
 import { analyzePg, capitalInPositionPrivateWorld, decisionBase, runAnalyzeTick } from './world';
 import { conversation, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { capitalPut } from '../../harness/worlds/capital';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
@@ -42,7 +42,7 @@ startBoundary(
             ...kvWorld(),
             marketauxNews([{ title: 'Euro steadies after PMI beat', sentimentScore: 0.2 }]),
             forexFactoryCalendar([]),
-            openAiDecides(MANAGE_HOLD),
+            responsesDecides(MANAGE_HOLD),
             capitalPut('/api/v1/positions/deal-test-1', { dealReference: 'ref-amend-1' }),
         ],
         db: analyzePg,

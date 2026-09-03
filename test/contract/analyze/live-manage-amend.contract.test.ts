@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePgWith, decisionBase, inPositionPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { bitgetPost } from '../../harness/worlds/bitget';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
@@ -58,7 +58,7 @@ startBoundary(
             ...kvWorld(),
             coindeskNews([{ title: 'Bitcoin holds higher low', sentiment: 'NEUTRAL' }]),
             forexFactoryCalendar([]),
-            openAiDecides(MANAGE_HOLD),
+            responsesDecides(MANAGE_HOLD),
             bitgetPost('/api/v2/mix/order/modify-tpsl-order', { orderId: 'plan-sl-1' }),
         ],
         db: analyzePgWith((text) => (text.includes('FROM swing.ai_threads') ? [THREAD_ROW] : undefined)),

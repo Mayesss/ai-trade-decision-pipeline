@@ -19,7 +19,7 @@ export const TRADE_WINDOW_MINUTES = 60;
 export const DEFAULT_TAKER_FEE_RATE = Number(process.env.TAKER_FEE_RATE ?? '0.0006');
 export const DEFAULT_NOTIONAL_USDT = 100;
 // NOTE: the old flat signal_strength≥MEDIUM budget gate was replaced by the
-// actionability gate (evaluateActionability in lib/ai.ts) — a confirmed-structure
+// actionability gate (evaluateActionability in lib/swing/signals.ts) — a confirmed-structure
 // OR bounce-with-room predicate derived from the decision history. signal_strength
 // is now used only by postprocessDecision's exception thresholds.
 

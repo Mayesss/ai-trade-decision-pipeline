@@ -14,7 +14,7 @@ import { expect, test } from 'vitest';
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePgWith, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, conversationSummary, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
 import { coindeskNews } from '../../harness/worlds/news';
@@ -63,7 +63,7 @@ startBoundary(
             ...kvWorld(),
             coindeskNews([{ title: 'Bitcoin pushes through 77k', sentiment: 'POSITIVE' }]),
             forexFactoryCalendar([]),
-            openAiDecides(WAKE_HOLD),
+            responsesDecides(WAKE_HOLD),
         ],
         db: wakePg,
     }),

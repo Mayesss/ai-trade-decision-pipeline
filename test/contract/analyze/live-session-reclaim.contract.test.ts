@@ -12,7 +12,7 @@ import { kvSetJson } from '../../../lib/kv';
 import { sessionSweepEventKey, type SessionSweepEvent } from '../../../lib/swing/wakeWatch';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
 import { conversation, conversationSummary, startBoundary } from '../../harness';
-import { openAiDecides } from '../../harness/worlds/aiGateway';
+import { responsesDecides } from '../../harness/worlds/aiGateway';
 import { forexFactoryCalendar } from '../../harness/worlds/forexFactory';
 import { kvWorld } from '../../harness/worlds/kv';
 import { coindeskNews } from '../../harness/worlds/news';
@@ -49,7 +49,7 @@ startBoundary(
             ...kvWorld(),
             coindeskNews([{ title: 'Bitcoin sweeps the prior-day low', sentiment: 'NEUTRAL' }]),
             forexFactoryCalendar([]),
-            openAiDecides(HOLD_REWRITE),
+            responsesDecides(HOLD_REWRITE),
         ],
         db: analyzePg,
     }),

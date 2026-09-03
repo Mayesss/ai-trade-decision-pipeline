@@ -1,8 +1,11 @@
-// lib/claudeAi.ts
+// lib/gatewayMessages.ts
 //
-// Anthropic Messages API client for the swing decision (SWING_AI_PROVIDER=claude).
+// Messages-dialect client for the swing decision (SWING_AI_PROVIDER=messages,
+// legacy alias 'claude'). Named for the endpoint it speaks, like its sibling —
+// though unlike the Responses dialect this one is Anthropic's own, so only
+// Anthropic ids ride it (dialectForAiModel in lib/aiModel.ts).
 //
-// Differences from the OpenAI Responses client in lib/ai.ts:
+// Differences from the Responses client in lib/gatewayResponses.ts:
 // - STATELESS: there is no previous_response_id — the conversation lives in
 //   swing.ai_threads.transcript (phase 3) and is resent on every tick. This
 //   module takes the transcript in and hands the turns-to-append back out; it
@@ -10,7 +13,7 @@
 // - Structured outputs ride on output_config.format (json_schema) — the schema
 //   is enforced at the API layer, so the text block is guaranteed parseable.
 //   Claude's structured outputs reject numeric bound keywords (minimum/maximum),
-//   so those are stripped from the OpenAI-shaped schemas; every numeric field
+//   so those are stripped from the Responses-shaped schemas; every numeric field
 //   is already clamped in code after parse (sanitizeRestingEntry,
 //   sanitizeExchangeTpSl, leverage clamps), so nothing is lost.
 // - Prompt caching: the system prompt is byte-stable per venue/asset-class
@@ -54,7 +57,7 @@ function claudeClient(): Anthropic {
 // Claude structured outputs support enums, type unions and additionalProperties:false,
 // but not numeric bound constraints — strip minimum/maximum (and the string
 // bounds, unused today, for safety) recursively. Post-parse code clamps instead.
-export function toClaudeSchema(schema: Record<string, unknown>): Record<string, unknown> {
+export function toMessagesSchema(schema: Record<string, unknown>): Record<string, unknown> {
     const UNSUPPORTED = new Set(['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'multipleOf']);
     const walk = (node: unknown): unknown => {
         if (Array.isArray(node)) return node.map(walk);
@@ -71,13 +74,14 @@ export function toClaudeSchema(schema: Record<string, unknown>): Record<string, 
     return walk(schema) as Record<string, unknown>;
 }
 
-// Transcript growth cap (replaces OpenAI's server-side `truncation: "auto"`).
+// Transcript growth cap (replaces the Responses endpoint's server-side
+// `truncation: "auto"`).
 // In-position ticks call every 15 min, so a 1–10 day hold could reach hundreds
 // of turn pairs — keep the ENTRY pair (the thesis the prompt tells the model to
 // manage against) plus the most recent management pairs, drop the middle.
 const TRANSCRIPT_MAX_MESSAGES = 62; // entry pair + 30 management pairs
 
-export function truncateClaudeTranscript(
+export function truncateMessagesTranscript(
     transcript: Anthropic.MessageParam[],
     maxMessages: number = TRANSCRIPT_MAX_MESSAGES,
 ): Anthropic.MessageParam[] {
@@ -143,10 +147,10 @@ function withConversationBreakpoint(turns: Anthropic.MessageParam[]): Anthropic.
     return turns;
 }
 
-export type ClaudeSwingCallResult = {
+export type MessagesCallResult = {
     json: Record<string, unknown>;
     // Message id of THIS call (`msg_...`) — persisted on the decision row, same
-    // slot the OpenAI path uses for `resp_...`.
+    // slot the Responses client uses for `resp_...`.
     responseId: string | null;
     // Model that actually served the call (from the API response, not the
     // request) — persisted on the decision row for post-mortems.
@@ -166,7 +170,7 @@ export type ClaudeSwingCallResult = {
     };
 };
 
-export async function callClaudeSwingDecision(
+export async function callMessagesDecision(
     system: string,
     user: string,
     schema?: { name: string; schema: Record<string, unknown> },
@@ -175,7 +179,7 @@ export async function callClaudeSwingDecision(
     // `user`; only the stored copy is slimmed, so a long hold stops resending
     // dozens of stale tapes on every management tick.
     opts?: { transcript?: unknown[] | null; userForTranscript?: string | null },
-): Promise<ClaudeSwingCallResult> {
+): Promise<MessagesCallResult> {
     const client = claudeClient();
     const priorTurns = withConversationBreakpoint(sanitizeTranscript(opts?.transcript));
 
@@ -190,7 +194,7 @@ export async function callClaudeSwingDecision(
 
     const outputConfig: Anthropic.OutputConfig = { effort: resolveClaudeEffort() };
     if (schema) {
-        outputConfig.format = { type: 'json_schema', schema: toClaudeSchema(schema.schema) };
+        outputConfig.format = { type: 'json_schema', schema: toMessagesSchema(schema.schema) };
     }
 
     let response: Anthropic.Message;
@@ -252,9 +256,9 @@ export async function callClaudeSwingDecision(
     };
 }
 
-// With a schema the API guarantees valid JSON; without one (forex advisor,
-// evaluations — prompts demand strict JSON but don't ship a schema) the model
-// may wrap the object in a markdown fence — tolerate that.
+// With a schema the API guarantees valid JSON; without one (pages/api/evaluate.ts
+// is the only such caller — its prompts demand strict JSON but ship no schema)
+// the model may wrap the object in a markdown fence — tolerate that.
 function parseDecisionJson(text: string, schemaEnforced: boolean): Record<string, unknown> {
     const raw = text.trim();
     try {

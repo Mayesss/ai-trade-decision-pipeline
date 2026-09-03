@@ -13,7 +13,7 @@ Next.js app that runs an AI-driven swing-trading loop for multiple platforms (Bi
 - **Next.js API routes** for analysis (`/api/swing/analyze`), AI-driven evaluations (`/api/swing/evaluate`), history/PNL enrichment (`/api/swing/evaluations`, `/api/swing/rest-history`, `/api/swing/chart`), swing crons (wake-watch, postmortem drain, weekly digest), and health/debug helpers.
 - **Platform integrations**: Bitget (futures) and Capital.com (CFD/spot-style market access) with platform-selected market/execution paths.
 - **Signal stack**: multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and provider-selected news sentiment (`coindesk` or `marketaux`).
-- **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
+- **LLM prompts** built in `lib/swing/prompt.ts` with guardrails and momentum overrides, sent through the gateway clients (`lib/gatewayResponses.ts` / `lib/gatewayMessages.ts`); responses are persisted for replay and review.
 - **Dashboard** (`pages/index.tsx` + `components/ChartPanel.tsx`) showing latest decisions, prompts, aspect ratings, 7D PnL, open positions, live ticker updates, and chart overlays of recent trades.
 - **Storage**: Neon Postgres (`swing.*` schema via the shared client in `lib/db/`) as the durable source of truth, with KV (Upstash-compatible REST) in front for decision history, evaluations, and cached news.
 
