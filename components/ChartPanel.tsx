@@ -256,6 +256,10 @@ const TIMELINE_MIN_GAP_PX = 14;
 type CachedChartEntry = {
   payload: ChartApiResponse;
   fetchedAt: number;
+  // Refresh generation this payload was fetched in. A newer `refreshToken`
+  // makes the entry stale even inside its TTL, so a completed analyze cycle
+  // always re-reads the overlays (see the fetch effect).
+  refreshToken: number;
 };
 
 export type ChartRangeKey = '4H' | '1D' | '7D' | '30D' | '6M';
@@ -273,6 +277,13 @@ type ChartPanelProps = {
   statsSlot?: React.ReactNode;
   livePrice?: number | null;
   liveTimestamp?: number | null;
+  // Bumped by the dashboard when an analyze cycle finishes warming. The candles
+  // ride the live-price feed on their own, but every server-derived overlay
+  // (resting-entry windows, cooldown bands, position boxes, markers, pending
+  // lines) only changes on a chart fetch — without this an open tab renders a
+  // moving price line over hours-old overlays, e.g. a resting-entry window that
+  // stops where "now" happened to be when the payload was built.
+  refreshToken?: number;
   onOpenPositionChange?: (position: {
     pnlPct: number | null;
     side: 'long' | 'short' | null;
@@ -993,7 +1004,11 @@ const buildCooldownBandItems = (
 };
 
 // Same snap/clamp treatment for resting-limit windows (see buildCooldownBandItems).
-const buildLimitOrderItems = (
+// A window that STARTS before the visible range is clamped to the left edge, not
+// dropped — on the short ranges (4H) most resting entries were issued before the
+// window opens, and dropping them left the chart with no line at all.
+// Exported for the unit test that pins exactly that.
+export const buildLimitOrderItems = (
   chartData: { time: number; value: number }[],
   orders: LimitOrderSegment[],
 ): LimitOrderItem[] => {
@@ -1038,6 +1053,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     statsSlot = null,
     livePrice = null,
     liveTimestamp = null,
+    refreshToken = 0,
     onOpenPositionChange,
     onPositionSummaryChange,
     highlightTimeMs = null,
@@ -1263,7 +1279,11 @@ export default function ChartPanel(props: ChartPanelProps) {
     let timeoutId: number | null = null;
     const cacheKey = `${symbol}|${platform || 'bitget'}|${timeframe}|${resolvedLimit}`;
     const cached = chartCacheRef.current.get(cacheKey);
-    const hasFresh = !!cached && Date.now() - cached.fetchedAt <= CHART_CACHE_TTL_MS;
+    // A newer refresh generation invalidates the entry even inside its TTL. The
+    // cached payload still renders while the refetch runs, so a warm-triggered
+    // refresh updates the overlays without blanking the chart.
+    const hasFresh =
+      !!cached && Date.now() - cached.fetchedAt <= CHART_CACHE_TTL_MS && cached.refreshToken === refreshToken;
 
     setHoveredOverlay(null);
     setHoverX(null);
@@ -1309,6 +1329,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         chartCacheRef.current.set(cacheKey, {
           payload,
           fetchedAt: Date.now(),
+          refreshToken,
         });
         applyPayload(payload);
       } catch (err) {
@@ -1334,7 +1355,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       controller.abort();
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [symbol, platform, timeframe, adminSecret, adminGranted, resolvedLimit]);
+  }, [symbol, platform, timeframe, adminSecret, adminGranted, resolvedLimit, refreshToken]);
 
   useEffect(() => {
     if (!isFullscreen) return;

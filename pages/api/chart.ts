@@ -22,7 +22,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
 import { PRIMARY_TIMEFRAME } from '../../lib/constants';
-import { buildRestingEntryWindows } from '../../lib/swing/restingEntryWindows';
+import { buildRestingEntryWindows, RESTING_ENTRY_WINDOW_LOOKBACK_MS } from '../../lib/swing/restingEntryWindows';
 import { timeframeToMs } from '../../lib/swing/wakeWatch';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
@@ -192,12 +192,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Only entry/exit markers (BUY/SELL/CLOSE) are drawn on the chart, so read them
     // straight from the per-symbol marker index (window-bounded) rather than
     // scanning the full decision index. KV-only; same data, far fewer round-trips.
+    //
+    // The read starts BEFORE the window by the resting-entry lookback: an entry
+    // issued hours before a 4H window can still be resting (or fill) inside it,
+    // and reading from the window's own start left those lines missing entirely
+    // on the short ranges. Same key, same command count — just a wider score
+    // range. Everything except the resting-entry windows keeps consuming the
+    // window-bounded slice below, so no other overlay changes.
+    const restingHistoryFromMs = Math.max(0, windowStartMs - RESTING_ENTRY_WINDOW_LOOKBACK_MS);
     const markerLoadStartedAt = Date.now();
-    const indexedHistory = await loadSymbolMarkerHistory(symbol, platform, {
-      fromMs: windowStartMs,
+    const restingHistory = await loadSymbolMarkerHistory(symbol, platform, {
+      fromMs: restingHistoryFromMs,
       toMs: nowMs,
       limit: historyLimit,
     });
+    const indexedHistory = restingHistory.filter((h) => Number(h.timestamp) >= windowStartMs);
     // The per-symbol index carries entry/exit decisions AND flat-HOLD cooldown
     // rows (wake bands). Everything below that means "entry/exit decision"
     // (markers, nearest-decision tooltips, leverage capture) reads the filtered
@@ -606,7 +615,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // resting orders — see lib/swing/restingEntryWindows.ts for the rest rules.
     const limitOrders = buildRestingEntryWindows({
       nowMs,
-      history: indexedHistory,
+      history: restingHistory,
       positions,
       pendingOrders,
     });

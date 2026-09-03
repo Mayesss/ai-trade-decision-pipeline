@@ -1137,8 +1137,14 @@ export default function Home() {
   // The refresher is an effect event so the poll effect keeps stable deps
   // while still seeing the current range/symbol/platform.
   const swingWarmSeenMsRef = useRef<number | null>(null);
+  const [chartRefreshToken, setChartRefreshToken] = useState(0);
   const onSwingWarm = useEffectEvent(() => {
     void loadDashboard({ background: true });
+    // Chart overlays too: the candles ride the live-price feed, but the
+    // resting-entry windows, cooldown bands, position boxes and markers only
+    // change when the chart payload is re-read. Without this the price line
+    // advances for hours over overlays frozen at the last fetch.
+    setChartRefreshToken((prev) => prev + 1);
     const symbol = symbols[active] || null;
     if (!symbol) return;
     const platform = tabData[symbol]?.lastPlatform ?? null;
@@ -2322,6 +2328,7 @@ export default function Home() {
                     statsSlot={swingChartStats}
                     livePrice={livePriceNow}
                     liveTimestamp={livePriceTs}
+                    refreshToken={chartRefreshToken}
                     onOpenPositionChange={(position) =>
                       handleChartOpenPositionChange(activeSymbol, position)
                     }

@@ -36,6 +36,12 @@ type PendingOrderRow = { side: 'buy' | 'sell' | null; price: number; createdAtMs
 // backstop, so a segment must be allowed to span that. 65min was the old
 // one-tick-TTL assumption and truncated every long-resting order.
 const REST_MAX_MS = RESTING_ENTRY_MAX_AGE_MINUTES * 60_000;
+// How far BEFORE a chart window a caller must read decision history for these
+// windows to be complete. An order issued earlier than this cannot still be
+// resting inside the window (the age backstop cancels it), so this is the exact
+// bound — and reading only from the window's own start hid every order placed
+// before it, which is what made resting lines vanish on the short ranges.
+export const RESTING_ENTRY_WINDOW_LOOKBACK_MS = REST_MAX_MS;
 // Re-issues of the same price further apart than this are separate orders.
 const REISSUE_MERGE_MS = 75 * 60_000;
 // A fill's timestamp can sit slightly outside the window: it may have raced the

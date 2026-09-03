@@ -130,6 +130,38 @@ completes, which never happens under the contract harness (it expects all 25
 crons). It is verified by code path and by the mutation audit above — worth a
 look at the first live warm.
 
+## What the chart fixes cost (measured 2026-09-03)
+
+Two later changes add load, so here is the meter on them. One `/api/chart`
+request, measured in-process against production data:
+
+| | KV commands | KV bytes in | Neon queries | Neon bytes |
+| --- | --- | --- | --- | --- |
+| 1D preset (15m x96), caches warm | **4** | 24.3 KB | **3** (15 rows) | 10.4 KB |
+| 4H preset (5m x48) | 5 (one cache fill) | 13.7 KB | 3 | 10.4 KB |
+| 1D preset, cold lambda | 4 | 24.3 KB | 50 (schema ensure) | 10.5 KB |
+
+**Warm-triggered chart refresh** (one fetch per completed analyze cycle per open
+dashboard tab, 96/day):
+
+- KV: 96 x ~4.5 = ~430/day = **~13k commands/month ≈ $0.03** — 0.9% of the
+  ~1.42M/month the work above removed.
+- Neon: 96 x ~10 KB = **~30 MB/month**, against the 50 GB alert / 90 GB
+  free-tier thresholds in [neon-egress.md](./neon-egress.md). 0.03% of it.
+- Cold starts add ~47 schema-ensure queries but almost no bytes; Neon bills
+  transfer and compute, not query count.
+
+**Widened resting-entry history read** (reads from `windowStartMs - 48h` so an
+order placed before a short window still draws): **zero extra commands.**
+`loadSymbolMarkerHistory` issues one `ZREVRANGEBYSCORE` plus a single unchunked
+`MGET` ([history.ts:457](../lib/history.ts#L457)) regardless of row count, and
+the marker index is 7-day-trimmed and small (~23 rows for BTCUSDT), so the wider
+score range adds a few KB at most. The Upstash invoice has exactly two lines —
+Request and Storage — so extra bytes at the same command count are free, and no
+new keys means storage is untouched.
+
+Net effect of everything on this page: **~-1.4M commands/month (~-$2.82)**.
+
 ## Storage — worth doing, but it is $0.17
 
 `DBSIZE` = 11,927 keys, ~510 MB, of which **97% is orphaned data from the retired
