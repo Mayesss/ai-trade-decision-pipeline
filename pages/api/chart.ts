@@ -10,19 +10,18 @@ import {
   listCapitalPendingEntryOrders,
 } from '../../lib/capital';
 import { fetchPendingEntryOrders, fetchPositionTpsl, getTradeProductType } from '../../lib/trading';
-import {
-  loadDecisionHistory,
-  loadSymbolMarkerHistory,
-  extractCapturedLeverages,
-  isCooldownBandDecision,
-  isPositionWakeBandDecision,
-  type DecisionHistoryEntry,
-} from '../../lib/history';
+import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages, isCooldownBandDecision, isPositionWakeBandDecision } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
 import { PRIMARY_TIMEFRAME } from '../../lib/constants';
 import { buildRestingEntryWindows, RESTING_ENTRY_WINDOW_LOOKBACK_MS } from '../../lib/swing/restingEntryWindows';
+import {
+  findEntryDecision,
+  findExitDecision,
+  getPartialClosePct,
+  inferCloseReason,
+} from '../../lib/swing/positionDecisionMatch';
 import { timeframeToMs } from '../../lib/swing/wakeWatch';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../lib/swing/sync';
 import {
@@ -272,64 +271,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return n !== null && n > 0 ? n : null;
     };
 
-    const findNearestDecision = (tsMs?: number | null) => {
-      if (!tsMs || !history?.length) return null;
-      let best: DecisionHistoryEntry | null = null;
-      let bestDiff = Number.POSITIVE_INFINITY;
-      for (const h of history) {
-        if (!h.timestamp) continue;
-        const diff = Math.abs(Number(h.timestamp) - tsMs);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          best = h;
-        }
-      }
-      if (!best) return null;
-      return {
-        timestamp: Number(best.timestamp) || null,
-        action: best.aiDecision?.action,
-        summary: best.aiDecision?.summary,
-        reason: best.aiDecision?.reason,
-        // Carry the partial-close pct so a trim renders as "Close 30%" rather than
-        // a bare "Close" in the overlay tooltip's exit/entry decision label.
-        closePct: getPartialClosePct(best),
-      };
-    };
-    // Bracket-close inference: an exchange-side TP/SL exit has no AI decision
-    // of its own, so a closed position with no CLOSE/REVERSE decision near its
-    // exit was closed by the resting bracket — TP vs SL by realized pnl sign.
-    // Only claimed inside the KV history window; older exits are unknowable
-    // (the decision rows have expired, so "no decision found" means nothing).
-    const CLOSE_REASON_HISTORY_MS = 7 * 24 * 60 * 60 * 1000;
-    const AI_CLOSE_MATCH_MS = 20 * 60 * 1000;
-    const nearestCloseActionDiffMs = (tsMs?: number | null): number => {
-      if (!tsMs || !history?.length) return Number.POSITIVE_INFINITY;
-      let best = Number.POSITIVE_INFINITY;
-      for (const h of history) {
-        const action = String(h.aiDecision?.action || '').toUpperCase();
-        if (action !== 'CLOSE' && action !== 'REVERSE') continue;
-        const diff = Math.abs(Number(h.timestamp) - tsMs);
-        if (diff < best) best = diff;
-      }
-      return best;
-    };
-    const inferCloseReason = (
-      exitTsMs: number | null,
-      pnlValue: number | null,
-    ): 'tp' | 'sl' | null => {
-      if (!exitTsMs || typeof pnlValue !== 'number') return null;
-      if (exitTsMs < nowMs - CLOSE_REASON_HISTORY_MS) return null;
-      if (nearestCloseActionDiffMs(exitTsMs) <= AI_CLOSE_MATCH_MS) return null;
-      return pnlValue >= 0 ? 'tp' : 'sl';
-    };
-    const getPartialClosePct = (entry: DecisionHistoryEntry | null | undefined): number | null => {
-      const pct =
-        finiteNumber(entry?.execResult?.partialClosePct) ??
-        finiteNumber(entry?.aiDecision?.exit_size_pct) ??
-        finiteNumber(entry?.aiDecision?.close_size_pct) ??
-        finiteNumber(entry?.aiDecision?.partial_close_pct);
-      return pct !== null && pct > 0 && pct < 100 ? pct : null;
-    };
     const buildPartialCloses = (entryTsMs?: number | null, exitTsMs?: number | null) => {
       const fromMs = finiteNumber(entryTsMs) ?? windowStartMs;
       const toMs = finiteNumber(exitTsMs) ?? nowMs;
@@ -494,21 +435,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             Math.abs(pnlPct) < 0.005 &&
             pnlNet !== null &&
             Math.abs(pnlNet) > 0.005;
-          const entryDecision = findNearestDecision(p.entryTimestamp);
-          let exitDecision = findNearestDecision(p.exitTimestamp);
-          // An exchange-side TP/SL exit has no AI decision of its own — the
-          // nearest match is then the ENTRY decision, which rendered the same
-          // decision twice in the overlay tooltip. Show no exit decision instead.
-          if (exitDecision && entryDecision && exitDecision.timestamp === entryDecision.timestamp) {
-            exitDecision = null;
-          }
+          const entryDecision = findEntryDecision(history, p.entryTimestamp);
+          // Exit-shaped only (CLOSE/REVERSE within the match window): anything
+          // else near the exit is the next tick's own idea, not what closed it.
+          const exitDecision = findExitDecision(history, p.exitTimestamp);
           const closeReason = p.exitTimestamp
-            ? inferCloseReason(p.exitTimestamp, pnlPct ?? pnlNet)
+            ? inferCloseReason({ history, exitTsMs: p.exitTimestamp, pnlValue: pnlPct ?? pnlNet, nowMs })
             : null;
-          // A bracket close means the nearest-decision match above is noise
-          // (some HOLD row hours away) — the tooltip shows the TP/SL-hit line
-          // instead of a misleading "exit AI decision".
-          if (closeReason) exitDecision = null;
           return {
             id: p.id,
             status: p.exitTimestamp ? 'closed' : 'open',

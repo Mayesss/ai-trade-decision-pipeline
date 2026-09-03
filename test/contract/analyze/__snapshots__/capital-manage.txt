@@ -123,9 +123,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:5m:48",
+    "swing:chart:overlay:v8:capital:EURUSD:5m:48",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -133,9 +133,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:15m:96",
+    "swing:chart:overlay:v8:capital:EURUSD:15m:96",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -143,9 +143,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1H:168",
+    "swing:chart:overlay:v8:capital:EURUSD:1H:168",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -153,9 +153,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:4H:180",
+    "swing:chart:overlay:v8:capital:EURUSD:4H:180",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -163,9 +163,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1D:183",
+    "swing:chart:overlay:v8:capital:EURUSD:1D:183",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 GET https://api-capital.backend-capital.com/api/v1/prices/EURUSD?max=116&resolution=MINUTE_15
@@ -622,9 +622,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:5m:48",
+    "swing:chart:overlay:v8:capital:EURUSD:5m:48",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -632,9 +632,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:15m:96",
+    "swing:chart:overlay:v8:capital:EURUSD:15m:96",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -642,9 +642,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1H:168",
+    "swing:chart:overlay:v8:capital:EURUSD:1H:168",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -652,9 +652,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:4H:180",
+    "swing:chart:overlay:v8:capital:EURUSD:4H:180",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]
 
 POST https://kv.boundary.test/
@@ -662,7 +662,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1D:183",
+    "swing:chart:overlay:v8:capital:EURUSD:1D:183",
     3900,
-    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
+    "[{\"id\":\"capital:EURUSD-open-position\",\"status\":\"open\",\"side\":\"long\",\"entryTime\":1787770594,\"exitTime\":null,\"pnlPct\":20.7,\"pnlNet\":null,\"entryPrice\":1.15,\"exitPrice\":null,\"leverage\":30,\"takeProfitPrice\":1.175,\"stopLossPrice\":1.144,\"closeReason\":null,\"entryDecision\":null,\"exitDecision\":null,\"partialCloses\":[]}]"
   ]

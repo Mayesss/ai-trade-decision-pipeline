@@ -135,7 +135,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:5m:48",
+    "swing:chart:overlay:v8:capital:EURUSD:5m:48",
     3900,
     "[]"
   ]
@@ -145,7 +145,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:15m:96",
+    "swing:chart:overlay:v8:capital:EURUSD:15m:96",
     3900,
     "[]"
   ]
@@ -155,7 +155,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1H:168",
+    "swing:chart:overlay:v8:capital:EURUSD:1H:168",
     3900,
     "[]"
   ]
@@ -165,7 +165,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:4H:180",
+    "swing:chart:overlay:v8:capital:EURUSD:4H:180",
     3900,
     "[]"
   ]
@@ -175,7 +175,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v7:capital:EURUSD:1D:183",
+    "swing:chart:overlay:v8:capital:EURUSD:1D:183",
     3900,
     "[]"
   ]

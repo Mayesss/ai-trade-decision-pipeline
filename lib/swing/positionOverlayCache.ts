@@ -11,6 +11,12 @@ import {
   type CapitalWindowChunk,
 } from './capitalWindows';
 import { chartTimeframeToSeconds } from './chartCache';
+import {
+  findEntryDecision,
+  findExitDecision,
+  getPartialClosePct,
+  inferCloseReason,
+} from './positionDecisionMatch';
 
 // Chart position-overlay cache. The chart endpoint builds its position overlays
 // from closed positions (Neon `swing.positions`) plus a live broker
@@ -29,7 +35,10 @@ import { chartTimeframeToSeconds } from './chartCache';
 // v7: fold now groups by span overlap too (resting-entry fills give one
 // position two entry timestamps: decision ts vs venue fill ts) — v6 overlays
 // could still hold stacked boxes for limit-entered positions.
-const PREFIX = 'swing:chart:overlay:v7';
+// v8: exit decisions are matched CLOSE/REVERSE-only and rows carry closeReason
+// (this builder had neither) — v7 blobs label a bracket-hit exit with whatever
+// decision ran next, e.g. a BUY placing the following resting entry.
+const PREFIX = 'swing:chart:overlay:v8';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -160,39 +169,6 @@ function parsePnl(value: unknown): number | null {
   return finiteNumber(raw);
 }
 
-function findNearestDecision(history: DecisionHistoryEntry[], tsMs?: number | null) {
-  if (!tsMs || !history?.length) return null;
-  let best: DecisionHistoryEntry | null = null;
-  let bestDiff = Number.POSITIVE_INFINITY;
-  for (const h of history) {
-    if (!h.timestamp) continue;
-    const diff = Math.abs(Number(h.timestamp) - tsMs);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = h;
-    }
-  }
-  if (!best) return null;
-  return {
-    timestamp: Number(best.timestamp) || null,
-    action: best.aiDecision?.action,
-    summary: best.aiDecision?.summary,
-    reason: best.aiDecision?.reason,
-    // Carry the partial-close pct so a trim renders as "Close 30%" rather than a
-    // bare "Close" in the overlay tooltip's exit/entry decision label.
-    closePct: getPartialClosePct(best),
-  };
-}
-
-function getPartialClosePct(entry: DecisionHistoryEntry | null | undefined): number | null {
-  const pct =
-    finiteNumber(entry?.execResult?.partialClosePct) ??
-    finiteNumber(entry?.aiDecision?.exit_size_pct) ??
-    finiteNumber(entry?.aiDecision?.close_size_pct) ??
-    finiteNumber(entry?.aiDecision?.partial_close_pct);
-  return pct !== null && pct > 0 && pct < 100 ? pct : null;
-}
-
 function buildPartialCloses(params: {
   history: DecisionHistoryEntry[];
   entryTsMs?: number | null;
@@ -295,14 +271,22 @@ function normalizeOverlayPositions(params: {
       Math.abs(pnlPct) < 0.005 &&
       pnlNet !== null &&
       Math.abs(pnlNet) > 0.005;
-    const entryDecision = findNearestDecision(params.history, p.entryTimestamp);
-    let exitDecision = findNearestDecision(params.history, p.exitTimestamp);
-    // An exchange-side TP/SL exit has no AI decision of its own — the nearest
-    // match is then the ENTRY decision, which rendered the same decision twice
-    // in the overlay tooltip. Show no exit decision instead.
-    if (exitDecision && entryDecision && exitDecision.timestamp === entryDecision.timestamp) {
-      exitDecision = null;
-    }
+    const entryDecision = findEntryDecision(params.history, p.entryTimestamp);
+    // Exit-shaped only (CLOSE/REVERSE within the match window): anything else
+    // near the exit is the next tick's own idea, not what closed the position.
+    const exitDecision = findExitDecision(params.history, p.exitTimestamp);
+    // Bracket-hit inference, which this builder used to omit entirely — cached
+    // rows therefore had no closeReason at all and kept whatever decision sat
+    // nearest the exit, while the chart endpoint's own (cache-miss) path got it
+    // right. Same call, same result, whichever path built the row.
+    const closeReason = p.exitTimestamp
+      ? inferCloseReason({
+          history: params.history,
+          exitTsMs: p.exitTimestamp,
+          pnlValue: pnlPct ?? pnlNet,
+          nowMs: params.nowMs,
+        })
+      : null;
     return {
       id: p.id,
       status: p.exitTimestamp ? 'closed' : 'open',
@@ -316,6 +300,7 @@ function normalizeOverlayPositions(params: {
       leverage: positiveNumber(p.leverage),
       takeProfitPrice: positiveNumber(p.takeProfitPrice),
       stopLossPrice: positiveNumber(p.stopLossPrice),
+      closeReason,
       entryDecision,
       exitDecision,
       // Trim markers carry the cash each chunk realized: folded closed windows
