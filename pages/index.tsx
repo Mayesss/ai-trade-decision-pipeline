@@ -1247,17 +1247,25 @@ export default function Home() {
 
   // Action label for the Latest Decision pill: a partial CLOSE (trim) shows its
   // size, e.g. "CLOSE 40%"; a full close (pct absent or 100) stays "CLOSE"; a
-  // pullback-limit entry shows its resting price, e.g. "BUY @ 6.34" (a market
-  // entry stays bare "BUY"/"SELL"); a flat HOLD that armed a cooldown shows the
-  // quiet period + wake bands, e.g. "HOLD + CD 2h (↑51,200 ↓49,700)".
+  // resting entry shows its resting price and which kind rests there, e.g.
+  // "BUY @ 6.34" (limit) or "SELL stop @ 2,426" (a market entry stays bare
+  // "BUY"/"SELL"); a flat HOLD that armed a cooldown shows the quiet period +
+  // wake bands, e.g. "HOLD + CD 2h (↑51,200 ↓49,700)".
   const formatLastDecisionAction = (
     decision: Record<string, unknown> | null | undefined,
   ): string => {
     const action = String(decision?.action || "");
     if (action === "BUY" || action === "SELL") {
+      // Both resting legs carry a price and exactly one is ever set (analyze
+      // rewrites the pair off the sanitized kind). Reading only the limit leg
+      // made every STOP entry read as a bare market "SELL".
       const limit = Number(decision?.entry_limit_price);
       if (Number.isFinite(limit) && limit > 0) {
         return `${action} @ ${formatDecisionPrice(limit)}`;
+      }
+      const stop = Number(decision?.entry_stop_price);
+      if (Number.isFinite(stop) && stop > 0) {
+        return `${action} stop @ ${formatDecisionPrice(stop)}`;
       }
       return action;
     }

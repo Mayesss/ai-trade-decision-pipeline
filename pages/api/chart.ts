@@ -512,10 +512,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // evaluations but can be superseded or withdrawn by any of them, so a
     // cached copy goes stale silently. Best-effort — a broker error just omits
     // the lines.
+    // `kind` rides along so the chart can label the line for what it is — both
+    // venues report it (Bitget: the plan book holds the stops; Capital: the
+    // working order's own LIMIT/STOP type), so it is read, never inferred.
     let pendingOrders: Array<{
       side: 'buy' | 'sell' | null;
       price: number;
       size: string | null;
+      kind: 'limit' | 'stop' | null;
       createdAtMs?: number | null;
     }> = [];
     try {
@@ -526,6 +530,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             side: o.direction ? (o.direction.toUpperCase() === 'SELL' ? 'sell' : 'buy') : null,
             price: o.level as number,
             size: o.size != null ? String(o.size) : null,
+            kind: o.restingKind,
             createdAtMs: o.createdAtMs ?? null,
           }));
       } else {
@@ -535,6 +540,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             side: o.side ? (o.side.toLowerCase().includes('sell') ? 'sell' : 'buy') : null,
             price: o.price as number,
             size: o.size,
+            kind: o.planOrder ? ('stop' as const) : ('limit' as const),
             createdAtMs: o.createdAtMs ?? null,
           }));
       }

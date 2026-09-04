@@ -109,12 +109,15 @@ type LimitOrderSegment = {
   filled?: boolean;
 };
 
-// A resting pullback limit entry (Bitget normal order / Capital working order),
-// drawn as a dotted entry-level line on the chart.
+// A live resting entry (Bitget pending/plan order, Capital working order),
+// drawn as a dotted entry-level line on the chart. `kind` is the venue's own
+// LIMIT/STOP type — a stop rests WITH the trade, so labelling it "LIMIT" read
+// as the wrong order entirely.
 type PendingOrderLine = {
   side: 'buy' | 'sell' | null;
   price: number;
   size?: string | null;
+  kind?: 'limit' | 'stop' | null;
 };
 
 // A decision-timeline tick rendered as a time-aligned dot under the chart's
@@ -847,13 +850,20 @@ type CooldownBandItem = { fromTime: number; toTime: number; above: number | null
 // limit price; `filled` draws a dot at the segment end (the fill moment).
 type LimitOrderItem = { fromTime: number; toTime: number; price: number; side: 'buy' | 'sell'; filled: boolean };
 
-class PositionOverlayPrimitive {
+// Exported for the unit test that pins autoscaleInfo() — see
+// test/unit/swing/chartRestingAutoscale.test.ts.
+export class PositionOverlayPrimitive {
   chart: ChartApiLike | null = null;
   series: ChartSeriesLike | null = null;
   data: OverlayPrimitiveDatum[] = [];
   bands: CooldownBandItem[] = [];
   limitOrders: LimitOrderItem[] = [];
+  // Live resting-entry levels (the dotted price lines). Held here only so
+  // autoscaleInfo() can keep them on scale — the lines themselves are drawn by
+  // the series, not by this primitive.
+  restingLevels: number[] = [];
   theme: OverlayTheme;
+  private restingRange: { minValue: number; maxValue: number } | null = null;
   private requestUpdate: (() => void) | null = null;
   private readonly paneView: PositionOverlayPaneView;
   constructor(theme: OverlayTheme) {
@@ -890,7 +900,37 @@ class PositionOverlayPrimitive {
   }
   setLimitOrders(limitOrders: LimitOrderItem[]) {
     this.limitOrders = limitOrders;
+    this.recomputeRestingRange();
     this.requestUpdate?.();
+  }
+  setRestingLevels(levels: number[]) {
+    this.restingLevels = levels;
+    this.recomputeRestingRange();
+    this.requestUpdate?.();
+  }
+  // Pull the resting-entry levels into the series' price range. The scale is
+  // autoscaled from the candles alone, and a STOP entry rests BEYOND the
+  // traversed range by construction (a SELL stop under the low, a BUY stop over
+  // the high) — so its dotted line and its dashed window landed at a y outside
+  // the pane and simply never appeared. A LIMIT rests inside the range, which
+  // is why only stop entries looked broken.
+  //
+  // Called on every scroll/zoom frame, so the range is precomputed on write.
+  autoscaleInfo() {
+    if (!this.restingRange) return null;
+    return {
+      priceRange: this.restingRange,
+      // A level flush against the pane edge is as unreadable as a missing one.
+      margins: { above: 8, below: 8 },
+    };
+  }
+  private recomputeRestingRange() {
+    const prices = [...this.limitOrders.map((order) => order.price), ...this.restingLevels].filter(
+      (price) => Number.isFinite(price) && price > 0,
+    );
+    this.restingRange = prices.length
+      ? { minValue: Math.min(...prices), maxValue: Math.max(...prices) }
+      : null;
   }
   setTheme(theme: OverlayTheme) {
     this.theme = theme;
@@ -1258,6 +1298,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       overlayPrimitiveRef.current?.setData([]);
       overlayPrimitiveRef.current?.setBands([]);
       overlayPrimitiveRef.current?.setLimitOrders([]);
+      overlayPrimitiveRef.current?.setRestingLevels([]);
       snappedOverlaysRef.current = [];
       pinnedOverlayIdRef.current = null;
       setHoveredOverlay(null);
@@ -1750,8 +1791,15 @@ export default function ChartPanel(props: ChartPanelProps) {
     drawLine(open.stopLossPrice, 'rgba(239,68,68,0.9)', 'SL');
   }, [positionOverlays, chartInitToken]);
 
-  // Resting pullback limit entries as dotted entry-level lines — side-colored
-  // so a waiting BUY reads green, a waiting SELL red.
+  // Resting entries as dotted entry-level lines — side-colored so a waiting BUY
+  // reads green, a waiting SELL red. The levels also go to the overlay
+  // primitive, whose autoscaleInfo() keeps them inside the price scale.
+  useEffect(() => {
+    overlayPrimitiveRef.current?.setRestingLevels(
+      pendingOrders.map((order) => Number(order.price)).filter((price) => Number.isFinite(price) && price > 0),
+    );
+  }, [pendingOrders, chartInitToken]);
+
   useEffect(() => {
     const series = chartSeriesRef.current;
     if (!series) return;
@@ -1774,7 +1822,7 @@ export default function ChartPanel(props: ChartPanelProps) {
             lineWidth: 1,
             lineStyle: 1, // dotted — a waiting order, not an active level
             axisLabelVisible: true,
-            title: `${(order.side || 'entry').toUpperCase()} LIMIT`,
+            title: `${(order.side || 'entry').toUpperCase()} ${order.kind === 'stop' ? 'STOP' : 'LIMIT'}`,
           }),
         );
       } catch (err) {
