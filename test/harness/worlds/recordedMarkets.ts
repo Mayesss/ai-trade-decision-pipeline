@@ -2,7 +2,7 @@
 //
 // Fixtures come from `node --import tsx scripts/capture-analyze-fixtures.ts`,
 // which records REAL market-data responses (full body) from one live dryRun
-// tick: Bitget /api/v2/mix/market/* (public), Capital /api/v1/prices* and
+// tick: Bitget /api/v2/{mix,spot}/market/* (public), Capital /api/v1/prices* and
 // /api/v1/markets* (market metadata; account state is never recorded). Replay
 // freezes the clock at the fixture's `capturedAtMs` (pass it to
 // startBoundary) so age/staleness math reproduces the capture.
@@ -25,18 +25,22 @@ export interface RecordedMarketFixture {
     capturedAtMs: number;
     entries: Array<{
         path: string;
-        query: Record<string, string>;
+        // Heterogeneous across paths — mix calls carry productType, spot calls
+        // carry endTime instead — so a key absent from one entry shape reads as
+        // `undefined` when TS unions the fixture JSON. stableQuery drops those.
+        query: Record<string, string | undefined>;
         body: unknown;
     }>;
 }
 
 const VOLATILE_PARAMS = new Set(['startTime', 'endTime', 'after', 'idLessThan', 'from', 'to']);
 
-function stableQuery(params: URLSearchParams | Record<string, string>): Record<string, string> {
+function stableQuery(params: URLSearchParams | Record<string, string | undefined>): Record<string, string> {
     const out: Record<string, string> = {};
     const entries = params instanceof URLSearchParams ? params.entries() : Object.entries(params);
     for (const [key, value] of entries) {
         if (VOLATILE_PARAMS.has(key)) continue;
+        if (value === undefined) continue;
         // lib code mixes productType casings per call site; Bitget accepts both.
         out[key] = key === 'productType' ? value.toLowerCase() : value;
     }

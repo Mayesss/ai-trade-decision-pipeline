@@ -154,6 +154,22 @@ GET https://api.bitget.com/api/v2/mix/market/candles?granularity=4H&limit=200&pr
   content-type: application/json
   locale: en-US
 
+GET https://api.bitget.com/api/v2/spot/market/history-candles?endTime=<NOW_MS>&granularity=1day&limit=200&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/spot/market/history-candles?endTime=<NOW_MS>&granularity=1week&limit=200&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
 POST https://kv.boundary.test/ZREVRANGEBYSCORE/decision%3Amarkers%3Abitget%3AETHUSDT/<NOW_MS>/1772130256422/LIMIT/0/1200
   authorization: Bearer <TOKEN>
 

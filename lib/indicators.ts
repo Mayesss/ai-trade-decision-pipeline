@@ -43,17 +43,32 @@ export interface IndicatorTimeframeOptions {
 
 export type LevelState = 'at_level' | 'approaching' | 'rejected' | 'broken' | 'retesting';
 
+// Where a level actually came from. Only `swing_pivot` is a confirmed 5-bar
+// pivot; the other two are the sparse-data fallback below and are far weaker
+// evidence — `forming_bar` has not even closed once. The model is told the
+// difference (see the INPUTS legend in lib/swing/prompt.ts), so do not collapse
+// these back into one label.
+export type LevelType = 'swing_pivot' | 'range_extreme' | 'forming_bar';
+
 export interface LevelDescriptor {
     price: number;
     dist_in_atr: number;
+    // Age of the level in bars of its own timeframe: 0 = the bar still forming.
+    // Shipped alongside level_strength so the normalization below is inspectable
+    // rather than something the model has to infer.
+    bars_ago: number;
     level_strength: number;
-    level_type: string;
+    level_type: LevelType;
     level_state: LevelState;
 }
 
 export interface SRLevels {
     timeframe: string;
     atr: number;
+    // How many candles the pivot scan actually had — venue history plus any spot
+    // backfill (see SPOT_BACKFILL_GRANULARITY). Travels with the levels it
+    // produced so the prompt can say how deep a sample they came from.
+    bars_scanned: number;
     support?: LevelDescriptor;
     resistance?: LevelDescriptor;
 }
@@ -422,51 +437,69 @@ function computeSRLevels(candles: CandleRow[], atr: number, timeframe: string): 
     if (candles.length < minCandles) return undefined;
     const lookback = 150;
     const swings = computeSwingLevels(candles, lookback);
+    // Pivots are scanned over the most recent `lookback` bars, but the series can
+    // still be shorter than that (a recent listing, or a timeframe with no spot
+    // pair to backfill from). Recency is therefore normalized over the window
+    // actually scanned. Dividing by a flat 150 pinned every level in a short
+    // series to 0.9+, which made `strength` read as conviction while carrying no
+    // information at all.
+    const scanned = Math.min(candles.length, lookback);
     const lastClose = Number(candles.at(-1)?.[4]);
     if (!Number.isFinite(lastClose)) return undefined;
 
-    let nearestSupport: { price: number; idx: number } | null = null;
-    let nearestResistance: { price: number; idx: number } | null = null;
+    type LevelPick = { price: number; idx: number; type: LevelType };
+    let nearestSupport: LevelPick | null = null;
+    let nearestResistance: LevelPick | null = null;
 
     for (const s of swings) {
         if (s.type === 'low' && s.price <= lastClose) {
-            if (!nearestSupport || s.price > nearestSupport.price) nearestSupport = { price: s.price, idx: s.index };
+            if (!nearestSupport || s.price > nearestSupport.price)
+                nearestSupport = { price: s.price, idx: s.index, type: 'swing_pivot' };
         } else if (s.type === 'high' && s.price >= lastClose) {
             if (!nearestResistance || s.price < nearestResistance.price)
-                nearestResistance = { price: s.price, idx: s.index };
+                nearestResistance = { price: s.price, idx: s.index, type: 'swing_pivot' };
         }
     }
 
-    // Fallback for sparse/high-timeframe data where strict pivot detection yields no usable level.
+    // Fallback for sparse/high-timeframe data where strict pivot detection yields
+    // no usable level. These are bar extremes, NOT pivots: a single wick print
+    // that was never tested, and possibly from the bar that is still open. They
+    // are labelled accordingly so the prompt can discount them — see LevelType.
     if (!nearestSupport || !nearestResistance) {
         const startIdx = Math.max(0, candles.length - Math.min(40, candles.length));
-        let fallbackSupport: { price: number; idx: number } | null = null;
-        let fallbackResistance: { price: number; idx: number } | null = null;
+        const lastIdx = candles.length - 1;
+        const fallbackType = (idx: number): LevelType => (idx === lastIdx ? 'forming_bar' : 'range_extreme');
+        let fallbackSupport: LevelPick | null = null;
+        let fallbackResistance: LevelPick | null = null;
         for (let i = startIdx; i < candles.length; i++) {
             const low = Number(candles[i]?.[3]);
             const high = Number(candles[i]?.[2]);
             if (!nearestSupport && Number.isFinite(low) && low <= lastClose) {
-                if (!fallbackSupport || low > fallbackSupport.price) fallbackSupport = { price: low, idx: i };
+                if (!fallbackSupport || low > fallbackSupport.price)
+                    fallbackSupport = { price: low, idx: i, type: fallbackType(i) };
             }
             if (!nearestResistance && Number.isFinite(high) && high >= lastClose) {
-                if (!fallbackResistance || high < fallbackResistance.price) fallbackResistance = { price: high, idx: i };
+                if (!fallbackResistance || high < fallbackResistance.price)
+                    fallbackResistance = { price: high, idx: i, type: fallbackType(i) };
             }
         }
         if (!nearestSupport && fallbackSupport) nearestSupport = fallbackSupport;
         if (!nearestResistance && fallbackResistance) nearestResistance = fallbackResistance;
     }
 
-    const levelFromSwing = (side: 'support' | 'resistance', level: { price: number; idx: number } | null) => {
+    const levelFromSwing = (side: 'support' | 'resistance', level: LevelPick | null) => {
         if (!level || !Number.isFinite(atr) || atr <= 0) return undefined;
         const distInAtr = Math.abs((lastClose - level.price) / atr);
-        const barsAgo = candles.length - level.idx;
-        const recencyStrength = clamp(1 - barsAgo / Math.max(lookback, 1), 0.2, 1);
+        const barsAgo = Math.max(0, candles.length - 1 - level.idx);
+        const recencyStrength = clamp(1 - barsAgo / Math.max(scanned, 1), 0.2, 1);
         const level_state = deriveLevelState(lastClose, level.price, atr, side);
         return {
             price: Number(level.price.toFixed(4)),
             dist_in_atr: Number(distInAtr.toFixed(3)),
+            bars_ago: barsAgo,
+            // Recency only — NOT how often the level held. See the INPUTS legend.
             level_strength: Number(recencyStrength.toFixed(3)),
-            level_type: 'swing_pivot',
+            level_type: level.type,
             level_state,
         };
     };
@@ -477,6 +510,7 @@ function computeSRLevels(candles: CandleRow[], atr: number, timeframe: string): 
     return {
         timeframe,
         atr,
+        bars_scanned: candles.length,
         support,
         resistance,
     };
@@ -506,9 +540,17 @@ const EMPTY_TF_SUMMARY =
 // array. Shared by both the Bitget and Capital indicator pipelines so they
 // produce identical inputs (structure, valueState, atrPctile, rvol, S/R) — this
 // is the single source of truth for timeframe metrics. Candles are [ts,o,h,l,c,v].
+// `srCandles` lets the S/R scan run over a DEEPER series than the rest of the
+// metrics — see the spot backfill in calculateMultiTFIndicators. It must stay
+// separate: the backfilled tail comes from the spot book, whose volume is on a
+// different scale entirely (~4x smaller for LINKUSDT), so feeding it to VWAP,
+// RVOL or the value area would corrupt them. Prices agree to within 0.15%, which
+// is what makes it safe for level detection and nothing else. Defaults to
+// `candles`, so callers without a backfill (Capital) are unaffected.
 export function buildTimeframeMetrics(
     candles: CandleRow[],
     tf: string,
+    srCandles: CandleRow[] = candles,
 ): { summary: string; atr: number; candleCount: number; sr?: SRLevels; metrics: TimeframeMetrics } {
     if (!Array.isArray(candles) || candles.length < 2) {
         return {
@@ -573,7 +615,7 @@ export function buildTimeframeMetrics(
         )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
         atr,
         candleCount: candles.length,
-        sr: computeSRLevels(candles, atr, tf),
+        sr: computeSRLevels(srCandles, atr, tf),
         metrics: {
             atr,
             atrPctile,
@@ -590,6 +632,27 @@ export function buildTimeframeMetrics(
             val: valueArea?.val,
         },
     };
+}
+
+// Mix granularity -> spot granularity, for the timeframes whose mix history is
+// too shallow for a 150-bar pivot scan. Bar boundaries are identical across the
+// two markets, so merged rows line up without re-bucketing.
+const SPOT_BACKFILL_GRANULARITY: Record<string, string> = {
+    '1D': '1day',
+    '1W': '1week',
+};
+
+// Prepend the part of `deep` that predates `recent`, keeping `recent` (and with
+// it the still-forming bar, which the spot history endpoint omits) authoritative
+// wherever the two overlap.
+export function mergeCandleHistory(deep: CandleRow[], recent: CandleRow[], cap = 200): CandleRow[] {
+    if (!Array.isArray(recent) || recent.length === 0) return Array.isArray(deep) ? deep.slice(-cap) : [];
+    if (!Array.isArray(deep) || deep.length === 0) return recent.slice(-cap);
+    const firstRecentTs = Number(recent[0]?.[0]);
+    if (!Number.isFinite(firstRecentTs)) return recent.slice(-cap);
+    const older = deep.filter((row) => Number(row?.[0]) < firstRecentTs);
+    if (older.length === 0) return recent.slice(-cap);
+    return [...older, ...recent].slice(-cap);
 }
 
 export async function calculateMultiTFIndicators(
@@ -616,6 +679,34 @@ export async function calculateMultiTFIndicators(
         return ensureAscending(cs);
     }
 
+    // Deep history for the level scan. Bitget's mix market serves only ~90 days
+    // per request at ANY granularity, so 1W comes back ~13 bars and 1D ~90 —
+    // both under the 150-bar pivot lookback, which meant every higher-timeframe
+    // level was derived from about one quarter of history. The spot book carries
+    // years on identical bar boundaries (both open at 16:00 UTC), so the older
+    // tail is taken from there. Only the timeframes that are actually short are
+    // backfilled; 4H/1H already return their full 200 bars from mix.
+    async function fetchSpotBackfill(tf: string): Promise<CandleRow[]> {
+        const granularity = SPOT_BACKFILL_GRANULARITY[tf];
+        // Spot symbols are only guaranteed to line up with the USDT perp names.
+        if (!granularity || productType !== 'usdt-futures') return [];
+        try {
+            const cs = await bitgetFetch('GET', '/api/v2/spot/market/history-candles', {
+                symbol,
+                granularity,
+                // Required by this endpoint — it rejects the request without it.
+                endTime: Date.now(),
+                limit: 200,
+            });
+            return ensureAscending(Array.isArray(cs) ? (cs as CandleRow[]) : []);
+        } catch {
+            // Perp-only listings have no spot pair (Bitget answers 40034), and a
+            // level scan is not worth failing a tick over. The mix series then
+            // stands on its own, just shallower — which `bars_scanned` reports.
+            return [];
+        }
+    }
+
     const requests = new Map<string, Promise<CandleRow[]>>();
     const addRequest = (tf: string) => {
         if (!requests.has(tf)) requests.set(tf, fetchCandles(tf));
@@ -624,6 +715,11 @@ export async function calculateMultiTFIndicators(
     addRequest(macroTF);
     addRequest(contextTF);
     addRequest(primaryTF);
+
+    const backfills = new Map<string, Promise<CandleRow[]>>();
+    for (const tf of requests.keys()) {
+        if (SPOT_BACKFILL_GRANULARITY[tf]) backfills.set(tf, fetchSpotBackfill(tf));
+    }
 
     const entries = Array.from(requests.entries());
     const summaries = new Map<
@@ -637,8 +733,11 @@ export async function calculateMultiTFIndicators(
     await Promise.all(
         entries.map(async ([tf, promise]) => {
             const candles = await promise;
+            // rawByTf stays venue-pure: it feeds the dashboard chart and the wave
+            // geometry, neither of which should show spot bars.
             rawByTf.set(tf, candles);
-            summaries.set(tf, build(candles, tf));
+            const deep = (await backfills.get(tf)) ?? [];
+            summaries.set(tf, build(candles, tf, mergeCandleHistory(deep, candles)));
         }),
     );
 

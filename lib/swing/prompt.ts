@@ -10,7 +10,7 @@
 // model's ANSWER lives in decisionRules.ts.
 
 import { CONTEXT_TIMEFRAME, DEFAULT_TAKER_FEE_RATE, MACRO_TIMEFRAME, MICRO_TIMEFRAME, NANO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../constants';
-import type { LevelDescriptor, MultiTFIndicators } from '../indicators';
+import type { LevelDescriptor, MultiTFIndicators, SRLevels } from '../indicators';
 import { wakePlanGraceMinutes, wakeBreakConfirmAtr, WAKE_CONFIRM_MAX_MINUTES, WAKE_CONFIRM_MIN_MINUTES } from './wakeWatch';
 import type { EventReactionMeasurement } from './eventReaction';
 import type { BtcContext } from './btcContext';
@@ -708,11 +708,16 @@ export function computeSwingState(
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
     const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
 
+    const levelBars = (sr: SRLevels | null | undefined) => {
+        const depth = Number(sr?.bars_scanned);
+        return Number.isFinite(depth) && depth > 0 ? Math.round(depth) : null;
+    };
     const srLevel = (lvl: LevelDescriptor | null | undefined) =>
         lvl
             ? {
                   price: lvl.price,
                   dist_atr: lvl.dist_in_atr,
+                  bars_ago: lvl.bars_ago,
                   strength: lvl.level_strength,
                   type: lvl.level_type,
                   state: lvl.level_state,
@@ -795,9 +800,22 @@ export function computeSwingState(
             context_breakdown_confirmed: htfBreakdownConfirmed,
             chop_risk: chopRisk,
         },
+        // `bars` = the sample the level scan actually had, after the spot
+        // backfill in lib/indicators.ts tops up the venue's shallow 1D/1W
+        // history. It ships next to the levels it produced rather than being
+        // implied by the legend, because it still collapses for a recent
+        // listing or a perp with no spot pair.
         levels: {
-            primary: { support: srLevel(primarySR?.support), resistance: srLevel(primarySR?.resistance) },
-            context: { support: srLevel(contextSR?.support), resistance: srLevel(contextSR?.resistance) },
+            primary: {
+                bars: levelBars(primarySR),
+                support: srLevel(primarySR?.support),
+                resistance: srLevel(primarySR?.resistance),
+            },
+            context: {
+                bars: levelBars(contextSR),
+                support: srLevel(contextSR?.support),
+                resistance: srLevel(contextSR?.resistance),
+            },
         },
         // Wave geometry per timeframe: regression channel (slope_atr, channel_pos
         // 0=low..1=high, width), pivot trendlines (live price + slope + touches)
@@ -1422,7 +1440,10 @@ CADENCE (how often you are actually consulted)
 
 INPUTS
 - You receive two JSON objects: STATE (derived signals — your single source of truth) and MARKET (raw price/tape/news). All keys are pre-computed; do not invent fields.
-- S/R levels are swing-pivot derived per timeframe (~150 bars); distances are in that timeframe's ATR; level state ∈ {at_level, approaching, rejected, broken, retesting}.
+- state.levels gives the nearest support/resistance per timeframe. Distances are in that timeframe's ATR and level state ∈ {at_level, approaching, rejected, broken, retesting}. Three qualifiers decide how much a level is worth, and they are NOT interchangeable:
+  • bars = how many candles the level scan actually had for this timeframe, typically 200. It can be much smaller for a recently listed instrument, and when it is, the level came from a short sample and is provisional rather than structural — anything older than that window is invisible to you, not absent from the market.
+  • type = where the level came from. swing_pivot = a confirmed pivot high/low (its bar's extreme beat the two bars either side). range_extreme = no pivot existed in the sample, so this is the nearest bar extreme — a single wick print that was never tested. forming_bar = the extreme of the bar that is STILL OPEN, so it has not closed even once; it is the weakest label here and it can move before your next look.
+  • bars_ago / strength = the level's AGE, raw and normalized. bars_ago counts bars of that timeframe (0 = the bar still forming). strength rescales it over the sample actually available — strength = 1 − bars_ago/min(bars,150) — so 1.0 is the newest bar and 0.2 is as old as this timeframe's history goes. Age is ALL either field measures: neither counts touches, holds or rejections, and a level's price alone tells you nothing about whether it was ever defended. So a high strength on a range_extreme or forming_bar reads "very recent and untested", NOT "reliable" — do not treat it as conviction, and do not price a bracket off it as if it were a tested shelf. If you want to know whether a level held, read the bar extremes and structure fields, not these two.
 - micro_bias precedence (already applied in state.biases.micro): structure (breakout-retest → break-state → BOS → structure-state) first, momentum (EMA slope+RSI+price vs EMA20) as fallback; structure wins ties.
 - market.recent_actions: your last few decisions on this symbol (oldest first) with their MEASURED follow-through where known — rested_at / rested_as = the price that entry rested at and which tool rested there (limit or stop), absent when it took the market; strategy = the play you named at the time; reissued_count = consecutive re-issues of the same resting idea collapsed into one row (one idea, not repeated trades); outcome ∈ never_filled (the resting order was cancelled unfilled — NO position resulted, you did not trade) | still_open | {closed_pnl_pct_on_margin (leverage-multiplied), held_min}. Weigh outcomes as recent evidence about your read of this market — e.g. a just-stopped-out direction needs a materially changed setup, and a never_filled entry means that idea was never tested. Over several rows this is also feedback on your own play selection and entry mechanics on THIS instrument: if one strategy or one resting tool keeps producing never_filled or quick losses here while another works, that is data about this market, not a rule — read it and adjust.
 - Optional blocks: STATE/MARKET carry extra keys only when this tick measured them, and the user turn may carry extra sections. Any present on THIS tick are explained in the SITUATIONAL DOCTRINE section at the end of these instructions; when that section is absent this tick carries none beyond the keys described above.

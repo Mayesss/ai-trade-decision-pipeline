@@ -4,7 +4,7 @@
 // Runs one real `dryRun=true` tick through the actual /api/analyze handler.
 // What goes over the real network depends on the platform:
 //
-//   bitget   api.bitget.com/api/v2/mix/market/*  — public, unauthenticated;
+//   bitget   api.bitget.com/api/v2/{mix,spot}/market/*  — public, unauthenticated;
 //            recorded. Private endpoints (positions/accounts/orders) stubbed.
 //
 //   capital  api-capital.backend-capital.com — market data requires a REAL
@@ -94,7 +94,12 @@ const captured = new Map<string, CapturedMarketCall>();
 const capturedAtMs = Date.now();
 
 function isRecordedMarketData(url: URL): boolean {
-    if (url.hostname === 'api.bitget.com') return url.pathname.startsWith('/api/v2/mix/market/');
+    if (url.hostname === 'api.bitget.com') {
+        // spot/market carries the deep 1D/1W history the level scan backfills
+        // from (see SPOT_BACKFILL_GRANULARITY) — public and unauthenticated, as
+        // mix/market is.
+        return url.pathname.startsWith('/api/v2/mix/market/') || url.pathname.startsWith('/api/v2/spot/market/');
+    }
     if (url.hostname === 'api-capital.backend-capital.com') {
         // Market data and metadata only — account state never lands in fixtures.
         return url.pathname.startsWith('/api/v1/prices') || url.pathname.startsWith('/api/v1/markets');
