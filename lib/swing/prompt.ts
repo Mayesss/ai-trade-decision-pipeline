@@ -1492,7 +1492,7 @@ ${
         : ''
 }${
     perplexity_context?.text
-        ? `\nFRESH SENTIMENT (search-grounded news + social digest, generated ${new Date(perplexity_context.fetchedAtMs).toISOString()} — secondary color; the STATE/MARKET numbers remain the primary evidence):\n${perplexity_context.text}\n`
+        ? `\nFRESH SENTIMENT (search-grounded news + social digest, generated ${new Date(perplexity_context.fetchedAtMs).toISOString()} — secondary color; the STATE/MARKET numbers remain the primary evidence). Item times are absolute UTC; each parenthesised age is measured from that generation time, NOT from now, so add the gap when the digest is older than this tick:\n${perplexity_context.text}\n`
         : ''
 }
 Decide now per the OUTPUT contract in your system instructions — strict JSON only.

@@ -69,6 +69,9 @@ test('flag on: calls chat/completions with sonar-legal params only and returns t
         assert.equal(body.model, 'perplexity/sonar');
         assert.equal(body.messages.length, 2);
         assert.ok(String(body.messages[1].content).includes('Asset: BTC'));
+        // Whole-hour markers collapsed the whole freshest window — the reason
+        // the digest exists — into an unreadable "0h ago".
+        assert.ok(String(body.messages[0].content).includes('NEVER write "0h ago"'));
         // Sonar accepts ONLY max_tokens/temperature/stop — anything else 400s.
         assert.deepEqual(
             Object.keys(body).sort(),

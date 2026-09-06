@@ -69,7 +69,8 @@ const PERPLEXITY_TEXT_MAX_CHARS = 2000;
 // v2: digest format changed (fixed aspect first line, citation markers banned)
 // — the version bump keeps a stale v1-format digest from serving out of cache
 // across the deploy.
-const KEY_PREFIX = 'swing:perplexity:v2';
+// v3: recency markers are absolute UTC + a minute-resolution relative age.
+const KEY_PREFIX = 'swing:perplexity:v3';
 
 function cacheKey(platform: string, symbol: string): string {
     return `${KEY_PREFIX}:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
@@ -84,7 +85,13 @@ function buildPrompts(symbol: string, category?: string | null): { system: strin
         'Your FIRST line must be exactly this shape and nothing else: "mood: bullish|bearish|mixed | catalyst: yes|no | flows: <≤6 words, or none>" — mood = prevailing retail/social sentiment, catalyst = whether a concrete news/regulatory/macro driver exists for the current move, flows = the most notable flow/on-chain/positioning fact.',
         `Then cover the last ${PERPLEXITY_FRESH_HOURS} hours in detail: major headlines, regulatory or macro items, notable flow/on-chain data, and the retail/social mood behind the label.`,
         'Then AT MOST 2 one-line items for anything older (up to 24h) that is still actively driving the market.',
-        'Format: short bullet points, each with a recency marker (e.g. "2h ago"). Flag rumors or unconfirmed items as such.',
+        // Absolute stamp FIRST, relative second. The digest is cached for up to
+        // PERPLEXITY_TTL_SECONDS, so a relative marker read from cache is stale
+        // by however long it sat there; the UTC time is not. And the relative
+        // half carries minutes below 2h: whole hours collapsed everything
+        // inside the freshest window — the one this digest exists for — into an
+        // unreadable "0h ago".
+        'Format: short bullet points, each opening with the item\'s time in this exact shape: "14:05Z (35m ago)" — absolute UTC first, then the age relative to the current time given below, in minutes under 2h and in hours above ("3h ago"). NEVER write "0h ago": anything under an hour is stated in minutes. Flag rumors or unconfirmed items as such.',
         'Plain text only — NEVER emit citation markers, footnote numbers, or bracketed source references like [1]; name a source inline ("per Reuters") only when it matters.',
         'Max ~250 words. Facts only — NO trading advice, NO price predictions.',
     ].join(' ');
