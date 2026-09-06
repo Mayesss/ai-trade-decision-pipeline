@@ -577,8 +577,13 @@ export function computeSwingState(
             : null;
 
     const resolvedDecisionPolicy = resolveDecisionPolicy(decisionPolicy);
+    // The resolved policy drives the base-gate hard-constraint row below, which
+    // states exactly what it coerces. The prompt used to ALSO print the raw
+    // label ("Decision policy mode: balanced_guardrails") as its closing line —
+    // dropped 2026-09-06: it carried no information the constraint row lacked,
+    // and "balanced"/"guardrails" are posture words that argue for caution
+    // independently of what STATE shows.
     const strictPolicy = resolvedDecisionPolicy === 'strict';
-    const decisionPolicyLabel = strictPolicy ? 'strict_guardrails' : 'balanced_guardrails';
 
     // Variant key: the system prompt renders a FLAT or an IN-POSITION variant —
     // each byte-stable for its state — so a tick never carries the other
@@ -1085,13 +1090,13 @@ export function computeSwingState(
     // Keep prose aligned with the data or it misleads.
     const assetNote =
         assetClass === 'crypto'
-            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context, never a standalone trigger, and avoid initiating new risk into an imminent high-impact event. News/sentiment can move price fast. market.fear_greed (when present) is the daily market-wide crypto Fear & Greed index (0=extreme fear … 100=extreme greed, with recent daily history for direction/persistence) — broad mood context whose extremes are contrarian conditions, never a standalone trigger. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
+            ? `Asset class: crypto. Trades 24/7 — no session boundaries or weekend gaps, and no session-levels block is provided. market.forex_events carries the USD macro calendar (CPI/NFP/FOMC) — crypto reacts to these like a USD risk asset; treat it as event-risk context. News/sentiment can move price fast. market.fear_greed (when present) is the daily market-wide crypto Fear & Greed index (0=extreme fear … 100=extreme greed) — broad mood context. The recent daily history ships with it so that level, direction and persistence are yours to read; this prompt attaches no interpretation to any part of the range. Perp funding, when measured, is in state.costs.funding (borrow is not modeled); judge on structure, regime and location.`
             : assetClass === 'forex'
-              ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk), never as a standalone entry trigger. Avoid initiating new risk into an imminent high-impact event.'
+              ? 'Asset class: forex. Liquidity and volatility are session-dependent and weekend gaps exist. Treat market.forex_session levels and market.forex_events as first-class swing context (location + event risk).'
               : assetClass === 'commodity'
-                ? 'Asset class: commodity (e.g. metals). Sensitive to USD, real yields and risk-on/off flows; strongly session-driven (London/NY). market.forex_events carries the relevant macro calendar (USD for metals — CPI/NFP/FOMC). Use market.forex_session levels + events as location and risk context, not standalone triggers; avoid initiating new risk into an imminent high-impact event.'
+                ? 'Asset class: commodity (e.g. metals). Sensitive to USD, real yields and risk-on/off flows; strongly session-driven (London/NY). market.forex_events carries the relevant macro calendar (USD for metals — CPI/NFP/FOMC). Use market.forex_session levels + events as location and risk context.'
                 : assetClass === 'index'
-                  ? "Asset class: index. Session-driven and gap-prone around the cash open/close. market.forex_events carries the index's home-economy macro calendar. Use market.forex_session levels + events as location and risk context, not standalone triggers; avoid initiating new risk into an imminent high-impact event."
+                  ? "Asset class: index. Session-driven and gap-prone around the cash open/close. market.forex_events carries the index's home-economy macro calendar. Use market.forex_session levels + events as location and risk context."
                   : `Asset class: ${assetClass}. No session or event context is provided; judge on structure, regime, location and cost.`;
 
 
@@ -1137,9 +1142,9 @@ export function computeSwingState(
     const eventReactionGuidance = !hasEventReaction
         ? ''
         : assetClass === 'forex' || assetClass === 'commodity' || assetClass === 'index'
-          ? `Post-event reaction (market.event_reaction): a high-impact release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates: the PRE-release drift direction carries no information, and the release burst is mostly whipsaw (net move ≈ one-third of range) — but a decisive reaction direction, once established ~45 min after release, has historically persisted over the following ~2–4 h and decays after. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction; large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
+          ? `Post-event reaction (market.event_reaction): a high-impact release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates: the PRE-release drift direction carries no information, and the release burst is mostly whipsaw (net move ≈ one-third of range) — but a decisive reaction direction, once established ~45 min after release, has historically persisted over the following ~2–4 h and decays after. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction; large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual.`
           : assetClass === 'crypto'
-            ? `Post-event reaction (market.event_reaction): a high-impact USD release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates on crypto (BTC/ETH/SOL, 2024–2026): the PRE-release drift direction carries no information (pre-FOMC drift, if anything, reversed), and the release burst is mostly whipsaw — but a decisive reaction direction, once established ~45 min after release, held through the following ~2–4 h on CPI and FOMC releases. NFP is the exception: its reaction direction was the least reliable and on average partially gave back, so discount NFP drift. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction (except NFP); large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual — context, never a standalone trigger.`
+            ? `Post-event reaction (market.event_reaction): a high-impact USD release just happened (see market.forex_events.recentEvents); each entry quantifies the reaction since the pre-release close — ret_since_release_bp (signed net move), range_since_release_bp (total excursion incl. whipsaw), retrace_pct (0 = price at the reaction extreme, 1 = push fully given back), minutes_since_release. Measured base rates on crypto (BTC/ETH/SOL, 2024–2026): the PRE-release drift direction carries no information (pre-FOMC drift, if anything, reversed), and the release burst is mostly whipsaw — but a decisive reaction direction, once established ~45 min after release, held through the following ~2–4 h on CPI and FOMC releases. NFP is the exception: its reaction direction was the least reliable and on average partially gave back, so discount NFP drift. Read it accordingly: large |ret| with low retrace_pct = post-event drift context in that direction (except NFP); large range with |ret| near zero = undecided, treat as chop; retrace_pct ≈ 1 = the event is spent as a directional input. Weigh WITH structure/location as usual.`
               : '';
 
     // BTC regime doctrine: how to read market.btc_context. Gated on the payload,
@@ -1149,7 +1154,7 @@ export function computeSwingState(
     // 2026), so the model weighs the measured value instead of a hardcoded
     // "crypto = BTC beta" claim.
     const btcContextGuidance = hasBtcContext
-        ? `BTC regime (market.btc_context): this asset's measured coupling to BTC — corr_30d/corr_90d (daily-return correlation), beta_90d, btc.ret_*_bp (BTC's own recent moves), and alt_vs_btc_residual_7d_bp (this asset's 7d return minus beta x BTC's; positive = idiosyncratic strength). At high correlation (corr ≳ 0.8) alts rarely sustain moves against the BTC regime: a fresh position against BTC's current direction needs idiosyncratic justification (see the residual and news), and a deteriorating BTC weakens an otherwise clean alt setup. At lower correlation weigh BTC context proportionally less. Measurements, not a verdict — combine with structure/location as usual, never a standalone trigger.`
+        ? `BTC regime (market.btc_context): this asset's measured coupling to BTC — corr_30d/corr_90d (daily-return correlation), beta_90d, btc.ret_*_bp (BTC's own recent moves), and alt_vs_btc_residual_7d_bp (this asset's 7d return minus beta x BTC's; positive = idiosyncratic strength). corr_* is how much of this asset's recent daily movement BTC's direction actually accounted for over that window, beta_90d is how hard it moved per unit of BTC, and the residual is the part that BTC did NOT account for. Those three fix the weight BTC's direction deserves here on this tick; there is no threshold in this prompt at which it starts or stops mattering, and no extra burden on a trade in either direction relative to it. Measurements, not a verdict — combine with structure and location as usual.`
         : '';
 
     // In-position wake bands (ENABLE_POSITION_WAKE_BANDS): how to SET them (rides
@@ -1209,7 +1214,11 @@ export function computeSwingState(
     // instruments themselves; it deliberately prescribes no setup. The previous
     // prescriptive version ("rest a limit when the wave position is bad") is
     // what every losing post-mortem traced back to — the tool was never the
-    // problem, being told where to point it was.
+    // problem, being told where to point it was. It crept back once anyway,
+    // phrased as a reading of micro_entry_ok ("poor timing ... is precisely when
+    // a resting order at the level you would rather pay is the better tool") and
+    // was removed again 2026-09-06. If a bullet anywhere in YOUR JOB ends by
+    // naming which entry tool suits a measurement, that is this bug returning.
     const restingKinds = restingEntryKindsFor(platform);
     const canRestLimit = restingKinds.includes('limit');
     const canRestStop = restingKinds.includes('stop');
@@ -1400,7 +1409,7 @@ export function computeSwingState(
         : '';
 
     const sys = `
-You are an expert swing-trading market-structure analyst. Decide one action and size it.
+You are a swing-trading market-structure analyst. Decide one action and size it.
 
 TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${inPosition ? '' : `, nano=${NANO_TIMEFRAME} (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal)`}.
@@ -1425,8 +1434,9 @@ ${hardConstraintsBlock}
 
 YOUR JOB (soft judgment — where your reasoning actually matters)
 - Decide the action from STATE and place its bracket. STATE gives you structure (BOS/CHoCH/breakout-retest), momentum, location and regime as separate measurements; how you weigh them against each other is the judgment this call exists to make, and nothing here ranks them for you.
+- One ordering IS asserted, once, and it holds only BETWEEN kinds of input, never within them: the price-derived measurements in STATE are the primary evidence, and the surrounding context blocks (BTC coupling, market mood, the macro calendar, session levels, post-event reaction, news and sentiment) are weighed ALONGSIDE that evidence rather than in place of it. Inside each group nothing is ranked, and no context block is separately demoted — they all sit at the same distance from the decision.
 - Location vs regime: state.biases.macro / .context are the higher-timeframe lean, and alignment with them is a measurement you weigh, not a requirement — a counter-regime entry at a well-defined level with clean invalidation is a normal trade, not an exception that needs justifying. A near opposite level (levels.*.dist_atr or location.context_*_dist_atr under ~0.6 ATR) cuts the room available to a market entry taken now — and is simultaneously the best-defined price on the chart to rest an order at or beyond. Read it as location information, not a prohibition: what it rules out is paying market into a wall, not trading the wall. Same for location.chop_risk (both nearest levels close): it prices down a directional market entry and prices up working the range edges. Which of those, if either, is worth doing is your call.
-- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean "do not enter": it means taking the market here is poor timing, which is precisely when a resting order at the level you would rather pay is the better tool. Weigh it against extension below, which measures the same thing more finely.
+- momentum.micro_entry_ok is a coarse timing READ, not a constraint: true when price sits near either EMA20 or micro RSI is at an extreme — i.e. somewhere a MARKET fill is reasonable right now. false does NOT mean "do not enter": it means a MARKET fill taken right here is poorly timed. What follows from that — take it anyway, rest an order somewhere better, or wait — is yours, and this prompt does not pick. Weigh it against extension below, which measures the same thing more finely.
 - Extension: state.extension_atr is how far price has travelled from its EMA20, in ATRs — the distance a market fill would be paying up for, and the distance a pullback would give back. What to do with it is yours.
 - Wave position (state.geometry): channel_pos maps price inside the timeframe's regression channel (0=low, 1=high) and slope_atr is its drift per bar, so together they say where in the current leg price sits and which way the leg is going. support_trendline / resistance_trendline give the live trendline price and slope; a close through one plus a structure signal is a break, a touch alone is a reaction point.${inPosition ? '' : ' geometry.nano is the same measurement one timeframe down, for fine-timing.'} Whether a given position in the wave is a place to buy, to fade, or to wait is a read, and it is yours.${
         inPosition
@@ -1436,7 +1446,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
 - Exchange-side TP/SL bracket:
   • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. Their distances are yours: no minimum on either, and no required ratio between them. A tight stop with a near target and a wide stop with a far one are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
         inPosition
-            ? `\n  • On HOLD or partial CLOSE, you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Tighten the stop as profit builds (structure-based, e.g. just past the last defended swing); move the TP only for a structural reason, not to chase price.`
+            ? `\n  • On HOLD or partial CLOSE, you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Whether either leg should move as the trade develops, and to where, is the same structural judgment that placed it.`
             : ''
     }${positionWakeGuidance}
 ${
@@ -1456,7 +1466,7 @@ ${
   • cooldown_wake_note — REQUIRED whenever you set a band. One short line stating the plan the band encodes ("acceptance above 3.42 → breakout check", "retest of broken 118.4k → long on reclaim"). The wake evaluation is a fresh stateless scan; without the note your future self receives an anonymous level cross and has to rediscover the idea.
   • cooldown_wake_confirm_minutes — WHAT COUNTS as an event at that level, and nothing else. Set it and the wake fires only if price is STILL beyond the band that many minutes after first touch; a poke that reclaims sooner never wakes you and comes back instead as market.wake_band_sweeps (evidence of a liquidity grab, not acceptance). About 10 minutes is the measured figure for "the level actually went"; clamps to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}. null = the touch ITSELF is the event, unfiltered — right when any tag of the level changes your read. Either way a break that extends ≥${wakeBreakConfirmAtr()} primary-ATR beyond the band confirms IMMEDIATELY by force, before the clock, so you are never late on a runner.
 - A wake band is a WATCH. It never trades for you — however it fires, it brings you back to decide, and cooldown_wake_confirm_minutes only changes what is worth waking you for. If you want to COMMIT to a break rather than look at it, that is a resting stop order beyond the level: same trigger, placed at the venue, no second decision. Choose deliberately — the band keeps the decision and costs you a beat; the order takes the trade and can be swept. Nothing filters an order the way confirm_minutes filters a band.
-- PLACEMENT: arm a band only at a level you would actually be willing to act on when it fires. If the first ~1 primary-ATR beyond the level runs straight into an unbroken opposing level, that wake can only ever produce a NO — watch the level beyond it instead, or leave that side null, rather than scheduling your own rejection.
+- PLACEMENT: a wake spends the watch whichever way you answer it — refusing the cross drops the re-armed fired side (see the hard constraints) — so the band's cost is the same for a YES and for a NO. Price that in when you choose the level: if the first ~1 primary-ATR beyond it runs straight into an unbroken opposing level, the room a fill would have there is what you are buying the watch for.
 - When a CONFIRMED wake fires but the location has degraded (price extended well past the level, or the move has already landed on the next opposing level), you are not limited to chasing or re-arming: rest an order back at the broken level's retest, or arm the retest band with confirm null and a note saying what you intend there. Re-arming the side that JUST fired is dropped in code — choose a different level or a different tool.
 `
     }${
@@ -1470,7 +1480,6 @@ OUTPUT (every response)
 {"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"take_profit_price":null|price,"stop_loss_price":null|price,"entry_limit_price":null|price,"entry_stop_price":null|price,"withdraw_resting_entry":true|false|null,"entry_trigger_price":null|price,"strategy":null|"one of the strategy list","cooldown_minutes":null|minutes,"cooldown_wake_above":null|price,"cooldown_wake_below":null|price,"cooldown_wake_note":null|"≤1 short line","cooldown_wake_confirm_minutes":null|minutes${leverageJsonField}${manageJsonField}}
 - Field rules:
 ${fieldRulesBlock}
-- Decision policy mode: ${decisionPolicyLabel}.
 `.trim();
 
     // The user turn carries only per-tick DATA: chained threads store every
@@ -1492,7 +1501,7 @@ ${
         : ''
 }${
     perplexity_context?.text
-        ? `\nFRESH SENTIMENT (search-grounded news + social digest, generated ${new Date(perplexity_context.fetchedAtMs).toISOString()} — secondary color; the STATE/MARKET numbers remain the primary evidence). Item times are absolute UTC; each parenthesised age is measured from that generation time, NOT from now, so add the gap when the digest is older than this tick:\n${perplexity_context.text}\n`
+        ? `\nFRESH SENTIMENT (search-grounded news + social digest, generated ${new Date(perplexity_context.fetchedAtMs).toISOString()} — a context block, weighed per the ordering in your system instructions). Item times are absolute UTC; each parenthesised age is measured from that generation time, NOT from now, so add the gap when the digest is older than this tick:\n${perplexity_context.text}\n`
         : ''
 }
 Decide now per the OUTPUT contract in your system instructions — strict JSON only.
