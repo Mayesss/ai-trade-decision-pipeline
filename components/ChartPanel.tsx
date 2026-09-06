@@ -2262,7 +2262,15 @@ export default function ChartPanel(props: ChartPanelProps) {
                       >
                         {hoveredOverlay.closeReason === 'tp' ? 'Take-profit hit' : 'Stop-loss hit'}
                       </span>
-                      <span className="text-slate-500"> · closed by exchange-side bracket</span>
+                      <span className="text-slate-500">
+                        {/* A stop trailed above entry closes a WINNER at the stop —
+                            spelled out, or the green pnl above reads as a TP. */}
+                        {hoveredOverlay.closeReason === 'sl' &&
+                        typeof hoveredOverlay.pnlPct === 'number' &&
+                        hoveredOverlay.pnlPct > 0
+                          ? ' · trailed stop, closed in profit'
+                          : ' · closed by exchange-side bracket'}
+                      </span>
                     </div>
                   ) : null}
 

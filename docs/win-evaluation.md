@@ -28,6 +28,17 @@ turn win evaluations off, `'off'` kills both). Same 12h delay, same drain,
 same idempotency, same dossier builder — the post-exit market section is the
 star witness for exit quality.
 
+The analyst selection stays PnL-based, but the dossier no longer lets the sign
+speak for the exit: `position.closed_by` names what actually ended the trade
+(`take_profit` / `stop_loss` / `ai_close` / `unknown`), with
+`take_profit_at_exit` / `stop_loss_at_exit` — the levels that were resting at
+the close, replayed from the tick trail
+(`positionDecisionMatch.resolveBracketAtExit`). This matters most exactly here:
+most winners end on a stop TRAILED into profit, and `closed_by: 'stop_loss'`
+tells the analyst to judge the trail, not a target it never reached.
+`closed_by_basis: 'pnl_sign'` marks the fallback where no levels could be
+recovered.
+
 ## Verdicts
 
 | verdict | meaning |

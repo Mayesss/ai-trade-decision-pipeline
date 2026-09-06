@@ -2,7 +2,7 @@ import { kvDel, kvGetJson, kvSetJson } from '../kv';
 import { extractCapturedLeverages, loadSymbolMarkerHistory, type DecisionHistoryEntry } from '../history';
 import { fetchRecentPositionWindows, type PositionWindow } from '../analytics';
 import type { AnalysisPlatform } from '../platform';
-import { loadClosedSwingPositions } from './pg';
+import { loadClosedSwingPositions, loadSwingBracketTrail } from './pg';
 import { syncSwingClosedPositions, mergePositionWindows } from './sync';
 import {
   assembleCapitalPositionWindows,
@@ -12,10 +12,12 @@ import {
 } from './capitalWindows';
 import { chartTimeframeToSeconds } from './chartCache';
 import {
+  bracketTrailFromMs,
   findEntryDecision,
   findExitDecision,
   getPartialClosePct,
   inferCloseReason,
+  type BracketTrailRow,
 } from './positionDecisionMatch';
 
 // Chart position-overlay cache. The chart endpoint builds its position overlays
@@ -38,7 +40,9 @@ import {
 // v8: exit decisions are matched CLOSE/REVERSE-only and rows carry closeReason
 // (this builder had neither) — v7 blobs label a bracket-hit exit with whatever
 // decision ran next, e.g. a BUY placing the following resting entry.
-const PREFIX = 'swing:chart:overlay:v8';
+// v9: closeReason names the bracket leg the exit price landed on instead of
+// reading the pnl sign — v8 blobs call every stop trailed into profit a TP.
+const PREFIX = 'swing:chart:overlay:v9';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -213,6 +217,9 @@ function normalizeOverlayPositions(params: {
   // foldCapitalTrimChunks) — their cash lands on the open overlay's markers.
   openTrimChunks?: CapitalWindowChunk[];
   history: DecisionHistoryEntry[];
+  // Every tick's TP/SL evidence for the window — the marker history above
+  // carries no plain HOLDs, and that is exactly where a stop gets trailed.
+  bracketTrail: BracketTrailRow[];
   leverageFromHistory: number | null;
   fromMs: number;
   nowMs: number;
@@ -282,7 +289,10 @@ function normalizeOverlayPositions(params: {
     const closeReason = p.exitTimestamp
       ? inferCloseReason({
           history: params.history,
+          bracketTrail: params.bracketTrail,
+          entryTsMs: p.entryTimestamp,
           exitTsMs: p.exitTimestamp,
+          exitPrice: positiveNumber(p.exitPrice),
           pnlValue: pnlPct ?? pnlNet,
           nowMs: params.nowMs,
         })
@@ -355,8 +365,10 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
   );
   let allHistory: DecisionHistoryEntry[] = [];
   let allClosed: PositionWindow[] = [];
+  let bracketTrail: BracketTrailRow[] = [];
   try {
-    [allHistory, allClosed] = await Promise.all([
+    let trailRows;
+    [allHistory, allClosed, trailRows] = await Promise.all([
       loadSymbolMarkerHistory(symbol, params.platform, {
         fromMs: earliestFromMs,
         toMs: params.nowMs,
@@ -369,7 +381,22 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
         toMs: params.nowMs,
         limit: 1000,
       }),
+      // Slim (levels only) — this runs on every analyze tick, so it must stay
+      // cheap; see loadSwingBracketTrail.
+      // Its own catch: the trail only decides a CLOSED position's close
+      // reason, so losing it must not cost the whole warm overlay.
+      loadSwingBracketTrail({
+        platform: params.platform,
+        symbol,
+        fromMs: bracketTrailFromMs(earliestFromMs, params.nowMs),
+        toMs: params.nowMs,
+      }).catch((err) => {
+        console.warn(`chart overlay warm bracket trail failed for ${symbol}:`, err);
+        return [];
+      }),
     ]);
+    // The slim query already returns the flattened shape.
+    bracketTrail = trailRows;
   } catch (err) {
     console.warn(`chart overlay warm source load failed for ${symbol}:`, err);
     return;
@@ -428,6 +455,7 @@ export async function warmPositionOverlayCacheFromAnalyze(params: {
           openStopLossPrice: params.openStopLossPrice,
           openTrimChunks,
           history,
+          bracketTrail,
           leverageFromHistory,
           fromMs: preset.fromMs,
           nowMs: params.nowMs,

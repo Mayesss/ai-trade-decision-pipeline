@@ -1818,6 +1818,73 @@ export async function loadSwingDecisionWindow(opts: {
     }));
 }
 
+// The bracket trail for a window: every tick's TP/SL evidence, and nothing
+// else. Deliberately NOT loadSwingDecisionWindow — that hauls prompts and
+// snapshots per row, and the chart only needs the levels to work out which
+// bracket leg closed a position (see positionDecisionMatch.resolveBracketAtExit).
+// Includes plain HOLDs: a stop trailed into profit is amended on exactly those
+// ticks, and they carry no marker, so a reader that skipped them saw only the
+// entry's original bracket.
+export type SwingBracketTrailRow = {
+    tsMs: number;
+    action: string | null;
+    placed: boolean;
+    takeProfitPrice: number | null;
+    stopLossPrice: number | null;
+    tpsl: Record<string, unknown> | null;
+    beStop: Record<string, unknown> | null;
+};
+
+export async function loadSwingBracketTrail(opts: {
+    symbol: string;
+    platform?: string | null;
+    fromMs: number;
+    toMs: number;
+    limit?: number;
+}): Promise<SwingBracketTrailRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const limit = Math.max(1, Math.min(2000, opts.limit ?? 1000));
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const db = swingPg();
+    const rows = await db.$queryRaw<
+        Array<{
+            decided_at_ms: unknown;
+            action: string | null;
+            placed: unknown;
+            tp: unknown;
+            sl: unknown;
+            tpsl: Record<string, unknown> | null;
+            be_stop: Record<string, unknown> | null;
+        }>
+    >(sql`
+        SELECT decided_at_ms,
+               action,
+               exec_result_json->>'placed'                  AS placed,
+               ai_decision_json->>'take_profit_price'       AS tp,
+               ai_decision_json->>'stop_loss_price'         AS sl,
+               exec_result_json->'tpsl'                     AS tpsl,
+               exec_result_json->'management'->'beStop'     AS be_stop
+        FROM swing.decisions
+        WHERE symbol = ${String(opts.symbol || '').toUpperCase()}
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND dry_run = false
+          AND decided_at_ms >= ${Math.floor(opts.fromMs)}
+          AND decided_at_ms <= ${Math.floor(opts.toMs)}
+        ORDER BY decided_at_ms ASC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((r) => ({
+        tsMs: Number(r.decided_at_ms),
+        action: r.action ?? null,
+        placed: String(r.placed ?? '') === 'true',
+        takeProfitPrice: finite(r.tp),
+        stopLossPrice: finite(r.sl),
+        tpsl: r.tpsl ?? null,
+        beStop: r.be_stop ?? null,
+    }));
+}
+
 // One position row by its natural key — manual post-mortem enqueue.
 export async function loadSwingPositionByKey(
     platform: string,

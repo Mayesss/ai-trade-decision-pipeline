@@ -14,12 +14,14 @@ import { bitgetFetch, resolveProductType } from '../bitget';
 import { fetchCapitalCandlesByEpicDateRange, resolveCapitalEpic } from '../capital';
 import type { AnalysisPlatform } from '../platform';
 import { resolveSwingCategory } from './category';
+import { BRACKET_ENTRY_LOOKBACK_MS, classifyCloseCause, type CloseCause } from './positionDecisionMatch';
 import { applyLessonDecision, resolveLessonDecision } from './lessons';
 import {
     completeSwingPostmortem,
     enqueueSwingPostmortem,
     failSwingPostmortem,
     loadActiveSwingLessons,
+    loadSwingBracketTrail,
     loadSwingDecisionWindow,
     loadSwingTickLog,
     requeueSwingPostmortem,
@@ -759,6 +761,7 @@ Your job: decide whether this win was EARNED or LUCKY, judge the exit against wh
 Rules:
 - NO survivor bias — the mirror of hindsight bias: a profitable outcome does not retroactively validate the process. Only credit a decision if the information AVAILABLE AT ITS TIMESTAMP supported it. A trade that violated the library or its own plan and got paid anyway is 'lucky_win' — the most dangerous outcome in the dataset, because it teaches overconfidence if mishandled.
 - verdict: 'earned_win' when entry, management and exit were each defensible on their own timestamps. 'lucky_win' when the profit arrived DESPITE a process flaw (violated an applicable lesson, chased an extended entry, overrode its own written plan without cause, or was rescued by news/variance). 'exit_flaw' when the win was real but the exit demonstrably leaked money — use the POST-EXIT MARKET section: continuation well past the exit price toward the original target = premature exit; most of the recorded in-trade MFE given back before the close = late exit; reversal shortly after the close = well-timed (that alone is not exit_flaw).
+- position.closed_by names what ENDED the trade: 'take_profit' (the TP leg filled), 'stop_loss' (the stop filled — including a stop TRAILED into profit, which is how most winners here end), 'ai_close' (a CLOSE/REVERSE decision), 'unknown'. Read it before judging the exit: a win closed_by 'stop_loss' never reached its target, so judge it as a trailing-stop exit (was the trail tight enough to bank the move, too tight to let it run?) — never as a target hit. position.take_profit_at_exit / stop_loss_at_exit are the levels that were actually resting at the close. closed_by_basis='pnl_sign' means the levels could not be recovered and the sign was the only evidence — treat that verdict as weak.
 - what_worked: the repeatable, MEASURABLE conditions behind the win (each one sentence, anchored to dossier values). exit_quality: the exit judgment with its numbers.
 - Anchor every claim to a timestamp or measured value from the dossier. Do not invent data.
 - ACTIVE LESSON LIBRARY handling:
@@ -778,6 +781,7 @@ Rules:
 - NO hindsight bias. Only fault a decision if information AVAILABLE AT THAT TIMESTAMP (in its prompt, the gate metrics, or earlier ticks) contradicted it. Price going the wrong way afterwards is not by itself an error — that verdict is 'bad_luck'.
 - Anchor every claim to a timestamp from the dossier. Do not invent data that is not present.
 - Explicitly examine the SKIPPED ticks: did a gate (cooldown, dedupe, off-boundary bar-close cadence, quiet-position threshold) hide actionable information while the position was moving against its thesis? Remember the pipeline BY DESIGN only consults the model on primary bar closes and fences positions with the exchange bracket in between — a skip is only a defect if an ON-CADENCE look or a wider/different bracket could have acted on what the skip hid. If yes, describe it in gate_impact; if no, set gate_impact to null.
+- position.closed_by names what ENDED the trade: 'take_profit', 'stop_loss' (the stop filled — a stop trailed into profit closes a WINNER at the stop), 'ai_close' (a CLOSE/REVERSE decision) or 'unknown', with the levels that were actually resting in take_profit_at_exit / stop_loss_at_exit. Judge stop geometry against the level that actually fired, not the one the entry set. closed_by_basis='pnl_sign' means the levels could not be recovered — say so rather than asserting a cause.
 - Judge the bracket geometry: was the stop at a level the recorded volatility (ATR fields in the prompts/metrics) made likely to be swept? Was the TP realistic for the holding window?
 - POST-EXIT MARKET (section, when present): the run is deliberately delayed past the close so you can see the price path AFTER the exit. Use it to judge EXIT quality only: a stop swept immediately before a reversal well past the stop level points to misplaced SL geometry; continuation through the original target after an AI CLOSE points to a premature exit; continued adverse movement CONFIRMS the exit was right. It must never retroactively fault the ENTRY or any in-trade decision — the no-hindsight rule above still governs those; this section exists solely so exit-mechanics verdicts rest on measurements instead of guesses.
 - Judge entry mechanics: market vs a resting entry, and which KIND of resting entry (a limit rests against the trade, a stop rests with it). For a filled limit, ask whether it filled into momentum against the position (adverse selection); for a filled stop, whether the trigger was a genuine move or a sweep that reversed. Note that trades predating 2026-08-30 could only ever be market or limit — a missing stop is a tooling fact, not a preference.
@@ -850,7 +854,7 @@ export async function runSwingPostmortem(
             symbol: row.symbol,
             platform: row.platform as AnalysisPlatform,
         });
-        const [decisions, ticks, library, postExitMarket] = await Promise.all([
+        const [decisions, ticks, library, postExitMarket, bracketTrail] = await Promise.all([
             loadSwingDecisionWindow({ symbol: row.symbol, platform: row.platform, fromMs, toMs }),
             loadSwingTickLog({ symbol: row.symbol, platform: row.platform, fromMs, toMs, limit: 3000 }),
             // Library slice shown to the analyst: adherence check + dedup —
@@ -865,6 +869,19 @@ export async function runSwingPostmortem(
                 exitPrice: isRefusal ? row.entryPrice : row.exitPrice,
                 exitMs,
                 toMs,
+            }),
+            // Bracket trail: the TP/SL actually resting when the position
+            // closed. Its own read, from further back than the dossier window
+            // — a resting entry can wait up to the age backstop for its fill,
+            // so the entry that shipped the bracket may sit before it.
+            loadSwingBracketTrail({
+                symbol: row.symbol,
+                platform: row.platform,
+                fromMs: entryMs - BRACKET_ENTRY_LOOKBACK_MS,
+                toMs,
+            }).catch((err) => {
+                console.warn(`[postmortem] bracket trail read failed for ${row.symbol}:`, err);
+                return [];
             }),
         ]);
         if (!decisions.length && !ticks.length) {
@@ -892,6 +909,17 @@ export async function runSwingPostmortem(
                 return { id: row.id, status: 'skipped', error: note };
             }
         }
+        // Which bracket leg (or AI decision) closed this position, replayed
+        // from the tick trail rather than read off the pnl sign.
+        const closeCause: CloseCause = classifyCloseCause({
+            history: decisions,
+            bracketTrail,
+            entryTsMs: row.entryTsMs,
+            exitTsMs: row.exitTsMs,
+            exitPrice: row.exitPrice,
+            pnlValue: rowPnl,
+            nowMs: Date.now(),
+        });
         const position = isRefusal
             ? {
                   platform: row.platform,
@@ -911,6 +939,15 @@ export async function runSwingPostmortem(
                   exit_price: row.exitPrice,
                   pnl_pct: row.pnlPct,
                   pnl_net: row.pnlNet,
+                  // What ended the position, and the bracket that was actually
+                  // resting when it did. Without this the analyst reads a
+                  // profitable close as "target reached" — a stop trailed into
+                  // profit ends a trade at the STOP, and the two carry opposite
+                  // lessons about the exit.
+                  closed_by: closeCause.cause,
+                  closed_by_basis: closeCause.basis,
+                  take_profit_at_exit: closeCause.takeProfit,
+                  stop_loss_at_exit: closeCause.stopLoss,
               };
         const { dossier, aiUserMessage } = buildPostmortemDossier({
             position,

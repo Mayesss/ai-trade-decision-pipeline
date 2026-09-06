@@ -216,6 +216,19 @@ SQL neon-postgres
     ]
   }
 
+SQL neon-postgres
+  {
+    "text": "SELECT decided_at_ms, action, exec_result_json->>'placed' AS placed, ai_decision_json->>'take_profit_price' AS tp, ai_decision_json->>'stop_loss_price' AS sl, exec_result_json->'tpsl' AS tpsl, exec_result_json->'management'->'beStop' AS be_stop FROM swing.decisions WHERE symbol = $1 AND ($2::text IS NULL OR platform = $3) AND dry_run = false AND decided_at_ms >= $4 AND decided_at_ms <= $5 ORDER BY decided_at_ms ASC LIMIT $6;",
+    "values": [
+      "BTCUSDT",
+      "bitget",
+      "bitget",
+      1787163945796,
+      <NOW_MS>,
+      1000
+    ]
+  }
+
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
@@ -277,7 +290,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:5m:48",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:5m:48",
     3900,
     "[]"
   ]
@@ -287,7 +300,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:15m:96",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:15m:96",
     3900,
     "[]"
   ]
@@ -297,7 +310,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:1H:168",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:1H:168",
     3900,
     "[]"
   ]
@@ -307,7 +320,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:4H:180",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:4H:180",
     3900,
     "[]"
   ]
@@ -317,7 +330,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:1D:183",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:1D:183",
     3900,
     "[]"
   ]
@@ -878,6 +891,19 @@ SQL neon-postgres
     ]
   }
 
+SQL neon-postgres
+  {
+    "text": "SELECT decided_at_ms, action, exec_result_json->>'placed' AS placed, ai_decision_json->>'take_profit_price' AS tp, ai_decision_json->>'stop_loss_price' AS sl, exec_result_json->'tpsl' AS tpsl, exec_result_json->'management'->'beStop' AS be_stop FROM swing.decisions WHERE symbol = $1 AND ($2::text IS NULL OR platform = $3) AND dry_run = false AND decided_at_ms >= $4 AND decided_at_ms <= $5 ORDER BY decided_at_ms ASC LIMIT $6;",
+    "values": [
+      "BTCUSDT",
+      "bitget",
+      "bitget",
+      1787163945796,
+      <NOW_MS>,
+      1000
+    ]
+  }
+
 POST https://kv.boundary.test/GET/decision%3Amarkers%3Aseeded%3Abitget%3ABTCUSDT
   authorization: Bearer <TOKEN>
 
@@ -894,7 +920,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:5m:48",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:5m:48",
     3900,
     "[]"
   ]
@@ -904,7 +930,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:15m:96",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:15m:96",
     3900,
     "[]"
   ]
@@ -914,7 +940,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:1H:168",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:1H:168",
     3900,
     "[]"
   ]
@@ -924,7 +950,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:4H:180",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:4H:180",
     3900,
     "[]"
   ]
@@ -934,7 +960,7 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:chart:overlay:v8:bitget:BTCUSDT:1D:183",
+    "swing:chart:overlay:v9:bitget:BTCUSDT:1D:183",
     3900,
     "[]"
   ]

@@ -13,10 +13,17 @@ import { fetchPendingEntryOrders, fetchPositionTpsl, getTradeProductType } from 
 import { loadDecisionHistory, loadSymbolMarkerHistory, extractCapturedLeverages, isCooldownBandDecision, isPositionWakeBandDecision } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
-import { loadClosedSwingPositions, getSwingAiCooldown, getSwingAiThread, loadSwingPostmortems } from '../../lib/swing/pg';
+import {
+  loadClosedSwingPositions,
+  loadSwingBracketTrail,
+  getSwingAiCooldown,
+  getSwingAiThread,
+  loadSwingPostmortems,
+} from '../../lib/swing/pg';
 import { PRIMARY_TIMEFRAME } from '../../lib/constants';
 import { buildRestingEntryWindows, RESTING_ENTRY_WINDOW_LOOKBACK_MS } from '../../lib/swing/restingEntryWindows';
 import {
+  bracketTrailFromMs,
   findEntryDecision,
   findExitDecision,
   getPartialClosePct,
@@ -326,6 +333,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (closed.length) {
           closedPositionSource = 'persisted';
         }
+        // Bracket trail for the window: which TP/SL was actually resting when
+        // each position closed. Slim by design (levels only, no prompts) and
+        // read from Neon rather than the marker index, because a stop trailed
+        // into profit is amended on plain HOLD ticks — which the marker index
+        // does not carry, so the KV history above cannot see them at all.
+        const bracketTrail = await loadSwingBracketTrail({
+          platform,
+          symbol,
+          fromMs: bracketTrailFromMs(windowStartMs, nowMs),
+          toMs: nowMs,
+        }).catch((err) => {
+          console.warn(`bracket trail read failed for ${symbol}:`, err);
+          return [];
+        });
         // Open position first: the Capital trim fold below needs its entry to
         // recognize realized chunks of the STILL-OPEN position (they must fold
         // into the live overlay's markers, not draw a phantom closed box).
@@ -440,7 +461,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           // else near the exit is the next tick's own idea, not what closed it.
           const exitDecision = findExitDecision(history, p.exitTimestamp);
           const closeReason = p.exitTimestamp
-            ? inferCloseReason({ history, exitTsMs: p.exitTimestamp, pnlValue: pnlPct ?? pnlNet, nowMs })
+            ? inferCloseReason({
+                history,
+                bracketTrail,
+                entryTsMs: p.entryTimestamp,
+                exitTsMs: p.exitTimestamp,
+                exitPrice: p.exitPrice,
+                pnlValue: pnlPct ?? pnlNet,
+                nowMs,
+              })
             : null;
           return {
             id: p.id,

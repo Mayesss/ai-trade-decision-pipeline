@@ -143,6 +143,8 @@ export const analyzePg: PgResponder = (text) => {
     if (text.startsWith('INSERT INTO swing.decisions')) return [{ id: 4711 }];
     if (kind === 'INSERT' || kind === 'UPDATE' || kind === 'DELETE') return 1;
     if (text.includes('FROM swing.positions')) return [];
+    // Bracket trail (which TP/SL was resting when a position closed).
+    if (text.includes('FROM swing.decisions')) return [];
     if (text.includes('FROM swing.lessons')) return [];
     if (text.includes('FROM swing.ai_threads')) return [];
     if (text.includes('FROM swing.ai_cooldowns')) return [];
