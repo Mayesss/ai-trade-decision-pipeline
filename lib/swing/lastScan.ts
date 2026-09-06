@@ -33,6 +33,12 @@ function key(platform: string, symbol: string): string {
     return `${KEY_PREFIX}:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
 }
 
+// Exposed so a caller that is already issuing an MGET can fold these keys into
+// it rather than paying a second command (the dashboard summary read does).
+export function swingLastScanKey(platform: string, symbol: string): string {
+    return key(platform, symbol);
+}
+
 function tickLogKey(platform: string, symbol: string): string {
     return `${TICK_LOG_KEY_PREFIX}:${String(platform || 'bitget').toLowerCase()}:${symbol.toUpperCase()}`;
 }

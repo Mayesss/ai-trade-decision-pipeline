@@ -20,15 +20,20 @@ import {
   type FoldedCapitalWindow,
 } from '../../../lib/swing/capitalWindows';
 import { loadDecisionHistory, extractCapturedLeverages, type DecisionHistoryEntry } from '../../../lib/history';
-import { readSwingLastScan, readSwingLastScanMany, type LastScanMarker } from '../../../lib/swing/lastScan';
+import {
+  readSwingLastScan,
+  readSwingLastScanMany,
+  swingLastScanKey,
+  type LastScanMarker,
+} from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
-import { kvGetJson, kvSetJson } from '../../../lib/kv';
+import { kvGetJson, kvMGetJson, kvSetJson } from '../../../lib/kv';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
 import { buildForexEventContext, ensureForexEventsState, type ForexEventContext } from '../../../lib/swing/forexEvents';
-import { swingSummaryCacheKey } from '../../../lib/swing/summaryCache';
+import { SWING_SUMMARY_STALE_KEY, swingSummaryCacheKey } from '../../../lib/swing/summaryCache';
 import type { PositionWindow } from '../../../lib/analytics';
 
 type SummaryEntry = {
@@ -100,13 +105,13 @@ const BTC_LAST_POSITION_LEVERAGE_OVERRIDE = 3;
 const BITGET_LIVE_POSITION_HISTORY_HOURS = 89 * 24;
 const CAPITAL_TRANSACTION_CACHE_TTL_SECONDS = 60 * 60;
 
-// Read-through KV cache. The summary is expensive to build (per-symbol Bitget /
-// Capital calls + decision history), and swing data only changes at the hourly
-// cron tick — so we cache it for a long window and let the analyze cron bust it
-// (invalidateSwingSummaryCache) whenever a new decision is recorded. Result: fresh
-// right after each tick, served from KV in between. The active symbol stays live
-// via the separate /live-price endpoint, so a long TTL here costs no live-ness.
-// Bypass with ?fresh=1.
+// Read-through KV cache, stale-while-revalidate. The summary is expensive to
+// build (per-symbol Bitget / Capital calls + decision history), so it is cached
+// for a long window and rebuilt by the cycle's warm latch. A decision recorded
+// in between only MARKS it stale (markSwingSummaryStale) — the standing blob is
+// still served, flagged, until the warm replaces it, so no visitor ever pays the
+// fan-out. The active symbol stays live via the separate /live-price endpoint,
+// so a long TTL here costs no live-ness. Bypass with ?fresh=1.
 const SUMMARY_CACHE_TTL_SECONDS = (() => {
   const n = Number(process.env.SWING_DASHBOARD_SUMMARY_TTL_SECONDS);
   return Number.isFinite(n) && n >= 0 ? n : 3600;
@@ -775,34 +780,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!bypassCache && SUMMARY_CACHE_TTL_SECONDS > 0) {
     try {
-      const cached = await kvGetJson<CachedSummary>(swingSummaryCacheKey(range));
+      // The blob, the staleness marker and every symbol's live scan marker in
+      // ONE MGET. The blob used to be its own GET on top of the marker batch;
+      // folding it in makes a cached read a single Upstash command, and the
+      // stale marker rides along for nothing.
+      const configs = getCronSymbolConfigs();
+      const scanKeys = configs.map((config) => swingLastScanKey(config.platform, config.symbol));
+      const [cachedRaw, staleRaw, ...markerRaw] = await kvMGetJson<unknown>([
+        swingSummaryCacheKey(range),
+        SWING_SUMMARY_STALE_KEY,
+        ...scanKeys,
+      ]);
+      const cached = (cachedRaw ?? null) as CachedSummary | null;
       if (cached?.payload) {
-        // The blob can be up to an hour old and quarter-tick scans don't
-        // invalidate it (they persist no decision rows) — so overlay the live
-        // last-scan markers, which are the whole point of scan freshness.
-        // ONE batched KV read for the whole universe (it was a GET per symbol,
-        // i.e. 26 commands to serve a cached blob); failures keep the cached values.
+        const markerBySymbol = new Map<string, LastScanMarker | null>();
+        configs.forEach((config, i) => {
+          markerBySymbol.set(
+            symbolReadKey(config.platform, config.symbol),
+            (markerRaw[i] ?? null) as LastScanMarker | null,
+          );
+        });
+        // The blob can be up to an hour old and quarter-tick scans never mark it
+        // stale (they persist no decision rows) — so overlay the live last-scan
+        // markers, which are the whole point of scan freshness.
         try {
           const rows = Array.isArray(cached.payload.data) ? cached.payload.data : [];
-          const markers = await readSwingLastScanMany(
-            rows.map((row) => ({ platform: String(row.lastPlatform || 'bitget'), symbol: row.symbol })),
-          ).catch(() => rows.map(() => null));
-          markers.forEach((marker, i) => {
-            if (!marker) return;
-            rows[i].lastScanAt = marker.ts;
-            rows[i].lastScanStage = marker.stage ?? null;
-            rows[i].lastScanReason = marker.reason ?? null;
-          });
+          for (const row of rows) {
+            const marker = markerBySymbol.get(symbolReadKey(String(row.lastPlatform || 'bitget'), row.symbol));
+            const ts = Number(marker?.ts);
+            if (!marker || !Number.isFinite(ts) || ts <= 0) continue;
+            row.lastScanAt = ts;
+            row.lastScanStage = marker.stage ?? null;
+            row.lastScanReason = marker.reason ?? null;
+          }
         } catch (err) {
           console.warn('last-scan overlay on cached summary failed:', err);
         }
-        return res.status(200).json({ ...cached.payload, cached: true, generatedAtMs: cached.generatedAtMs });
+        // A decision landed after this blob was built: serve it anyway and say
+        // so. The cycle's warm latch (or the fallback cron) rebuilds within
+        // minutes — a visitor must never pay the fan-out just because a tick
+        // happened to run first.
+        const staleAtMs = Number((staleRaw as { at?: unknown } | null)?.at);
+        const stale = Number.isFinite(staleAtMs) && staleAtMs > Number(cached.generatedAtMs || 0);
+        return res
+          .status(200)
+          .json({ ...cached.payload, cached: true, stale, generatedAtMs: cached.generatedAtMs });
       }
     } catch (err) {
       console.warn('summary cache read failed; computing fresh:', err);
     }
   }
 
+  // Only reached with no blob at all (first build, or the TTL expired).
   const { payload, generatedAtMs } = await buildAndCacheSwingSummary(range);
-  return res.status(200).json({ ...payload, cached: false, generatedAtMs });
+  return res.status(200).json({ ...payload, cached: false, stale: false, generatedAtMs });
 }

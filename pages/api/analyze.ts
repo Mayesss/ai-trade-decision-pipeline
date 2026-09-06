@@ -115,7 +115,7 @@ import {
     collapseLimitReissues,
     type PositionForOutcome,
 } from '../../lib/swing/recentActions';
-import { invalidateSwingSummaryCache } from '../../lib/swing/summaryCache';
+import { markSwingSummaryStale } from '../../lib/swing/summaryCache';
 import { markSwingWarmDone, recordSwingAnalyzeFinished, swingWarmCycleId } from '../../lib/swing/warmLatch';
 import { warmAllSwingSummaries } from './dashboard/summary';
 import { warmChartCandlesFromAnalyze } from '../../lib/swing/chartCache';
@@ -571,9 +571,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     micro: microTimeFrame,
                 },
             });
-            // A new decision was recorded → bust the dashboard summary cache so the
-            // next load reflects it. Best-effort; never blocks the trading path.
-            await invalidateSwingSummaryCache();
+            // A new decision was recorded → mark the dashboard summary stale so
+            // the next warm rebuilds it (the standing blob stays servable in the
+            // meantime). Best-effort; never blocks the trading path.
+            await markSwingSummaryStale();
         };
         // The kill switch binds every AUTOMATED invocation: the 15-min crons
         // AND wake-watcher fires (wake=1). Only genuine manual operator calls
@@ -3697,9 +3698,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 console.warn(`position wake persist failed for ${symbol}:`, err);
             }
         }
-        // New decision recorded → bust the dashboard summary cache so the next load
-        // reflects it. Best-effort; never blocks the trading path.
-        await invalidateSwingSummaryCache();
+        // New decision recorded → mark the dashboard summary stale; the cycle's
+        // warm rebuilds it and the standing blob is served until then.
+        // Best-effort; never blocks the trading path.
+        await markSwingSummaryStale();
         try {
             const overlayPositionInfo =
                 !dryRun && execRes?.placed ? await fetchPositionInfo(symbol).catch(() => positionInfo) : positionInfo;

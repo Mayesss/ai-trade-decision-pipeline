@@ -879,11 +879,10 @@ POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
   [
-    "DEL",
-    "swing:dashboard:summary:v6:1D",
-    "swing:dashboard:summary:v6:7D",
-    "swing:dashboard:summary:v6:30D",
-    "swing:dashboard:summary:v6:6M"
+    "SETEX",
+    "swing:dashboard:summary:stale:v1",
+    21600,
+    "{\"at\":<NOW_MS>}"
   ]
 
 POST https://kv.boundary.test/ZREVRANGEBYSCORE/decision%3Amarkers%3Abitget%3ABTCUSDT/<NOW_MS>/1772130345796/LIMIT/0/1200
