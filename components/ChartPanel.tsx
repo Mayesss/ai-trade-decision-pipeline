@@ -66,9 +66,6 @@ type ChartTimeScaleLike = {
   applyOptions: (options: Record<string, unknown>) => void;
   fitContent: () => void;
   timeToCoordinate: (time: number) => number | null;
-  // Fractional logical indices map to sub-bar x positions — how an overlay
-  // edge lands on the exact minute something happened rather than on a bar.
-  logicalToCoordinate?: (logical: number) => number | null;
   subscribeVisibleLogicalRangeChange?: (handler: () => void) => void;
   unsubscribeVisibleLogicalRangeChange?: (handler: () => void) => void;
 };
@@ -571,13 +568,14 @@ type OverlayPrimitiveDatum = {
   // bar space. The *Logical fields below carry the real moment.
   entryTime: number;
   exitTime: number;
-  // Fractional bar index of the true entry/exit instant. A venue bracket fires
-  // whenever it fires, not on a bar close, and snapping the wall to the nearest
-  // bar put a 07:13 stop-out on the 08:00 bar — which on the ranges where a bar
-  // IS a decision tick reads as "the position closed on the tick".
-  entryLogical: number | null;
-  exitLogical: number | null;
-  partialLogicals: number[];
+  // The true entry/exit instant, expressed as a position BETWEEN two bars. A
+  // venue bracket fires whenever it fires, not on a bar close, and snapping the
+  // wall to the nearest bar put a 07:13 stop-out on the 08:00 bar — which on the
+  // ranges where a bar IS a decision tick reads as "the position closed on the
+  // tick".
+  entryAnchor: BarAnchor | null;
+  exitAnchor: BarAnchor | null;
+  partialAnchors: Array<BarAnchor | null>;
   showEntryWall: boolean;
   closed: boolean;
   closeReason: 'tp' | 'sl' | null;
@@ -846,25 +844,20 @@ class PositionOverlayPaneView {
       this.items = [];
       return;
     }
-    // Exact instant first (fractional bar index), bar-snapped time as the
-    // fallback for a library build without logicalToCoordinate.
-    const xAt = (logical: number | null, snappedTime: number): number | null => {
-      if (logical !== null && typeof timeScale.logicalToCoordinate === 'function') {
-        const x = timeScale.logicalToCoordinate(logical);
-        if (x !== null && Number.isFinite(x)) return x;
-      }
-      const x = timeScale.timeToCoordinate(snappedTime);
-      return x !== null && Number.isFinite(x) ? x : null;
-    };
+    // Bar coordinates only — see coordinateForAnchor. The bar-snapped time is
+    // the last-resort fallback so a datum is never silently dropped.
+    const toX = (time: number) => timeScale.timeToCoordinate(time);
+    const xAt = (anchor: BarAnchor | null, snappedTime: number): number | null =>
+      coordinateForAnchor(anchor, toX) ?? finiteOrNull(toX(snappedTime));
     this.items = data
       .map((datum) => {
-        const x1 = xAt(datum.entryLogical, datum.entryTime);
-        const x2 = xAt(datum.exitLogical, datum.exitTime);
+        const x1 = xAt(datum.entryAnchor, datum.entryTime);
+        const x2 = xAt(datum.exitAnchor, datum.exitTime);
         if (x1 === null || x2 === null) return null;
         const left = Math.min(x1, x2);
         const right = Math.max(x1, x2);
         const partials = datum.partialTimes
-          .map((time, idx) => xAt(datum.partialLogicals[idx] ?? null, time))
+          .map((time, idx) => xAt(datum.partialAnchors[idx] ?? null, time))
           .filter((x): x is number => x !== null && x >= left && x <= right);
         return { left, right, partials, datum };
       })
@@ -976,16 +969,17 @@ export class PositionOverlayPrimitive {
 // badge labels) for the primitive. Depends only on the data, never the zoom.
 type SnappedOverlay = { pos: PositionOverlay; entryTime: number; exitTime: number };
 
-// Where a timestamp falls in BAR-INDEX space, as a fraction between the two
-// bars that bracket it (e.g. 12.4 = 40% of the way from bar 12 into bar 13).
-// The chart maps that straight to an x coordinate, so an event that happened
-// mid-bar is drawn mid-bar instead of being rounded to a bar edge.
-// Exported for the unit test.
-export const logicalIndexForTime = (candleTimes: number[], target: number): number | null => {
+// A moment placed between two bars: the bar at or before it, the next bar, and
+// how far between them it fell. `after` is null at the last bar.
+export type BarAnchor = { before: number; after: number | null; frac: number };
+
+// Where a timestamp falls between the two bars that bracket it. Exported for
+// the unit test.
+export const barAnchorForTime = (candleTimes: number[], target: number): BarAnchor | null => {
   if (!candleTimes.length) return null;
-  if (target <= candleTimes[0]) return 0;
   const last = candleTimes.length - 1;
-  if (target >= candleTimes[last]) return last;
+  if (target <= candleTimes[0]) return { before: candleTimes[0], after: candleTimes[1] ?? null, frac: 0 };
+  if (target >= candleTimes[last]) return { before: candleTimes[last], after: null, frac: 0 };
   let lo = 0;
   let hi = last;
   while (hi - lo > 1) {
@@ -994,7 +988,36 @@ export const logicalIndexForTime = (candleTimes: number[], target: number): numb
     else hi = mid;
   }
   const span = candleTimes[hi] - candleTimes[lo];
-  return span > 0 ? lo + (target - candleTimes[lo]) / span : lo;
+  return {
+    before: candleTimes[lo],
+    after: candleTimes[hi],
+    frac: span > 0 ? (target - candleTimes[lo]) / span : 0,
+  };
+};
+
+const finiteOrNull = (value: number | null): number | null =>
+  value !== null && Number.isFinite(value) ? value : null;
+
+// The x for an anchor: the bar's own coordinate, plus the fraction of the way
+// to the next bar's.
+//
+// It interpolates between two timeToCoordinate calls rather than asking the
+// chart to place a fractional index directly. lightweight-charts' logical→x
+// mapping is `if (!isInteger(logical)) return 0` — a fractional logical silently
+// answers 0, which pinned every position box to a 4px sliver at the left edge
+// and made them all look deleted. Bar coordinates are exact and the mapping is
+// linear between them, so interpolating gives the same sub-bar position safely.
+export const coordinateForAnchor = (
+  anchor: BarAnchor | null,
+  toX: (time: number) => number | null,
+): number | null => {
+  if (!anchor) return null;
+  const x1 = finiteOrNull(toX(anchor.before));
+  if (x1 === null) return null;
+  if (anchor.after === null || anchor.frac <= 0) return x1;
+  const x2 = finiteOrNull(toX(anchor.after));
+  if (x2 === null) return x1;
+  return x1 + (x2 - x1) * anchor.frac;
 };
 
 const buildOverlayPrimitiveData = (
@@ -1034,10 +1057,10 @@ const buildOverlayPrimitiveData = (
       id: pos.id,
       entryTime,
       exitTime,
-      entryLogical: logicalIndexForTime(candleTimes, boundedEntry),
-      exitLogical: logicalIndexForTime(candleTimes, boundedExit),
-      partialLogicals: partialSeconds.map(
-        (time) => logicalIndexForTime(candleTimes, Math.min(Math.max(time, minTime), maxTime)) ?? 0,
+      entryAnchor: barAnchorForTime(candleTimes, boundedEntry),
+      exitAnchor: barAnchorForTime(candleTimes, boundedExit),
+      partialAnchors: partialSeconds.map((time) =>
+        barAnchorForTime(candleTimes, Math.min(Math.max(time, minTime), maxTime)),
       ),
       showEntryWall: pos.entryTime !== null && pos.entryTime >= minTime,
       closed: pos.status === 'closed',
