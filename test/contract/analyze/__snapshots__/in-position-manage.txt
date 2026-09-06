@@ -25,7 +25,7 @@ SQL neon-postgres
       10000,
       0.05,
       null,
-      "{\"status\":\"open\",\"symbol\":\"BTCUSDT\",\"holdSide\":\"long\",\"entryPrice\":\"75000\",\"entryTimestamp\":1787768745796,\"posMode\":\"one_way_mode\",\"marginCoin\":\"USDT\",\"available\":\"0.05\",\"total\":\"0.05\",\"currentPnl\":\"16.40%\",\"leverage\":5,\"markPrice\":77543.7}"
+      "{\"status\":\"open\",\"symbol\":\"BTCUSDT\",\"holdSide\":\"long\",\"entryPrice\":\"75000\",\"entryTimestamp\":1787768745796,\"posMode\":\"one_way_mode\",\"marginCoin\":\"USDT\",\"available\":\"0.05\",\"total\":\"0.05\",\"currentPnl\":\"16.40%\",\"leverage\":5,\"markPrice\":77543.7,\"unrealizedCash\":127.18,\"marginCash\":775.437}"
     ]
   }
 

@@ -39,6 +39,12 @@ export type PositionInfo =
           // live as plan orders and are fetched separately (fetchPositionTpsl).
           takeProfitPrice?: number | null;
           stopLossPrice?: number | null;
+          // Unrealized PnL in VENUE CASH (USDT on Bitget, account currency on
+          // Capital) and the margin backing the position. The dashboard's money
+          // calendar needs cash, not the on-margin percent — and margin is what
+          // lets it rescale that cash from a live quote between summary builds.
+          unrealizedCash?: number | null;
+          marginCash?: number | null;
       };
 
 export type PositionWindow = {
@@ -243,6 +249,13 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
     const leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
     const markRaw = Number(chosen.markPrice);
     const markPrice = Number.isFinite(markRaw) && markRaw > 0 ? markRaw : null;
+    const unrealizedRaw = Number(chosen.unrealizedPL);
+    const unrealizedCash = Number.isFinite(unrealizedRaw) ? unrealizedRaw : null;
+    // Same basis calculatePnLPercent uses, so cash / margin and the percent
+    // below can never disagree.
+    const sizeBase = num(chosen.total);
+    const marginRaw = leverage && markPrice ? (sizeBase * markPrice) / leverage : NaN;
+    const marginCash = Number.isFinite(marginRaw) && marginRaw > 0 ? marginRaw : null;
 
     return {
         status: 'open',
@@ -257,6 +270,8 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         currentPnl: calculatePnLPercent(chosen),
         leverage,
         markPrice,
+        unrealizedCash,
+        marginCash,
     };
 }
 // Account equity (USDT futures account) for fixed-fractional risk sizing.

@@ -56,6 +56,11 @@ type EvaluationEntry = {
   pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
   pendingEntry?: boolean;
   openPnl?: number | null;
+  // Open PnL in venue cash + the margin behind it. The money calendar adds
+  // today's open exposure to the day's realized net, and margin is what lets
+  // the live quote rescale that cash between summary builds.
+  openPnlCash?: number | null;
+  openMargin?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
   openEntryPrice?: number | null;
@@ -117,6 +122,11 @@ type DashboardSummaryRow = {
   // open positions and fresh AI decisions.
   pendingEntry?: boolean;
   openPnl?: number | null;
+  // Open PnL in venue cash + the margin behind it. The money calendar adds
+  // today's open exposure to the day's realized net, and margin is what lets
+  // the live quote rescale that cash between summary builds.
+  openPnlCash?: number | null;
+  openMargin?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
   openEntryPrice?: number | null;
@@ -146,12 +156,6 @@ type DashboardSummaryResponse = {
   range?: DashboardRangeKey;
 };
 
-type SwingCronControlState = {
-  hardDeactivated?: boolean;
-  reason?: string | null;
-  updatedAtMs?: number | null;
-  updatedBy?: string | null;
-};
 type DashboardDecisionResponse = {
   symbol: string;
   category?: string | null;
@@ -220,6 +224,17 @@ const EUR_USD_FALLBACK_RATE = 1.1;
 // platform — never sum across the two.
 const platformCurrencySymbol = (platform?: string | null): "$" | "€" =>
   String(platform || "").toLowerCase() === "capital" ? "€" : "$";
+// The money calendar renders as many trailing days as the panel is wide, so it
+// reads its daily buckets from the 30D blob and never from a hardcoded count.
+const CALENDAR_SOURCE_RANGE = "30D" as const;
+// Below this a cell can no longer hold "31 · SUN · +€12"; above it the cells
+// just share the leftover width evenly.
+const CALENDAR_CELL_MIN_PX = 58;
+const CALENDAR_MAX_DAYS = 30;
+// The week the strip has always shown — the floor it never drops below when
+// there is room, even on a young account.
+const CALENDAR_MIN_DAYS = 7;
+
 const formatCash = (value: number, currencySymbol: "$" | "€" = "$") => {
   const abs = Math.abs(value);
   const sign = value < 0 ? "-" : "";
@@ -356,7 +371,6 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
   const [showRawResponse, setShowRawResponse] = useState(false);
-  const [cronConfirmOpen, setCronConfirmOpen] = useState(false);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("1D");
   // Trailing-7-day per-day closed nets for the header week-calendar strip,
   // folded across symbols. Kept in both venue currencies (Bitget USDT ≈ $,
@@ -410,10 +424,6 @@ export default function Home() {
   // True once the user clicks a symbol pill — from then on, dashboard reloads
   // keep their selection instead of re-defaulting to the top-ranked pill.
   const userPickedSymbolRef = useRef(false);
-  const [swingCronControl, setSwingCronControl] =
-    useState<SwingCronControlState | null>(null);
-  const [swingCronControlUpdating, setSwingCronControlUpdating] =
-    useState(false);
   // AI health (swing:ai:health:v1) — rides on the warm-status poll.
   // degraded with kind billing/config means AI calls fail until a human acts
   // (pay the subscription / fix the key); open positions run on their
@@ -807,22 +817,6 @@ export default function Home() {
     });
   };
 
-  const loadSwingCronControl = async () => {
-    const res = await fetch("/api/swing/ops/cron-control", {
-      headers: buildAdminHeaders(),
-      cache: "no-store",
-    });
-    if (res.status === 401) {
-      handleAuthExpired("Admin session expired. Re-enter ADMIN_ACCESS_SECRET.");
-      throw new Error("Unauthorized");
-    }
-    if (!res.ok) {
-      throw new Error(`Failed to load swing cron control (${res.status})`);
-    }
-    const json = await res.json();
-    setSwingCronControl((json?.cronControl || null) as SwingCronControlState);
-  };
-
   // background: refresh the data in place without the loading skeleton — used
   // by the warm-status poll when a new analyze cycle's summary lands.
   const loadDashboard = async (opts?: {
@@ -967,20 +961,22 @@ export default function Home() {
           setActive(bestIdx);
         }
 
-        // Week-calendar strip: fold each symbol's per-day closed nets into one
-        // day → {USD, EUR, trades} map. The strip always shows the trailing 7
-        // days, so on other ranges fetch the 7D blob too (KV-cached and
-        // cron-warmed — no extra fan-out). Non-fatal: a failure just keeps the
-        // strip's previous data.
+        // Money-calendar strip: fold each symbol's per-day closed nets into one
+        // day → {USD, EUR, trades} map. It renders as many trailing days as the
+        // panel is wide, so the source is the 30D blob rather than 7D — same
+        // one KV read (every range is cron-warmed), just enough days to fill a
+        // wide screen. Non-fatal: a failure keeps the strip's previous data.
         try {
           let weekRows: DashboardSummaryRow[] = summaryRows;
-          if (resolvedSummaryRange !== "7D") {
+          if (resolvedSummaryRange !== CALENDAR_SOURCE_RANGE) {
             const weekRes = await fetch(
-              "/api/swing/dashboard/summary?range=7D",
+              `/api/swing/dashboard/summary?range=${CALENDAR_SOURCE_RANGE}`,
               { headers: buildAdminHeaders(), cache: "no-store" },
             );
             if (!weekRes.ok) {
-              throw new Error(`Failed to load 7D summary (${weekRes.status})`);
+              throw new Error(
+                `Failed to load ${CALENDAR_SOURCE_RANGE} summary (${weekRes.status})`,
+              );
             }
             const weekJson: DashboardSummaryResponse = await weekRes.json();
             weekRows = Array.isArray(weekJson.data) ? weekJson.data : [];
@@ -1021,60 +1017,11 @@ export default function Home() {
           errMsg(summaryErr) || "Failed to load dashboard summary";
       }
 
-      try {
-        await loadSwingCronControl();
-      } catch (controlErr) {
-        summaryError =
-          summaryError ||
-          errMsg(controlErr) ||
-          "Failed to load swing cron control";
-      }
-
       setError(summaryError);
     } catch (err) {
       setError(errMsg(err) || "Failed to load dashboard");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const setSwingCronHardDeactivate = async (hardDeactivated: boolean) => {
-    if (swingCronControlUpdating) return;
-    setSwingCronControlUpdating(true);
-    try {
-      const reason = hardDeactivated
-        ? "manual_hard_deactivate_from_ui"
-        : "manual_reactivate_from_ui";
-      const updatedBy = "ui:swing-cron-control";
-      const params = new URLSearchParams({
-        hardDeactivated: hardDeactivated ? "true" : "false",
-        reason,
-        updatedBy,
-      });
-      const res = await fetch(`/api/swing/ops/cron-control?${params.toString()}`, {
-        method: "POST",
-        headers: buildAdminHeaders(),
-        cache: "no-store",
-      });
-      if (res.status === 401) {
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        return;
-      }
-      if (!res.ok) {
-        throw new Error(`swing_cron_control_update_failed (${res.status})`);
-      }
-      const json = await res.json().catch(() => null);
-      if (json?.cronControl) {
-        setSwingCronControl(json.cronControl as SwingCronControlState);
-      } else {
-        await loadSwingCronControl();
-      }
-    } catch (err) {
-      setError(errMsg(err) || "Failed to update swing cron control");
-    } finally {
-      setSwingCronControlUpdating(false);
     }
   };
 
@@ -1472,10 +1419,61 @@ export default function Home() {
       if (tsDiff !== 0) return tsDiff;
       return a.index - b.index;
     });
-  // Header week-calendar strip: the trailing 7 Berlin days (oldest → today),
-  // each cell carrying that day's all-symbols closed net in €. The USDT net is
+  // How many days the strip shows: whatever fits the panel, measured. It used
+  // to be a fixed 7 with the two oldest hidden under `sm:` — a breakpoint guess
+  // that left a wide screen half empty and a narrow one scrolling.
+  const [calendarWidthPx, setCalendarWidthPx] = useState(0);
+  const calendarDayCount = (() => {
+    const fits =
+      calendarWidthPx > 0
+        ? Math.floor(calendarWidthPx / CALENDAR_CELL_MIN_PX)
+        : CALENDAR_MIN_DAYS;
+    // Don't pad a wide screen with empty days the account is too young to
+    // have: history grows into the width. The cells stretch (flex-1), so the
+    // row still reaches the right edge whatever the count.
+    const earliest = swingWeekDaily ? Object.keys(swingWeekDaily).sort()[0] : null;
+    // Anchored to the load timestamp the cells themselves are generated from,
+    // not to a fresh clock read (which would make render impure).
+    const daysOfHistory =
+      earliest && swingWeekLoadedAtMs !== null
+        ? Math.floor(
+            (swingWeekLoadedAtMs - new Date(`${earliest}T00:00:00Z`).getTime()) / 86_400_000,
+          ) + 1
+        : 0;
+    return Math.max(
+      3,
+      Math.min(CALENDAR_MAX_DAYS, fits, Math.max(CALENDAR_MIN_DAYS, daysOfHistory)),
+    );
+  })();
+  // Live open money, folded to € across every symbol holding a position. Cash
+  // rather than percent: this is the one place the dashboard shows real money,
+  // and an open position's money is only real once you count it. Preference
+  // order per symbol: margin x the live percent (moves with the 3s quote),
+  // else the venue's own cash figure from the last summary build.
+  const liveOpenCashEur = (() => {
+    const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
+    let total = 0;
+    let live = false;
+    let counted = 0;
+    for (const sym of symbols) {
+      const tab = tabData[sym];
+      if (tab?.openDirection !== "long" && tab?.openDirection !== "short") continue;
+      const margin = typeof tab?.openMargin === "number" ? tab.openMargin : null;
+      const livePct = liveOpenPnlPct(tab, livePrices[sym]?.price ?? null);
+      const fromLive = margin !== null && livePct !== null ? (margin * livePct) / 100 : null;
+      const cash = fromLive ?? (typeof tab?.openPnlCash === "number" ? tab.openPnlCash : null);
+      if (cash === null) continue;
+      if (fromLive !== null) live = true;
+      counted += 1;
+      total += platformCurrencySymbol(tab?.lastPlatform) === "€" ? cash : cash / rate;
+    }
+    return counted ? { eur: total, live, positions: counted } : null;
+  })();
+  // Money calendar: the trailing Berlin days that FIT (oldest → today), each
+  // cell carrying that day's all-symbols closed net in €. The USDT net is
   // folded in at the live EURUSD rate (fallback approximation when the quote
   // hasn't loaded) — cells with a conversion are marked ≈ in their tooltip.
+  // Today's cell also carries the open positions' live money.
   const swingWeekCalendar = (() => {
     if (!swingWeekDaily || swingWeekLoadedAtMs === null) return null;
     const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
@@ -1489,14 +1487,24 @@ export default function Home() {
       net: number | null;
       approximate: boolean;
       trades: number;
+      // Today only: the open positions' unrealized € already folded into `net`.
+      openEur: number | null;
+      openLive: boolean;
+      openPositions: number;
     }> = [];
-    for (let daysBack = 6; daysBack >= 0; daysBack--) {
+    for (let daysBack = calendarDayCount - 1; daysBack >= 0; daysBack--) {
       const date = new Date(swingWeekLoadedAtMs - daysBack * 24 * 60 * 60 * 1000);
       const key = BERLIN_DAY_KEY_FORMAT.format(date);
       const slot = swingWeekDaily[key];
       const hasNet =
         typeof slot?.netUsd === "number" || typeof slot?.netEur === "number";
       const month = BERLIN_MONTH_FORMAT.format(date);
+      const isToday = daysBack === 0;
+      const realized = hasNet
+        ? (slot?.netEur ?? 0) +
+          (typeof slot?.netUsd === "number" ? slot.netUsd / rate : 0)
+        : null;
+      const open = isToday ? liveOpenCashEur : null;
       cells.push({
         key,
         dayNum: BERLIN_DAY_NUM_FORMAT.format(date),
@@ -1505,13 +1513,15 @@ export default function Home() {
         // Month label only where it changes along the row (and on the first
         // cell) — keeps the strip narrow.
         showMonth: cells.length === 0 || cells[cells.length - 1].month !== month,
-        isToday: daysBack === 0,
-        net: hasNet
-          ? (slot?.netEur ?? 0) +
-            (typeof slot?.netUsd === "number" ? slot.netUsd / rate : 0)
-          : null,
+        isToday,
+        // Realized + what is still on the table. A day with no closes but an
+        // open position is a number, not a dash.
+        net: open ? (realized ?? 0) + open.eur : realized,
         approximate: typeof slot?.netUsd === "number" && slot.netUsd !== 0,
         trades: slot?.trades ?? 0,
+        openEur: open?.eur ?? null,
+        openLive: open?.live ?? false,
+        openPositions: open?.positions ?? 0,
       });
     }
     return cells;
@@ -1526,15 +1536,19 @@ export default function Home() {
     const activePill = row.querySelector<HTMLElement>('[data-active-pill="true"]');
     activePill?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active]);
-  // Week-calendar strip: days run oldest → today, so on narrow screens pin the
-  // scroll to the right edge — today stays in view, the past scrolls away.
+  // Money-calendar strip: measure the row so the day count follows the actual
+  // width to the right edge, at every size, instead of a breakpoint guess.
   const weekCalendarRef = useRef<HTMLDivElement | null>(null);
-  const weekCalendarHasData = Boolean(swingWeekCalendar);
   useEffect(() => {
     const row = weekCalendarRef.current;
-    if (!row) return;
-    row.scrollLeft = row.scrollWidth;
-  }, [weekCalendarHasData]);
+    if (!row || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setCalendarWidthPx((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   // Compact PnL stats (range / open) that ride alongside the chart's range
   // switches. Rendered inside ChartPanel so it no longer costs its own header
@@ -1740,8 +1754,6 @@ export default function Home() {
       };
     });
   };
-  const swingCronControlLoaded = swingCronControl !== null;
-  const swingCronHardDeactivated = swingCronControl?.hardDeactivated === true;
   const hasLastDecision = !!(
     current &&
     ("lastDecision" in current ||
@@ -1997,42 +2009,43 @@ export default function Home() {
                   {!swingWeekCalendar &&
                   loading &&
                   !error ? (
-                    // Week-calendar skeleton — covers the initial load and the
+                    // Money-calendar skeleton — covers the initial load and the
                     // gap while a range switch refetches the summary.
-                    <span className="skeleton-shimmer flex items-center gap-1">
-                      {Array.from({ length: 7 }, (_, i) => (
-                        <span
-                          key={i}
-                          className={`h-[18px] w-10 rounded bg-slate-200 ${
-                            i < 2 ? "hidden sm:block" : ""
-                          }`}
-                        />
+                    <span className="skeleton-shimmer flex w-full items-center gap-1">
+                      {Array.from({ length: calendarDayCount }, (_, i) => (
+                        <span key={i} className="h-[18px] flex-1 rounded bg-slate-200" />
                       ))}
                     </span>
                   ) : null}
                   {swingWeekCalendar ? (
-                    // Trailing-7-day calendar: per-day all-symbols closed net
-                    // in € (USDT folded in at the EURUSD rate — tooltip carries
-                    // the ≈ note). One-line height; scrolls horizontally on
-                    // narrow screens with today pinned at the right edge.
+                    // Money calendar: per-day all-symbols net in € (USDT folded
+                    // in at the EURUSD rate — tooltip carries the ≈ note), one
+                    // line, cells sharing the full width out to the right edge.
+                    // Today also carries the open positions' live money.
                     <div
                       ref={weekCalendarRef}
-                      className="scrollbar-none flex min-w-0 max-w-full flex-nowrap items-center gap-2 overflow-x-auto"
-                      aria-label="Daily net, last 7 days"
+                      className="flex w-full min-w-0 flex-nowrap items-center gap-1"
+                      aria-label={`Daily net, last ${calendarDayCount} days`}
                     >
-                      {swingWeekCalendar.map((cell, index) => (
+                      {swingWeekCalendar.map((cell) => (
                         <div
                           key={cell.key}
-                          title={`${cell.key} · ${cell.trades} trade${
-                            cell.trades === 1 ? "" : "s"
-                          }${
+                          title={[
+                            `${cell.key} · ${cell.trades} trade${cell.trades === 1 ? "" : "s"}`,
+                            cell.openEur !== null
+                              ? `open ${cell.openPositions} position${
+                                  cell.openPositions === 1 ? "" : "s"
+                                }: ${cell.openEur >= 0 ? "+" : ""}${formatCash(cell.openEur, "€")}${
+                                  cell.openLive ? " (live)" : ""
+                                } — included above, not booked yet`
+                              : null,
                             cell.approximate
-                              ? ` · includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
-                              : ""
-                          }`}
-                          className={`shrink-0 items-center gap-1 rounded px-1 ${
-                            index < 2 ? "hidden sm:flex" : "flex"
-                          } ${
+                              ? `includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                          className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 ${
                             cell.isToday ? "bg-slate-100" : ""
                           }`}
                         >
@@ -2049,7 +2062,7 @@ export default function Home() {
                               {cell.showMonth ? ` ${cell.month}` : ""}
                             </span>
                             <span
-                              className={`text-[9px] font-semibold leading-none tabular-nums ${
+                              className={`flex items-center gap-[2px] text-[9px] font-semibold leading-none tabular-nums ${
                                 cell.net === null
                                   ? "text-slate-300"
                                   : cell.net >= 0
@@ -2060,6 +2073,19 @@ export default function Home() {
                               {cell.net === null
                                 ? "–"
                                 : `${cell.net >= 0 ? "+" : ""}${formatCash(cell.net, "€")}`}
+                              {/* Part of this number is still on the table —
+                                  a hollow ring says "not booked yet", the same
+                                  language the pills use for a resting order. */}
+                              {cell.openEur !== null ? (
+                                <span
+                                  aria-label="includes open positions"
+                                  className={`inline-block h-[5px] w-[5px] shrink-0 rounded-full border ${
+                                    cell.net !== null && cell.net >= 0
+                                      ? "border-emerald-500"
+                                      : "border-rose-500"
+                                  }`}
+                                />
+                              ) : null}
                             </span>
                           </span>
                         </div>
@@ -2228,115 +2254,26 @@ export default function Home() {
                   </div>
                 ) : null}
               </div>
-              {/* Cron + theme switches: always stacked, one per line. */}
-              <div className="flex flex-col items-end gap-2">
-                <div className="relative flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    {swingCronControlUpdating ? "…" : "cron"}
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={!swingCronHardDeactivated}
-                    onClick={() => setCronConfirmOpen((v) => !v)}
-                    disabled={
-                      !adminGranted ||
-                      swingCronControlUpdating ||
-                      !swingCronControlLoaded
-                    }
-                    title={
-                      !swingCronControlLoaded
-                        ? "loading"
-                        : swingCronHardDeactivated
-                          ? "swing cron OFF — click to re-enable"
-                          : "swing cron ON — click to disable"
-                    }
-                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                      swingCronControlUpdating || !swingCronControlLoaded
-                        ? "border-slate-300 bg-slate-200"
-                        : swingCronHardDeactivated
-                          ? "border-rose-400 bg-rose-500/80"
-                          : "neutral-highlight"
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                        swingCronHardDeactivated
-                          ? "translate-x-0.5"
-                          : "translate-x-4"
-                      }`}
-                    />
-                  </button>
-                  {cronConfirmOpen ? (
-                    <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-amber-300 bg-white p-3 text-left shadow-lg">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-                        <div className="text-xs text-slate-700">
-                          {swingCronHardDeactivated
-                            ? "Re-enable the swing cron? It resumes analyzing and executing swing trades automatically."
-                            : "Disable the swing cron? This hard-deactivates automated swing analysis and execution."}
-                        </div>
-                      </div>
-                      <div className="mt-3 flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setCronConfirmOpen(false)}
-                          className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void setSwingCronHardDeactivate(
-                              !swingCronHardDeactivated,
-                            );
-                            setCronConfirmOpen(false);
-                          }}
-                          className={`rounded-full px-3 py-1 text-xs font-semibold text-white transition ${
-                            swingCronHardDeactivated
-                              ? "bg-emerald-600 hover:bg-emerald-700"
-                              : "bg-rose-600 hover:bg-rose-700"
-                          }`}
-                        >
-                          {swingCronHardDeactivated ? "Enable" : "Disable"}
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                    {resolvedTheme === "dark" ? "dark" : "light"}
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={resolvedTheme === "dark"}
-                    onClick={handleThemeToggle}
-                    title={
-                      resolvedTheme === "dark"
-                        ? "Switch to light mode"
-                        : "Switch to dark mode"
-                    }
-                    className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-slate-400 bg-slate-200 transition"
-                  >
-                    <span
-                      className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white transition-transform ${
-                        resolvedTheme === "dark"
-                          ? "translate-x-4"
-                          : "translate-x-0.5"
-                      }`}
-                    >
-                      {resolvedTheme === "dark" ? (
-                        <Moon className="h-2.5 w-2.5 text-slate-700" />
-                      ) : (
-                        <Sun className="h-2.5 w-2.5 text-slate-700" />
-                      )}
-                    </span>
-                  </button>
-                </div>
-              </div>
+              {/* Theme: one small icon in the panel's top-right corner. The
+                  cron kill switch used to live here too — it is gone; the swing
+                  cron is controlled from /api/swing/ops/cron-control now. */}
+              <button
+                type="button"
+                onClick={handleThemeToggle}
+                aria-label={
+                  resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+                }
+                title={
+                  resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+                }
+                className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              >
+                {resolvedTheme === "dark" ? (
+                  <Sun className="h-3.5 w-3.5" />
+                ) : (
+                  <Moon className="h-3.5 w-3.5" />
+                )}
+              </button>
             </div>
           </div>
 

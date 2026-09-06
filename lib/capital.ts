@@ -2709,6 +2709,18 @@ export async function fetchCapitalPositionInfo(
     leverage: extractLeverage(open),
     stopLossPrice: stopLevel,
     takeProfitPrice: profitLevel,
+    // Cash comes straight from the venue (account currency). Margin is left
+    // null on purpose: Capital's contract size varies per instrument, so
+    // size x level / leverage is not a number worth trusting — the dashboard
+    // then shows this cash as-is instead of rescaling it from a live quote.
+    unrealizedCash: (() => {
+      const cash = safeNumber(
+        open?.position?.upl ?? open?.position?.unrealisedProfitLoss ?? open?.position?.profit,
+        NaN,
+      );
+      return Number.isFinite(cash) ? cash : null;
+    })(),
+    marginCash: null,
   };
 }
 

@@ -58,6 +58,12 @@ type SummaryEntry = {
   // fresh AI decisions.
   pendingEntry?: boolean;
   openPnl?: number | null;
+  // Open PnL in VENUE CASH plus the margin behind it — the money calendar runs
+  // on cash, and margin lets the client rescale that cash from its own live
+  // quote instead of waiting for the next summary build. Margin is null where
+  // the venue does not give a trustworthy one (Capital).
+  openPnlCash?: number | null;
+  openMargin?: number | null;
   openDirection?: 'long' | 'short' | null;
   openLeverage?: number | null;
   openEntryPrice?: number | null;
@@ -427,6 +433,8 @@ export async function buildAndCacheSwingSummary(
       let pnlSpark: number[] | null | undefined = null;
       let pnlDaily: Array<{ day: string; net: number | null; trades: number }> | null | undefined = null;
       let openPnl: number | null | undefined = null;
+      let openPnlCash: number | null = null;
+      let openMargin: number | null = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
       let openLeverage: number | null | undefined = null;
       let openEntryPrice: number | null | undefined = null;
@@ -643,8 +651,15 @@ export async function buildAndCacheSwingSummary(
               : leverageFromHistory ?? null;
             const entryPriceVal = Number(pos.entryPrice);
             openEntryPrice = Number.isFinite(entryPriceVal) && entryPriceVal > 0 ? entryPriceVal : null;
+            openPnlCash = finiteNumber(pos.unrealizedCash);
+            openMargin = (() => {
+              const margin = finiteNumber(pos.marginCash);
+              return margin !== null && margin > 0 ? margin : null;
+            })();
           } else {
             openPnl = null;
+            openPnlCash = null;
+            openMargin = null;
             openDirection = null;
             openLeverage = null;
             openEntryPrice = null;
@@ -702,6 +717,8 @@ export async function buildAndCacheSwingSummary(
           `${String(platform).toLowerCase()}:${symbol.toUpperCase()}`,
         ),
         openPnl,
+        openPnlCash,
+        openMargin,
         openDirection,
         openLeverage,
         openEntryPrice,

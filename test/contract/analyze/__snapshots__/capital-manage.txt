@@ -47,7 +47,7 @@ SQL neon-postgres
       10000,
       null,
       null,
-      "{\"status\":\"open\",\"symbol\":\"EURUSD\",\"holdSide\":\"long\",\"entryPrice\":\"1.15\",\"entryTimestamp\":1787770594000,\"currentPnl\":\"20.70%\",\"leverage\":30,\"stopLossPrice\":1.144,\"takeProfitPrice\":1.175}"
+      "{\"status\":\"open\",\"symbol\":\"EURUSD\",\"holdSide\":\"long\",\"entryPrice\":\"1.15\",\"entryTimestamp\":1787770594000,\"currentPnl\":\"20.70%\",\"leverage\":30,\"stopLossPrice\":1.144,\"takeProfitPrice\":1.175,\"unrealizedCash\":null,\"marginCash\":null}"
     ]
   }
 
