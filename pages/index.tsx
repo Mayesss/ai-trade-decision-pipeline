@@ -2041,7 +2041,7 @@ export default function Home() {
               title={
                 resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
               }
-              className="absolute right-1.5 top-1.5 z-10 rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              className="absolute right-1.5 top-3 z-10 rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
             >
               {resolvedTheme === "dark" ? (
                 <Sun className="h-3.5 w-3.5" />
@@ -2064,10 +2064,14 @@ export default function Home() {
                       title={todayMoney.title}
                     >
                       <span className="text-[8px] font-semibold uppercase leading-none tracking-wide text-slate-400">
+                        {/* Just "Today". The open/booked split lives in the
+                            tooltip: a "· live" suffix made this block wide
+                            enough to cost a whole day off the strip, which is
+                            a bad trade for a word most days do not need. */}
                         Today
                       </span>
                       <span
-                        className={`mt-[3px] flex items-center gap-1 text-[15px] font-semibold leading-none tabular-nums ${
+                        className={`mt-[3px] text-[15px] font-semibold leading-none tabular-nums ${
                           todayMoney.net === null
                             ? "text-slate-300"
                             : todayMoney.net >= 0
@@ -2078,16 +2082,6 @@ export default function Home() {
                         {todayMoney.net === null
                           ? "–"
                           : `${todayMoney.net >= 0 ? "+" : ""}${formatCash(todayMoney.net, "€")}`}
-                        {todayMoney.openEur !== null ? (
-                          <span
-                            aria-label="includes open positions"
-                            className={`inline-block h-[6px] w-[6px] shrink-0 rounded-full border ${
-                              todayMoney.net !== null && todayMoney.net >= 0
-                                ? "border-emerald-500"
-                                : "border-rose-500"
-                            }`}
-                          />
-                        ) : null}
                       </span>
                     </div>
                   ) : loading && !error ? (
@@ -2145,7 +2139,7 @@ export default function Home() {
                               // last-price label terminates its axis: a ring, not
                               // just a tint, so the right edge reads as "now"
                               // instead of as one more chip.
-                              cell.isToday ? "bg-slate-100 ring-1 ring-slate-300" : ""
+                              cell.isToday ? "ring-1 ring-slate-300" : ""
                             }`}
                           >
                             <span
@@ -2163,7 +2157,7 @@ export default function Home() {
                                 {cell.showMonth ? ` ${cell.month}` : ""}
                               </span>
                               <span
-                                className={`flex items-center gap-[2px] text-[9px] font-semibold leading-none tabular-nums ${
+                                className={`text-[9px] font-semibold leading-none tabular-nums ${
                                   cell.net === null
                                     ? "text-slate-300"
                                     : cell.net >= 0
@@ -2174,19 +2168,6 @@ export default function Home() {
                                 {cell.net === null
                                   ? "–"
                                   : `${cell.net >= 0 ? "+" : ""}${formatCash(cell.net, "€")}`}
-                                {/* Part of this number is still on the table —
-                                    a hollow ring says "not booked yet", the same
-                                    language the pills use for a resting order. */}
-                                {cell.openEur !== null ? (
-                                  <span
-                                    aria-label="includes open positions"
-                                    className={`inline-block h-[5px] w-[5px] shrink-0 rounded-full border ${
-                                      cell.net !== null && cell.net >= 0
-                                        ? "border-emerald-500"
-                                        : "border-rose-500"
-                                    }`}
-                                  />
-                                ) : null}
                               </span>
                             </span>
                           </div>
