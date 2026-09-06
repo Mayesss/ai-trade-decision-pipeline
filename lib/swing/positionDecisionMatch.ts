@@ -79,15 +79,66 @@ function nearest(
   return { entry: best, diffMs: bestDiff };
 }
 
-// The decision that opened a position: nearest in time, any action. An entry is
-// unambiguous — the position exists because something placed it — so this stays
-// a plain proximity match.
+// A decision row is written just AFTER its own execution, so a market entry's
+// row can carry a timestamp a beat later than the venue's fill.
+const ENTRY_ROW_LAG_MS = 5 * 60 * 1000;
+
+const ENTRY_ACTIONS = new Set(['BUY', 'SELL', 'REVERSE']);
+
+// Which side an entry action opens. REVERSE flips whatever was open, so it can
+// legitimately have opened either side.
+const sideOfEntryAction = (action: string): 'long' | 'short' | null =>
+  action === 'BUY' ? 'long' : action === 'SELL' ? 'short' : null;
+
+const opensSide = (entry: DecisionHistoryEntry, side?: 'long' | 'short' | null): boolean => {
+  const action = actionOf(entry);
+  if (!ENTRY_ACTIONS.has(action)) return false;
+  if (!side) return true;
+  const opened = sideOfEntryAction(action);
+  return opened === null || opened === side;
+};
+
+// The decision that OPENED a position. NOT a proximity match: a resting entry
+// is placed at one tick and fills at another — anywhere up to the age backstop
+// later — so the row nearest the fill is regularly something else entirely. It
+// picked up HOLDs that merely ran in between, and worse, the BUY/SELL that
+// opened the NEXT position: XRPUSDT 2026-09-04, a long that filled at 12:30
+// from a 01:06 resting limit was labelled with the 16:01 SELL that opened the
+// following short. (findExitDecision was hardened against the mirror image of
+// this; the entry side was left on plain proximity.)
+//
+// The rule: the LATEST decision that could actually have placed this fill —
+// entry-shaped, on the position's own side, at or before the fill, inside the
+// resting backstop. A later re-issue supersedes an earlier one, which is why
+// the latest wins. Nothing matching means the placing tick is outside the
+// loaded window; an empty entry label beats a confidently wrong one.
 export function findEntryDecision(
   history: DecisionHistoryEntry[] | null | undefined,
   tsMs?: number | null,
+  opts: { side?: 'long' | 'short' | null } = {},
 ): OverlayDecisionBrief | null {
-  const hit = nearest(history, tsMs, () => true);
-  return hit ? brief(hit.entry) : null;
+  if (!tsMs || !history?.length) return null;
+  const earliest = tsMs - BRACKET_ENTRY_LOOKBACK_MS;
+  let best: DecisionHistoryEntry | null = null;
+  let bestTs = Number.NEGATIVE_INFINITY;
+  // Fallback for a row persisted just after the fill it caused (market entries).
+  let lagged: DecisionHistoryEntry | null = null;
+  let laggedTs = Number.POSITIVE_INFINITY;
+  for (const h of history) {
+    const ts = finiteNumber(h?.timestamp);
+    if (ts === null || !opensSide(h, opts.side)) continue;
+    if (ts <= tsMs) {
+      if (ts >= earliest && ts > bestTs) {
+        bestTs = ts;
+        best = h;
+      }
+    } else if (ts - tsMs <= ENTRY_ROW_LAG_MS && ts < laggedTs) {
+      laggedTs = ts;
+      lagged = h;
+    }
+  }
+  const hit = best ?? lagged;
+  return hit ? brief(hit) : null;
 }
 
 // The decision that closed a position — CLOSE or REVERSE only, and only inside

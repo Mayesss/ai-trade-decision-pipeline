@@ -456,7 +456,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             Math.abs(pnlPct) < 0.005 &&
             pnlNet !== null &&
             Math.abs(pnlNet) > 0.005;
-          const entryDecision = findEntryDecision(history, p.entryTimestamp);
+          const entryDecision = findEntryDecision(history, p.entryTimestamp, { side: p.side ?? null });
           // Exit-shaped only (CLOSE/REVERSE within the match window): anything
           // else near the exit is the next tick's own idea, not what closed it.
           const exitDecision = findExitDecision(history, p.exitTimestamp);

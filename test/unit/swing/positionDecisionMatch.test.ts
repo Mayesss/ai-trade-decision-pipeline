@@ -45,10 +45,60 @@ test('a BUY placing the next resting entry is not the exit decision', () => {
     assert.equal(inferCloseReason({ history: BNB_HISTORY, exitTsMs: EXIT, pnlValue: 6.24, nowMs: NOW }), 'tp');
 });
 
-test('the entry decision is still the nearest row of any action', () => {
-    const entry = findEntryDecision(BNB_HISTORY, ENTRY);
+test('the entry decision is the BUY/SELL that placed the fill', () => {
+    const entry = findEntryDecision(BNB_HISTORY, ENTRY, { side: 'long' });
     assert.equal(entry?.action, 'BUY');
     assert.equal(entry?.timestamp, ENTRY);
+});
+
+// A resting entry is placed at one tick and fills at another, so the row
+// NEAREST the fill is regularly not the one that placed it. Real shape,
+// XRPUSDT 2026-09-04: a BUY limit at 01:06 filled at 12:30, and the next
+// position's SELL at 16:01 sat closer to that fill than its own BUY did.
+const REST_BUY = Date.UTC(2026, 8, 4, 1, 6, 58);
+const REST_FILL = Date.UTC(2026, 8, 4, 12, 30, 4);
+const NEXT_SELL = Date.UTC(2026, 8, 4, 16, 1, 1);
+const RESTING_HISTORY = [
+    row(REST_BUY, 'BUY', { entry_limit_price: 1.433 }),
+    row(Date.UTC(2026, 8, 4, 8, 1, 41), 'HOLD'),
+    row(NEXT_SELL, 'SELL'),
+];
+
+test('a resting entry is credited to the tick that placed it, hours before the fill', () => {
+    const entry = findEntryDecision(RESTING_HISTORY, REST_FILL, { side: 'long' });
+    assert.equal(entry?.timestamp, REST_BUY, 'not the HOLD that merely ran in between');
+});
+
+test('the NEXT position entry is never credited with this fill', () => {
+    const entry = findEntryDecision(RESTING_HISTORY, REST_FILL, { side: 'long' });
+    assert.notEqual(entry?.timestamp, NEXT_SELL);
+    // ...and the short that follows gets its own SELL, not the earlier BUY.
+    const short = findEntryDecision(RESTING_HISTORY, NEXT_SELL + 500, { side: 'short' });
+    assert.equal(short?.timestamp, NEXT_SELL);
+});
+
+test('a market entry whose row is persisted just after the venue fill still matches', () => {
+    // The decision row is written after execution: XRPUSDT logged the SELL
+    // 246ms after the fill it caused.
+    const fill = NEXT_SELL - 246;
+    assert.equal(findEntryDecision(RESTING_HISTORY, fill, { side: 'short' })?.timestamp, NEXT_SELL);
+});
+
+test('a re-issued entry credits the last issue, the one that was standing', () => {
+    const history = [
+        row(REST_BUY, 'BUY', { entry_limit_price: 1.44 }),
+        row(REST_BUY + 4 * 3600_000, 'BUY', { entry_limit_price: 1.433 }),
+    ];
+    assert.equal(findEntryDecision(history, REST_FILL, { side: 'long' })?.timestamp, REST_BUY + 4 * 3600_000);
+});
+
+test('an entry older than the backstop, or on the wrong side, labels nothing', () => {
+    const stale = [row(REST_FILL - BRACKET_ENTRY_LOOKBACK_MS - MIN, 'BUY')];
+    assert.equal(findEntryDecision(stale, REST_FILL, { side: 'long' }), null);
+    // A long is not opened by a SELL — better no label than a wrong one.
+    assert.equal(findEntryDecision([row(REST_BUY, 'SELL')], REST_FILL, { side: 'long' }), null);
+    // A REVERSE flips into either side, so it stays eligible for both.
+    assert.equal(findEntryDecision([row(REST_BUY, 'REVERSE')], REST_FILL, { side: 'long' })?.action, 'REVERSE');
 });
 
 test('an AI CLOSE near the exit is credited, and suppresses the bracket guess', () => {

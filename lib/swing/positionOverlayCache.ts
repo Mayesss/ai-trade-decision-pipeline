@@ -278,7 +278,8 @@ function normalizeOverlayPositions(params: {
       Math.abs(pnlPct) < 0.005 &&
       pnlNet !== null &&
       Math.abs(pnlNet) > 0.005;
-    const entryDecision = findEntryDecision(params.history, p.entryTimestamp);
+    const overlaySide = p.side === 'long' || p.side === 'short' ? p.side : null;
+    const entryDecision = findEntryDecision(params.history, p.entryTimestamp, { side: overlaySide });
     // Exit-shaped only (CLOSE/REVERSE within the match window): anything else
     // near the exit is the next tick's own idea, not what closed the position.
     const exitDecision = findExitDecision(params.history, p.exitTimestamp);

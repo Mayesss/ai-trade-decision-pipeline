@@ -450,6 +450,20 @@ const formatOverlayTime = (tsSeconds?: number | null) => {
   return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: BERLIN_TZ });
 };
 
+// How long a resting entry waited between the tick that placed it and the fill
+// that became the position. Spelled out in the tooltip because the two
+// timestamps otherwise just look inconsistent — the entry decision reads 01:06
+// while the position starts at 12:30. Null for a market entry (no wait) and
+// for anything under a few minutes (clock drift, not patience).
+const formatRestedGap = (decisionTsMs?: number | null, entryTimeSec?: number | null): string | null => {
+  if (!decisionTsMs || !entryTimeSec) return null;
+  const gapMin = Math.round((entryTimeSec * 1000 - decisionTsMs) / 60_000);
+  if (gapMin < 3) return null;
+  const hours = Math.floor(gapMin / 60);
+  const minutes = gapMin % 60;
+  return hours ? `${hours}h${minutes ? ` ${minutes}m` : ''}` : `${minutes}m`;
+};
+
 const formatOverlayPnl = (pos: PositionOverlay) => {
   if (typeof pos.pnlPct === 'number') return `${pos.pnlPct.toFixed(1)}%`;
   if (typeof pos.pnlNet === 'number') return `${pos.pnlNet >= 0 ? '+' : ''}${pos.pnlNet.toFixed(2)}`;
@@ -2338,6 +2352,13 @@ export default function ChartPanel(props: ChartPanelProps) {
                       </div>
                       <div className="text-[10px] text-slate-500">
                         {formatOverlayDecisionTs(hoveredOverlay.entryDecision.timestamp || null)}
+                        {(() => {
+                          const rested = formatRestedGap(
+                            hoveredOverlay.entryDecision.timestamp,
+                            hoveredOverlay.entryTime,
+                          );
+                          return rested ? ` · rested ${rested} before filling` : '';
+                        })()}
                       </div>
                     </div>
                   )}
