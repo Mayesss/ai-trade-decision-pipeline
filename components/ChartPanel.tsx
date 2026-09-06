@@ -1916,8 +1916,18 @@ export default function ChartPanel(props: ChartPanelProps) {
   }, [pendingOrders, chartInitToken]);
 
   useEffect(() => {
-    // Vertical marker at the decision-timeline selection: snap the selected
-    // tick's time to the nearest bar and project it to an X coordinate.
+    // Exact x for a ms timestamp, interpolated between the two bars around it
+    // (see coordinateForAnchor). These were snapped to the NEAREST bar, which
+    // is half a bar of error: a post-mortem for a 09:13 close landed on the
+    // 09:15 bar, i.e. on the next tick, right next to the position wall that
+    // now draws at the true minute.
+    const candleTimes = chartData.map((bar) => bar.time);
+    const xForTs = (scale: ChartTimeScaleLike, tsMs: number): number | null =>
+      coordinateForAnchor(barAnchorForTime(candleTimes, tsMs / 1000), (time) =>
+        scale.timeToCoordinate(time),
+      );
+
+    // Vertical marker at the decision-timeline selection.
     const recalcHighlightX = () => {
       const timeScaleNow = chartInstanceRef.current?.timeScale?.();
       if (
@@ -1929,35 +1939,7 @@ export default function ChartPanel(props: ChartPanelProps) {
         setHighlightX(null);
         return;
       }
-      const targetSec = highlightTimeMs / 1000;
-      let nearest = chartData[0].time;
-      let bestDiff = Math.abs(chartData[0].time - targetSec);
-      for (const bar of chartData) {
-        const diff = Math.abs(bar.time - targetSec);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          nearest = bar.time;
-        }
-      }
-      const x = Number(timeScaleNow.timeToCoordinate(nearest));
-      setHighlightX(Number.isFinite(x) ? x : null);
-    };
-
-    // Snap a ms timestamp to the nearest bar time (chartData is ascending).
-    const nearestBarTime = (tsMs: number): number => {
-      const target = tsMs / 1000;
-      let lo = 0;
-      let hi = chartData.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (chartData[mid].time < target) lo = mid + 1;
-        else hi = mid;
-      }
-      const below = Math.max(0, lo - 1);
-      return Math.abs(chartData[below].time - target) <=
-        Math.abs(chartData[lo].time - target)
-        ? chartData[below].time
-        : chartData[lo].time;
+      setHighlightX(xForTs(timeScaleNow, highlightTimeMs));
     };
 
     // Project timeline ticks onto the time axis. Zoom/pan re-runs this via the
@@ -1980,8 +1962,8 @@ export default function ChartPanel(props: ChartPanelProps) {
       const projected: Array<{ x: number; tick: ChartTimelineTick }> = [];
       const projectedAnalysis: Array<{ x: number; tick: ChartTimelineTick }> = [];
       for (const tick of timelineTicks) {
-        const x = Number(timeScaleNow.timeToCoordinate(nearestBarTime(tick.ts)));
-        if (!Number.isFinite(x) || x < 0 || (paneWidth > 0 && x > paneWidth)) continue;
+        const x = xForTs(timeScaleNow, tick.ts);
+        if (x === null || x < 0 || (paneWidth > 0 && x > paneWidth)) continue;
         // Analysis reports live on their own lane under the decision strip.
         (tick.kind === 'postmortem' ? projectedAnalysis : projected).push({ x, tick });
       }
@@ -1998,8 +1980,8 @@ export default function ChartPanel(props: ChartPanelProps) {
         if (tick.responseId) tsByResponseId.set(tick.responseId, tick.ts);
       }
       const clampedX = (tsMs: number): number => {
-        const x = Number(timeScaleNow.timeToCoordinate(nearestBarTime(tsMs)));
-        if (!Number.isFinite(x)) return NaN;
+        const x = xForTs(timeScaleNow, tsMs);
+        if (x === null) return NaN;
         return Math.min(Math.max(x, 0), paneWidth > 0 ? paneWidth : x);
       };
       const segments: Array<{ left: number; width: number }> = [];

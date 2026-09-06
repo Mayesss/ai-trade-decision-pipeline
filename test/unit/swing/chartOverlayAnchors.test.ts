@@ -78,3 +78,26 @@ test('an unplaceable anchor is null, so the caller can fall back', () => {
     assert.equal(coordinateForAnchor(null, toX), null);
     assert.equal(coordinateForAnchor({ before: bars[0], after: null, frac: 0 }, () => Number.NaN), null);
 });
+
+test('a mid-bar event projects BEFORE the next bar, not onto it', () => {
+    // The post-mortem dot: a win evaluation for a 09:13:20 close, on a 15m
+    // chart zoomed to ~246px per bar. Snapping it to the nearest bar put the
+    // trophy on the 09:15 tick — 27px to the right of the position wall that
+    // marks the very close it is evaluating.
+    const M15 = 15 * 60;
+    const first = Date.UTC(2026, 8, 6, 0, 0, 0) / 1000;
+    const bars15 = Array.from({ length: 96 }, (_, i) => first + i * M15);
+    const spacing = 246;
+    const barX = (time: number) => {
+        const i = bars15.indexOf(time);
+        return i === -1 ? null : i * spacing;
+    };
+    const closeSec = Date.UTC(2026, 8, 6, 7, 13, 20) / 1000;
+
+    const exact = coordinateForAnchor(barAnchorForTime(bars15, closeSec), barX) as number;
+    const nextBarX = barX(Date.UTC(2026, 8, 6, 7, 15, 0) / 1000) as number;
+    const prevBarX = barX(Date.UTC(2026, 8, 6, 7, 0, 0) / 1000) as number;
+
+    assert.ok(exact > prevBarX && exact < nextBarX, 'lands inside the bar it happened in');
+    assert.ok(nextBarX - exact > 25, `the old snap was ${(nextBarX - exact).toFixed(1)}px late`);
+});
