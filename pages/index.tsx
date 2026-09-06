@@ -431,8 +431,14 @@ export default function Home() {
   const [swingAiBannerDismissedKey, setSwingAiBannerDismissedKey] = useState<
     string | null
   >(null);
-  const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
-  const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
+  // Live quotes keyed by symbol: the viewed one (drives the chart's live
+  // candle) plus every symbol holding an open position (drives its pill's
+  // PnL). Keyed rather than a single value, so a quote can never paint the
+  // wrong symbol — the active reading is just a lookup that is absent until
+  // this symbol's own quote lands.
+  const [livePrices, setLivePrices] = useState<
+    Record<string, { price: number; ts: number }>
+  >({});
   const themePreference = useSyncExternalStore(
     subscribeThemePreference,
     readStoredThemePreference,
@@ -466,11 +472,16 @@ export default function Home() {
   // through these without widening their dependency arrays — re-subscription
   // stays keyed to the deps that matter, not to every value the body touches.
   const fetchAdminHeaders = useEffectEvent(buildAdminHeaders);
-  const resolveSymbolPlatform = useEffectEvent(
-    // Captured once per effect run — a symbol's platform doesn't change
-    // within its lifetime.
-    (symbol: string) => tabData[symbol]?.lastPlatform ?? null,
-  );
+  // Symbols holding an open position, as a stable string: the quote poll below
+  // keys off it so it re-subscribes when a position opens or closes, not on
+  // every unrelated summary refresh.
+  const openPositionSymbolKey = symbols
+    .filter((sym) => {
+      const direction = tabData[sym]?.openDirection;
+      return direction === "long" || direction === "short";
+    })
+    .join(",");
+
   // Per-symbol view state resets the moment the viewed symbol context
   // changes — the render-time adjustment pattern (react.dev: "Adjusting
   // state when a prop changes"), replacing reset-inside-effect versions.
@@ -485,9 +496,8 @@ export default function Home() {
   ) {
     setPrevViewKey([adminGranted, symbols, active]);
     if (prevViewKey !== null) {
-      // A stale quote from the previous symbol must never paint the new chart.
-      setLivePriceNow(null);
-      setLivePriceTs(null);
+      // Quotes are keyed by symbol, so nothing to reset here — a symbol the
+      // poll has not answered for yet simply has no entry.
       setShowPrompt(false);
       setShowRawResponse(false);
       if (adminGranted && (symbols[active] || null)) {
@@ -533,15 +543,20 @@ export default function Home() {
   useEffect(() => {
     const symbol = symbols[active] || null;
     if (!adminGranted || !symbol) return;
-    const platform = resolveSymbolPlatform(symbol);
+    // The viewed symbol plus every symbol carrying an open position: those
+    // pills show a PnL that moves with price, and a summary-cadence number
+    // there is stale by minutes. Everything else on the pill row is a settled
+    // figure that price cannot change, so it stays off the poll.
+    const wanted = Array.from(
+      new Set([symbol, ...openPositionSymbolKey.split(",").filter(Boolean)]),
+    );
     let cancelled = false;
     let inFlight = false;
     const tick = async () => {
       if (cancelled || inFlight || document.hidden) return;
       inFlight = true;
       try {
-        const params = new URLSearchParams({ symbol });
-        if (platform) params.set("platform", platform);
+        const params = new URLSearchParams({ symbols: wanted.join(",") });
         const res = await fetch(
           `/api/swing/dashboard/live-price?${params.toString()}`,
           { headers: fetchAdminHeaders(), cache: "no-store" },
@@ -549,14 +564,22 @@ export default function Home() {
         if (cancelled) return;
         if (!res.ok) return;
         const json = await res.json();
-        const price = Number(json?.price);
-        if (!cancelled && Number.isFinite(price) && price > 0) {
-          setLivePriceNow(price);
-          const ts = Number(json?.ts);
-          setLivePriceTs(Number.isFinite(ts) && ts > 0 ? ts : Date.now());
+        const quotes = Array.isArray(json?.quotes) ? json.quotes : [];
+        const next: Record<string, { price: number; ts: number }> = {};
+        for (const quote of quotes) {
+          const price = Number(quote?.price);
+          const sym = String(quote?.symbol || "").toUpperCase();
+          if (!sym || !Number.isFinite(price) || price <= 0) continue;
+          const ts = Number(quote?.ts);
+          next[sym] = { price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() };
+        }
+        // Merge, never replace: a symbol the venue failed on this tick keeps
+        // its previous quote instead of blanking.
+        if (!cancelled && Object.keys(next).length) {
+          setLivePrices((prev) => ({ ...prev, ...next }));
         }
       } catch {
-        // transient poll failure — keep the last quote
+        // transient poll failure — keep the last quotes
       } finally {
         inFlight = false;
       }
@@ -567,7 +590,7 @@ export default function Home() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [adminGranted, symbols, active]);
+  }, [adminGranted, symbols, active, openPositionSymbolKey]);
 
   const handleAuthExpired = (message?: string) => {
     if (typeof window !== "undefined") {
@@ -1340,24 +1363,35 @@ export default function Home() {
     return <div className="space-y-2">{rendered}</div>;
   };
 
+  // Open PnL on margin from a live quote — price move × side × leverage. One
+  // formula for the header/chart reading and for every pill, so a position's
+  // number cannot differ depending on where you look at it.
+  const liveOpenPnlPct = (
+    tab: (typeof tabData)[string] | null | undefined,
+    price: number | null,
+  ): number | null => {
+    const entry = Number(tab?.openEntryPrice);
+    const direction = tab?.openDirection;
+    if (price === null || !Number.isFinite(price) || price <= 0) return null;
+    if (!Number.isFinite(entry) || entry <= 0) return null;
+    if (direction !== "long" && direction !== "short") return null;
+    const leverage =
+      typeof tab?.openLeverage === "number" && tab.openLeverage > 0
+        ? tab.openLeverage
+        : 1;
+    return (
+      ((price - entry) / entry) * (direction === "long" ? 1 : -1) * leverage * 100
+    );
+  };
+
   const current = symbols[active] ? tabData[symbols[active]] : null;
   const activeSymbol = symbols[active] || null;
+  const livePriceNow = activeSymbol
+    ? (livePrices[activeSymbol]?.price ?? null)
+    : null;
+  const livePriceTs = activeSymbol ? (livePrices[activeSymbol]?.ts ?? null) : null;
   const swingSummaryMatchesRange = swingSummaryRange === dashboardRange;
-  const liveOpenPnl =
-    current &&
-    typeof livePriceNow === "number" &&
-    Number.isFinite(livePriceNow) &&
-    typeof current.openEntryPrice === "number" &&
-    Number.isFinite(current.openEntryPrice) &&
-    current.openEntryPrice > 0 &&
-    (current.openDirection === "long" || current.openDirection === "short")
-      ? ((livePriceNow - current.openEntryPrice) / current.openEntryPrice) *
-        (current.openDirection === "long" ? 1 : -1) *
-        (typeof current.openLeverage === "number" && current.openLeverage > 0
-          ? current.openLeverage
-          : 1) *
-        100
-      : null;
+  const liveOpenPnl = liveOpenPnlPct(current, livePriceNow);
   const effectiveOpenPnl =
     typeof liveOpenPnl === "number"
       ? liveOpenPnl
@@ -2070,10 +2104,13 @@ export default function Home() {
                         const holdCooldown =
                           lastAiAction === "HOLD" &&
                           Number(tab?.lastAiDecisionCooldownMinutes) > 0;
-                        const openPnlValue =
-                          openDirection && typeof tab?.openPnl === "number"
-                            ? tab.openPnl
-                            : null;
+                        // Live quote first, summary snapshot as the floor: an
+                        // open position's PnL moves with price, and the summary
+                        // figure is minutes old by the time it is read.
+                        const openPnlValue = openDirection
+                          ? (liveOpenPnlPct(tab, livePrices[sym]?.price ?? null) ??
+                            (typeof tab?.openPnl === "number" ? tab.openPnl : null))
+                          : null;
                         // Split pill: neutral symbol segment + one signal
                         // segment carrying the most important number. Color
                         // lives in the segment, not the whole pill, so the row

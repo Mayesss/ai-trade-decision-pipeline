@@ -571,6 +571,23 @@ type BundleOpts = {
     tradeMaxTrades?: number; // default 1500
     candleLimit?: number; // default 30
 };
+// Last traded price for one symbol — the ticker endpoint and nothing else.
+// The dashboard polls this every few seconds; fetchMarketBundle answers the
+// same question with SEVEN upstream calls (candles, orderbook, funding, OI…)
+// and throws all but one field away, which is what the live-price poll used to
+// do on every tick.
+export async function fetchBitgetLiveQuote(symbol: string): Promise<{ price: number; ts: number }> {
+    const productType = resolveProductType();
+    const raw = await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType });
+    const ticker = Array.isArray(raw) ? raw[0] : raw;
+    const price = num(ticker?.lastPr ?? ticker?.last ?? ticker?.close ?? ticker?.price);
+    if (!(Number.isFinite(price) && price > 0)) {
+        throw new Error(`Bitget live quote unavailable for ${symbol}`);
+    }
+    const ts = Number(ticker?.ts ?? ticker?.timestamp);
+    return { price, ts: Number.isFinite(ts) && ts > 0 ? ts : Date.now() };
+}
+
 export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string, opts: BundleOpts = {}) {
     const {
         includeTrades = true,
