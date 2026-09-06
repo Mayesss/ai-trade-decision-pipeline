@@ -227,13 +227,14 @@ const platformCurrencySymbol = (platform?: string | null): "$" | "€" =>
 // The money calendar renders as many trailing days as the panel is wide, so it
 // reads its daily buckets from the 30D blob and never from a hardcoded count.
 const CALENDAR_SOURCE_RANGE = "30D" as const;
-// Below this a cell can no longer hold "31 · SUN · +€12"; above it the cells
-// just share the leftover width evenly.
-const CALENDAR_CELL_MIN_PX = 58;
+// One cell holds "31 · SUN · +€12" at its natural size — cells keep this width
+// and the ROW shows however many of them fit. Widening the cells instead would
+// just make seven days take up the whole screen.
+const CALENDAR_CELL_PX = 54;
+const CALENDAR_CELL_GAP_PX = 4;
+// The 30D blob is the deepest daily source, so it is also the ceiling.
 const CALENDAR_MAX_DAYS = 30;
-// The week the strip has always shown — the floor it never drops below when
-// there is room, even on a young account.
-const CALENDAR_MIN_DAYS = 7;
+const CALENDAR_MIN_DAYS = 3;
 
 const formatCash = (value: number, currencySymbol: "$" | "€" = "$") => {
   const abs = Math.abs(value);
@@ -1424,26 +1425,10 @@ export default function Home() {
   // that left a wide screen half empty and a narrow one scrolling.
   const [calendarWidthPx, setCalendarWidthPx] = useState(0);
   const calendarDayCount = (() => {
-    const fits =
-      calendarWidthPx > 0
-        ? Math.floor(calendarWidthPx / CALENDAR_CELL_MIN_PX)
-        : CALENDAR_MIN_DAYS;
-    // Don't pad a wide screen with empty days the account is too young to
-    // have: history grows into the width. The cells stretch (flex-1), so the
-    // row still reaches the right edge whatever the count.
-    const earliest = swingWeekDaily ? Object.keys(swingWeekDaily).sort()[0] : null;
-    // Anchored to the load timestamp the cells themselves are generated from,
-    // not to a fresh clock read (which would make render impure).
-    const daysOfHistory =
-      earliest && swingWeekLoadedAtMs !== null
-        ? Math.floor(
-            (swingWeekLoadedAtMs - new Date(`${earliest}T00:00:00Z`).getTime()) / 86_400_000,
-          ) + 1
-        : 0;
-    return Math.max(
-      3,
-      Math.min(CALENDAR_MAX_DAYS, fits, Math.max(CALENDAR_MIN_DAYS, daysOfHistory)),
-    );
+    if (calendarWidthPx <= 0) return 7;
+    const step = CALENDAR_CELL_PX + CALENDAR_CELL_GAP_PX;
+    const fits = Math.floor((calendarWidthPx + CALENDAR_CELL_GAP_PX) / step);
+    return Math.max(CALENDAR_MIN_DAYS, Math.min(CALENDAR_MAX_DAYS, fits));
   })();
   // Live open money, folded to € across every symbol holding a position. Cash
   // rather than percent: this is the one place the dashboard shows real money,
@@ -1526,6 +1511,34 @@ export default function Home() {
     }
     return cells;
   })();
+  // The panel's headline: today's money, realized + still open. Same number as
+  // the calendar's last cell — a summary and its breakdown, deliberately — but
+  // sitting where the eye lands first instead of at the far end of a 24-cell
+  // row. Everything else in the panel is context for this.
+  const todayMoney = (() => {
+    const today = swingWeekCalendar?.[swingWeekCalendar.length - 1];
+    if (!today?.isToday) return null;
+    const realized = today.openEur !== null ? (today.net ?? 0) - today.openEur : today.net;
+    return {
+      net: today.net,
+      openEur: today.openEur,
+      title: [
+        `${today.key} · ${today.trades} trade${today.trades === 1 ? "" : "s"}`,
+        realized !== null
+          ? `booked ${realized >= 0 ? "+" : ""}${formatCash(realized, "€")}`
+          : "nothing booked yet",
+        today.openEur !== null
+          ? `open ${today.openPositions} position${
+              today.openPositions === 1 ? "" : "s"
+            }: ${today.openEur >= 0 ? "+" : ""}${formatCash(today.openEur, "€")}${
+              today.openLive ? " (live)" : ""
+            }`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  })();
   // The pill row is one horizontally-scrollable line; keep the active pill in
   // view when selection changes (not on every render — live ticks re-render
   // constantly and must not fight the user's scroll position).
@@ -1537,14 +1550,24 @@ export default function Home() {
     activePill?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active]);
   // Money-calendar strip: measure the row so the day count follows the actual
-  // width to the right edge, at every size, instead of a breakpoint guess.
+  // width, at every size, instead of a breakpoint guess.
+  //
+  // The observer watches the row WRAPPER, which is always mounted. Watching the
+  // calendar element itself did nothing: on mount that node does not exist yet
+  // (the skeleton is up until the summary lands), so a one-shot effect found a
+  // null ref, never attached, and the count sat on its 7-day fallback forever.
   const weekCalendarRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const row = weekCalendarRef.current;
-    if (!row || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
+    if (!row) return;
+    const apply = (width: number) =>
       setCalendarWidthPx((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+    if (typeof ResizeObserver === "undefined") {
+      apply(row.clientWidth);
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      apply(entries[0]?.contentRect.width ?? 0);
     });
     observer.observe(row);
     return () => observer.disconnect();
@@ -2002,96 +2025,175 @@ export default function Home() {
               </button>
             </div>
           ) : null}
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-            <div className="flex items-start justify-between gap-4">
+          <div className="relative rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            {/* Theme: pinned inside the panel's top-right corner, OUT of the
+                flow — as a flex child it stole a column's worth of width from
+                every row under it, days and symbol pills alike. Only the
+                calendar row keeps clearance for it; the pill row runs the full
+                width. The cron kill switch used to sit here too; it is gone,
+                and /api/swing/ops/cron-control owns that now. */}
+            <button
+              type="button"
+              onClick={handleThemeToggle}
+              aria-label={
+                resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+              }
+              title={
+                resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
+              }
+              className="absolute right-1.5 top-1.5 z-10 rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            >
+              {resolvedTheme === "dark" ? (
+                <Sun className="h-3.5 w-3.5" />
+              ) : (
+                <Moon className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <div className="flex items-start">
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {!swingWeekCalendar &&
-                  loading &&
-                  !error ? (
-                    // Money-calendar skeleton — covers the initial load and the
-                    // gap while a range switch refetches the summary.
-                    <span className="skeleton-shimmer flex w-full items-center gap-1">
-                      {Array.from({ length: calendarDayCount }, (_, i) => (
-                        <span key={i} className="h-[18px] flex-1 rounded bg-slate-200" />
-                      ))}
-                    </span>
-                  ) : null}
-                  {swingWeekCalendar ? (
-                    // Money calendar: per-day all-symbols net in € (USDT folded
-                    // in at the EURUSD rate — tooltip carries the ≈ note), one
-                    // line, cells sharing the full width out to the right edge.
-                    // Today also carries the open positions' live money.
+                {/* Top-left is where the eye lands, so it holds the one number
+                    that matters: today's money. The calendar to its right is
+                    that number's history — same row, so the panel keeps its
+                    height. pr-4 is EXACTLY the theme icon's reach into this
+                    row: the icon is 26px wide at right-1.5 (6px), and the
+                    panel's own px-4 already holds 16px of that. */}
+                <div className="flex flex-nowrap items-center gap-3 pr-4">
+                  {todayMoney ? (
                     <div
-                      ref={weekCalendarRef}
-                      className="flex w-full min-w-0 flex-nowrap items-center gap-1"
-                      aria-label={`Daily net, last ${calendarDayCount} days`}
+                      className="flex shrink-0 flex-col justify-center"
+                      title={todayMoney.title}
                     >
-                      {swingWeekCalendar.map((cell) => (
-                        <div
-                          key={cell.key}
-                          title={[
-                            `${cell.key} · ${cell.trades} trade${cell.trades === 1 ? "" : "s"}`,
-                            cell.openEur !== null
-                              ? `open ${cell.openPositions} position${
-                                  cell.openPositions === 1 ? "" : "s"
-                                }: ${cell.openEur >= 0 ? "+" : ""}${formatCash(cell.openEur, "€")}${
-                                  cell.openLive ? " (live)" : ""
-                                } — included above, not booked yet`
-                              : null,
-                            cell.approximate
-                              ? `includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
-                              : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                          className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-1 ${
-                            cell.isToday ? "bg-slate-100" : ""
-                          }`}
-                        >
+                      <span className="text-[8px] font-semibold uppercase leading-none tracking-wide text-slate-400">
+                        Today
+                      </span>
+                      <span
+                        className={`mt-[3px] flex items-center gap-1 text-[15px] font-semibold leading-none tabular-nums ${
+                          todayMoney.net === null
+                            ? "text-slate-300"
+                            : todayMoney.net >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                        }`}
+                      >
+                        {todayMoney.net === null
+                          ? "–"
+                          : `${todayMoney.net >= 0 ? "+" : ""}${formatCash(todayMoney.net, "€")}`}
+                        {todayMoney.openEur !== null ? (
                           <span
-                            className={`text-[15px] font-semibold leading-none tabular-nums ${
-                              cell.isToday ? "text-slate-900" : "text-slate-700"
+                            aria-label="includes open positions"
+                            className={`inline-block h-[6px] w-[6px] shrink-0 rounded-full border ${
+                              todayMoney.net !== null && todayMoney.net >= 0
+                                ? "border-emerald-500"
+                                : "border-rose-500"
+                            }`}
+                          />
+                        ) : null}
+                      </span>
+                    </div>
+                  ) : loading && !error ? (
+                    <span className="skeleton-shimmer h-[26px] w-16 shrink-0 rounded bg-slate-200" />
+                  ) : null}
+                  {/* Measured separately from the headline, so the day count
+                      uses the space actually left for cells. */}
+                  <div
+                    ref={weekCalendarRef}
+                    className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"
+                  >
+                    {!swingWeekCalendar &&
+                    loading &&
+                    !error ? (
+                      // Money-calendar skeleton — covers the initial load and the
+                      // gap while a range switch refetches the summary.
+                      <span className="skeleton-shimmer flex w-full items-center gap-1 overflow-hidden">
+                        {Array.from({ length: calendarDayCount }, (_, i) => (
+                          <span
+                            key={i}
+                            className="h-[18px] w-[54px] shrink-0 rounded bg-slate-200"
+                          />
+                        ))}
+                      </span>
+                    ) : null}
+                    {swingWeekCalendar ? (
+                      // Money calendar: per-day all-symbols net in € (USDT folded
+                      // in at the EURUSD rate — tooltip carries the ≈ note), one
+                      // line, cells sharing the full width out to the right edge.
+                      // Today also carries the open positions' live money.
+                      <div
+                        className="flex w-full min-w-0 flex-nowrap items-center gap-1 overflow-hidden"
+                        aria-label={`Daily net, last ${calendarDayCount} days`}
+                      >
+                        {swingWeekCalendar.map((cell) => (
+                          <div
+                            key={cell.key}
+                            title={[
+                              `${cell.key} · ${cell.trades} trade${cell.trades === 1 ? "" : "s"}`,
+                              cell.openEur !== null
+                                ? `open ${cell.openPositions} position${
+                                    cell.openPositions === 1 ? "" : "s"
+                                  }: ${cell.openEur >= 0 ? "+" : ""}${formatCash(cell.openEur, "€")}${
+                                    cell.openLive ? " (live)" : ""
+                                  } — included above, not booked yet`
+                                : null,
+                              cell.approximate
+                                ? `includes USDT converted at EURUSD ${(eurUsdRate ?? EUR_USD_FALLBACK_RATE).toFixed(4)}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                            className={`flex w-[54px] shrink-0 items-center gap-1 rounded px-1 ${
+                              // Today terminates the row the way the chart's
+                              // last-price label terminates its axis: a ring, not
+                              // just a tint, so the right edge reads as "now"
+                              // instead of as one more chip.
+                              cell.isToday ? "bg-slate-100 ring-1 ring-slate-300" : ""
                             }`}
                           >
-                            {cell.dayNum}
-                          </span>
-                          <span className="flex flex-col justify-center gap-[1px]">
-                            <span className="text-[8px] font-normal uppercase leading-none tracking-wide text-slate-400">
-                              {cell.weekday}
-                              {cell.showMonth ? ` ${cell.month}` : ""}
-                            </span>
                             <span
-                              className={`flex items-center gap-[2px] text-[9px] font-semibold leading-none tabular-nums ${
-                                cell.net === null
-                                  ? "text-slate-300"
-                                  : cell.net >= 0
-                                    ? "text-emerald-600"
-                                    : "text-rose-600"
+                              className={`text-[15px] leading-none tabular-nums ${
+                                cell.isToday
+                                  ? "font-bold text-slate-900"
+                                  : "font-semibold text-slate-700"
                               }`}
                             >
-                              {cell.net === null
-                                ? "–"
-                                : `${cell.net >= 0 ? "+" : ""}${formatCash(cell.net, "€")}`}
-                              {/* Part of this number is still on the table —
-                                  a hollow ring says "not booked yet", the same
-                                  language the pills use for a resting order. */}
-                              {cell.openEur !== null ? (
-                                <span
-                                  aria-label="includes open positions"
-                                  className={`inline-block h-[5px] w-[5px] shrink-0 rounded-full border ${
-                                    cell.net !== null && cell.net >= 0
-                                      ? "border-emerald-500"
-                                      : "border-rose-500"
-                                  }`}
-                                />
-                              ) : null}
+                              {cell.dayNum}
                             </span>
-                          </span>
+                            <span className="flex flex-col justify-center gap-[1px]">
+                              <span className="text-[8px] font-normal uppercase leading-none tracking-wide text-slate-400">
+                                {cell.weekday}
+                                {cell.showMonth ? ` ${cell.month}` : ""}
+                              </span>
+                              <span
+                                className={`flex items-center gap-[2px] text-[9px] font-semibold leading-none tabular-nums ${
+                                  cell.net === null
+                                    ? "text-slate-300"
+                                    : cell.net >= 0
+                                      ? "text-emerald-600"
+                                      : "text-rose-600"
+                                }`}
+                              >
+                                {cell.net === null
+                                  ? "–"
+                                  : `${cell.net >= 0 ? "+" : ""}${formatCash(cell.net, "€")}`}
+                                {/* Part of this number is still on the table —
+                                    a hollow ring says "not booked yet", the same
+                                    language the pills use for a resting order. */}
+                                {cell.openEur !== null ? (
+                                  <span
+                                    aria-label="includes open positions"
+                                    className={`inline-block h-[5px] w-[5px] shrink-0 rounded-full border ${
+                                      cell.net !== null && cell.net >= 0
+                                        ? "border-emerald-500"
+                                        : "border-rose-500"
+                                    }`}
+                                  />
+                                ) : null}
+                              </span>
+                            </span>
+                          </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : null}
+                      ) : null}
+                  </div>
                 </div>
                 {!error &&
                 (symbols.length || isInitialLoading) ? (
@@ -2254,26 +2356,6 @@ export default function Home() {
                   </div>
                 ) : null}
               </div>
-              {/* Theme: one small icon in the panel's top-right corner. The
-                  cron kill switch used to live here too — it is gone; the swing
-                  cron is controlled from /api/swing/ops/cron-control now. */}
-              <button
-                type="button"
-                onClick={handleThemeToggle}
-                aria-label={
-                  resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
-                }
-                title={
-                  resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"
-                }
-                className="-mr-1 -mt-1 shrink-0 rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-              >
-                {resolvedTheme === "dark" ? (
-                  <Sun className="h-3.5 w-3.5" />
-                ) : (
-                  <Moon className="h-3.5 w-3.5" />
-                )}
-              </button>
             </div>
           </div>
 
