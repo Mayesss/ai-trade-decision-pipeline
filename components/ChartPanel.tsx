@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import type { ColorType } from 'lightweight-charts';
 import { ChartSkeleton, TimelineSkeleton } from './ChartSkeleton';
+import { DROPPED_ENTRY_LABEL } from '../lib/constants';
 
 type DecisionBrief = {
   timestamp?: number | null;
@@ -127,6 +128,10 @@ export type ChartTimelineTick = {
   hourly: boolean;
   kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan' | 'postmortem';
   action?: string;
+  // The model's call before a sizing gate downgraded it to HOLD, and the code
+  // of the gate that did it. Only set when an entry was actually refused.
+  originalAction?: string;
+  entryDropped?: string;
   stage?: string;
   reason?: string;
   // Post-mortem ticks (violet, at the position's exit time): status + the
@@ -235,11 +240,21 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
             tick.verdict ? `: ${tick.verdict}` : tick.postmortemStatus ? ` (${tick.postmortemStatus})` : ''
           }`
         : tick.kind === 'ai_call'
-          ? ` · AI ${tick.action || 'decision'}${timelineTickCooldownSuffix(tick)}`
+          ? ` · AI ${timelineTickActionLabel(tick)}${timelineTickCooldownSuffix(tick)}`
           : tick.stage
             ? ` · skipped: ${tick.reason || tick.stage}`
             : ' · scanned'
   }`;
+};
+
+// A refused entry keeps the model's own call in the label — a tick that reads
+// "AI HOLD" when the model said REVERSE and a gate refused it describes the
+// opposite of what happened.
+const timelineTickActionLabel = (tick: ChartTimelineTick): string => {
+  if (tick.originalAction && tick.originalAction !== tick.action) {
+    return `${tick.originalAction} ✕ ${DROPPED_ENTRY_LABEL[tick.entryDropped ?? ''] ?? 'dropped'}`;
+  }
+  return tick.action || 'decision';
 };
 
 // Minimum px between dot centers before lower-priority dots get culled on

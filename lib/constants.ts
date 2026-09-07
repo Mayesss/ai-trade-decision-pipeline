@@ -28,3 +28,12 @@ export const MICRO_TIMEFRAME = '1H';
 export const PRIMARY_TIMEFRAME = '4H';
 export const MACRO_TIMEFRAME = '1D';
 export const CONTEXT_TIMEFRAME = '1W';
+
+// Short UI labels for the sizing gates that can refuse an entry and rewrite the
+// action to HOLD (analyze.ts dropEntry). Keyed by decision.entry_dropped so the
+// dashboard can render "REVERSE ✕ margin" instead of a bare, misleading HOLD.
+export const DROPPED_ENTRY_LABEL: Record<string, string> = {
+    insufficient_available_margin: 'margin',
+    risk_budget_below_min_size: 'min size',
+    resting_entry_unplaceable: 'unplaceable',
+};

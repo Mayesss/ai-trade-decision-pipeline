@@ -8,7 +8,7 @@ import React, {
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
-import { NANO_TIMEFRAME } from "../lib/constants";
+import { DROPPED_ENTRY_LABEL, NANO_TIMEFRAME } from "../lib/constants";
 import WeeklyDigestPanel from "../components/WeeklyDigestPanel";
 import {
   Circle,
@@ -184,6 +184,10 @@ type TimelineTickUi = {
   hourly: boolean;
   kind: "action" | "ai_call" | "gate_skip" | "scan_skip" | "scan" | "postmortem";
   action?: string;
+  // The model's call before a sizing gate downgraded it to HOLD, plus the code
+  // of the gate that refused it. Only set on a genuinely dropped entry.
+  originalAction?: string;
+  entryDropped?: string;
   summary?: string;
   stage?: string;
   reason?: string;
@@ -1226,6 +1230,15 @@ export default function Home() {
     decision: Record<string, unknown> | null | undefined,
   ): string => {
     const action = String(decision?.action || "");
+    // A sizing gate can refuse an entry and rewrite the action to HOLD. Show
+    // the model's own call, marked as refused: a bare "HOLD" here reads as the
+    // model choosing to sit still, which is the opposite of the REVERSE it
+    // asked for and we declined (2026-09-07 ADAUSDT).
+    const original = String(decision?.original_action || "");
+    if (original && original !== action) {
+      const code = String(decision?.entry_dropped || "");
+      return `${original} ✕ ${DROPPED_ENTRY_LABEL[code] ?? "dropped"}`;
+    }
     if (action === "BUY" || action === "SELL") {
       // Both resting legs carry a price and exactly one is ever set (analyze
       // rewrites the pair off the sanitized kind). Reading only the limit leg

@@ -45,6 +45,11 @@ export type PositionInfo =
           // lets it rescale that cash from a live quote between summary builds.
           unrealizedCash?: number | null;
           marginCash?: number | null;
+          // The margin the VENUE says this position holds (Bitget marginSize),
+          // as opposed to marginCash's size×mark/leverage estimate. A REVERSE
+          // releases exactly this much before the opposite side opens, so the
+          // affordability check needs the exact number, not an approximation.
+          venueMarginUsd?: number | null;
       };
 
 export type PositionWindow = {
@@ -230,6 +235,7 @@ type RawPosition = {
     marginLeverage?: string | number;
     lever?: string | number;
     unrealizedPL?: string | number;
+    marginSize?: string | number;
 };
 
 export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
@@ -256,6 +262,9 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
     const sizeBase = num(chosen.total);
     const marginRaw = leverage && markPrice ? (sizeBase * markPrice) / leverage : NaN;
     const marginCash = Number.isFinite(marginRaw) && marginRaw > 0 ? marginRaw : null;
+    const venueMarginRaw = Number(chosen.marginSize);
+    const venueMarginUsd =
+        Number.isFinite(venueMarginRaw) && venueMarginRaw > 0 ? venueMarginRaw : null;
 
     return {
         status: 'open',
@@ -272,6 +281,7 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         markPrice,
         unrealizedCash,
         marginCash,
+        venueMarginUsd,
     };
 }
 // Account equity (USDT futures account) for fixed-fractional risk sizing.

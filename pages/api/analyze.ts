@@ -2929,6 +2929,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 7 * 24 * 3600,
             ).catch((err: unknown) => console.warn(`wake-watch ref stamp failed for ${symbol}:`, err));
         }
+        // A gate that refuses an ENTRY downgrades the action to HOLD so nothing
+        // executes. The model's real call has to survive that, or the dashboard
+        // reports the opposite of what happened: on 2026-09-07 ADAUSDT the AI
+        // returned REVERSE, a bad margin check dropped it, and the UI showed a
+        // plain HOLD with the reversal buried in the reason prose. original_action
+        // carries the pre-downgrade call and entry_dropped the machine code; both
+        // ride ai_decision_json into the timeline. The appended note text is
+        // unchanged so existing reason-string readers keep working.
+        const dropEntry = (code: string, note: string) => {
+            if (decision.original_action == null) decision.original_action = decision.action;
+            decision.entry_dropped = code;
+            decision.action = 'HOLD';
+            decision.reason = `${String(decision.reason ?? '')} [entry dropped: ${note}]`.trim();
+        };
+
         const restingEntry = sanitizeRestingEntry({
             action: decision.action,
             positionOpen,
@@ -2944,9 +2959,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         decision.entry_stop_price = restingEntry.kind === 'stop' ? restingEntry.price : null;
         decision.resting_entry_kind = restingEntry.kind;
         if (restingEntry.dropEntry && (decision.action === 'BUY' || decision.action === 'SELL')) {
-            decision.action = 'HOLD';
-            decision.reason =
-                `${String(decision.reason ?? '')} [entry dropped: ${restingEntry.notes.join(',')}]`.trim();
+            dropEntry('resting_entry_unplaceable', restingEntry.notes.join(','));
         }
         // Bracket anchor: for a resting entry the protective stop and TP must be
         // sized from the RESTING price (where the position would actually open),
@@ -3198,6 +3211,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // the risk budget, which is how the old fixed notional produced −$12
         // outliers next to −$0.30 losers.
         let execSideSizeUSDT = sideSizeUSDT;
+        // Set when a sizing gate below refuses the entry, so the bracket built
+        // for it can be torn down again (see the teardown after this block).
+        let entryDroppedAfterBracket = false;
         if (bracketEntrySide && stopLossPrice != null) {
             const equityUsd =
                 platform === 'capital'
@@ -3237,16 +3253,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 if (platform === 'bitget' && !dryRun) {
                     bitgetAvailableUsd = await fetchBitgetAccountAvailableMarginUsd();
                 }
+                // A REVERSE does not open alongside the existing position — it
+                // CLOSES it (reduceOnly) and then opens the opposite side, so
+                // that position's margin is back on the balance before the new
+                // order is sent. Comparing against raw pre-close availability
+                // therefore rejects reverses the account can plainly afford:
+                // 2026-09-07 ADAUSDT needed 20.27 against 10.01 "available"
+                // while the very short being closed held 20.40 of its own. Use
+                // the venue's exact marginSize, falling back to the derived
+                // estimate, and never let a bad reading subtract headroom.
+                const reverseReleasesUsd = (() => {
+                    if (decision.action !== 'REVERSE' || positionInfo.status !== 'open') return 0;
+                    const raw = Number(positionInfo.venueMarginUsd ?? positionInfo.marginCash ?? 0);
+                    return Number.isFinite(raw) && raw > 0 ? raw : 0;
+                })();
+                const spendableUsd =
+                    bitgetAvailableUsd === null ? null : bitgetAvailableUsd + reverseReleasesUsd;
                 if (minNotionalUsd !== null && riskSizing.notionalUsd < minNotionalUsd) {
-                    decision.action = 'HOLD';
-                    decision.reason =
-                        `${String(decision.reason ?? '')} [entry dropped: risk_budget_below_min_size ` +
-                        `notional≈${riskSizing.notionalUsd.toFixed(0)} min≈${minNotionalUsd.toFixed(0)}]`.trim();
-                } else if (bitgetAvailableUsd !== null && riskSizing.marginUsd > bitgetAvailableUsd * 0.98) {
-                    decision.action = 'HOLD';
-                    decision.reason =
-                        `${String(decision.reason ?? '')} [entry dropped: insufficient_available_margin ` +
-                        `need≈${riskSizing.marginUsd.toFixed(2)} have≈${bitgetAvailableUsd.toFixed(2)}]`.trim();
+                    entryDroppedAfterBracket = true;
+                    dropEntry(
+                        'risk_budget_below_min_size',
+                        `risk_budget_below_min_size notional≈${riskSizing.notionalUsd.toFixed(0)} ` +
+                            `min≈${minNotionalUsd.toFixed(0)}`,
+                    );
+                } else if (spendableUsd !== null && riskSizing.marginUsd > spendableUsd * 0.98) {
+                    entryDroppedAfterBracket = true;
+                    dropEntry(
+                        'insufficient_available_margin',
+                        `insufficient_available_margin need≈${riskSizing.marginUsd.toFixed(2)} ` +
+                            `have≈${spendableUsd.toFixed(2)}` +
+                            (reverseReleasesUsd > 0
+                                ? ` (avail≈${(bitgetAvailableUsd ?? 0).toFixed(2)} + reverse_release≈${reverseReleasesUsd.toFixed(2)})`
+                                : ''),
+                    );
                 } else {
                     execSideSizeUSDT = riskSizing.marginUsd;
                 }
@@ -3261,6 +3300,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     source: riskSizing.source,
                 };
             }
+        }
+
+        // Bracket teardown for a dropped entry. The stop and TP above were
+        // sized for the position the entry WOULD have opened — and on a dropped
+        // REVERSE that is the OPPOSITE side of the position still sitting on the
+        // venue, so shipping them amends the survivor with an inverted bracket.
+        // On 2026-09-07 ADAUSDT the long-side pair (SL 0.2134 / TP 0.2264) went
+        // at the still-open short and Bitget refused both legs (45122 / 45135);
+        // the original bracket survived only because BOTH were rejected. A venue
+        // that accepts one leg would leave the position stopped on the wrong side
+        // of price. Clearing exchangeTpsl itself (not just the execution args)
+        // keeps the persisted snapshot honest about what shipped: nothing.
+        if (entryDroppedAfterBracket) {
+            stopLossPrice = null;
+            exchangeTpsl.takeProfitPrice = null;
+            exchangeTpsl.stopLossPrice = null;
+            exchangeTpsl.notes.push('bracket_dropped_with_entry');
+            decision.take_profit_price = null;
+            decision.stop_loss_price = null;
         }
 
         // Resting-entry reconcile — the standing commitment's fate, decided by

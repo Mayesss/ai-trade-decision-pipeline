@@ -51,12 +51,19 @@ export function inPositionPrivateWorld(params: {
     openedAtMs: number;
     takeProfit: string;
     stopLoss: string;
+    // The margin the venue reports this position holding, and the account's
+    // spendable margin. Only the reverse-affordability scenarios set these:
+    // a REVERSE releases the position's own margin before the flip opens, so
+    // testing that gate needs an account whose free margin alone is too small.
+    marginSize?: string;
+    availableUsd?: string;
+    holdSide?: 'long' | 'short';
 }): RequestHandler[] {
     return [
         bitgetGet('/api/v2/mix/position/all-position', [
             {
                 symbol: params.symbol,
-                holdSide: 'long',
+                holdSide: params.holdSide ?? 'long',
                 openPriceAvg: params.entryPrice,
                 cTime: String(params.openedAtMs),
                 posMode: 'one_way_mode',
@@ -66,6 +73,7 @@ export function inPositionPrivateWorld(params: {
                 markPrice: params.markPrice,
                 leverage: '5',
                 unrealizedPL: '127.18',
+                ...(params.marginSize ? { marginSize: params.marginSize } : {}),
             },
         ]),
         bitgetGet('/api/v2/mix/order/orders-plan-pending', {
@@ -74,7 +82,16 @@ export function inPositionPrivateWorld(params: {
                 { planType: 'pos_loss', triggerPrice: params.stopLoss, orderId: 'plan-sl-1', size: '0.05' },
             ],
         }),
-        bitgetGet('/api/v2/mix/account/accounts', [ACCOUNT_ROW]),
+        bitgetGet('/api/v2/mix/account/accounts', [
+            params.availableUsd
+                ? {
+                      ...ACCOUNT_ROW,
+                      available: params.availableUsd,
+                      crossedMaxAvailable: params.availableUsd,
+                      isolatedMaxAvailable: params.availableUsd,
+                  }
+                : ACCOUNT_ROW,
+        ]),
         bitgetGet('/api/v2/mix/position/history-position', { list: [] }),
     ];
 }

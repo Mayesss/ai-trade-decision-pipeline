@@ -20,6 +20,11 @@ export type TimelineTick = {
   hourly: boolean;
   kind: 'action' | 'ai_call' | 'gate_skip' | 'scan_skip' | 'scan' | 'postmortem';
   action?: string;
+  // What the model actually called before a sizing gate downgraded it to HOLD,
+  // plus the gate's code. Present only on a dropped entry — without them a
+  // refused REVERSE is indistinguishable from a HOLD the model chose.
+  originalAction?: string;
+  entryDropped?: string;
   summary?: string;
   // Post-mortem ticks only: row id (details via /api/swing/postmortem?id=),
   // worker status, and — once succeeded — the verdict + distilled lesson.
@@ -113,6 +118,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
     const decision = (entry.aiDecision ?? {}) as Record<string, unknown>;
     const action = String(decision.action || '').trim().toUpperCase();
+    const originalAction = String(decision.original_action || '').trim().toUpperCase();
+    const entryDropped = String(decision.entry_dropped || '').trim();
     const skipped =
       decision.promptSkipped === true ||
       decision.decision_source === 'pre_ai_skip' ||
@@ -123,6 +130,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       hourly: isHourlyTs(ts),
       kind: skipped ? 'gate_skip' : ACTION_KINDS.has(action) ? 'action' : 'ai_call',
       ...(action ? { action } : {}),
+      ...(originalAction && originalAction !== action ? { originalAction } : {}),
+      ...(entryDropped ? { entryDropped } : {}),
       ...(typeof decision.summary === 'string' && decision.summary ? { summary: decision.summary } : {}),
       ...(Number.isFinite(Number(decision.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
         ? {
