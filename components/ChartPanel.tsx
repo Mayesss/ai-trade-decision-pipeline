@@ -132,6 +132,8 @@ export type ChartTimelineTick = {
   // of the gate that did it. Only set when an entry was actually refused.
   originalAction?: string;
   entryDropped?: string;
+  trimCoerced?: boolean;
+  trimDropped?: string;
   stage?: string;
   reason?: string;
   // Post-mortem ticks (violet, at the position's exit time): status + the
@@ -254,7 +256,10 @@ const timelineTickActionLabel = (tick: ChartTimelineTick): string => {
   if (tick.originalAction && tick.originalAction !== tick.action) {
     return `${tick.originalAction} ✕ ${DROPPED_ENTRY_LABEL[tick.entryDropped ?? ''] ?? 'dropped'}`;
   }
-  return tick.action || 'decision';
+  const base = tick.action || 'decision';
+  if (tick.trimDropped) return `${base} ✕ trim ${tick.trimDropped}`;
+  if (tick.trimCoerced) return `${base} (inferred trim)`;
+  return base;
 };
 
 // Minimum px between dot centers before lower-priority dots get culled on

@@ -149,6 +149,34 @@ export function postprocessDecision(params: {
         }
     }
 
+    // A trim expressed as HOLD. The venue only trims on a partial CLOSE, but the
+    // model reliably asks for one by setting exit_size_pct while labelling the
+    // action HOLD ("banking 40% here" with action: HOLD, exit_size_pct: 40).
+    // exit_size_pct below keeps the field only for CLOSE/REVERSE, so that
+    // request used to be nulled and the trim vanished with no trace anywhere —
+    // 2026-09-07 dropped a 40% ADAUSDT and a 35% BTCUSDT trim within a minute
+    // of each other, both wake-band fires whose own wake note invited a partial.
+    // On an open position exit_size_pct has exactly one meaning, so honour it:
+    // relabel as the partial CLOSE it describes. trim_coerced_from_hold marks
+    // the rewrite so history can tell an explicit CLOSE from an inferred one.
+    // A full 100 is deliberately NOT coerced — that is a whole-position exit,
+    // too big a leap from a HOLD to infer.
+    // A value we will NOT act on (a full 100, or junk) is recorded rather than
+    // dropped in silence — that silence is what hid the two 2026-09-07 trims,
+    // and the dashboard has to be able to say "the model asked and we declined".
+    let trim_coerced_from_hold = false;
+    let trim_dropped: string | null = null;
+    if (positionOpen && action === 'HOLD') {
+        const rawTrim = decision?.exit_size_pct;
+        const requestedTrim = Number(rawTrim);
+        if (Number.isFinite(requestedTrim) && requestedTrim > 0 && requestedTrim < 100) {
+            action = 'CLOSE';
+            trim_coerced_from_hold = true;
+        } else if (rawTrim !== null && rawTrim !== undefined) {
+            trim_dropped = String(rawTrim).slice(0, 40);
+        }
+    }
+
     const leverage =
         action === 'BUY' || action === 'SELL' || action === 'REVERSE'
             ? Number.isFinite(decision?.leverage as number)
@@ -265,6 +293,8 @@ export function postprocessDecision(params: {
         action,
         leverage,
         exit_size_pct,
+        ...(trim_coerced_from_hold ? { trim_coerced_from_hold: true } : {}),
+        ...(trim_dropped !== null ? { trim_dropped } : {}),
         raise_leverage_to,
         move_stop_to_be,
         take_profit_price,

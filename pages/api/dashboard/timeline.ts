@@ -25,6 +25,11 @@ export type TimelineTick = {
   // refused REVERSE is indistinguishable from a HOLD the model chose.
   originalAction?: string;
   entryDropped?: string;
+  // A partial CLOSE the model labelled HOLD (relabelled by postprocessDecision),
+  // and a trim value we refused to act on. Both exist so the dashboard never
+  // shows a trim as a bare HOLD, or an ignored request as nothing at all.
+  trimCoerced?: boolean;
+  trimDropped?: string;
   summary?: string;
   // Post-mortem ticks only: row id (details via /api/swing/postmortem?id=),
   // worker status, and — once succeeded — the verdict + distilled lesson.
@@ -120,6 +125,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const action = String(decision.action || '').trim().toUpperCase();
     const originalAction = String(decision.original_action || '').trim().toUpperCase();
     const entryDropped = String(decision.entry_dropped || '').trim();
+    const trimDropped = String(decision.trim_dropped ?? '').trim();
     const skipped =
       decision.promptSkipped === true ||
       decision.decision_source === 'pre_ai_skip' ||
@@ -132,6 +138,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ...(action ? { action } : {}),
       ...(originalAction && originalAction !== action ? { originalAction } : {}),
       ...(entryDropped ? { entryDropped } : {}),
+      ...(decision.trim_coerced_from_hold === true ? { trimCoerced: true } : {}),
+      ...(trimDropped ? { trimDropped } : {}),
       ...(typeof decision.summary === 'string' && decision.summary ? { summary: decision.summary } : {}),
       ...(Number.isFinite(Number(decision.cooldown_minutes)) && Number(decision.cooldown_minutes) > 0
         ? {

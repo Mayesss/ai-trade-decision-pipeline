@@ -188,6 +188,10 @@ type TimelineTickUi = {
   // of the gate that refused it. Only set on a genuinely dropped entry.
   originalAction?: string;
   entryDropped?: string;
+  // An inferred trim (model said HOLD, carried exit_size_pct) and a trim value
+  // that was refused — surfaced so neither is invisible on the timeline.
+  trimCoerced?: boolean;
+  trimDropped?: string;
   summary?: string;
   stage?: string;
   reason?: string;
@@ -1253,12 +1257,23 @@ export default function Home() {
       }
       return action;
     }
-    if (action === "HOLD") return `${action}${formatCooldownSuffix(decision)}`;
+    if (action === "HOLD") {
+      // The model asked for a trim we declined (a full 100, or an unusable
+      // value). Say so rather than showing an unqualified HOLD.
+      const refused = String(decision?.trim_dropped ?? "");
+      const suffix = refused ? ` · trim ${refused} refused` : "";
+      return `${action}${formatCooldownSuffix(decision)}${suffix}`;
+    }
     if (action !== "CLOSE") return action;
     const rawPct =
       decision?.exit_size_pct ?? decision?.close_size_pct ?? decision?.partial_close_pct;
     const pct = Number(rawPct);
-    if (Number.isFinite(pct) && pct > 0 && pct < 100) return `CLOSE ${Math.round(pct)}%`;
+    if (Number.isFinite(pct) && pct > 0 && pct < 100) {
+      // Flagged when the model labelled this HOLD and we read the trim off
+      // exit_size_pct — an explicit CLOSE carries no marker.
+      const inferred = decision?.trim_coerced_from_hold === true ? " (inferred)" : "";
+      return `CLOSE ${Math.round(pct)}%${inferred}`;
+    }
     return action;
   };
 
