@@ -23,7 +23,8 @@ export const config = { runtime: 'nodejs', maxDuration: 300 };
 //   4. Venue-side closes: in_position AI threads whose symbol is flat on the
 //      venue (TP/SL bracket fill, manual close, liquidation) fire analyze so
 //      the close is reconciled/persisted within ~a minute instead of at the
-//      next 15-min tick.
+//      next 15-min tick. This fire alone carries enforcePrimaryCloseGate: it
+//      wants the reconcile, not a fresh look at a symbol that just went flat.
 //
 // Firing = invokeCronEndpoint held OPEN until analyze responds (240s cap).
 // The old scalp kick-and-detach (5s abort, "the analyze run completes
@@ -194,7 +195,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // call — wake fires carry no Vercel cron headers, so without the
                 // marker they'd be classified as manual operator ticks and bypass
                 // the hard-deactivation gate entirely.
-                { symbol, platform, decisionPolicy: 'balanced', wake: true, ...(forwardDryRun ? { dryRun: true } : {}) },
+                //
+                // enforcePrimaryCloseGate on a position_closed fire: that fire
+                // exists for the close RECONCILE, not for a fresh decision, and
+                // the reconcile surface (thread end, Capital close persistence
+                // + postmortem enqueue, overlay invalidation) all sits ABOVE the
+                // 4H-close gate in analyze. Without the flag the fire is
+                // classified manual, so the cadence gate never applies and every
+                // TP/SL fill bought an off-boundary flat AI call on a symbol
+                // that had just gone flat. The gate still yields to a genuinely
+                // crossed wake band (analyze peeks the band before skipping),
+                // which matters because the per-symbol fired marker lets a close
+                // win the marker over a same-minute band crossing; and a close
+                // landing on a real 4H boundary evaluates as it normally would.
+                {
+                    symbol,
+                    platform,
+                    decisionPolicy: 'balanced',
+                    wake: true,
+                    ...(reason === 'position_closed' ? { enforcePrimaryCloseGate: true } : {}),
+                    ...(forwardDryRun ? { dryRun: true } : {}),
+                },
                 // Held open for the whole analyze run (~60-120s of AI latency):
                 // a detached run gets hard-killed by the platform more often
                 // than not, and it dies AFTER claiming the cooldown row.
@@ -534,7 +555,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // its thread in the same tick, so it never appears here. Fire analyze so
     // its existing close reconcile runs now (thread end, Capital close
     // persistence, overlay cache invalidation) instead of up to 15 minutes
-    // later. Gated per venue on a SUCCESSFUL position fetch: a failed fetch
+    // later. Reconcile-only: the fire carries enforcePrimaryCloseGate so it
+    // does the upkeep and stops at the 4H-close gate rather than spending an
+    // AI call (see maybeFire). The trade-off is that no flat HOLD runs here to
+    // arm a fresh wake band — the symbol waits for its next primary close, the
+    // same as any other off-boundary flat tick. Gated per venue on a SUCCESSFUL position fetch: a failed fetch
     // must not read as "every position closed at once". The fired analyze
     // re-checks broker reality itself, so a race against a mid-tick thread
     // update costs at most one redundant invocation (deduped by the KV marker).

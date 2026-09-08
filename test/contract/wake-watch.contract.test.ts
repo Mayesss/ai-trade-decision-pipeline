@@ -164,6 +164,14 @@ test('venue-side close: in_position thread with a flat venue fires the reconcile
     expect(body.fired).toEqual([
         { platform: 'bitget', symbol: 'ETHUSDT', reason: 'position_closed', invoked: true, error: null },
     ]);
+
+    // Reconcile-only: this fire alone forces the 4H-close gate on, so analyze
+    // does the close upkeep and skips the AI instead of taking an off-boundary
+    // flat look at a symbol that has just gone flat.
+    const summary = await conversationSummary();
+    const fire = summary.find((line) => line.includes(`${SELF_HOST}/api/swing/analyze`));
+    expect(fire).toContain('enforcePrimaryCloseGate=1');
+    expect(fire).toContain('wake=1');
 });
 
 test('in-position emergency move beyond the ATR threshold fires an early look', async () => {
