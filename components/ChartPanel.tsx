@@ -472,35 +472,10 @@ const formatOverlayTime = (tsSeconds?: number | null) => {
 // timestamps otherwise just look inconsistent — the entry decision reads 01:06
 // while the position starts at 12:30. Null for a market entry (no wait) and
 // for anything under a few minutes (clock drift, not patience).
-// Below this, decision and fill are the same moment for display purposes (a
-// market entry, or clock drift): no wait to spell out, nothing to extend.
-const RESTED_GAP_MIN_MINUTES = 3;
-
-const restedGapMinutes = (decisionTsMs?: number | null, entryTimeSec?: number | null): number | null => {
+const formatRestedGap = (decisionTsMs?: number | null, entryTimeSec?: number | null): string | null => {
   if (!decisionTsMs || !entryTimeSec) return null;
   const gapMin = Math.round((entryTimeSec * 1000 - decisionTsMs) / 60_000);
-  return gapMin >= RESTED_GAP_MIN_MINUTES ? gapMin : null;
-};
-
-// Where the bright timeline thread for an OPEN position should begin: the tick
-// that decided the entry when a resting order waited to fill, else the fill
-// itself. The position box deliberately still starts at the fill — the box is
-// exposure, the timeline is the decision chain, and only the latter should
-// reach back to the tick that caused the trade.
-export const openThreadStartMs = (
-  entryTimeSec?: number | null,
-  entryDecisionTsMs?: number | null,
-): number | null => {
-  if (!entryTimeSec || !Number.isFinite(entryTimeSec)) return null;
-  const fillMs = entryTimeSec * 1000;
-  return restedGapMinutes(entryDecisionTsMs, entryTimeSec) !== null
-    ? Number(entryDecisionTsMs)
-    : fillMs;
-};
-
-const formatRestedGap = (decisionTsMs?: number | null, entryTimeSec?: number | null): string | null => {
-  const gapMin = restedGapMinutes(decisionTsMs, entryTimeSec);
-  if (gapMin === null) return null;
+  if (gapMin < 3) return null;
   const hours = Math.floor(gapMin / 60);
   const minutes = gapMin % 60;
   return hours ? `${hours}h${minutes ? ` ${minutes}m` : ''}` : `${minutes}m`;
@@ -2041,13 +2016,9 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       // A live position keeps the decision context active even when later
       // quarter ticks are flat gate skips and therefore have no response ids.
-      // Extend the bright thread from entry through the latest observed tick —
-      // and, for a position opened by a resting order, from the tick that
-      // PLACED that order rather than the fill an hour later, so the chain
-      // starts where the decision was actually made.
+      // Extend the bright thread from entry through the latest observed tick.
       const openPosition = positionOverlays.find((pos) => pos.status === 'open');
-      const openEntryMs =
-        openThreadStartMs(openPosition?.entryTime, openPosition?.entryDecision?.timestamp) ?? Number.NaN;
+      const openEntryMs = Number(openPosition?.entryTime) * 1000;
       const latestTickTs = timelineTicks.reduce(
         (latest, tick) => Math.max(latest, tick.ts),
         0,
@@ -2353,19 +2324,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                     </span>
                   </div>
                   <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
-                    {hoveredOverlay.side || 'position'}
-                    {/* A resting order makes "entry" two moments: when the AI
-                        decided, and when the venue filled. Naming only the fill
-                        is what made the box look like it began on the wrong
-                        tick. A market entry keeps the single label. */}
-                    {restedGapMinutes(
-                      hoveredOverlay.entryDecision?.timestamp,
-                      hoveredOverlay.entryTime,
-                    ) !== null
-                      ? ` · decided ${formatOverlayTime(
-                          Math.floor((hoveredOverlay.entryDecision?.timestamp ?? 0) / 1000),
-                        )} · filled ${formatOverlayTime(hoveredOverlay.entryTime)}`
-                      : ` · entry ${formatOverlayTime(hoveredOverlay.entryTime)}`}
+                    {hoveredOverlay.side || 'position'} · entry {formatOverlayTime(hoveredOverlay.entryTime)}
                     {hoveredOverlay.exitTime ? ` · exit ${formatOverlayTime(hoveredOverlay.exitTime)}` : ''}
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
