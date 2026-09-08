@@ -8,6 +8,7 @@ import {
     pickPivotalDecisions,
     postmortemPnl,
     shouldEnqueuePostmortem,
+    summarizePositionSizeEvents,
     summarizePostExitBars,
     truncateMiddle,
 } from '../../../lib/swing/postmortem';
@@ -210,4 +211,61 @@ test('summarizePostExitBars: null without a usable exit price or without in-wind
         }),
         null,
     );
+});
+
+// An evaluation is scheduled once, on the exit that leaves the account FLAT,
+// so the size changes along the way have to be stated for the analyst — the
+// pnl it reads is the position's total across all of them.
+test('summarizePositionSizeEvents: trims inside the position, the flip that opened it', () => {
+    const events = summarizePositionSizeEvents(
+        [
+            // The REVERSE that opened this position, at its entry.
+            decision(0, 'REVERSE', { execResult: { placed: true, reversed: true } }),
+            decision(60, 'HOLD'),
+            // A 40% trim mid-flight.
+            decision(120, 'CLOSE', {
+                aiDecision: { action: 'CLOSE', exit_size_pct: 40, reason: 'bank half into strength' },
+                execResult: { placed: true, closed: true, partial: true, partialClosePct: 40 },
+            }),
+            // The exit under review: a full close, never an "event".
+            decision(600, 'CLOSE', {
+                aiDecision: { action: 'CLOSE', exit_size_pct: 100 },
+                execResult: { placed: true, closed: true },
+            }),
+        ],
+        { entryMs: at(0), exitMs: at(600) },
+    );
+    assert.deepEqual(
+        events.map((e) => [e.kind, e.pct]),
+        [
+            ['opened_by_reverse', null],
+            ['trim', 40],
+        ],
+    );
+    assert.equal(events[1].reason, 'bank half into strength');
+});
+
+test('summarizePositionSizeEvents: ignores dry runs, failed exits and other positions', () => {
+    const events = summarizePositionSizeEvents(
+        [
+            // A trim belonging to the PREVIOUS position.
+            decision(-600, 'CLOSE', {
+                aiDecision: { action: 'CLOSE', exit_size_pct: 25 },
+                execResult: { placed: true, closed: true, partial: true, partialClosePct: 25 },
+            }),
+            // Requested but never executed.
+            decision(100, 'CLOSE', {
+                aiDecision: { action: 'CLOSE', exit_size_pct: 30 },
+                execResult: { placed: false, closed: false, note: 'no open position' },
+            }),
+            // A dry-run tick.
+            decision(200, 'CLOSE', {
+                dryRun: true,
+                aiDecision: { action: 'CLOSE', exit_size_pct: 30 },
+                execResult: { placed: true, closed: true, partial: true, partialClosePct: 30 },
+            }),
+        ],
+        { entryMs: at(0), exitMs: at(600) },
+    );
+    assert.deepEqual(events, []);
 });

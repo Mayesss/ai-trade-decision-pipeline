@@ -35,6 +35,10 @@ type PositionOverlay = {
   pnlPct?: number | null;
   pnlNet?: number | null;
   leverage?: number | null;
+  // OPEN row only: leverage against the margin actually posted, which is what
+  // pnlPct is a percentage of. `leverage` is the venue's display setting and
+  // overstates a trimmed position — never rescale PnL with it.
+  effectiveLeverage?: number | null;
   entryPrice?: number | null;
   exitPrice?: number | null;
   entryDecision?: DecisionBrief | null;
@@ -302,6 +306,7 @@ type ChartPanelProps = {
     pnlPct: number | null;
     side: 'long' | 'short' | null;
     leverage: number | null;
+    effectiveLeverage: number | null;
     entryPrice: number | null;
   } | null) => void;
   onPositionSummaryChange?: (summary: {
@@ -314,6 +319,7 @@ type ChartPanelProps = {
     openPnlPct: number | null;
     openSide: 'long' | 'short' | null;
     openLeverage: number | null;
+    openEffectiveLeverage: number | null;
     openEntryPrice: number | null;
   }) => void;
   // Vertical marker for the decision-timeline selection (ms epoch); null hides it.
@@ -1368,6 +1374,8 @@ export default function ChartPanel(props: ChartPanelProps) {
             pnlPct: typeof openPosition.pnlPct === 'number' ? openPosition.pnlPct : null,
             side: openPosition.side === 'long' || openPosition.side === 'short' ? openPosition.side : null,
             leverage: typeof openPosition.leverage === 'number' ? openPosition.leverage : null,
+            effectiveLeverage:
+              typeof openPosition.effectiveLeverage === 'number' ? openPosition.effectiveLeverage : null,
             entryPrice: typeof openPosition.entryPrice === 'number' ? openPosition.entryPrice : null,
           }
         : null,
@@ -1382,6 +1390,8 @@ export default function ChartPanel(props: ChartPanelProps) {
       openPnlPct: typeof openPosition?.pnlPct === 'number' ? openPosition.pnlPct : null,
       openSide: openPosition?.side === 'long' || openPosition?.side === 'short' ? openPosition.side : null,
       openLeverage: typeof openPosition?.leverage === 'number' ? openPosition.leverage : null,
+      openEffectiveLeverage:
+        typeof openPosition?.effectiveLeverage === 'number' ? openPosition.effectiveLeverage : null,
       openEntryPrice: typeof openPosition?.entryPrice === 'number' ? openPosition.entryPrice : null,
     });
   });
@@ -1578,7 +1588,15 @@ export default function ChartPanel(props: ChartPanelProps) {
         ) {
           return pos;
         }
-        const lev = typeof pos.leverage === 'number' && pos.leverage > 0 ? pos.leverage : 1;
+        // effectiveLeverage, NOT `leverage`: the venue's setting is only the
+        // right factor while the position still posts size x price / setting of
+        // margin, which stops being true the moment it is trimmed.
+        const lev =
+          typeof pos.effectiveLeverage === 'number' && pos.effectiveLeverage > 0
+            ? pos.effectiveLeverage
+            : typeof pos.leverage === 'number' && pos.leverage > 0
+              ? pos.leverage
+              : 1;
         const sideSign = pos.side === 'long' ? 1 : -1;
         const nextPnlPct = ((price - pos.entryPrice) / pos.entryPrice) * sideSign * lev * 100;
         if (!Number.isFinite(nextPnlPct)) return pos;

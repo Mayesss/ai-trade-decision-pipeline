@@ -14,7 +14,14 @@ import { bitgetFetch, resolveProductType } from '../bitget';
 import { fetchCapitalCandlesByEpicDateRange, resolveCapitalEpic } from '../capital';
 import type { AnalysisPlatform } from '../platform';
 import { resolveSwingCategory } from './category';
-import { BRACKET_ENTRY_LOOKBACK_MS, classifyCloseCause, type CloseCause } from './positionDecisionMatch';
+import {
+    BRACKET_ENTRY_LOOKBACK_MS,
+    classifyCloseCause,
+    classifyExitDisposition,
+    AI_CLOSE_MATCH_MS,
+    type CloseCause,
+    type ExitDisposition,
+} from './positionDecisionMatch';
 import { applyLessonDecision, resolveLessonDecision } from './lessons';
 import {
     completeSwingPostmortem,
@@ -23,6 +30,7 @@ import {
     loadActiveSwingLessons,
     loadSwingBracketTrail,
     loadSwingDecisionWindow,
+    loadSwingExitDecisions,
     loadSwingTickLog,
     requeueSwingPostmortem,
     skipSwingPostmortem,
@@ -68,6 +76,30 @@ export function shouldEnqueuePostmortem(w: PositionWindow, mode: SwingPostmortem
     return pnl < 0;
 }
 
+// What this exit left behind, read from the decisions around it. Only the
+// timely paths know it for free (they hold the exec result); everyone else asks
+// Neon. Best-effort by design: a read failure returns 'flat', which keeps the
+// pre-gate behaviour (enqueue) rather than silently losing an evaluation.
+async function resolveExitDisposition(
+    platform: string,
+    window: PositionWindow,
+): Promise<ExitDisposition> {
+    const exitMs = Number(window?.exitTimestamp);
+    if (!Number.isFinite(exitMs) || exitMs <= 0) return 'flat';
+    try {
+        const rows = await loadSwingExitDecisions({
+            symbol: window.symbol,
+            platform,
+            fromMs: exitMs - AI_CLOSE_MATCH_MS,
+            toMs: exitMs + AI_CLOSE_MATCH_MS,
+        });
+        return classifyExitDisposition(rows, exitMs).disposition;
+    } catch (err) {
+        console.warn(`[postmortem] exit-disposition read failed for ${window?.symbol}:`, err);
+        return 'flat';
+    }
+}
+
 // Best-effort enqueue + worker kick, called from every close-persistence path
 // (Bitget broker-merge sync, Capital reconcile, Capital AI-close snapshot).
 // Never throws into the caller; returns the new row id or null (filtered out /
@@ -76,11 +108,35 @@ export async function maybeEnqueueSwingPostmortem(
     platform: string,
     window: PositionWindow,
     trigger: SwingPostmortemTrigger = 'close',
+    // The caller's own reading of what the exit left behind. The AI-execution
+    // path passes it (its decision row is not written yet, so Neon would say
+    // 'flat' for a trim it just made); everyone else omits it and this resolves
+    // from the recorded decisions.
+    opts: { disposition?: ExitDisposition } = {},
 ): Promise<number | null> {
     try {
         // Manual/backfill triggers bypass the mode filter — an operator asking
         // for a post-mortem gets one, wins included.
         if (trigger === 'close' && !shouldEnqueuePostmortem(window, resolveSwingPostmortemMode())) return null;
+        // An evaluation judges a FINISHED trade, so it waits for the position to
+        // be entirely closed. A trim books its own closed window while the
+        // position keeps running, and a REVERSE books one with an opposite
+        // position opening in the same breath — evaluating either would grade a
+        // trade still in flight (and, for a trimmed position, grade one chunk's
+        // cash as the whole result). Both still reach the analyst: they show up
+        // as position_events on the evaluation that runs when the position
+        // finally goes flat.
+        if (trigger === 'close') {
+            const disposition = opts.disposition ?? (await resolveExitDisposition(platform, window));
+            if (disposition !== 'flat') {
+                console.log(
+                    `[postmortem] no evaluation for ${window.symbol} ${new Date(
+                        Number(window.exitTimestamp),
+                    ).toISOString()} — exit was a ${disposition}, position is still open`,
+                );
+                return null;
+            }
+        }
         const id = await enqueueSwingPostmortem({
             platform,
             symbol: window.symbol,
@@ -415,6 +471,80 @@ function digestDecision(d: SwingDecisionFullRow): DecisionDigest {
             : null,
         decision_id: d.id,
     };
+}
+
+// --------------------------------------------------------------------------
+// Size changes during the position's life
+// --------------------------------------------------------------------------
+// An evaluation now runs once, when the position is entirely closed, so the
+// trims along the way (and a flip that opened or ended it) are no longer
+// implied by "one evaluation per exit" — they have to be stated. The analyst
+// reads them next to the outcome: pnl is the position's TOTAL, so a trade that
+// banked 40% into strength and let the rest run is a sequence to judge as one,
+// not a single all-or-nothing exit.
+export type PositionSizeEvent = {
+    ts_utc: string;
+    kind: 'trim' | 'reverse' | 'opened_by_reverse';
+    // Percent of the position the exit took off (null when unrecorded).
+    pct: number | null;
+    reason: string | null;
+};
+
+// Decision rows are written just after their execution, so both ends get a
+// grace margin before a trim is read as belonging to a neighbouring position.
+const POSITION_EVENT_EDGE_MS = 5 * 60 * 1000;
+const MAX_EVENT_REASON_CHARS = 240;
+
+export function summarizePositionSizeEvents(
+    decisions: SwingDecisionFullRow[],
+    bounds: { entryMs: number | null; exitMs: number | null },
+): PositionSizeEvent[] {
+    const entryMs = Number.isFinite(Number(bounds.entryMs)) ? Number(bounds.entryMs) : null;
+    const exitMs = Number.isFinite(Number(bounds.exitMs)) ? Number(bounds.exitMs) : null;
+    const events: PositionSizeEvent[] = [];
+    for (const d of decisions) {
+        if (d.dryRun) continue;
+        const ai = d.aiDecision ?? {};
+        const exec = d.execResult ?? {};
+        const action = String(d.action ?? ai.action ?? '').toUpperCase();
+        if (action !== 'CLOSE' && action !== 'REVERSE') continue;
+        if (!(exec.placed === true || exec.closed === true || exec.reversed === true)) continue;
+        const { disposition, pct } = classifyExitDisposition(
+            [
+                {
+                    tsMs: d.decidedAtMs,
+                    action,
+                    exitSizePct: numOrNull(ai.exit_size_pct),
+                    execPlaced: exec.placed === true,
+                    execClosed: exec.closed === true,
+                    execReversed: exec.reversed === true,
+                    execPartial: exec.partial === true,
+                    execPartialClosePct: numOrNull(exec.partialClosePct),
+                },
+            ],
+            d.decidedAtMs,
+        );
+        if (disposition === 'flat') continue; // the exit under review, not a size change
+        // A flip at the entry edge is what OPENED this position; one inside its
+        // life is what ended it (only reachable on a forced/manual run — the
+        // enqueue no longer schedules those).
+        const openedByReverse =
+            disposition === 'reverse' &&
+            entryMs !== null &&
+            Math.abs(d.decidedAtMs - entryMs) <= POSITION_EVENT_EDGE_MS;
+        if (!openedByReverse) {
+            if (entryMs !== null && d.decidedAtMs < entryMs - POSITION_EVENT_EDGE_MS) continue;
+            if (exitMs !== null && d.decidedAtMs > exitMs + POSITION_EVENT_EDGE_MS) continue;
+        }
+        const reason = typeof ai.reason === 'string' ? ai.reason : typeof ai.summary === 'string' ? ai.summary : null;
+        events.push({
+            ts_utc: new Date(d.decidedAtMs).toISOString(),
+            kind: openedByReverse ? 'opened_by_reverse' : disposition,
+            pct,
+            reason: reason ? reason.slice(0, MAX_EVENT_REASON_CHARS) : null,
+        });
+    }
+    return events;
 }
 
 // Pivotal = the ticks whose full prompt the analyst should read: everything
@@ -762,6 +892,7 @@ Rules:
 - NO survivor bias — the mirror of hindsight bias: a profitable outcome does not retroactively validate the process. Only credit a decision if the information AVAILABLE AT ITS TIMESTAMP supported it. A trade that violated the library or its own plan and got paid anyway is 'lucky_win' — the most dangerous outcome in the dataset, because it teaches overconfidence if mishandled.
 - verdict: 'earned_win' when entry, management and exit were each defensible on their own timestamps. 'lucky_win' when the profit arrived DESPITE a process flaw (violated an applicable lesson, chased an extended entry, overrode its own written plan without cause, or was rescued by news/variance). 'exit_flaw' when the win was real but the exit demonstrably leaked money — use the POST-EXIT MARKET section: continuation well past the exit price toward the original target = premature exit; most of the recorded in-trade MFE given back before the close = late exit; reversal shortly after the close = well-timed (that alone is not exit_flaw).
 - position.closed_by names what ENDED the trade: 'take_profit' (the TP leg filled), 'stop_loss' (the stop filled — including a stop TRAILED into profit, which is how most winners here end), 'ai_close' (a CLOSE/REVERSE decision), 'unknown'. Read it before judging the exit: a win closed_by 'stop_loss' never reached its target, so judge it as a trailing-stop exit (was the trail tight enough to bank the move, too tight to let it run?) — never as a target hit. position.take_profit_at_exit / stop_loss_at_exit are the levels that were actually resting at the close. closed_by_basis='pnl_sign' means the levels could not be recovered and the sign was the only evidence — treat that verdict as weak.
+- position.position_events (when present) lists the SIZE changes inside this trade: 'trim' (a partial exit — pct is how much of the position it took off), 'opened_by_reverse' (the position was opened by flipping the previous one). The evaluation covers the position from entry to the moment the account went FLAT, and the pnl figures above are its TOTAL across every partial exit — so judge the exit as a sequence: banking part into strength and letting the remainder run is a scaling decision, and the POST-EXIT MARKET section only speaks to the LAST chunk's timing, never to the earlier trims.
 - what_worked: the repeatable, MEASURABLE conditions behind the win (each one sentence, anchored to dossier values). exit_quality: the exit judgment with its numbers.
 - Anchor every claim to a timestamp or measured value from the dossier. Do not invent data.
 - ACTIVE LESSON LIBRARY handling:
@@ -782,6 +913,7 @@ Rules:
 - Anchor every claim to a timestamp from the dossier. Do not invent data that is not present.
 - Explicitly examine the SKIPPED ticks: did a gate (cooldown, dedupe, off-boundary bar-close cadence, quiet-position threshold) hide actionable information while the position was moving against its thesis? Remember the pipeline BY DESIGN only consults the model on primary bar closes and fences positions with the exchange bracket in between — a skip is only a defect if an ON-CADENCE look or a wider/different bracket could have acted on what the skip hid. If yes, describe it in gate_impact; if no, set gate_impact to null.
 - position.closed_by names what ENDED the trade: 'take_profit', 'stop_loss' (the stop filled — a stop trailed into profit closes a WINNER at the stop), 'ai_close' (a CLOSE/REVERSE decision) or 'unknown', with the levels that were actually resting in take_profit_at_exit / stop_loss_at_exit. Judge stop geometry against the level that actually fired, not the one the entry set. closed_by_basis='pnl_sign' means the levels could not be recovered — say so rather than asserting a cause.
+- position.position_events (when present) lists the SIZE changes inside this trade: 'trim' (a partial exit — pct is how much of the position it took off), 'opened_by_reverse' (the position was opened by flipping the previous one). The evaluation covers the position from entry to the moment the account went FLAT, and the pnl figures above are its TOTAL across every partial exit — so judge management as a sequence, not a single all-or-nothing exit: a trim that de-risked before the adverse move is a different (and often better) decision than holding full size into it, and a stop hit after a trim cost less than the same stop at full size. Never read a trim as the trade ending.
 - Judge the bracket geometry: was the stop at a level the recorded volatility (ATR fields in the prompts/metrics) made likely to be swept? Was the TP realistic for the holding window?
 - POST-EXIT MARKET (section, when present): the run is deliberately delayed past the close so you can see the price path AFTER the exit. Use it to judge EXIT quality only: a stop swept immediately before a reversal well past the stop level points to misplaced SL geometry; continuation through the original target after an AI CLOSE points to a premature exit; continued adverse movement CONFIRMS the exit was right. It must never retroactively fault the ENTRY or any in-trade decision — the no-hindsight rule above still governs those; this section exists solely so exit-mechanics verdicts rest on measurements instead of guesses.
 - Judge entry mechanics: market vs a resting entry, and which KIND of resting entry (a limit rests against the trade, a stop rests with it). For a filled limit, ask whether it filled into momentum against the position (adverse selection); for a filled stop, whether the trigger was a genuine move or a sweep that reversed. Note that trades predating 2026-08-30 could only ever be market or limit — a missing stop is a tooling fact, not a preference.
@@ -920,6 +1052,9 @@ export async function runSwingPostmortem(
             pnlValue: rowPnl,
             nowMs: Date.now(),
         });
+        const sizeEvents = isRefusal
+            ? []
+            : summarizePositionSizeEvents(decisions, { entryMs: row.entryTsMs, exitMs: row.exitTsMs });
         const position = isRefusal
             ? {
                   platform: row.platform,
@@ -948,6 +1083,12 @@ export async function runSwingPostmortem(
                   closed_by_basis: closeCause.basis,
                   take_profit_at_exit: closeCause.takeProfit,
                   stop_loss_at_exit: closeCause.stopLoss,
+                  // Size changes during the life of the trade. The evaluation is
+                  // scheduled once, on the exit that left the account FLAT, so
+                  // the trims (and a flip that opened the position) are only
+                  // visible if stated: pnl above is the position's total across
+                  // all of them.
+                  ...(sizeEvents.length ? { position_events: sizeEvents } : {}),
               };
         const { dossier, aiUserMessage } = buildPostmortemDossier({
             position,

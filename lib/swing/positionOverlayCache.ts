@@ -42,7 +42,10 @@ import {
 // decision ran next, e.g. a BUY placing the following resting entry.
 // v9: closeReason names the bracket leg the exit price landed on instead of
 // reading the pnl sign — v8 blobs call every stop trailed into profit a TP.
-const PREFIX = 'swing:chart:overlay:v9';
+// v10: the open row carries effectiveLeverage (its percent's real basis) — v9
+// rows have none, so the client's live rescale would fall back to the venue's
+// leverage SETTING and overstate any trimmed position for the whole TTL.
+const PREFIX = 'swing:chart:overlay:v10';
 const TTL_SECONDS = (() => {
   const raw = Number(process.env.SWING_CHART_OVERLAY_CACHE_TTL_SECONDS);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 65 * 60;
@@ -78,6 +81,8 @@ type OverlaySourceRow = {
   pnlPct?: number | string | null;
   pnlNet?: number | string | null;
   leverage?: number | null;
+  // Open row only — see the note on the chart endpoint's OverlaySourceWindow.
+  effectiveLeverage?: number | null;
   takeProfitPrice?: number | null;
   stopLossPrice?: number | null;
   chunks?: CapitalWindowChunk[] | null;
@@ -90,6 +95,7 @@ type OpenPositionInfo = {
   currentPnl?: string | number | null;
   entryPrice?: string | number | null;
   leverage?: number | null;
+  effectiveLeverage?: number | null;
   // Standing exchange-side bracket (Capital carries it on the position row;
   // Bitget callers pass it explicitly via openTakeProfitPrice/openStopLossPrice).
   takeProfitPrice?: number | null;
@@ -261,6 +267,7 @@ function normalizeOverlayPositions(params: {
         Number.isFinite(open.leverage as number) && Number(open.leverage) > 0
           ? Number(open.leverage)
           : params.leverageFromHistory,
+      effectiveLeverage: positiveNumber(open.effectiveLeverage),
       takeProfitPrice: positiveNumber(params.openTakeProfitPrice ?? open.takeProfitPrice),
       stopLossPrice: positiveNumber(params.openStopLossPrice ?? open.stopLossPrice),
     };
@@ -309,6 +316,7 @@ function normalizeOverlayPositions(params: {
       entryPrice: positiveNumber(p.entryPrice),
       exitPrice: positiveNumber(p.exitPrice),
       leverage: positiveNumber(p.leverage),
+      effectiveLeverage: positiveNumber(p.effectiveLeverage),
       takeProfitPrice: positiveNumber(p.takeProfitPrice),
       stopLossPrice: positiveNumber(p.stopLossPrice),
       closeReason,

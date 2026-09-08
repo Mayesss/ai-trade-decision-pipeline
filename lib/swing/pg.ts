@@ -7,6 +7,7 @@ import { isPgConfigured, pgClient } from '../db/client';
 import { sql } from '../db/sql';
 import type { DecisionHistoryEntry } from '../history';
 import type { PositionWindow } from '../analytics';
+import type { ExitDispositionRow } from './positionDecisionMatch';
 
 export function isSwingPgConfigured(): boolean {
     return isPgConfigured();
@@ -1815,6 +1816,66 @@ export async function loadSwingDecisionWindow(opts: {
         aiDecision: r.ai_decision_json ?? {},
         execResult: r.exec_result_json ?? {},
         snapshot: r.snapshot_json ?? {},
+    }));
+}
+
+// The exits in a window, and nothing else: what the venue actually did on each
+// CLOSE/REVERSE. Read by the post-mortem enqueue to tell a finished trade from
+// a trim or a flip (positionDecisionMatch.classifyExitDisposition) — a
+// projection, not loadSwingDecisionWindow, because that hauls a full prompt per
+// row and this runs on every close.
+export async function loadSwingExitDecisions(opts: {
+    symbol: string;
+    platform?: string | null;
+    fromMs: number;
+    toMs: number;
+    limit?: number;
+}): Promise<ExitDispositionRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+    const platform = opts.platform ? normalizePlatform(opts.platform) : null;
+    const db = swingPg();
+    const rows = await db.$queryRaw<
+        Array<{
+            decided_at_ms: unknown;
+            action: string | null;
+            exit_size_pct: unknown;
+            placed: unknown;
+            closed: unknown;
+            reversed: unknown;
+            partial: unknown;
+            partial_close_pct: unknown;
+        }>
+    >(sql`
+        SELECT decided_at_ms,
+               action,
+               ai_decision_json->>'exit_size_pct'        AS exit_size_pct,
+               exec_result_json->>'placed'               AS placed,
+               exec_result_json->>'closed'               AS closed,
+               exec_result_json->>'reversed'             AS reversed,
+               exec_result_json->>'partial'              AS partial,
+               exec_result_json->>'partialClosePct'      AS partial_close_pct
+        FROM swing.decisions
+        WHERE symbol = ${String(opts.symbol || '').toUpperCase()}
+          AND (${platform}::text IS NULL OR platform = ${platform})
+          AND dry_run = false
+          AND upper(coalesce(action, '')) IN ('CLOSE', 'REVERSE')
+          AND decided_at_ms >= ${Math.floor(opts.fromMs)}
+          AND decided_at_ms <= ${Math.floor(opts.toMs)}
+        ORDER BY decided_at_ms ASC
+        LIMIT ${limit};
+    `);
+    const bool = (v: unknown): boolean | null => (v == null ? null : String(v) === 'true');
+    return (rows || []).map((r) => ({
+        tsMs: Number(r.decided_at_ms),
+        action: r.action ?? null,
+        exitSizePct: finite(r.exit_size_pct),
+        execPlaced: bool(r.placed),
+        execClosed: bool(r.closed),
+        execReversed: bool(r.reversed),
+        execPartial: bool(r.partial),
+        execPartialClosePct: finite(r.partial_close_pct),
     }));
 }
 

@@ -66,6 +66,11 @@ type SummaryEntry = {
   openMargin?: number | null;
   openDirection?: 'long' | 'short' | null;
   openLeverage?: number | null;
+  // Leverage against the margin actually posted, which is what openPnl above is
+  // a percentage OF. openLeverage is the venue's SETTING and is for display
+  // only — recomputing PnL from a live quote with it overstates any position
+  // that has been partly trimmed. See PositionInfo.effectiveLeverage.
+  openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
@@ -437,6 +442,7 @@ export async function buildAndCacheSwingSummary(
       let openMargin: number | null = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
       let openLeverage: number | null | undefined = null;
+      let openEffectiveLeverage: number | null = null;
       let openEntryPrice: number | null | undefined = null;
       let lastPositionPnl: number | null | undefined = null;
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
@@ -649,6 +655,7 @@ export async function buildAndCacheSwingSummary(
             openLeverage = Number.isFinite(pos.leverage as number)
               ? (pos.leverage as number)
               : leverageFromHistory ?? null;
+            openEffectiveLeverage = finiteNumber(pos.effectiveLeverage);
             const entryPriceVal = Number(pos.entryPrice);
             openEntryPrice = Number.isFinite(entryPriceVal) && entryPriceVal > 0 ? entryPriceVal : null;
             openPnlCash = finiteNumber(pos.unrealizedCash);
@@ -662,6 +669,7 @@ export async function buildAndCacheSwingSummary(
             openMargin = null;
             openDirection = null;
             openLeverage = null;
+            openEffectiveLeverage = null;
             openEntryPrice = null;
           }
         } catch (err) {
@@ -721,6 +729,7 @@ export async function buildAndCacheSwingSummary(
         openMargin,
         openDirection,
         openLeverage,
+        openEffectiveLeverage,
         openEntryPrice,
         lastPositionPnl,
         lastPositionDirection,

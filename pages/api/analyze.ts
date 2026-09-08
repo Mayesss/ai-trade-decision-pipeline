@@ -153,6 +153,7 @@ type ExecResultView = {
     placed?: unknown;
     closed?: unknown;
     reversed?: unknown;
+    partial?: unknown;
     orderId?: unknown;
     clientOid?: unknown;
     tpsl?: {
@@ -208,8 +209,17 @@ async function persistCapitalClosedPositionSnapshot(params: {
     try {
         await upsertSwingPosition('capital', { ...window, status: 'closed', leverageSource: 'captured' });
         // AI-initiated Capital closes never flow through the broker-merge sync,
-        // so this is their only post-mortem enqueue point.
-        await maybeEnqueueSwingPostmortem('capital', window);
+        // so this is their only post-mortem enqueue point. The disposition is
+        // passed rather than resolved: this runs BEFORE the decision row is
+        // written, so Neon would read a trim or a flip as a finished trade.
+        await maybeEnqueueSwingPostmortem('capital', window, 'close', {
+            disposition:
+                params.execRes?.reversed === true
+                    ? 'reverse'
+                    : params.execRes?.partial === true
+                      ? 'trim'
+                      : 'flat',
+        });
     } catch (err) {
         console.warn(`Could not persist Capital closed position for ${params.symbol}:`, err);
     }

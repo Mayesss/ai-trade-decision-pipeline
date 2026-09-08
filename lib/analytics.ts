@@ -44,12 +44,24 @@ export type PositionInfo =
           // calendar needs cash, not the on-margin percent — and margin is what
           // lets it rescale that cash from a live quote between summary builds.
           unrealizedCash?: number | null;
+          // The basis currentPnl divided by — the venue's own marginSize when it
+          // reports one, else the size×mark/leverage estimate. Always the number
+          // currentPnl actually used, so cash / margin and the percent cannot
+          // disagree.
           marginCash?: number | null;
           // The margin the VENUE says this position holds (Bitget marginSize),
-          // as opposed to marginCash's size×mark/leverage estimate. A REVERSE
-          // releases exactly this much before the opposite side opens, so the
-          // affordability check needs the exact number, not an approximation.
+          // null when the venue reports none. A REVERSE releases exactly this
+          // much before the opposite side opens, so the affordability check
+          // needs the exact number, not an approximation.
           venueMarginUsd?: number | null;
+          // Leverage measured against the margin actually posted (entry notional
+          // / marginCash), NOT the venue's leverage SETTING. This is the factor
+          // that turns a price move into the on-margin percent, so a client
+          // recomputing PnL from a live quote lands on the venue's own number.
+          // The two diverge after a partial close: Bitget keeps the isolated
+          // margin the full-size position posted, so a trimmed 20x position can
+          // really be levered ~7x (2026-09-08 ADAUSDT).
+          effectiveLeverage?: number | null;
       };
 
 export type PositionWindow = {
@@ -257,14 +269,12 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
     const markPrice = Number.isFinite(markRaw) && markRaw > 0 ? markRaw : null;
     const unrealizedRaw = Number(chosen.unrealizedPL);
     const unrealizedCash = Number.isFinite(unrealizedRaw) ? unrealizedRaw : null;
-    // Same basis calculatePnLPercent uses, so cash / margin and the percent
-    // below can never disagree.
-    const sizeBase = num(chosen.total);
-    const marginRaw = leverage && markPrice ? (sizeBase * markPrice) / leverage : NaN;
-    const marginCash = Number.isFinite(marginRaw) && marginRaw > 0 ? marginRaw : null;
     const venueMarginRaw = Number(chosen.marginSize);
     const venueMarginUsd =
         Number.isFinite(venueMarginRaw) && venueMarginRaw > 0 ? venueMarginRaw : null;
+    // Margin, percent and effective leverage all come off ONE basis, so the
+    // cash, the percent and any client-side rescale of them cannot disagree.
+    const basis = describeOpenPositionBasis(chosen);
 
     return {
         status: 'open',
@@ -276,12 +286,13 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         marginCoin: chosen.marginCoin,
         available: chosen.available,
         total: chosen.total,
-        currentPnl: calculatePnLPercent(chosen),
+        currentPnl: basis.pnlPercent,
         leverage,
         markPrice,
         unrealizedCash,
-        marginCash,
+        marginCash: basis.marginUsd,
         venueMarginUsd,
+        effectiveLeverage: basis.effectiveLeverage,
     };
 }
 // Account equity (USDT futures account) for fixed-fractional risk sizing.
@@ -352,14 +363,46 @@ export async function evaluateBitgetMinSizeAffordability(): Promise<BitgetMinSiz
     };
 }
 
-function calculatePnLPercent(data: RawPosition): string {
+// The margin an OPEN position's percent divides by, most to least trustworthy:
+//   1. marginSize — the money the VENUE actually holds behind the position, and
+//      the basis its own ROI display uses. Closed windows already prefer the
+//      equivalent historical field (see fetchRecentPositionWindows), so reading
+//      it here keeps open and closed percentages on ONE basis — they get summed
+//      into pnl7dWithOpen, which was nonsense while the two disagreed.
+//   2. size × mark / leverage — an ESTIMATE, and only right while the position
+//      is untouched. Bitget does not release isolated margin proportionally on a
+//      partial close, so after a trim the estimate collapses while the real
+//      margin stays put: on 2026-09-08 ADAUSDT the estimate read 1.91 (→ 104%)
+//      against 5.51 actually posted (→ the 36% the venue reported).
+// Exported for the unit test: the fixtures replay venue rows that carry no
+// marginSize, so the trimmed-position case this exists for is only reachable
+// here.
+export function describeOpenPositionBasis(data: Partial<RawPosition>): {
+    marginUsd: number | null;
+    pnlPercent: string;
+    effectiveLeverage: number | null;
+} {
+    const venueMargin = num(data.marginSize);
     const sizeBase = num(data.total);
     const mark = Math.max(1e-9, num(data.markPrice));
-    const lev = Math.max(1, num(data.leverage));
+    const levRaw = num(data.leverage ?? data.marginLeverage ?? data.lever);
+    const levSetting = levRaw > 0 ? levRaw : null;
+    const derived = (sizeBase * mark) / Math.max(1, levRaw);
+    const marginUsd = venueMargin > 0 ? venueMargin : derived > 0 ? derived : null;
+
     const uPnl = num(data.unrealizedPL);
-    const initialMargin = (sizeBase * mark) / lev || 1;
-    const pnlPercent = (uPnl / initialMargin) * 100;
-    return pnlPercent.toFixed(2) + '%';
+    const pnlPercent = ((uPnl / (marginUsd ?? 1)) * 100).toFixed(2) + '%';
+
+    // Entry notional / posted margin — see effectiveLeverage on PositionInfo.
+    // Falls back to the venue's leverage setting when an input is unusable.
+    const entryPrice = num(data.openPriceAvg);
+    const effectiveLeverage = (() => {
+        if (marginUsd === null || !(entryPrice > 0) || !(sizeBase > 0)) return levSetting;
+        const lev = (sizeBase * entryPrice) / marginUsd;
+        return lev > 0 ? lev : levSetting;
+    })();
+
+    return { marginUsd, pnlPercent, effectiveLeverage };
 }
 
 // ------------------------------

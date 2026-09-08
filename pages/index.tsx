@@ -63,6 +63,10 @@ type EvaluationEntry = {
   openMargin?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
+  // What openPnl is a percentage OF: leverage against the margin actually
+  // posted. openLeverage is the venue's SETTING — display only, since it
+  // overstates any position that has been partly trimmed.
+  openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
@@ -129,6 +133,10 @@ type DashboardSummaryRow = {
   openMargin?: number | null;
   openDirection?: "long" | "short" | null;
   openLeverage?: number | null;
+  // What openPnl is a percentage OF: leverage against the margin actually
+  // posted. openLeverage is the venue's SETTING — display only, since it
+  // overstates any position that has been partly trimmed.
+  openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
@@ -1342,6 +1350,13 @@ export default function Home() {
   // Open PnL on margin from a live quote — price move × side × leverage. One
   // formula for the header/chart reading and for every pill, so a position's
   // number cannot differ depending on where you look at it.
+  //
+  // The leverage here is openEffectiveLeverage — entry notional over the margin
+  // the venue actually holds — NOT openLeverage, which is only the venue's
+  // leverage setting. They agree while a position is untouched and diverge hard
+  // after a trim, because Bitget keeps the isolated margin the full-size
+  // position posted: on 2026-09-08 a trimmed 20x ADA long was really levered
+  // ~7x, and using the setting read +111% where the venue reported +36%.
   const liveOpenPnlPct = (
     tab: (typeof tabData)[string] | null | undefined,
     price: number | null,
@@ -1352,9 +1367,11 @@ export default function Home() {
     if (!Number.isFinite(entry) || entry <= 0) return null;
     if (direction !== "long" && direction !== "short") return null;
     const leverage =
-      typeof tab?.openLeverage === "number" && tab.openLeverage > 0
-        ? tab.openLeverage
-        : 1;
+      typeof tab?.openEffectiveLeverage === "number" && tab.openEffectiveLeverage > 0
+        ? tab.openEffectiveLeverage
+        : typeof tab?.openLeverage === "number" && tab.openLeverage > 0
+          ? tab.openLeverage
+          : 1;
     return (
       ((price - entry) / entry) * (direction === "long" ? 1 : -1) * leverage * 100
     );
@@ -1720,6 +1737,7 @@ export default function Home() {
       pnlPct: number | null;
       side: "long" | "short" | null;
       leverage: number | null;
+      effectiveLeverage: number | null;
       entryPrice: number | null;
     } | null,
   ) => {
@@ -1731,11 +1749,13 @@ export default function Home() {
       const nextOpenPnl = position?.pnlPct ?? null;
       const nextOpenDirection = position?.side ?? null;
       const nextOpenLeverage = position?.leverage ?? null;
+      const nextOpenEffectiveLeverage = position?.effectiveLeverage ?? null;
       const nextOpenEntryPrice = position?.entryPrice ?? null;
       if (
         existing.openPnl === nextOpenPnl &&
         existing.openDirection === nextOpenDirection &&
         existing.openLeverage === nextOpenLeverage &&
+        existing.openEffectiveLeverage === nextOpenEffectiveLeverage &&
         existing.openEntryPrice === nextOpenEntryPrice
       ) {
         return prev;
@@ -1747,6 +1767,7 @@ export default function Home() {
           openPnl: nextOpenPnl,
           openDirection: nextOpenDirection,
           openLeverage: nextOpenLeverage,
+          openEffectiveLeverage: nextOpenEffectiveLeverage,
           openEntryPrice: nextOpenEntryPrice,
         },
       };
@@ -1764,6 +1785,7 @@ export default function Home() {
       openPnlPct: number | null;
       openSide: "long" | "short" | null;
       openLeverage: number | null;
+      openEffectiveLeverage: number | null;
       openEntryPrice: number | null;
     },
   ) => {
@@ -1800,6 +1822,7 @@ export default function Home() {
           openPnl,
           openDirection: summary.openSide,
           openLeverage: summary.openLeverage,
+          openEffectiveLeverage: summary.openEffectiveLeverage,
           openEntryPrice: summary.openEntryPrice,
         },
       };

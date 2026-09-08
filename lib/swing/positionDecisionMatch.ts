@@ -386,3 +386,80 @@ export function inferCloseReason(params: {
   if (cause === 'stop_loss') return 'sl';
   return null;
 }
+
+// --------------------------------------------------------------------------
+// Did an exit leave the account FLAT in this symbol?
+// --------------------------------------------------------------------------
+// A closed-position WINDOW is not the same thing as a finished trade. A trim
+// realizes cash and books its own window while the position keeps running, and
+// a REVERSE books a close with an opposite position opening in the same breath.
+// Consumers that must only act "once the position is entirely closed" — the
+// post-mortem enqueue above all — ask this what the exit actually was.
+export type ExitDisposition = 'flat' | 'trim' | 'reverse';
+
+// The exit-decision evidence the disposition check reads: the action plus what
+// the venue execution reported back. Deliberately loose (every field optional)
+// so both the slim Neon projection and a KV history entry can narrow to it.
+export type ExitDispositionRow = {
+  tsMs: number;
+  action: string | null;
+  // ai_decision.exit_size_pct — the requested size, 100/null = full exit.
+  exitSizePct?: number | null;
+  // exec_result fields: what the venue actually did.
+  execPlaced?: boolean | null;
+  execClosed?: boolean | null;
+  execReversed?: boolean | null;
+  execPartial?: boolean | null;
+  execPartialClosePct?: number | null;
+};
+
+const executedExit = (row: ExitDispositionRow): boolean =>
+  row.execPlaced === true || row.execClosed === true || row.execReversed === true;
+
+// Percent of the position this exit actually took off. The exec result wins
+// over the request: the venue path clamps/quantizes and reports back what it
+// closed.
+function effectiveExitPct(row: ExitDispositionRow): number | null {
+  const pct = finiteNumber(row.execPartialClosePct) ?? finiteNumber(row.exitSizePct);
+  return pct !== null && pct > 0 ? pct : null;
+}
+
+// Nearest EXECUTED exit decision to this exit timestamp, and what it left
+// behind. No matching decision ⇒ the exchange bracket closed the position,
+// which is always a full exit ⇒ 'flat'. A decision that did NOT execute
+// (placed:false — "no open position", a rejected order) is not the cause of
+// this exit either, so it is ignored the same way.
+export function classifyExitDisposition(
+  rows: ExitDispositionRow[] | null | undefined,
+  exitTsMs: number | null | undefined,
+  opts: { toleranceMs?: number } = {},
+): { disposition: ExitDisposition; decisionTsMs: number | null; pct: number | null } {
+  const flat = { disposition: 'flat' as const, decisionTsMs: null, pct: null };
+  if (!exitTsMs || !rows?.length) return flat;
+  const tolerance = opts.toleranceMs ?? AI_CLOSE_MATCH_MS;
+  let best: ExitDispositionRow | null = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    const ts = finiteNumber(row?.tsMs);
+    if (ts === null) continue;
+    const action = String(row.action || '').toUpperCase();
+    if (action !== 'CLOSE' && action !== 'REVERSE') continue;
+    if (!executedExit(row)) continue;
+    const diff = Math.abs(ts - exitTsMs);
+    if (diff <= tolerance && diff < bestDiff) {
+      bestDiff = diff;
+      best = row;
+    }
+  }
+  if (!best) return flat;
+  const pct = effectiveExitPct(best);
+  // A REVERSE flips into an opposite position — exposure continues either way,
+  // whether it flipped the whole size or a trimmed part of it.
+  if (String(best.action || '').toUpperCase() === 'REVERSE' || best.execReversed === true) {
+    return { disposition: 'reverse', decisionTsMs: best.tsMs, pct };
+  }
+  if (best.execPartial === true || (pct !== null && pct < 100)) {
+    return { disposition: 'trim', decisionTsMs: best.tsMs, pct };
+  }
+  return { disposition: 'flat', decisionTsMs: best.tsMs, pct };
+}

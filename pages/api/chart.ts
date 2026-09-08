@@ -307,6 +307,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     type OverlaySourceWindow = FoldedCapitalWindow & {
       takeProfitPrice?: number | null;
       stopLossPrice?: number | null;
+      // Open overlay only: what its pnlPct is a percentage OF, so the client can
+      // rescale from a live quote without re-deriving it from `leverage` (the
+      // venue's display setting). Closed rows carry their percent already.
+      effectiveLeverage?: number | null;
     };
     let positions: ChartPositionOverlay[] = [];
     const overlayLoadStartedAt = Date.now();
@@ -381,6 +385,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               entryPrice: Number(open.entryPrice) || null,
               exitPrice: null,
               leverage: Number.isFinite(open.leverage as number) ? (open.leverage as number) : leverageFromHistory,
+              effectiveLeverage: Number.isFinite(open.effectiveLeverage as number)
+                ? (open.effectiveLeverage as number)
+                : null,
               takeProfitPrice,
               stopLossPrice,
             };
@@ -483,6 +490,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             entryPrice: positiveNumber(p.entryPrice),
             exitPrice: positiveNumber(p.exitPrice),
             leverage: positiveNumber(p.leverage),
+            effectiveLeverage: positiveNumber(p.effectiveLeverage),
             takeProfitPrice: positiveNumber(p.takeProfitPrice),
             stopLossPrice: positiveNumber(p.stopLossPrice),
             entryDecision,

@@ -410,28 +410,35 @@ export async function reconcileCapitalClosedPositions(symbol: string): Promise<n
             .filter((row) => normalizeCapitalSymbolKey(row.symbol) === symbolKey);
         if (!windows.length) return 0;
         const history = await loadDecisionHistory(symbol, 60, 'capital').catch(() => []);
+        const enriched = windows.map((window) => enrichCapitalWindowFromHistory(window, history));
         let persistedCount = 0;
         await Promise.all(
-            windows
-                .map((window) => enrichCapitalWindowFromHistory(window, history))
-                .map((window) =>
-                    upsertSwingPosition('capital', {
-                        ...window,
-                        status: 'closed',
-                        leverageSource: window.leverage ? 'captured' : null,
+            enriched.map((window) =>
+                upsertSwingPosition('capital', {
+                    ...window,
+                    status: 'closed',
+                    leverageSource: window.leverage ? 'captured' : null,
+                })
+                    .then(() => {
+                        persistedCount += 1;
                     })
-                        .then(async () => {
-                            persistedCount += 1;
-                            // 48h-lookback reconcile revisits the same closes on
-                            // every venue-close detection — the enqueue's unique
-                            // key makes the repeats free no-ops.
-                            await maybeEnqueueSwingPostmortem('capital', window);
-                        })
-                        .catch((err) => {
-                            console.warn(`Could not persist reconciled Capital close ${window.id}:`, err);
-                        }),
-                ),
+                    .catch((err) => {
+                        console.warn(`Could not persist reconciled Capital close ${window.id}:`, err);
+                    }),
+            ),
         );
+        // Every realized chunk is persisted above (each one is real cash), but an
+        // evaluation is per POSITION, not per chunk: fold the trims back into the
+        // position they belong to and enqueue once, on the window that carries the
+        // whole trade — first entry, summed cash. Without the fold a trimmed
+        // position asked for one evaluation per chunk, each judging a fraction of
+        // the result as if it were the outcome. This runs only on a flat
+        // transition, so there is no still-open position whose chunks need
+        // excluding. The 48h lookback revisits the same closes on every
+        // venue-close detection — the enqueue's unique key makes repeats free.
+        for (const position of foldCapitalTrimChunks(enriched.map(withDerivedPnlPct)).windows) {
+            await maybeEnqueueSwingPostmortem('capital', position);
+        }
         return persistedCount;
     } catch (err) {
         console.warn(`Capital close reconcile failed for ${symbol}:`, err);

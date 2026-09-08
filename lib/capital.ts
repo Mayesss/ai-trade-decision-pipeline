@@ -2721,6 +2721,10 @@ export async function fetchCapitalPositionInfo(
       return Number.isFinite(cash) ? cash : null;
     })(),
     marginCash: null,
+    // Capital's percent above IS price move x the venue's leverage, so that
+    // leverage is already the effective one — there is no posted-margin figure
+    // here to diverge from (see marginCash).
+    effectiveLeverage: extractLeverage(open),
   };
 }
 

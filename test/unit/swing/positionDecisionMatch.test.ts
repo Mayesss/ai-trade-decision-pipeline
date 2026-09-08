@@ -316,3 +316,87 @@ test('the trail read is bounded by how far back a close reason is claimable', ()
     const yesterday = now - 24 * 3600 * 1000;
     assert.equal(bracketTrailFromMs(yesterday, now), yesterday - BRACKET_ENTRY_LOOKBACK_MS);
 });
+
+// classifyExitDisposition — the question the post-mortem enqueue asks before
+// scheduling an evaluation: did this exit leave us FLAT, or is the position
+// still running? Capital books a trim as its own closed window (entry → trim),
+// so "a window exists" is not "the trade is over".
+import { classifyExitDisposition, type ExitDispositionRow } from '../../../lib/swing/positionDecisionMatch';
+
+const exitRow = (tsMs: number, action: string, extra: Partial<ExitDispositionRow> = {}): ExitDispositionRow => ({
+    tsMs,
+    action,
+    execPlaced: true,
+    ...extra,
+});
+
+test('classifyExitDisposition: a full CLOSE is flat, a trim is not', () => {
+    assert.equal(
+        classifyExitDisposition([exitRow(EXIT, 'CLOSE', { exitSizePct: 100, execClosed: true })], EXIT).disposition,
+        'flat',
+    );
+    // exit_size_pct absent = full exit (the venue closes everything)
+    assert.equal(classifyExitDisposition([exitRow(EXIT, 'CLOSE', { execClosed: true })], EXIT).disposition, 'flat');
+
+    const trim = classifyExitDisposition(
+        [exitRow(EXIT, 'CLOSE', { exitSizePct: 40, execClosed: true, execPartial: true, execPartialClosePct: 40 })],
+        EXIT,
+    );
+    assert.equal(trim.disposition, 'trim');
+    assert.equal(trim.pct, 40);
+});
+
+test('classifyExitDisposition: the exec result outranks the requested size', () => {
+    // Requested 100, venue reports a partial — the position is still open.
+    assert.equal(
+        classifyExitDisposition(
+            [exitRow(EXIT, 'CLOSE', { exitSizePct: 100, execClosed: true, execPartial: true, execPartialClosePct: 60 })],
+            EXIT,
+        ).disposition,
+        'trim',
+    );
+});
+
+test('classifyExitDisposition: a REVERSE keeps exposure, partial or not', () => {
+    assert.equal(classifyExitDisposition([exitRow(EXIT, 'REVERSE', { execReversed: true })], EXIT).disposition, 'reverse');
+    // Bitget's partial reverse: trims a percent and flips that size.
+    assert.equal(
+        classifyExitDisposition(
+            [exitRow(EXIT, 'REVERSE', { execReversed: true, execPartial: true, execPartialClosePct: 50 })],
+            EXIT,
+        ).disposition,
+        'reverse',
+    );
+});
+
+test('classifyExitDisposition: only EXECUTED exits near the timestamp count', () => {
+    // A bracket close: no AI exit decision at all ⇒ the position is flat.
+    assert.equal(classifyExitDisposition(BNB_HISTORY.map((h) => exitRow(Number(h.timestamp), 'HOLD')), EXIT).disposition, 'flat');
+    // A CLOSE that never executed ("no open position") did not cause this exit.
+    assert.equal(
+        classifyExitDisposition(
+            [exitRow(EXIT, 'CLOSE', { execPlaced: false, execClosed: false, exitSizePct: 30 })],
+            EXIT,
+        ).disposition,
+        'flat',
+    );
+    // A trim from an earlier position, well outside the match window.
+    assert.equal(
+        classifyExitDisposition(
+            [exitRow(EXIT - AI_CLOSE_MATCH_MS - MIN, 'CLOSE', { execClosed: true, execPartial: true, execPartialClosePct: 30 })],
+            EXIT,
+        ).disposition,
+        'flat',
+    );
+    // …and the nearest one wins when several sit inside it.
+    assert.equal(
+        classifyExitDisposition(
+            [
+                exitRow(EXIT - 15 * MIN, 'CLOSE', { execClosed: true, execPartial: true, execPartialClosePct: 30 }),
+                exitRow(EXIT - MIN, 'CLOSE', { execClosed: true, exitSizePct: 100 }),
+            ],
+            EXIT,
+        ).disposition,
+        'flat',
+    );
+});
