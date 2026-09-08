@@ -2324,7 +2324,22 @@ export default function ChartPanel(props: ChartPanelProps) {
                     </span>
                   </div>
                   <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
-                    {hoveredOverlay.side || 'position'} · entry {formatOverlayTime(hoveredOverlay.entryTime)}
+                    {hoveredOverlay.side || 'position'}
+                    {/* A resting order makes "entry" two different moments: when
+                        the AI decided, and when the venue filled. Naming only
+                        the fill made the position look like it began on a tick
+                        it had nothing to do with. Reuses formatRestedGap's own
+                        null-under-3-minutes rule so this label and the "rested
+                        Xh Ym" line below can never disagree; a market entry
+                        keeps the single "entry" label. */}
+                    {formatRestedGap(
+                      hoveredOverlay.entryDecision?.timestamp,
+                      hoveredOverlay.entryTime,
+                    ) !== null
+                      ? ` · decided ${formatOverlayTime(
+                          Math.floor((hoveredOverlay.entryDecision?.timestamp ?? 0) / 1000),
+                        )} · filled ${formatOverlayTime(hoveredOverlay.entryTime)}`
+                      : ` · entry ${formatOverlayTime(hoveredOverlay.entryTime)}`}
                     {hoveredOverlay.exitTime ? ` · exit ${formatOverlayTime(hoveredOverlay.exitTime)}` : ''}
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
