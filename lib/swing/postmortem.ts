@@ -27,6 +27,7 @@ import {
     completeSwingPostmortem,
     enqueueSwingPostmortem,
     failSwingPostmortem,
+    findSwingPostmortemTwin,
     loadActiveSwingLessons,
     loadSwingBracketTrail,
     loadSwingDecisionWindow,
@@ -104,6 +105,11 @@ async function resolveExitDisposition(
 // (Bitget broker-merge sync, Capital reconcile, Capital AI-close snapshot).
 // Never throws into the caller; returns the new row id or null (filtered out /
 // already enqueued / PG unconfigured).
+// How far apart two exit timestamps may be and still describe one close. The
+// Capital snapshot row carries the AI close's clock; the transaction row the
+// venue's — measured pairs differ by 0–46 s, one by 6 min (a trimmed leg).
+export const POSTMORTEM_TWIN_WINDOW_MS = 10 * 60 * 1000;
+
 export async function maybeEnqueueSwingPostmortem(
     platform: string,
     window: PositionWindow,
@@ -133,6 +139,26 @@ export async function maybeEnqueueSwingPostmortem(
                     `[postmortem] no evaluation for ${window.symbol} ${new Date(
                         Number(window.exitTimestamp),
                     ).toISOString()} — exit was a ${disposition}, position is still open`,
+                );
+                return null;
+            }
+        }
+        // Twin guard: the same close can reach here twice under two different
+        // position keys (Capital snapshot row + transaction-history row, see
+        // findSwingPostmortemTwin). One evaluation per close.
+        if (trigger === 'close' && Number.isFinite(Number(window.exitTimestamp))) {
+            const twin = await findSwingPostmortemTwin({
+                platform,
+                symbol: window.symbol,
+                exitTsMs: Number(window.exitTimestamp),
+                side: window.side ?? null,
+                windowMs: POSTMORTEM_TWIN_WINDOW_MS,
+            });
+            if (twin) {
+                console.log(
+                    `[postmortem] no second evaluation for ${window.symbol} ${new Date(
+                        Number(window.exitTimestamp),
+                    ).toISOString()} — #${twin.id} (${twin.positionKey}) already covers this close`,
                 );
                 return null;
             }
@@ -421,7 +447,10 @@ export type PostmortemDossier = {
     pivotal_decision_ids: number[];
     // The active lesson-library slice shown to the analyst (dedup/adherence
     // context) — provenance for reinforce decisions.
-    lessons_shown?: Array<{ id: number; scope: string; lesson: string }>;
+    // shown_to_trader=false marks rows learned on OTHER instruments (symbol
+    // scope, different symbol): the trading AI never saw them for this trade,
+    // so they are reinforce/dedup candidates, never an adherence question.
+    lessons_shown?: Array<{ id: number; scope: string; symbol?: string | null; shown_to_trader: boolean; lesson: string }>;
     // Price path recorded AFTER the close (the run is delayed past the exit so
     // this window exists) — exit-quality evidence for the analyst.
     post_exit_market?: Record<string, unknown>;
@@ -656,7 +685,17 @@ export function buildPostmortemDossier(input: {
         calls.find((d) => typeof d.prompt?.system === 'string' && d.prompt.system)?.prompt?.system ??
         null;
 
-    const lessonsShown = (input.library ?? []).map((l) => ({ id: l.id, scope: l.scope, lesson: l.lesson }));
+    const subjectSymbol = String(input.position?.symbol ?? '').toUpperCase();
+    const lessonsShown = (input.library ?? []).map((l) => {
+        const sibling = l.scope === 'symbol' && String(l.symbol ?? '').toUpperCase() !== subjectSymbol;
+        return {
+            id: l.id,
+            scope: l.scope,
+            ...(l.scope === 'symbol' ? { symbol: l.symbol ?? null } : {}),
+            shown_to_trader: !sibling,
+            lesson: l.lesson,
+        };
+    });
 
     // Shrink the full-prompt set until the assembled message fits the budget.
     for (const maxFull of [12, 6, 3, 1, 0]) {
@@ -715,7 +754,7 @@ function renderPostmortemUserMessage(
     );
     if (dossier.lessons_shown?.length) {
         parts.push(
-            '## ACTIVE LESSON LIBRARY (already injected into the trading AI\'s prompts for this instrument — check adherence, never duplicate)',
+            "## ACTIVE LESSON LIBRARY — rows with shown_to_trader=true were injected into the trading AI's prompts for this instrument (check adherence, never duplicate). Rows with shown_to_trader=false were learned on OTHER instruments and were NOT shown to the trader here: never grade adherence against them; when one covers this trade's failure mode, 'reinforce' it (reinforce_lesson_id) instead of emitting 'new' — a reinforce from a different instrument is what promotes a lesson to asset-class/global scope in code.",
         );
         parts.push(JSON.stringify(dossier.lessons_shown, null, 1));
     }
@@ -896,8 +935,8 @@ Rules:
 - what_worked: the repeatable, MEASURABLE conditions behind the win (each one sentence, anchored to dossier values). exit_quality: the exit judgment with its numbers.
 - Anchor every claim to a timestamp or measured value from the dossier. Do not invent data.
 - ACTIVE LESSON LIBRARY handling:
-  1. Adherence: if a library lesson applied, state in lesson_adherence whether it was FOLLOWED or VIOLATED (cite the tick).
-  2. lesson_action gates (code-enforced): on 'lucky_win' you MUST use 'none' — a lesson violated by a winning trade is NOT weakened by one lucky outcome, and "the violation worked" must never become doctrine; record the violation in lesson_adherence only. On 'earned_win': 'reinforce' the lesson whose condition shaped the win (reinforce_lesson_id — positive evidence counts like negative), or 'revise' a shown lesson whose bound ALMOST blocked this good trade (the win is evidence the bound is a notch too wide — corrected text with the adjusted number), or 'new' ONLY when the win hinged on a repeatable measurable condition the library does not cover. Before emitting 'new', check the candidate against EVERY shown lesson: if it would contradict one (opposite prescription for overlapping measured conditions), do not add it — 'revise' the existing lesson instead so the two reconcile into one rule with partitioned bounds. On 'exit_flaw': 'new'/'reinforce'/'revise' for exit-mechanics lessons. Never 'retire' from a win.
+  1. Adherence: if a library lesson the trader actually saw (shown_to_trader=true) applied, state in lesson_adherence whether it was FOLLOWED or VIOLATED (cite the tick).
+  2. lesson_action gates (code-enforced): on 'lucky_win' you MUST use 'none' — a lesson violated by a winning trade is NOT weakened by one lucky outcome, and "the violation worked" must never become doctrine; record the violation in lesson_adherence only. On 'earned_win': 'reinforce' the lesson whose condition shaped the win (reinforce_lesson_id — positive evidence counts like negative), or 'revise' a shown lesson whose bound ALMOST blocked this good trade (the win is evidence the bound is a notch too wide — corrected text with the adjusted number), or 'new' ONLY when the win hinged on a repeatable measurable condition the library does not cover. Before emitting 'new', check the candidate against EVERY shown lesson, including rows marked shown_to_trader=false (learned on other instruments — 'reinforce' those rather than copying them): if it would contradict one (opposite prescription for overlapping measured conditions), do not add it — 'revise' the existing lesson instead so the two reconcile into one rule with partitioned bounds. On 'exit_flaw': 'new'/'reinforce'/'revise' for exit-mechanics lessons. Never 'retire' from a win.
   3. Do not invent a lesson to have something to say — most earned wins are the process working and teach nothing new ('none').
 - lesson (when writing/rewriting): 1-2 sentences, ≤220 chars, imperative, generalizable (ATR-relative/structural, no absolute price levels), and it MUST carry a numeric applicability bound. Positive-playbook lessons are allowed ("Prefer X when Y is within Z primary-ATR") but never platitudes.
 - lesson_scope is ADVISORY on 'new' (code starts every lesson at this symbol and promotes on cross-symbol evidence); on 'revise' it moves the corrected lesson's scope, null keeps it.
@@ -920,8 +959,8 @@ Rules:
 - what_went_wrong: concrete defects, each one sentence. suggestions: concrete, implementable changes (gate thresholds, prompt wording, bracket sizing rules) — no platitudes.
 - verdict: the SINGLE dominant failure. confidence below 0.5 means the data did not clearly separate the hypotheses — say so in timeline_analysis.
 - ACTIVE LESSON LIBRARY (section in the dossier, when present): lessons distilled from PREVIOUS post-mortems that are already injected into the trading AI's prompts for this instrument. Handle it in three steps:
-  1. Adherence: if a library lesson applied to this trade, state in lesson_adherence whether the trading AI FOLLOWED it or VIOLATED it (cite the tick). A violated lesson is an adherence failure, not a missing lesson. No applicable lesson → lesson_adherence null.
-  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'revise' when a SHOWN lesson is wrong as written — too broad, missing its numeric bound, or CONTRADICTING another shown lesson: set reinforce_lesson_id to the lesson being corrected and put the full corrected text in lesson (you may also move its scope via lesson_scope, up or down). 'retire' when a shown lesson is simply wrong and unfixable — set reinforce_lesson_id. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'. Before emitting 'new', check the candidate against EVERY shown lesson: if it would contradict one (opposite prescription for overlapping measured conditions), do not add it — 'revise' the existing lesson instead so the two reconcile into one rule with partitioned bounds.
+  1. Adherence: if a library lesson the trader actually saw (shown_to_trader=true) applied to this trade, state in lesson_adherence whether the trading AI FOLLOWED it or VIOLATED it (cite the tick). A violated lesson is an adherence failure, not a missing lesson. No applicable lesson → lesson_adherence null.
+  2. lesson_action: 'new' ONLY for a failure mode the library does not yet cover (write the lesson text). 'reinforce' when an existing lesson covers this failure — set reinforce_lesson_id to its id; optionally put a reformulated text in the lesson field that absorbs the new case (≤220 chars), or null to keep its current wording. 'revise' when a SHOWN lesson is wrong as written — too broad, missing its numeric bound, or CONTRADICTING another shown lesson: set reinforce_lesson_id to the lesson being corrected and put the full corrected text in lesson (you may also move its scope via lesson_scope, up or down). 'retire' when a shown lesson is simply wrong and unfixable — set reinforce_lesson_id. 'none' when there is nothing to teach: the loss happened DESPITE a sound process (verdict bad_luck), or the library already covers it and this case adds nothing. Never emit a duplicate of a library lesson as 'new'. Before emitting 'new', check the candidate against EVERY shown lesson — including rows marked shown_to_trader=false, which were learned on other instruments: if one already states this failure mode, 'reinforce' it (that cross-instrument reinforce is how a lesson earns asset-class/global scope; a fresh symbol-local copy earns nothing). If it would contradict one (opposite prescription for overlapping measured conditions), do not add it — 'revise' the existing lesson instead so the two reconcile into one rule with partitioned bounds.
   3. Losing while following the process and the library is often just variance — do not invent a lesson to have something to say. A library bloated with near-duplicates and noise dilutes the trading AI's attention.
 - lesson (when lesson_action='new', or the reformulated/corrected text on 'reinforce'/'revise'): 1-2 sentences, max ~220 characters, imperative voice, GENERALIZABLE (no symbol-specific price levels; ATR-relative or structural phrasing). It is shown to the trading AI before similar setups, so write it as an instruction to a trader, not commentary. Every lesson MUST carry a numeric applicability bound (an ATR distance, a time window, a count) that makes it checkable against measurements — an unbounded "do not X near Y" reads as a universal veto and WILL be applied far beyond your intent (a bound like "within 0.5 primary-ATR" both blocks the failure and clears the setups it never meant to touch).
 - lesson_scope: ADVISORY on 'new' — code assigns every new lesson to this symbol and promotes it mechanically when later post-mortems reinforce it from other symbols or asset classes, so do not agonize over the audience. On 'revise' it moves the corrected lesson's scope (e.g. demote an over-generalized global back to its origin symbol); null keeps the current scope.
@@ -991,7 +1030,9 @@ export async function runSwingPostmortem(
             loadSwingTickLog({ symbol: row.symbol, platform: row.platform, fromMs, toMs, limit: 3000 }),
             // Library slice shown to the analyst: adherence check + dedup —
             // fails open to [] (the analyst then simply can't reinforce).
-            loadActiveSwingLessons({ symbol: row.symbol, assetClass }).catch(() => [] as SwingLessonRow[]),
+            loadActiveSwingLessons({ symbol: row.symbol, assetClass, includeSiblingSymbols: true, limit: 100 }).catch(
+                () => [] as SwingLessonRow[],
+            ),
             // What price did after the close (for refusals: after the refusal
             // moment, anchored at the price the model declined at) — the
             // reason the run is delayed.

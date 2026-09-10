@@ -46,10 +46,10 @@ function decide(
     });
 }
 
-// The re-entry cooldown is OFF by default since 2026-09-02
-// (SWING_REENTRY_COOLDOWN_MIN defaults to 0). The mechanism is kept so it can be
-// switched back on from env if churn reappears; these tests pin the disabled
-// behaviour and the still-pure cooldown resolver. The ENABLED path — the
+// The re-entry cooldown is ON by default in prod (240 min, restored
+// 2026-09-10 after a week of measured churn without it) and pinned OFF for the
+// test run in test/harness/setup-env.ts (SWING_REENTRY_COOLDOWN_MIN=0); these
+// tests pin the disabled behaviour and the still-pure cooldown resolver. The ENABLED path — the
 // coercion itself and both sweep-reclaim exceptions — lives in
 // decisionRules.reentryEnabled.test.ts, which must be a separate file because
 // REENTRY_COOLDOWN_MIN is captured at import time.

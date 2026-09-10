@@ -1367,6 +1367,42 @@ export async function enqueueSwingPostmortem(input: SwingPostmortemEnqueueInput)
     return id == null ? null : Number(id);
 }
 
+// Twin check for the enqueue path. A Capital position that the AI closed lands
+// in swing.positions TWICE — a `capital:` snapshot row at close time and a
+// `capital-tx:` row from the venue's transaction history minutes later
+// (lib/swing/capitalWindows.ts) — under two different position_keys, so the
+// UNIQUE (platform, position_key) lock never fires and both rows used to get
+// their own post-mortem: 10 of 21 pairs analysed twice in the week of
+// 2026-09-07, six lessons "learned from 2 losses" that were one loss
+// (docs/week-one-review-2026-09-10.md §5). Same instrument, same side (or an
+// unknown side), an exit within the window → already covered.
+export async function findSwingPostmortemTwin(input: {
+    platform: string;
+    symbol: string;
+    exitTsMs: number;
+    side?: string | null;
+    windowMs: number;
+}): Promise<{ id: number; positionKey: string } | null> {
+    if (!isSwingPgConfigured()) return null;
+    await ensureSwingSchema();
+    const exit = Math.floor(input.exitTsMs);
+    const window = Math.max(0, Math.floor(input.windowMs));
+    const side = input.side ?? null;
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ id: number | string; position_key: string }>>(sql`
+        SELECT id, position_key FROM swing.postmortems
+        WHERE platform = ${normalizePlatform(input.platform)}
+          AND symbol = ${String(input.symbol || '').toUpperCase()}
+          AND trigger_source = 'close'
+          AND exit_ts_ms BETWEEN ${exit - window} AND ${exit + window}
+          AND (${side}::text IS NULL OR side IS NULL OR side = ${side}::text)
+        ORDER BY id ASC
+        LIMIT 1;
+    `);
+    const row = rows?.[0];
+    return row ? { id: Number(row.id), positionKey: String(row.position_key) } : null;
+}
+
 // Claim by id for a worker run. Without force only queued/failed rows (or a
 // stale 'running' — a crashed worker's leftover, >15 min old) are claimable;
 // force re-claims anything (manual regenerate).
@@ -1397,6 +1433,12 @@ export async function claimSwingPostmortemById(
 // timestamp (the post-close maturity delay — the dossier's post-exit tail must
 // be fully recorded before the analyst runs). Rows without an exit timestamp
 // are always claimable. Omit to claim regardless of maturity.
+// A 'running' row older than this with no completion is a dead worker, not a
+// slow one: a single analyst call finishes in minutes, and the drain runs its
+// three claims sequentially inside one invocation.
+export const POSTMORTEM_STALE_RUNNING_MS = 45 * 60 * 1000;
+export const POSTMORTEM_STALE_MAX_ATTEMPTS = 3;
+
 export async function claimQueuedSwingPostmortems(
     limit: number,
     opts: { exitTsBeforeMs?: number | null } = {},
@@ -1411,7 +1453,19 @@ export async function claimQueuedSwingPostmortems(
         SET status = 'running', attempts = attempts + 1, error = NULL
         WHERE id IN (
             SELECT id FROM swing.postmortems
-            WHERE status = 'queued'
+            WHERE (
+                status = 'queued'
+                -- A worker killed mid-run (platform timeout, deploy) leaves its
+                -- row 'running' forever: 12 such rows sat untouched for two days
+                -- on 2026-09-10. Reclaim them like a crashed worker's leftover,
+                -- with an attempts cap so a row that keeps killing its worker
+                -- does not loop.
+                OR (
+                    status = 'running'
+                    AND updated_at < ${new Date(Date.now() - POSTMORTEM_STALE_RUNNING_MS)}
+                    AND attempts < ${POSTMORTEM_STALE_MAX_ATTEMPTS}
+                )
+              )
               AND (
                 ${cutoff}::bigint IS NULL
                 OR exit_ts_ms IS NULL
@@ -1730,12 +1784,21 @@ export async function loadActiveSwingLessons(opts: {
     symbol?: string | null;
     assetClass?: string | null;
     limit?: number;
+    // Analyst-only: ALSO return symbol-scoped rows learned on OTHER instruments.
+    // The trading prompt never sets this (its slice stays symbol ∪ class ∪
+    // global); the post-mortem analyst needs the siblings because the scope
+    // ladder only promotes a lesson when a post-mortem on a DIFFERENT symbol
+    // reinforces it — and an analyst that never sees a sibling's row can only
+    // mint a fresh copy (docs/week-one-review-2026-09-10.md §3: 51 active
+    // rows, all symbol-scoped, ~20 restating one rule).
+    includeSiblingSymbols?: boolean;
 }): Promise<SwingLessonRow[]> {
     if (!isSwingPgConfigured()) return [];
     await ensureSwingSchema();
     const symbol = opts.symbol ? String(opts.symbol).toUpperCase() : null;
     const assetClass = opts.assetClass ?? null;
     const limit = Math.max(1, Math.min(100, opts.limit ?? 50));
+    const siblings = Boolean(opts.includeSiblingSymbols);
     const db = swingPg();
     const rows = await db.$queryRaw<Array<LessonDbRow>>(sql`
         SELECT id, scope, symbol, asset_class, lesson, confidence, support_count,
@@ -1745,6 +1808,7 @@ export async function loadActiveSwingLessons(opts: {
           AND (
             scope = 'global'
             OR (scope = 'symbol' AND ${symbol}::text IS NOT NULL AND symbol = ${symbol})
+            OR (scope = 'symbol' AND ${siblings}::boolean = TRUE)
             OR (scope = 'asset_class' AND ${assetClass}::text IS NOT NULL AND asset_class = ${assetClass})
           )
         ORDER BY confidence DESC, support_count DESC, updated_at DESC

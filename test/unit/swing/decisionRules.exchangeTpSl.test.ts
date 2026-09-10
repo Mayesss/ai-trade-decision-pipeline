@@ -41,16 +41,51 @@ test('entry BUY keeps a valid structural TP and a valid structural SL', () => {
     assert.equal(out.stopLossPrice, 97);
 });
 
-test('entry SL on the wrong side is dropped; a sub-1-ATR stop is now kept', () => {
+test('entry SL on the wrong side is dropped; a sub-floor stop is kept but flagged for refusal', () => {
     const wrongSide = entry('BUY', 104, 101);
     assert.ok(wrongSide.notes.includes('sl_wrong_side_dropped'));
     assert.equal(wrongSide.stopLossPrice, null);
-    const tight = entry('BUY', 104, 99); // 0.5 ATR — previously dropped
+    assert.equal(wrongSide.entryStopBelowFloor, false);
+    // 0.5 ATR — inside ENTRY_SL_MIN_ATR (1). Returned as asked (the record of
+    // what the model wanted) and flagged: analyze.ts refuses the entry on the
+    // flag instead of widening the stop or dropping it to the 3×ATR default.
+    const tight = entry('BUY', 104, 99);
     assert.equal(tight.stopLossPrice, 99);
+    assert.equal(tight.entryStopBelowFloor, true);
+    assert.ok(tight.notes.includes('sl_below_entry_floor'));
     assert.ok(!tight.notes.includes('sl_too_close_dropped'));
     const noise = entry('BUY', 104, 99.95); // 0.025 ATR — under BRACKET_MIN_GAP_ATR
     assert.ok(noise.notes.includes('sl_too_close_dropped'));
     assert.equal(noise.stopLossPrice, null);
+    assert.equal(noise.entryStopBelowFloor, false); // dropped, not flagged — nothing to refuse
+});
+
+test('entry stop floor: exactly 1 ATR passes, both sides, and REVERSE measures the NEW side', () => {
+    const atFloor = entry('BUY', 104, PRICE - ATR);
+    assert.equal(atFloor.stopLossPrice, PRICE - ATR);
+    assert.equal(atFloor.entryStopBelowFloor, false);
+    assert.equal(atFloor.notes.length, 0);
+    const shortInside = entry('SELL', 96, PRICE + 0.9 * ATR);
+    assert.equal(shortInside.entryStopBelowFloor, true);
+    // Reversing a LONG → new SHORT: the stop above price is 0.5 ATR away.
+    const rev = sanitizeExchangeTpSl({
+        action: 'REVERSE',
+        positionOpen: true,
+        side: 'long',
+        price: PRICE,
+        primaryAtr: ATR,
+        takeProfitPrice: 95,
+        stopLossPrice: PRICE + 0.5 * ATR,
+    });
+    assert.equal(rev.entryStopBelowFloor, true);
+    assert.ok(rev.notes.includes('sl_below_entry_floor'));
+});
+
+test('entry stop floor never applies to amends — a 0.3-ATR tightened stop is a legitimate trail', () => {
+    const trail = amend('long', null, PRICE - 0.3 * ATR, { standingStopLossPrice: PRICE - 2 * ATR });
+    assert.equal(trail.stopLossPrice, PRICE - 0.3 * ATR);
+    assert.equal(trail.entryStopBelowFloor, false);
+    assert.ok(!trail.notes.includes('sl_below_entry_floor'));
 });
 
 test('entry without a TP falls back to 3×ATR on the profit side', () => {
@@ -64,15 +99,17 @@ test('entry TP on the wrong side is replaced by the fallback', () => {
     assert.equal(wrongSide.takeProfitPrice, PRICE + 3 * ATR);
 });
 
-// Floors removed 2026-09-02 (ENTRY_TP_MIN_ATR = 2, ENTRY_SL_MIN_ATR = 1): they
-// made any trade inside a sub-2-ATR range inexpressible, and a violation
-// silently WIDENED the target to the 3×ATR fallback. Bracket geometry is the
-// model's now. Anchor for every case below: PRICE 100, ATR 2.
-test('the tight-stop range trade is expressible — both legs kept as asked', () => {
-    const out = entry('BUY', 102.4, 99.2); // stop 0.4 ATR, target 1.2 ATR = 3R
-    assert.equal(out.stopLossPrice, 99.2);
+// Target floors removed 2026-09-02 (ENTRY_TP_MIN_ATR = 2 made any trade inside
+// a sub-2-ATR range inexpressible, and a violation silently WIDENED the target
+// to the 3×ATR fallback). Target geometry is the model's. The STOP floor came
+// back 2026-09-10 (ENTRY_SL_MIN_ATR = 1) as a refusal, not a widening — see
+// decisionConfig.ts. Anchor for every case below: PRICE 100, ATR 2.
+test('the range trade is expressible with a floor-clearing stop — both legs kept as asked', () => {
+    const out = entry('BUY', 102.4, 98); // stop 1.0 ATR, target 1.2 ATR = 1.2R
+    assert.equal(out.stopLossPrice, 98);
     assert.equal(out.takeProfitPrice, 102.4);
     assert.equal(out.notes.length, 0);
+    assert.equal(out.entryStopBelowFloor, false);
 });
 
 test('a sub-2-ATR target is kept — no minimum distance', () => {
@@ -123,9 +160,12 @@ test('on a low-ATR instrument the floor is the sizing threshold, not 0.1 ATR', (
     assert.equal(unsizeable.stopLossPrice, null);
     assert.ok(unsizeable.notes.includes('sl_below_sizeable_dropped'));
 
-    // 0.2 ATR = 0.071% of entry — over both floors, kept as asked.
+    // 0.2 ATR = 0.071% of entry — over both noise floors, kept as asked; the
+    // ENTRY floor (1 ATR) still flags it for refusal upstream.
     const ok = price - 0.2 * atr;
     assert.equal(sanitize(ok).stopLossPrice, ok);
+    assert.equal(sanitize(ok).entryStopBelowFloor, true);
+    assert.equal(sanitize(price - 1.2 * atr).entryStopBelowFloor, false);
 });
 
 test('on a high-ATR instrument the ATR floor still binds and keeps its own note', () => {

@@ -34,6 +34,7 @@ import {
     HOLD_COOLDOWN_MIN_MINUTES,
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
+    ENTRY_SL_MIN_ATR,
     ENTRY_LIMIT_MIN_ATR,
     ENTRY_LIMIT_MAX_ATR,
 } from './decisionConfig';
@@ -1335,6 +1336,11 @@ export function computeSwingState(
                       : 'a REVERSE is demoted to CLOSE; HOLD and CLOSE stand as you set them'
               }.`
             : 'Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD.',
+        ...(ENTRY_SL_MIN_ATR > 0
+            ? [
+                  `Entry stop floor: on ${inPosition ? 'REVERSE (the new side)' : 'BUY/SELL'} stop_loss_price must sit at least ${ENTRY_SL_MIN_ATR} primary-ATR from the entry price (the resting price when the entry rests). Closer and the ENTRY is refused — coerced to HOLD, nothing placed, a wasted call — never widened for you. Targets have no floor. A null stop gets the wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe default.`,
+              ]
+            : []),
         ...(!inPosition && REENTRY_COOLDOWN_MIN > 0
             ? [
                   `Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).${SESSION_OFFENSE_ENABLED ? ' Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.' : ''}`,
@@ -1465,7 +1471,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
             : ''
     }
 - Exchange-side TP/SL bracket:
-  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. Their distances are yours: no minimum on either, and no required ratio between them. A tight stop with a near target and a wide stop with a far one are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
+  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. The target's distance is yours (no minimum, no required ratio to the stop); the stop has the one floor listed in HARD CONSTRAINTS. Inside that, a near target with a modest stop and a far target with a wide stop are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
         inPosition
             ? `\n  • On HOLD or partial CLOSE, you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Whether either leg should move as the trade develops, and to where, is the same structural judgment that placed it.`
             : ''

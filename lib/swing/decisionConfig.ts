@@ -266,16 +266,16 @@ export const ACTIONABILITY_WALL_ATR = (() => {
 // the decision history: same-direction re-opens within hours of a close were fee
 // bleed (e.g. 3 NATURALGAS SELLs and 3 US100 BUYs on single days). One primary bar
 // (4H) by default; 0 disables.
-// Default 240 -> 0 (off) 2026-09-02. The anti-churn case was real (repeat
-// same-day opens bled fees) but it is a blanket directional block: it also eats
-// the reclaim re-entry after a stop-out, which is the highest-edge version of
-// the same trade, and its exception is gated behind SWING_SESSION_OFFENSE_ENABLED
-// which is off for swing. market.recent_actions already shows the model its own
-// recent closes and their PnL, so it can decline a churn re-entry itself.
-// Set SWING_REENTRY_COOLDOWN_MIN=240 to restore it if churn reappears.
+// 240 → 0 (off) on 2026-09-02, back to 240 on 2026-09-10. The 09-02 argument
+// was that market.recent_actions lets the model decline a churn re-entry itself.
+// Measured over the first week without the block (docs/week-one-review-2026-09-10.md):
+// 19 same-symbol re-entries within 2h of a losing close, 4 wins, net −1.52 —
+// the model did not decline them. The block is back as a code default; its
+// sweep-reclaim exception stays behind SWING_SESSION_OFFENSE_ENABLED.
+// SWING_REENTRY_COOLDOWN_MIN=0 switches it off again.
 export const REENTRY_COOLDOWN_MIN = (() => {
     const n = Number(process.env.SWING_REENTRY_COOLDOWN_MIN);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    return Number.isFinite(n) && n >= 0 ? n : 240;
 })();
 
 // ------------------------------
@@ -481,11 +481,12 @@ export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
 // a violating leg was DROPPED and replaced by the wide default, so asking for a
 // near target produced a far one.
 //
-// What code still owns after this is exactly three things — legs on the correct
-// side of price, a noise floor (BRACKET_MIN_GAP_ATR), and tighten-only stop
-// amends. All three are mechanical facts about the venue, not views on the
-// trade. Whether a target pays for its stop is a judgment made with the levels
-// in view, so it sits with the model, which has them.
+// What code still owns after this — legs on the correct side of price, a noise
+// floor (BRACKET_MIN_GAP_ATR), tighten-only stop amends, and (since 2026-09-10)
+// one ENTRY stop floor, ENTRY_SL_MIN_ATR below. The first three are mechanical
+// facts about the venue. The fourth is a view on the trade, kept on purpose:
+// see its note. Whether a target pays for its stop is still a judgment made
+// with the levels in view, so it sits with the model, which has them.
 //
 // Sizing absorbs the tight stops this admits: notional = riskUsd /
 // stopDistancePct is capped at EXPOSURE_CAP_EQUITY_MULT× equity (riskSizing.ts),
@@ -499,6 +500,27 @@ export const EXCHANGE_TP_FALLBACK_ATR_MULT = 3;
 // a price rather than noise sitting on top of the current print. Not a view on
 // whether the target is any good — that judgment is the model's.
 export const BRACKET_MIN_GAP_ATR = 0.1;
+
+// Entry stop floor, in primary ATR from the entry price (the resting price when
+// the entry rests). An entry whose stop sits closer is REFUSED — coerced to HOLD
+// with entry_dropped='entry_stop_below_floor' — not widened: widening would size
+// and ship a trade the model did not decide on.
+//
+// Reinstated 2026-09-10 after one week without any floor
+// (docs/week-one-review-2026-09-10.md): the median entry stop went from 1.50 to
+// 0.62 primary-ATR, 84% of stops sat under 1 ATR, and stop-outs were the entire
+// week's loss (33 stop-outs, 2 wins, −14.10 net) while every target that filled
+// paid. In the 12h after a stop-out price came back to the entry price 15 times
+// out of 15 — the stops were inside one bar's noise, which the prompt's "must
+// stand on its own for one full 4H bar" sentence did not prevent. The model's
+// own post-mortems wrote "stop ≥0.5–1 primary-ATR" about twenty times, once per
+// symbol; this is that lesson, stated once, where it cannot be forgotten.
+// Targets keep no floor — range trades stay expressible.
+// SWING_ENTRY_SL_MIN_ATR overrides; 0 disables.
+export const ENTRY_SL_MIN_ATR = (() => {
+    const n = Number(process.env.SWING_ENTRY_SL_MIN_ATR);
+    return Number.isFinite(n) && n >= 0 ? n : 1;
+})();
 
 // Resting-entry distance envelope, in primary ATR from live price. An invalid
 // resting price (wrong side for its kind, inside the noise band, or

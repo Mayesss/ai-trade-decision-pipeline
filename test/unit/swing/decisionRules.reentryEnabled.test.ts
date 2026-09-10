@@ -1,7 +1,7 @@
-// The re-entry cooldown defaults to OFF (SWING_REENTRY_COOLDOWN_MIN = 0 since
-// 2026-09-02), so decisionRules.reentry.test.ts pins the DISABLED behaviour.
-// This file pins the mechanism as it behaves when switched back ON — the state
-// the restore note in decisionConfig.ts points at.
+// The re-entry cooldown is pinned OFF for the test run (test/harness/setup-env.ts
+// sets SWING_REENTRY_COOLDOWN_MIN=0; the prod default is 240 again since
+// 2026-09-10), so decisionRules.reentry.test.ts pins the DISABLED behaviour.
+// This file pins the mechanism as it behaves when ON — the production state.
 //
 // REENTRY_COOLDOWN_MIN is captured into a module-level const at import time, so
 // the env has to be set BEFORE the modules load: vi.stubEnv in a test body is

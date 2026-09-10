@@ -22,6 +22,7 @@ import {
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
     BRACKET_MIN_GAP_ATR,
+    ENTRY_SL_MIN_ATR,
 } from './decisionConfig';
 import { MIN_SIZEABLE_STOP_PCT } from './riskSizing';
 import type {
@@ -565,6 +566,11 @@ export type ExchangeTpSl = {
     takeProfitPrice: number | null;
     stopLossPrice: number | null;
     notes: string[];
+    // Entry only: the model's stop sits inside ENTRY_SL_MIN_ATR of the entry
+    // price. The stop is returned as given (an honest record of what was
+    // asked); the caller REFUSES the entry rather than shipping or widening it.
+    // Never set on amends.
+    entryStopBelowFloor: boolean;
 };
 
 /**
@@ -609,7 +615,7 @@ export function sanitizeExchangeTpSl(params: {
         (action === 'HOLD' ||
             (action === 'CLOSE' && params.exitSizePct != null && params.exitSizePct < 100));
     if (!(price > 0) || (!isEntry && !isAmend)) {
-        return { takeProfitPrice: null, stopLossPrice: null, notes: ['tpsl_not_applicable'] };
+        return { takeProfitPrice: null, stopLossPrice: null, notes: ['tpsl_not_applicable'], entryStopBelowFloor: false };
     }
 
     const side: 'long' | 'short' = isReverse
@@ -664,6 +670,7 @@ export function sanitizeExchangeTpSl(params: {
     // is dropped and the caller's catastrophe default (a sizeable width) is
     // attached instead, so the entry survives and stays risk-sized.
     let sl = Number.isFinite(params.stopLossPrice as number) && (params.stopLossPrice as number) > 0 ? Number(params.stopLossPrice) : null;
+    let entryStopBelowFloor = false;
     if (sl != null) {
         if (dir * (price - sl) <= 0) {
             notes.push('sl_wrong_side_dropped');
@@ -675,6 +682,13 @@ export function sanitizeExchangeTpSl(params: {
             if (minDist > 0 && Math.abs(price - sl) < minDist) {
                 notes.push(minBySizing > minByAtr ? 'sl_below_sizeable_dropped' : 'sl_too_close_dropped');
                 sl = null;
+            } else if (isEntry && atr && ENTRY_SL_MIN_ATR > 0 && Math.abs(price - sl) < ENTRY_SL_MIN_ATR * atr) {
+                // Entry stop floor (decisionConfig.ts ENTRY_SL_MIN_ATR). Flagged,
+                // not dropped: dropping would hand the entry the wide catastrophe
+                // default and ship a trade the model did not decide on. The
+                // caller refuses the entry instead (analyze.ts dropEntry).
+                notes.push('sl_below_entry_floor');
+                entryStopBelowFloor = true;
             }
         }
         // Tighten-only guard on amends: a new stop below the standing stop
@@ -691,7 +705,7 @@ export function sanitizeExchangeTpSl(params: {
     }
     if (sl != null && !(sl > 0)) sl = null;
 
-    return { takeProfitPrice: tp, stopLossPrice: sl, notes };
+    return { takeProfitPrice: tp, stopLossPrice: sl, notes, entryStopBelowFloor };
 }
 
 // ------------------------------

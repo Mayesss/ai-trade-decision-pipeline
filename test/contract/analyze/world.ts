@@ -163,6 +163,8 @@ export const analyzePg: PgResponder = (text) => {
     // Bracket trail (which TP/SL was resting when a position closed).
     if (text.includes('FROM swing.decisions')) return [];
     if (text.includes('FROM swing.lessons')) return [];
+    // Post-mortem twin guard (one evaluation per close).
+    if (text.includes('FROM swing.postmortems')) return [];
     if (text.includes('FROM swing.ai_threads')) return [];
     if (text.includes('FROM swing.ai_cooldowns')) return [];
     if (text.includes('FROM swing.break_triggers')) return [];

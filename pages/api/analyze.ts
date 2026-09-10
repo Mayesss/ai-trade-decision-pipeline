@@ -44,7 +44,7 @@ import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
 
-import { POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
+import { ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
@@ -2995,6 +2995,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         decision.take_profit_price = exchangeTpsl.takeProfitPrice;
         decision.stop_loss_price = exchangeTpsl.stopLossPrice;
 
+        // Entry stop floor (decisionConfig.ts ENTRY_SL_MIN_ATR): a fresh entry
+        // whose stop sits inside the floor is refused outright — HOLD, bracket
+        // torn down — never widened to the floor or to the catastrophe default,
+        // because either would size and ship a trade the model did not decide
+        // on. Refusing also keeps a standing resting entry untouched (a HOLD
+        // leaves it resting, see the reconcile below), so the model's earlier
+        // commitment is not swept away by a bad re-issue. Stated in the prompt's
+        // HARD CONSTRAINTS; decision.entry_dropped carries the code for the
+        // dashboard and the post-mortem.
+        const opensFreshExposure =
+            (!positionOpen && (decision.action === 'BUY' || decision.action === 'SELL')) ||
+            (positionOpen && decision.action === 'REVERSE');
+        if (exchangeTpsl.entryStopBelowFloor && opensFreshExposure) {
+            const askedSl = Number(exchangeTpsl.stopLossPrice);
+            const distAtr =
+                Number.isFinite(askedSl) && primaryAtrSane
+                    ? (Math.abs(bracketAnchor - askedSl) / primaryAtrSane).toFixed(2)
+                    : '?';
+            dropEntry('entry_stop_below_floor', `entry_stop_below_floor stop≈${distAtr}ATR floor=${ENTRY_SL_MIN_ATR}ATR`);
+            exchangeTpsl.takeProfitPrice = null;
+            exchangeTpsl.stopLossPrice = null;
+            exchangeTpsl.notes.push('bracket_dropped_with_entry');
+            decision.take_profit_price = null;
+            decision.stop_loss_price = null;
+        }
+
         // Flat-HOLD cooldown request: clamp minutes and validate wake-band sides
         // against live price; write the SANITIZED values back onto the decision
         // so history/dashboard show what was actually armed. Persisted after
@@ -3176,8 +3202,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Entry protective stop: the model's structural invalidation stop when it
-        // survived sanitation (sanitizeExchangeTpSl: protective side, 1–3×ATR
-        // from the bracket anchor), otherwise the deliberately WIDE ATR-based
+        // survived sanitation (sanitizeExchangeTpSl: protective side, outside
+        // the noise band and the entry floor), otherwise the deliberately WIDE ATR-based
         // catastrophe stop — a circuit breaker bounding the position during the
         // gap between AI evaluations, not a tactical exit.
         const CATASTROPHE_STOP_ATR_MULT = 3;

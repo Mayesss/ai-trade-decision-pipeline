@@ -87,6 +87,10 @@ Object.assign(process.env, {
     CAPITAL_MAX_REQUESTS_PER_SECOND: '1000',
     CAPITAL_RATE_LIMIT_SAFETY_MS: '0',
     CAPITAL_MAX_429_RETRIES: '0',
+    // Re-entry cooldown is default-ON in prod again (240 min since 2026-09-10).
+    // Pinned OFF here so the flat-scan snapshots and the disabled-behaviour
+    // unit test stay stable; decisionRules.reentryEnabled.test.ts stubs it ON.
+    SWING_REENTRY_COOLDOWN_MIN: '0',
     // Fear/greed is default-ON in prod (free, fails open) — but here it would
     // hit alternative.me on every crypto AI tick and trip the harness's
     // unhandled-request error. Off by default; tests that cover it stub 'true'
