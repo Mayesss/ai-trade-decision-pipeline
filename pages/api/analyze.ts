@@ -2788,8 +2788,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             loadPromptLessons(symbol, category),
             // Fresh search-grounded news+social digest (Perplexity sonar via
             // the AI gateway, KV-cached). SWING_PERPLEXITY_ENABLED opt-in;
-            // fails open to null like the rest of the bundle.
-            loadPerplexityContext(symbol, { platform, category }),
+            // fails open to null like the rest of the bundle. IN-POSITION ONLY
+            // since 2026-09-10: flat scans ran a Sonar search on every AI call
+            // (110–145/day across 24 symbols) with no measured effect on entry
+            // quality; a position being managed is where a fresh news item can
+            // change the answer. Flat entries keep the venue news feed.
+            positionOpen ? loadPerplexityContext(symbol, { platform, category }) : Promise.resolve(null),
             // Daily crypto Fear & Greed index (alternative.me, KV-cached 1h,
             // market-wide so one value serves every symbol). Crypto only;
             // default-on with SWING_FEAR_GREED_ENABLED as kill switch; fails

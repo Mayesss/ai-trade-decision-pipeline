@@ -255,3 +255,20 @@ test('attachTrimChunkPnl: partial-close briefs pick up the matching chunk cash b
     assert.equal((out[0] as any).pnlNet, 2.3);
     assert.equal((out[1] as any).pnlNet, undefined);
 });
+
+test('quoteNotionalToUsd: USD-quoted instruments are size×price, USD-based forex is the size itself', async () => {
+    const { quoteNotionalToUsd } = await import('../../../lib/swing/capitalWindows');
+    // USDJPY: 100 units at 153.235 — the base IS the dollar, notional is $100 (not ¥15,323.5).
+    assert.equal(quoteNotionalToUsd('USDJPY', 100, 153.235), 100);
+    // EURUSD: quote is USD, size × price.
+    assert.equal(quoteNotionalToUsd('EURUSD', 100, 1.085), 108.5);
+    // Cross pair without a USD leg: unknown rather than wrong.
+    assert.equal(quoteNotionalToUsd('EURJPY', 100, 165), null);
+    // Non-forex CFDs (indices, metals, energy) are quoted in USD.
+    assert.equal(quoteNotionalToUsd('GOLD', 0.05, 3600), 180);
+    assert.equal(quoteNotionalToUsd('US100', 0.01, 18200), 182);
+    assert.equal(quoteNotionalToUsd('NATURALGAS', 50, 3.68), 184);
+    // Degenerate inputs.
+    assert.equal(quoteNotionalToUsd('GOLD', 0, 3600), null);
+    assert.equal(quoteNotionalToUsd('GOLD', 1, 0), null);
+});

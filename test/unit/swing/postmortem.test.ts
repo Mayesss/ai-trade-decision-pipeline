@@ -269,3 +269,33 @@ test('summarizePositionSizeEvents: ignores dry runs, failed exits and other posi
     );
     assert.deepEqual(events, []);
 });
+
+test('refusal pre-filter: quiet aftermath skips the analyst, a real move or unknown data does not', async () => {
+    const { evaluateRefusalPrefilter, parsePromptPrimaryAtrPct } = await import('../../../lib/swing/postmortem');
+    const opts = { minAtr: 0.5, fallbackPct: 0.5 };
+    // ATR known (1.4% of price): threshold 0.7%. 0.4% either way → mechanical right_to_skip.
+    const quiet = evaluateRefusalPrefilter({ max_up_from_exit_pct: 0.4, max_down_from_exit_pct: -0.3 }, 1.4, opts);
+    assert.equal(quiet.skipAnalyst, true);
+    assert.equal(quiet.thresholdBasis, 'atr');
+    assert.equal(quiet.thresholdPct, 0.7);
+    assert.equal(quiet.maxExcursionPct, 0.4);
+    // A 1.9% move in one direction → the analyst runs.
+    const moved = evaluateRefusalPrefilter({ max_up_from_exit_pct: 1.9, max_down_from_exit_pct: -0.2 }, 1.4, opts);
+    assert.equal(moved.skipAnalyst, false);
+    // No ATR → flat pct fallback (0.5%).
+    const noAtr = evaluateRefusalPrefilter({ max_up_from_exit_pct: 0.45, max_down_from_exit_pct: -0.1 }, null, opts);
+    assert.equal(noAtr.skipAnalyst, true);
+    assert.equal(noAtr.thresholdBasis, 'pct');
+    // Missing summary → never skip (fail toward spending).
+    assert.equal(evaluateRefusalPrefilter(null, 1.4, opts).skipAnalyst, false);
+    assert.equal(evaluateRefusalPrefilter({ max_up_from_exit_pct: 'x' }, 1.4, opts).skipAnalyst, false);
+    // Disabled.
+    assert.equal(evaluateRefusalPrefilter({ max_up_from_exit_pct: 0.1, max_down_from_exit_pct: 0 }, 1.4, { minAtr: 0 }).skipAnalyst, false);
+
+    // ATR parse from the stored user turn — the STATE JSON block.
+    const user = 'You are analyzing BTCUSDT\n\nSTATE (derived signals — single source of truth):\n{"volatility":{"atr_pct":{"primary":1.42,"macro":4.1}}}\n\nMARKET (raw inputs):\n{"price":{"last":1}}\n';
+    assert.equal(parsePromptPrimaryAtrPct(user), 1.42);
+    assert.equal(parsePromptPrimaryAtrPct(user.replace('1.42', '0')), null); // observed on a thin listing → unknown
+    assert.equal(parsePromptPrimaryAtrPct('no state here'), null);
+    assert.equal(parsePromptPrimaryAtrPct(null), null);
+});

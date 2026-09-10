@@ -1006,6 +1006,78 @@ const POSTMORTEM_MAX_TRANSIENT_ATTEMPTS = 5;
 // The caller owns claiming (claimSwingPostmortemById / claimQueuedSwingPostmortems).
 // opts.force (manual regenerate): also analyze positions with an AI coverage
 // gap — the default is to SKIP those (see below).
+// ---------------------------------------------------------------------------
+// Refusal pre-filter: skip the analyst when nothing happened after the refusal
+// ---------------------------------------------------------------------------
+// 94 refusal investigations ran in the week of 2026-09-07; 81 came back
+// right_to_skip, ~3.3M input tokens. Where the post-refusal path never left a
+// half-ATR band in EITHER direction the analyst has nothing to judge — the
+// declined trade neither worked nor failed — and the verdict is
+// right_to_skip by construction (25 of 26 such cases in that week; the one
+// wrong_to_skip sat just under the pct fallback). Decide that in code, record
+// a mechanical report, keep the dossier for the UI, spend no tokens.
+//
+// Threshold is ATR-relative when the refused evaluation's STATE carried a
+// primary atr_pct (half a primary ATR), else a flat percent of price.
+// SWING_REFUSAL_MIN_EXCURSION_ATR=0 disables the pre-filter.
+export const REFUSAL_MIN_EXCURSION_ATR = (() => {
+    const n = Number(process.env.SWING_REFUSAL_MIN_EXCURSION_ATR);
+    return Number.isFinite(n) && n >= 0 ? n : 0.5;
+})();
+export const REFUSAL_MIN_EXCURSION_PCT_FALLBACK = (() => {
+    const n = Number(process.env.SWING_REFUSAL_MIN_EXCURSION_PCT);
+    return Number.isFinite(n) && n > 0 ? n : 0.5;
+})();
+
+// Primary-timeframe ATR as % of price, read back from the refused evaluation's
+// stored user prompt (STATE.volatility.atr_pct.primary). null when absent or
+// non-positive (a 0 has been observed on a thin listing — treated as unknown).
+export function parsePromptPrimaryAtrPct(user: string | null | undefined): number | null {
+    if (typeof user !== 'string') return null;
+    const m = user.match(/STATE \(derived signals[^\n]*\n(\{.*?\})\n\nMARKET/s);
+    if (!m) return null;
+    try {
+        const state = JSON.parse(m[1]) as { volatility?: { atr_pct?: { primary?: unknown } | unknown } };
+        const atrPct = state?.volatility?.atr_pct;
+        const primary =
+            atrPct && typeof atrPct === 'object' ? Number((atrPct as { primary?: unknown }).primary) : Number(atrPct);
+        return Number.isFinite(primary) && primary > 0 ? primary : null;
+    } catch {
+        return null;
+    }
+}
+
+export type RefusalPrefilterVerdict = {
+    skipAnalyst: boolean;
+    maxExcursionPct: number | null;
+    thresholdPct: number | null;
+    thresholdBasis: 'atr' | 'pct' | null;
+};
+
+// Pure: given the post-refusal summary and the ATR read, decide whether the
+// analyst is needed. Unknown excursion → run the analyst (fail toward spending).
+export function evaluateRefusalPrefilter(
+    postExitMarket: { max_up_from_exit_pct?: unknown; max_down_from_exit_pct?: unknown } | null | undefined,
+    primaryAtrPct: number | null,
+    opts: { minAtr?: number; fallbackPct?: number } = {},
+): RefusalPrefilterVerdict {
+    const minAtr = opts.minAtr ?? REFUSAL_MIN_EXCURSION_ATR;
+    const fallbackPct = opts.fallbackPct ?? REFUSAL_MIN_EXCURSION_PCT_FALLBACK;
+    const none: RefusalPrefilterVerdict = { skipAnalyst: false, maxExcursionPct: null, thresholdPct: null, thresholdBasis: null };
+    if (!(minAtr > 0)) return none;
+    const up = Number(postExitMarket?.max_up_from_exit_pct);
+    const down = Number(postExitMarket?.max_down_from_exit_pct);
+    if (!Number.isFinite(up) || !Number.isFinite(down)) return none;
+    const maxExcursionPct = Math.max(Math.abs(up), Math.abs(down));
+    const thresholdPct = primaryAtrPct !== null && primaryAtrPct > 0 ? minAtr * primaryAtrPct : fallbackPct;
+    return {
+        skipAnalyst: maxExcursionPct < thresholdPct,
+        maxExcursionPct,
+        thresholdPct,
+        thresholdBasis: primaryAtrPct !== null && primaryAtrPct > 0 ? 'atr' : 'pct',
+    };
+}
+
 export async function runSwingPostmortem(
     row: SwingPostmortemRow,
     opts: { force?: boolean } = {},
@@ -1148,6 +1220,38 @@ export async function runSwingPostmortem(
                   ? 'POSITION (closed IN PROFIT — subject of this WIN EVALUATION)'
                   : undefined,
         });
+        if (isRefusal && !opts.force) {
+            const refusedEval = decisions.find((d) => Math.abs(d.decidedAtMs - exitMs) <= 120_000 && d.prompt?.user);
+            const prefilter = evaluateRefusalPrefilter(postExitMarket, parsePromptPrimaryAtrPct(refusedEval?.prompt?.user));
+            if (prefilter.skipAnalyst) {
+                const hours = Math.round(postmortemTailAfterExitMs() / 3_600_000);
+                const report = {
+                    verdict: 'right_to_skip',
+                    confidence: 1,
+                    lesson_action: 'none',
+                    reinforce_lesson_id: null,
+                    lesson: null,
+                    lesson_scope: null,
+                    mechanical: true,
+                    summary:
+                        `Mechanical verdict, no analyst call: in the ${hours}h after the refusal price moved at most ` +
+                        `${prefilter.maxExcursionPct?.toFixed(2)}% in either direction, under the ` +
+                        `${prefilter.thresholdPct?.toFixed(2)}% threshold (${prefilter.thresholdBasis === 'atr' ? `${REFUSAL_MIN_EXCURSION_ATR} primary-ATR` : 'flat pct fallback'}). ` +
+                        'The declined trade neither worked nor failed — nothing to investigate.',
+                };
+                await completeSwingPostmortem(row.id, {
+                    verdict: 'right_to_skip',
+                    lesson: null,
+                    lessonScope: null,
+                    report,
+                    dossier,
+                    model: null,
+                    usage: null,
+                });
+                console.log(`[postmortem] #${row.id} refusal pre-filtered: ${report.summary}`);
+                return { id: row.id, status: 'succeeded', verdict: 'right_to_skip', lesson: null };
+            }
+        }
         const { json: report, model, usage } = await callSwingDecision({
             system: isRefusal
                 ? REFUSAL_INVESTIGATION_SYSTEM_PROMPT

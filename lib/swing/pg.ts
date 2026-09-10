@@ -2137,10 +2137,18 @@ export async function upsertSwingPosition(
     const positionKey = String(p.id || `${symbol}-${p.entryTimestamp ?? 'nots'}`);
     const status = p.status ?? (p.exitTimestamp ? 'closed' : 'open');
     const entryMs = finite(p.entryTimestamp);
-    // When the caller doesn't supply a decision_id, link to the most recent
-    // decision for this symbol/platform at or just before entry (the one that
-    // opened the position). 6h lookback keeps it to the same cron neighbourhood.
+    // When the caller doesn't supply a decision_id, link to the decision that
+    // PLACED the entry: the most recent executed BUY/SELL for this symbol at or
+    // just before entry, looking back as far as a resting order may wait for its
+    // fill (RESTING_ENTRY_MAX_AGE_MINUTES = 48h). The old rule — "most recent
+    // decision within 6h" — linked every resting fill to the HOLD tick that
+    // happened to observe it, so strategy/tool attribution on
+    // positions.decision_id was wrong for 33 of 125 positions in the week of
+    // 2026-09-02 (docs/week-one-review-2026-09-10.md). The 6h any-decision rule
+    // stays as the last resort (venue-side positions with no recorded order).
     const linkLowerMs = entryMs == null ? null : entryMs - 6 * 60 * 60 * 1000;
+    const orderLowerMs = entryMs == null ? null : entryMs - 48 * 60 * 60 * 1000;
+    const orderUpperMs = entryMs == null ? null : entryMs + 2 * 60 * 1000;
     const db = swingPg();
     await db.$executeRaw(sql`
         INSERT INTO swing.positions AS p (
@@ -2157,6 +2165,13 @@ export async function upsertSwingPosition(
             ${finite(p.pnlNet)}, ${finite(p.pnlGross)}, ${finite(p.pnlPct)}, ${finite(p.pnlGrossPct)},
             COALESCE(
                 ${p.decisionId ?? null}::bigint,
+                (SELECT d.id FROM swing.decisions d
+                   WHERE d.platform = ${plat} AND d.symbol = ${symbol}
+                     AND d.action IN ('BUY', 'SELL')
+                     AND d.exec_result_json->>'placed' = 'true'
+                     AND d.decided_at_ms <= ${orderUpperMs}
+                     AND d.decided_at_ms >= ${orderLowerMs}
+                   ORDER BY d.decided_at_ms DESC LIMIT 1),
                 (SELECT d.id FROM swing.decisions d
                    WHERE d.platform = ${plat} AND d.symbol = ${symbol}
                      AND d.decided_at_ms <= ${entryMs}

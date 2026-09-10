@@ -99,8 +99,10 @@ function buildPrompts(symbol: string, category?: string | null): { system: strin
     return { system, user };
 }
 
-// Entry point for /api/analyze. Returns null on flag-off or ANY failure so the
-// caller's prompt block is simply absent — never throws.
+// Entry point for /api/analyze — called on IN-POSITION ticks only (flat scans
+// skip it since 2026-09-10, see the bundle in analyze.ts). Returns null on
+// flag-off or ANY failure so the caller's prompt block is simply absent —
+// never throws.
 export async function loadPerplexityContext(
     symbol: string,
     opts: { platform: string; category?: string | null },

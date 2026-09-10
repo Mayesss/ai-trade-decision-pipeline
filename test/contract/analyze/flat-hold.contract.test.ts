@@ -4,7 +4,7 @@
 // conversation: every market read, the KV cache traffic, the full prompt on
 // the AI call, and the dryRun persistence trail (decision row, tick log).
 
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';
 import { analyzePg, decisionBase, flatPrivateWorld, runAnalyzeTick } from './world';
@@ -49,6 +49,10 @@ startBoundary(
 );
 
 test('flat actionable tick: full prompt to the model, HOLD answer, dryRun persistence', async () => {
+    // Perplexity is in-position only (2026-09-10): with the flag ON, a flat
+    // scan must not fetch the digest. The world registers no perplexity
+    // handler, so a fetch here fails via msw error-on-unhandled.
+    vi.stubEnv('SWING_PERPLEXITY_ENABLED', 'true');
     const out = await runAnalyzeTick({ symbol: 'BTCUSDT', platform: 'bitget', dryRun: 'true' });
 
     expect(out.statusCode).toBe(200);

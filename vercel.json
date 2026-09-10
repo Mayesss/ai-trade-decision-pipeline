@@ -64,10 +64,6 @@
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/swing/analyze?symbol=J225&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
-    },
-    {
       "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
       "schedule": "*/15 * * * *"
     },

@@ -198,3 +198,42 @@ retired.
 
 Not done: deploy, the model de-confound (§7 item 4), narrowing Capital
 breadth (§7 item 5).
+
+## 9. Applied 2026-09-10, afternoon (after the first deploy)
+
+Incident first: between ~11:45 and ~13:00 UTC the 15-min cadence fell from 25
+ticks per slot to 0–5. Cause: this review's read-only analysis scripts ran a
+session-level `SET default_transaction_read_only = on` on the POOLED Neon URL;
+pgbouncer (transaction mode) kept the flag on the server connections and
+handed them to the app, whose `CREATE SCHEMA IF NOT EXISTS` then failed on
+every tick that drew one. Repaired by `scripts/pg-reset-read-only.mjs` (owner
+ran it; 0/40 pooled connections read-only afterwards, 13:15 slot back to 25).
+The 12:00 UTC bar close was missed for nearly every symbol; open positions
+were covered by their exchange brackets. Rule going forward: read-only work
+uses `BEGIN READ ONLY` per transaction or the unpooled URL, and any setting
+altered during analysis is reset before the session ends.
+
+Follow-ups from the deeper cut (code, this repo):
+
+1. **Position → placing order.** `upsertSwingPosition` now links a position to
+   the latest executed BUY/SELL within 48h before entry, then falls back to
+   the old 6h any-decision rule. 33 of 125 positions since 09-02 were linked
+   to the HOLD tick that observed a resting fill; backfill in
+   `docs/positions-repair-2026-09-10.sql` (owner runs it).
+2. **Refusal pre-filter.** A refusal investigation whose post-refusal path
+   stayed within half a primary ATR in both directions (flat 0.5% when the
+   ATR is unknown) gets a mechanical `right_to_skip` with `lesson_action:
+   none` and no analyst call. On last week's 94 investigations this removes
+   ~26 calls (25 right, 1 wrong). `SWING_REFUSAL_MIN_EXCURSION_ATR=0` disables.
+3. **Perplexity in-position only.** Flat scans no longer fetch the Sonar
+   digest (was 110–145 searches/day). Contract test moved to an in-position
+   scenario; flat-hold pins the absence.
+4. **J225 cron removed** — minimum size needs ~320 of margin on a ~93 account;
+   454 wasted ticks last week. HK50 (25) and TLT are marginal and kept.
+5. **USDJPY notional in USD.** `quoteNotionalToUsd`: for USD-based forex pairs
+   the size is the dollar notional; five historical rows repaired in the same
+   SQL file.
+
+Re-measured after the first week with the floor live (owner's call):
+resting-limit outcomes by tool (§ "deeper cut": limits −9.34 vs market +2.85
+on the placing-order attribution), and the Capital hour-of-day buckets.

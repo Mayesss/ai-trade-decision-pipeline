@@ -92,6 +92,26 @@ type CapitalHistoryEntry = {
     } | null;
 };
 
+// size × price is notional in the instrument's QUOTE currency. For everything
+// Capital quotes in USD (indices, metals, energy, xxxUSD forex) that is USD
+// already; for a USDxxx forex pair the base IS the dollar, so the USD notional
+// is the size itself — size × price would be yen (USDJPY: 100 units printed
+// as 15,324 "USD", 150× too large, and it fed the derived pnl_pct). Cross pairs
+// (neither leg USD) have no rate here and stay unknown rather than wrong.
+export function quoteNotionalToUsd(symbol: string, sizeUnits: number, entryPrice: number): number | null {
+    if (!(sizeUnits > 0) || !(entryPrice > 0)) return null;
+    const key = normalizeCapitalSymbolKey(symbol);
+    const forexPair = /^[A-Z]{6}$/.test(key) && !/^(US|DE|UK|HK|J)\d/.test(key) ? key : null;
+    if (forexPair) {
+        const base = forexPair.slice(0, 3);
+        const quote = forexPair.slice(3);
+        if (quote === 'USD') return sizeUnits * entryPrice;
+        if (base === 'USD') return sizeUnits;
+        return null;
+    }
+    return sizeUnits * entryPrice;
+}
+
 // Fill a cash-only transaction window with entry data (and/or a missing
 // notional, needed for the derived percent) from the most recent placed
 // BUY/SELL decision before its exit. Window-provided fields always win —
@@ -121,9 +141,10 @@ export function enrichCapitalWindowFromHistory(window: PositionWindow, history: 
         finiteNumber(entry?.snapshot?.price) ??
         null;
     // Capital exec results record deal size in units, not notional — fall back
-    // to size × entry price. That's quote-currency notional against an
-    // account-currency (EUR) pnl_net, the same approximation the direct
-    // notionalUsd fields already carry; good enough for a display percent.
+    // to size × entry price converted to USD (quoteNotionalToUsd; a USDJPY size
+    // is dollars already). Against an account-currency (EUR) pnl_net that is the
+    // same approximation the direct notionalUsd fields carry; good enough for a
+    // display percent.
     const sizeUnits = positiveNumber(entry?.execResult?.size);
     const notional =
         positiveNumber(window.notional) ??
@@ -132,7 +153,9 @@ export function enrichCapitalWindowFromHistory(window: PositionWindow, history: 
         positiveNumber(entry?.execResult?.orderNotionalUsd) ??
         positiveNumber(entry?.snapshot?.gates?.notionalUSDT) ??
         positiveNumber(entry?.snapshot?.gates?.notionalUsd) ??
-        (sizeUnits !== null && entryPrice !== null && entryPrice > 0 ? sizeUnits * entryPrice : null);
+        (sizeUnits !== null && entryPrice !== null && entryPrice > 0
+            ? quoteNotionalToUsd(window.symbol, sizeUnits, entryPrice)
+            : null);
     return {
         ...window,
         entryTimestamp: window.entryTimestamp ?? Number(entry.timestamp),
