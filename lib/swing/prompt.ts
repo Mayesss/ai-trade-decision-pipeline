@@ -23,6 +23,7 @@ import { SWING_STRATEGIES } from './decisionSchema';
 import { RISK_EQUITY_PCT, EXPOSURE_CAP_EQUITY_MULT } from './riskSizing';
 import {
     resolveDecisionPolicy,
+    resolveSessionWindowConfig,
     REENTRY_COOLDOWN_MIN,
     restingEntryKindsFor,
     RESTING_ENTRY_MAX_AGE_MINUTES,
@@ -1133,6 +1134,15 @@ export function computeSwingState(
             ? `Venue liquidity clock (market.venue_events, ISO UTC): recent/upcoming venue events (cash open/close, lunch break, exchange maintenance halt, weekly reopen) with minutes_ago/minutes_to, plus liquidity_phase ∈ {pre_open, opening_drive, into_close, venue_break, off_hours, thin_reopen, normal}. These are schedule facts, not signals — the session-liquidity guidance says how to trade around them.`
             : '';
 
+    // Session decision windows — a code fact about WHEN this instrument is
+    // evaluated, stated once so the model plans around it (a resting order
+    // meant to survive into the open will not).
+    const sessionWindowCfg = resolveSessionWindowConfig();
+    const sessionWindowNote =
+        isCapital && hasVenueEvents && sessionWindowCfg.enabled
+            ? ` Session decision windows (enforced in code): while flat you are NOT evaluated from ${sessionWindowCfg.preOpenMin} min before a cash open until ${sessionWindowCfg.postOpenMin} min after it, nor for ${sessionWindowCfg.postCloseMin} min after a cash close (home venue and cross-venue events alike, e.g. the European close for US instruments) — a bar close or a wake landing there is skipped and the first tick after the window is evaluated instead. A resting entry still standing when a window opens is WITHDRAWN by code: an order you want filled through the open cannot be placed ahead of it; place it in the look after the window. In-position management is unaffected.`
+            : '';
+
     // Session doctrine, two modes (SESSION_OFFENSE_ENABLED, default OFF):
     // OFF = swing-defensive — session sweeps and venue phases are HAZARD
     // context (don't chase a sweep, don't add risk into thin tape), never an
@@ -1400,7 +1410,7 @@ export function computeSwingState(
         positionWakeTriggerGuidance,
         wakeSweepsGuidance,
         venueSessionNote,
-        venueEventsNote,
+        venueEventsNote + sessionWindowNote,
         sessionOffenseGuidance,
         eventReactionGuidance,
         btcContextGuidance,

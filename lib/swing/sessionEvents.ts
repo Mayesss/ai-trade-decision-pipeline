@@ -78,14 +78,26 @@ const US_CASH_EVENTS: VenueEventDef[] = [
 
 const US_CASH_INFLUENCE: VenueEventDef[] = US_CASH_EVENTS.map((e) => ({ ...e, home: false }));
 
+// The European cash close (Xetra/Euronext 17:30 Berlin, LSE 16:30 London — the
+// same instant) as a cross-venue influence event for everything that trades
+// through it: US indices, metals, energy and FX all see the close-flow bar.
+// Measured 2026-09-10: the first 4H bar after it (16:00 UTC) was 6 decisions,
+// 0 wins across GOLD, COPPER, US100, US500, EURUSD — none of whose calendars
+// knew the event existed. Influence only (home: false), so it feeds the
+// decision windows and the recent/upcoming lists, never off_hours bookkeeping.
+const EUROPE_CLOSE_INFLUENCE: { timeZone: string; events: VenueEventDef[] } = {
+    timeZone: BER,
+    events: [{ event: 'europe_cash_close', kind: 'close', hour: 17, minute: 30, home: false }],
+};
+
 const CALENDARS: Record<string, VenueCalendar> = {
     US_INDEX: {
         venue: 'NYSE/Globex',
-        zones: [{ timeZone: NY, events: [...US_CASH_EVENTS, ...GLOBEX_EVENTS] }],
+        zones: [{ timeZone: NY, events: [...US_CASH_EVENTS, ...GLOBEX_EVENTS] }, EUROPE_CLOSE_INFLUENCE],
     },
     NYSE: {
         venue: 'NYSE',
-        zones: [{ timeZone: NY, events: US_CASH_EVENTS }],
+        zones: [{ timeZone: NY, events: US_CASH_EVENTS }, EUROPE_CLOSE_INFLUENCE],
     },
     XETRA: {
         venue: 'XETRA',
@@ -149,6 +161,7 @@ const CALENDARS: Record<string, VenueCalendar> = {
                 events: [{ event: 'comex_floor_open', kind: 'open', hour: 8, minute: 20 }, ...GLOBEX_EVENTS],
             },
             { timeZone: LDN, events: [{ event: 'london_open', kind: 'open', hour: 8, minute: 0, home: false }] },
+            EUROPE_CLOSE_INFLUENCE,
         ],
     },
     ENERGY: {
@@ -159,6 +172,7 @@ const CALENDARS: Record<string, VenueCalendar> = {
                 events: [{ event: 'nymex_floor_open', kind: 'open', hour: 9, minute: 0 }, ...GLOBEX_EVENTS],
             },
             { timeZone: LDN, events: [{ event: 'london_open', kind: 'open', hour: 8, minute: 0, home: false }] },
+            EUROPE_CLOSE_INFLUENCE,
         ],
     },
     FX: {
@@ -180,6 +194,7 @@ const CALENDARS: Record<string, VenueCalendar> = {
                     { event: 'fx_weekly_reopen', kind: 'weekly_reopen', hour: 17, minute: 0, days: [0] },
                 ],
             },
+            EUROPE_CLOSE_INFLUENCE,
         ],
     },
 };
@@ -366,4 +381,57 @@ export function buildVenueSessionEvents(params: {
         recent,
         upcoming,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Session decision windows (see decisionConfig.ts resolveSessionWindowConfig)
+// ---------------------------------------------------------------------------
+// A window is a span around a venue event during which the pipeline takes no
+// FLAT decision for this instrument:
+//   open / break_end : [event − preOpenMin (opens only), event + postOpenMin)
+//   close            : [event, event + postCloseMin)
+// Home and cross-venue influence events both count — the US open moves the
+// DAX and the European close moves gold whether or not the venue is "home".
+// Weekly closes/reopens and break starts are left to the liquidity_phase.
+export type SessionDecisionWindowKind = 'pre_open' | 'opening_drive' | 'post_close';
+
+export type SessionDecisionWindow = {
+    active: boolean;
+    // The window that is open now (active) or null.
+    kind: SessionDecisionWindowKind | null;
+    event: string | null;
+    startMs: number | null;
+    endMs: number | null;
+};
+
+export function evaluateSessionDecisionWindow(params: {
+    symbol: string;
+    category?: string | null;
+    nowMs?: number;
+    preOpenMin: number;
+    postOpenMin: number;
+    postCloseMin: number;
+}): SessionDecisionWindow | null {
+    const calendar = calendarFor(params.symbol, params.category);
+    if (!calendar) return null;
+    const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
+    const instances = instancesFor(calendar, nowMs);
+    let best: SessionDecisionWindow | null = null;
+    const consider = (kind: SessionDecisionWindowKind, event: string, startMs: number, endMs: number) => {
+        if (!(nowMs >= startMs && nowMs < endMs)) return;
+        // Overlapping windows: the one that ends last governs, so the release
+        // look happens once, after everything has settled.
+        if (!best || (best.endMs ?? 0) < endMs) best = { active: true, kind, event, startMs, endMs };
+    };
+    for (const e of instances) {
+        if (e.kind === 'open') {
+            consider('pre_open', e.event, e.atMs - params.preOpenMin * 60_000, e.atMs);
+            consider('opening_drive', e.event, e.atMs, e.atMs + params.postOpenMin * 60_000);
+        } else if (e.kind === 'break_end') {
+            consider('opening_drive', e.event, e.atMs, e.atMs + params.postOpenMin * 60_000);
+        } else if (e.kind === 'close') {
+            consider('post_close', e.event, e.atMs, e.atMs + params.postCloseMin * 60_000);
+        }
+    }
+    return best ?? { active: false, kind: null, event: null, startMs: null, endMs: null };
 }

@@ -237,3 +237,39 @@ Follow-ups from the deeper cut (code, this repo):
 Re-measured after the first week with the floor live (owner's call):
 resting-limit outcomes by tool (§ "deeper cut": limits −9.34 vs market +2.85
 on the placing-order attribution), and the Capital hour-of-day buckets.
+
+## 10. Session decision windows (2026-09-10, evening)
+
+Decision: gate the flat look rather than shift the bar clock (the clock shift
+is written up in `docs/session-bar-clock-shift.md` for a later session — it
+fixes what we measure, the gate fixes when we decide, and two thirds of the
+awkward-hour decisions were wakes the clock shift would not touch).
+
+Measured basis (Capital, placing-order attribution, week of 09-07):
+
+| decision hour (UTC) | trades | wins | net |
+|---|---|---|---|
+| 06, 12, 16 | 22 | 2 | −7.71 |
+| all others | 43 | 13 | −2.30 |
+
+Implementation (`session_window_gate` in `analyze.ts`, config in
+`decisionConfig.ts resolveSessionWindowConfig`, windows in
+`sessionEvents.ts evaluateSessionDecisionWindow`):
+
+- Windows: 120 min before a cash open through 30 min after it; 60 min after a
+  cash close. Home and cross-venue influence events both count. The European
+  cash close (15:30 UTC) was added as an influence event on the US index,
+  metals, energy and FX calendars — that is the 16:00 bucket.
+- Inside a window, flat: no evaluation (bar close or wake), a standing resting
+  entry is withdrawn (owner's call: nothing of ours fills into the open), the
+  wake-watch fired marker is held for the rest of the window so a band does not
+  re-fire every 4 minutes, and an owed-look marker is set.
+- After the window: the first quarter tick evaluates flat even off-boundary
+  (the owed look), once. In-position ticks are never touched.
+- Prompt: one sentence in the venue-clock note tells the model the schedule
+  and that resting orders will not survive into the open.
+- Env: `SWING_SESSION_WINDOW_ENABLED` (default on), `_PRE_OPEN_MIN` (120),
+  `_POST_OPEN_MIN` (30), `_POST_CLOSE_MIN` (60). Read at call time.
+- Measure: `tick_log` stage `session_window_gate` carries window kind/event and
+  whether an order was withdrawn; the skip counterfactual on those ticks is the
+  test of the 120/30/60 numbers.

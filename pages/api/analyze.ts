@@ -42,9 +42,10 @@ import { loadFearGreedContext } from '../../lib/swing/fearGreed';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
-import { buildVenueSessionEvents } from '../../lib/swing/sessionEvents';
+import { buildVenueSessionEvents, evaluateSessionDecisionWindow } from '../../lib/swing/sessionEvents';
+import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds } from '../../lib/swing/decisionConfig';
+import { ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
@@ -1482,6 +1483,139 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
+        // Session decision window (decisionConfig.ts resolveSessionWindowConfig —
+        // measured rationale there). A schedule gate, not a trade opinion: while
+        // this instrument's venue is inside a pre-open / opening-drive /
+        // post-close window, no FLAT decision is taken — bar close and wake
+        // alike — and a resting entry still standing is withdrawn so nothing of
+        // ours fills into the open. The window ends with one OWED flat look: the
+        // first tick after it evaluates even off-boundary (marker below), so the
+        // decision is re-scheduled to a settled tape rather than dropped.
+        // In-position ticks fall through untouched — the open is exactly when a
+        // position needs managing. Instruments without a venue calendar
+        // (crypto) get null and never see this block.
+        const sessionWindowConfig = resolveSessionWindowConfig();
+        const sessionWindow = sessionWindowConfig.enabled
+            ? evaluateSessionDecisionWindow({ symbol, category, preOpenMin: sessionWindowConfig.preOpenMin, postOpenMin: sessionWindowConfig.postOpenMin, postCloseMin: sessionWindowConfig.postCloseMin })
+            : null;
+        const sessionWindowOwedKey = `swing:sessionwindow:owed:${platform}:${String(symbol).toUpperCase()}`;
+        let sessionWindowOwedLook = false;
+        if (!positionOpen && sessionWindow?.active) {
+            const windowEndMs = Number(sessionWindow.endMs);
+            const remainingSec = Math.max(60, Math.ceil((windowEndMs - Date.now()) / 1000));
+            let withdrawn = false;
+            if (standingEntry && !dryRun) {
+                const sweep = await sweepPendingEntries();
+                if (await pendingEntryFilledMidTick(sweep)) {
+                    await recordTickOutcome({
+                        kind: 'skip',
+                        stage: 'pending_entry_filled',
+                        reason: 'pending_entry_filled_during_session_window_withdraw',
+                        kvMarker: false,
+                    });
+                    return res.status(200).json({
+                        symbol,
+                        platform,
+                        newsSource,
+                        category,
+                        instrumentId,
+                        timeFrame,
+                        dryRun,
+                        decisionPolicy,
+                        decision: {
+                            action: 'HOLD',
+                            bias: 'NEUTRAL',
+                            signal_strength: 'LOW',
+                            summary: 'pending_entry_filled',
+                            reason: 'pending_entry_filled_during_session_window_withdraw',
+                        },
+                        execRes: { placed: false, orderId: null, clientOid: null, reason: 'pending_entry_filled' },
+                        usedTape: false,
+                        promptSkipped: true,
+                    });
+                }
+                const sweepFailure = classifyPendingEntrySweep(sweep);
+                if (sweepFailure) {
+                    // Could not withdraw — say so and still take no decision;
+                    // the next quarter tick retries the withdraw.
+                    console.warn(`session window: resting entry withdraw failed for ${symbol}: ${sweepFailure}`);
+                } else {
+                    withdrawn = true;
+                }
+            }
+            if (!dryRun) {
+                // The owed post-window look.
+                kvSetJson(
+                    sessionWindowOwedKey,
+                    { windowEndMs, kind: sessionWindow.kind, event: sessionWindow.event, setAtMs: Date.now() },
+                    remainingSec + 6 * 3600,
+                ).catch((err: unknown) => console.warn(`session window owed-look marker failed for ${symbol}:`, err));
+                // A woken tick that lands here would be re-fired by wake-watch
+                // every WAKE_WATCH_FIRED_TTL_SECONDS for the rest of the window
+                // (the band stays armed). Hold the fired marker until the window
+                // ends; the owed look then reads the band like any other tick.
+                if (wakeFireRequest) {
+                    kvSetJson(wakeWatchFiredKey(platform, symbol), { ts: Date.now(), reason: 'session_window' }, remainingSec).catch(
+                        (err: unknown) => console.warn(`session window wake hold failed for ${symbol}:`, err),
+                    );
+                }
+            }
+            const reason = `flat_skip_session_window_${sessionWindow.kind}_${sessionWindow.event}${withdrawn ? '_resting_entry_withdrawn' : ''}`;
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: 'LOW',
+                summary: 'session_window',
+                reason,
+            };
+            await recordTickOutcome({
+                kind: 'skip',
+                stage: 'session_window_gate',
+                reason,
+                metrics: {
+                    windowKind: sessionWindow.kind,
+                    windowEvent: sessionWindow.event,
+                    windowEndUtc: new Date(windowEndMs).toISOString(),
+                    minutesToEnd: Math.round((windowEndMs - Date.now()) / 60_000),
+                    restingEntryWithdrawn: withdrawn,
+                    wakeFire: wakeFireRequest,
+                },
+            });
+            emitGateDebug('session_window_gate', {
+                gate: 'SESSION_DECISION_WINDOW',
+                ...sessionWindow,
+                restingEntryWithdrawn: withdrawn,
+                wakeFire: wakeFireRequest,
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                sessionWindow,
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'session_window' },
+                usedTape: false,
+                promptSkipped: true,
+            });
+        }
+        if (!positionOpen && offBoundaryTick && !dryRun && sessionWindow && !sessionWindow.active) {
+            try {
+                const owed = await kvGetJson<{ windowEndMs?: number }>(sessionWindowOwedKey);
+                if (owed && Number(owed.windowEndMs) <= Date.now()) {
+                    sessionWindowOwedLook = true;
+                    await kvDel(sessionWindowOwedKey);
+                    emitGateDebug('session_window_owed_look', { gate: 'SESSION_DECISION_WINDOW', ...owed });
+                }
+            } catch (err) {
+                console.warn(`session window owed-look read failed for ${symbol}:`, err);
+            }
+        }
+
         // Flat off-boundary ticks under the 4H-close cadence: no AI call unless
         // (a) this tick just swept a resting entry — the model owes
         // itself a re-issue/switch/drop decision — or (b) a flat wake band is
@@ -1492,7 +1626,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // fails CLOSED (skip): missing a wake by one bar is recoverable, while
         // failing open would re-create the 15-min churn cadence on every store
         // hiccup.
-        if (!positionOpen && offBoundaryTick && !sweptPendingEntry) {
+        if (!positionOpen && offBoundaryTick && !sweptPendingEntry && !sessionWindowOwedLook) {
             let wakeBandCrossed = false;
             if (!dryRun) {
                 try {

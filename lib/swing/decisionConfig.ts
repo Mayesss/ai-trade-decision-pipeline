@@ -365,6 +365,40 @@ export function restingEntryKindsFor(platform?: string | null): RestingEntryKind
 // opening-drive tactics) + the sweep-reclaim re-entry-cooldown exception.
 export const SESSION_OFFENSE_ENABLED = flagOn(process.env.SWING_SESSION_OFFENSE_ENABLED);
 
+// Session decision windows (2026-09-10). Measured over the week of 09-07 on
+// Capital (docs/week-one-review-2026-09-10.md §9): entries DECIDED at 06, 12
+// and 16 UTC — one hour before the Xetra open, ninety minutes before the New
+// York open, and the first bar after the European cash close — were 22 trades,
+// 2 wins, −7.71, against 43 trades, 13 wins, −2.30 in every other hour. The
+// existing liquidity_phase label missed 12 of the 22 (its pre-open window is
+// 30 min). Two thirds of those decisions came from wakes, not bar closes, so a
+// bar-clock shift alone would not have caught them.
+//
+// The gate (analyze.ts `session_window_gate`) is a SCHEDULE fact, not a trade
+// opinion, in the same family as the forex event blackout: while a window is
+// open no FLAT evaluation happens (bar close or wake) and a resting entry still
+// standing is withdrawn; the first tick after the window gets one flat look so
+// the decision is re-scheduled, not lost. In-position management is untouched.
+// Read at call time (not import time) so tests can flip it per scenario.
+export type SessionWindowConfig = {
+    enabled: boolean;
+    preOpenMin: number;
+    postOpenMin: number;
+    postCloseMin: number;
+};
+export function resolveSessionWindowConfig(): SessionWindowConfig {
+    const num = (raw: unknown, fallback: number) => {
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    return {
+        enabled: !flagOff(process.env.SWING_SESSION_WINDOW_ENABLED),
+        preOpenMin: num(process.env.SWING_SESSION_WINDOW_PRE_OPEN_MIN, 120),
+        postOpenMin: num(process.env.SWING_SESSION_WINDOW_POST_OPEN_MIN, 30),
+        postCloseMin: num(process.env.SWING_SESSION_WINDOW_POST_CLOSE_MIN, 60),
+    };
+}
+
 // In-position wake bands: the model declares price levels INSIDE its bracket
 // at which the 1-min watcher fires an early management look ("wake me if we
 // lose 3.42 support") instead of waiting for the next primary bar close.

@@ -11,7 +11,7 @@ import handler from '../../../pages/api/analyze';
 import { getSwingAiThread } from '../../../lib/swing/pg';
 import { createApiRequest, createApiResponse } from '../../harness/next';
 import { bitgetData, bitgetGet } from '../../harness/worlds/bitget';
-import { capitalGet, capitalSession } from '../../harness/worlds/capital';
+import { capitalDelete, capitalGet, capitalSession } from '../../harness/worlds/capital';
 
 import type { ApiResponseState } from '../../harness/next';
 import type { PgResponder } from '../../harness/pg';
@@ -113,6 +113,31 @@ export function capitalFlatPrivateWorld(): RequestHandler[] {
         capitalGet('/api/v1/positions', { positions: [] }),
         capitalGet('/api/v1/accounts', CAPITAL_ACCOUNTS),
         capitalGet('/api/v1/workingorders', { workingOrders: [] }),
+    ];
+}
+
+/** No open position, ONE resting working order (a BUY limit) — the withdraw path's target. */
+export function capitalFlatWithRestingEntryWorld(params: { epic: string; level: number; createdAtMs: number }): RequestHandler[] {
+    return [
+        capitalSession(),
+        capitalGet('/api/v1/positions', { positions: [] }),
+        capitalGet('/api/v1/accounts', CAPITAL_ACCOUNTS),
+        capitalGet('/api/v1/workingorders', {
+            workingOrders: [
+                {
+                    workingOrderData: {
+                        dealId: 'wo-test-1',
+                        direction: 'BUY',
+                        epic: params.epic,
+                        orderLevel: params.level,
+                        type: 'LIMIT',
+                        createdDateUTC: new Date(params.createdAtMs).toISOString().slice(0, 19),
+                    },
+                    marketData: { epic: params.epic },
+                },
+            ],
+        }),
+        capitalDelete('/api/v1/workingorders/wo-test-1', { dealReference: 'del-test-1' }),
     ];
 }
 

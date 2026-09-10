@@ -91,6 +91,11 @@ Object.assign(process.env, {
     // Pinned OFF here so the flat-scan snapshots and the disabled-behaviour
     // unit test stay stable; decisionRules.reentryEnabled.test.ts stubs it ON.
     SWING_REENTRY_COOLDOWN_MIN: '0',
+    // Session decision windows are default-ON in prod (2026-09-10). Pinned OFF
+    // here — the fixtures' frozen clocks would otherwise land some Capital
+    // scenarios inside a window; capital-session-window.contract.test.ts
+    // enables it explicitly (the config is read at call time).
+    SWING_SESSION_WINDOW_ENABLED: '0',
     // Fear/greed is default-ON in prod (free, fails open) — but here it would
     // hit alternative.me on every crypto AI tick and trip the harness's
     // unhandled-request error. Off by default; tests that cover it stub 'true'
