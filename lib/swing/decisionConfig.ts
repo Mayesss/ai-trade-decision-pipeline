@@ -365,6 +365,14 @@ export function restingEntryKindsFor(platform?: string | null): RestingEntryKind
 // opening-drive tactics) + the sweep-reclaim re-entry-cooldown exception.
 export const SESSION_OFFENSE_ENABLED = flagOn(process.env.SWING_SESSION_OFFENSE_ENABLED);
 
+// The highest leverage the model may request on a Bitget entry — the prompt's
+// leverage field offers 5–10 (prompt.ts leverageJsonField). The pre-AI
+// spendable-margin gate (lib/swing/flatGates.ts) uses it as the MOST permissive
+// case: if the cap-sized entry cannot be posted even at this leverage, no
+// answer the model can give is executable. Distinct from analytics.ts
+// BITGET_MAX_ENTRY_LEVERAGE (20), which is the venue ceiling.
+export const BITGET_MAX_AI_LEVERAGE = 10;
+
 // Session decision windows (2026-09-10). Measured over the week of 09-07 on
 // Capital (docs/week-one-review-2026-09-10.md §9): entries DECIDED at 06, 12
 // and 16 UTC — one hour before the Xetra open, ninety minutes before the New

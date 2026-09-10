@@ -273,3 +273,28 @@ Implementation (`session_window_gate` in `analyze.ts`, config in
 - Measure: `tick_log` stage `session_window_gate` carries window kind/event and
   whether an order was withdrawn; the skip counterfactual on those ticks is the
   test of the 120/30/60 numbers.
+
+## 11. Where the plain HOLDs came from, and two pre-AI skips (2026-09-10, night)
+
+Flat AI calls since 09-03: 569, of which 422 HOLD. In-position calls are lean
+(160 calls, 7 plain HOLDs) — the quiet-tick gate works. The flat HOLDs split
+into three populations; two earned a code gate, both pure skips
+(`lib/swing/flatGates.ts`):
+
+| population | calls | what happened | gate |
+|---|---|---|---|
+| model said BUY/SELL, code dropped it for spendable margin (Bitget) | 66 of 169 Bitget flat calls | need median 23 USDT vs have median 8.4; 4 positions on ~60 USDT | **spendable-margin gate**: skip when cap×equity/10× > available×0.98 (`insufficient_available_margin`) |
+| bar-close re-look of an unchanged setup (same door, <0.5 ATR, no plan, nothing resting) | 45 | 39 held again, 6 entered | **boundary dedupe**: skip once, never two bars in a row (`flat_dedupe`, variant boundary) |
+| session-reclaim looks | 56 | 40 HOLD (39 plain — the look is read-only), 16 entries net −1.28 | not yet — overlaps the session-window gate; review in week two |
+
+Not gated, with reasons: standing-order re-looks (92) change something 42% of
+the time; "break_state inside" HOLDs 78% of the time but gating on structure
+is the actionability door the overhaul opened on purpose; the HOLD reason
+text overlaps too much to separate ("level too close / no room" in 333 of 422,
+alongside "awaiting confirmation" and "range" — the same range described three
+ways).
+
+Caveat on the margin gate: it tests the MOST permissive leverage (10×). Last
+week 38 of the 66 dropped calls would have been skipped by it; the other 28 had
+enough spendable for a 10× entry but the model asked for 5× and was dropped
+post-AI. That residue is the model's leverage choice, not a gate question.

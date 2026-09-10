@@ -45,7 +45,8 @@ import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents, evaluateSessionDecisionWindow } from '../../lib/swing/sessionEvents';
 import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { BITGET_MAX_AI_LEVERAGE, ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
@@ -2864,6 +2865,170 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             actionabilityReason: actionability.reason,
                         },
                     },
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'flat_dedupe' },
+                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+        }
+
+        // Spendable-margin gate (flat, Bitget): the risk-sized entry needs
+        // cap×equity/leverage of margin, and if that cannot be posted even at the
+        // most permissive leverage the model may pick, every answer it could give
+        // is dropped after the fact anyway (66 of 169 flat Bitget calls in the
+        // week of 2026-09-07 — lib/swing/flatGates.ts). Runs here, after every
+        // other gate, so it costs its two account reads only on ticks that would
+        // otherwise reach the model. Fails open on any missing reading.
+        if (!positionOpen && platform === 'bitget') {
+            const [equityUsd, availableUsd] = await Promise.all([
+                fetchBitgetAccountEquityUsd().catch(() => null),
+                fetchBitgetAccountAvailableMarginUsd().catch(() => null),
+            ]);
+            const spendable = evaluateSpendableMarginGate({ equityUsd, availableUsd, maxLeverage: BITGET_MAX_AI_LEVERAGE });
+            if (spendable.blocked) {
+                const reason = `flat_skip_insufficient_available_margin need≈${spendable.needUsd?.toFixed(2)} have≈${spendable.haveUsd?.toFixed(2)} at ${BITGET_MAX_AI_LEVERAGE}x`;
+                const decision: TradeDecision & Record<string, unknown> = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'insufficient_available_margin',
+                    reason,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: 'insufficient_available_margin' };
+                await persistPreAiSkip({
+                    stage: 'insufficient_available_margin',
+                    decision,
+                    execResult: execRes,
+                    gates: gatesOut.gates,
+                    metrics: gatesOut.metrics,
+                    usedTape,
+                    snapshot: { price: effectivePrice, actionability, spendableMargin: { ...spendable, equityUsd, maxLeverage: BITGET_MAX_AI_LEVERAGE } },
+                });
+                emitGateDebug('insufficient_available_margin', {
+                    gate: 'SPENDABLE_MARGIN',
+                    ...spendable,
+                    equityUsd,
+                    maxLeverage: BITGET_MAX_AI_LEVERAGE,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    usedTape,
+                    promptSkipped: true,
+                });
+            }
+        }
+
+        // Boundary same-setup dedupe (flat, bar-close ticks only — the quarter
+        // variant above covers the 15m cadence). If the previous bar-close call
+        // answered a plain HOLD on the same admitting door with price still
+        // within the band, and nothing rests, this bar adds no information.
+        // Never two bars in a row (KV marker), never over a wake, never over a
+        // standing order, never over a HOLD that left a plan (the band owns that
+        // re-look). Measured: 45 such repeats in the week of 2026-09-07, 39 held
+        // again, 6 entered — those 6 now arrive one bar later.
+        const boundaryDedupeKey = `swing:flatdedupe:boundary:${platform}:${String(symbol).toUpperCase()}`;
+        if (!positionOpen && !quarterTick && primaryCloseTime && !cooldownWakeActive && !wakeFireRequest && !sessionWindowOwedLook) {
+            const dedupeCfg = resolveBoundaryDedupeConfig();
+            let dedupedLastBar = false;
+            if (!dryRun && dedupeCfg.maxMoveAtr > 0) {
+                try {
+                    const marker = await kvGetJson<{ ts?: number }>(boundaryDedupeKey);
+                    dedupedLastBar = Boolean(marker && Number.isFinite(Number(marker.ts)) && Date.now() - Number(marker.ts) < dedupeCfg.maxAgeMin * 60_000);
+                    if (dedupedLastBar) await kvDel(boundaryDedupeKey).catch(() => undefined);
+                } catch (err) {
+                    console.warn(`boundary dedupe marker read failed for ${symbol}:`, err);
+                }
+            }
+            const lastFlatAiCall = recentHistory.find((h) => {
+                const d = h.aiDecision;
+                if (!d || d.decision_source === 'pre_ai_skip' || d.promptSkipped) return false;
+                return !h.snapshot?.positionContext;
+            });
+            const lastSnap = lastFlatAiCall?.snapshot ?? null;
+            const lastDec = (lastFlatAiCall?.aiDecision ?? null) as Record<string, unknown> | null;
+            const lastPrice = Number(lastSnap?.price);
+            const dedupeAtr = Number(indicators?.metrics?.[timeFrame]?.atr);
+            const priceMoveAtr =
+                Number.isFinite(lastPrice) && lastPrice > 0 && Number.isFinite(dedupeAtr) && dedupeAtr > 0
+                    ? Math.abs(effectivePrice - lastPrice) / dedupeAtr
+                    : null;
+            const ageMin = lastFlatAiCall ? (Date.now() - Number(lastFlatAiCall.timestamp)) / 60_000 : Infinity;
+            const leftPlan =
+                lastDec != null &&
+                (lastDec.cooldown_wake_above != null || lastDec.cooldown_wake_below != null || lastDec.cooldown_minutes != null);
+            const lastReason = (lastSnap?.actionability as { reason?: unknown } | null | undefined)?.reason;
+            if (
+                lastFlatAiCall &&
+                shouldDedupeBoundaryLook({
+                    lastFlat: {
+                        action: String(lastDec?.action ?? ''),
+                        ageMin,
+                        priceMoveAtr,
+                        actionabilityReason: lastReason == null ? null : String(lastReason),
+                        leftPlan,
+                    },
+                    currentActionabilityReason: actionability.reason,
+                    restingEntryStanding: standingEntry !== null,
+                    dedupedLastBar,
+                    maxMoveAtr: dedupeCfg.maxMoveAtr,
+                    maxAgeMin: dedupeCfg.maxAgeMin,
+                })
+            ) {
+                if (!dryRun) {
+                    kvSetJson(boundaryDedupeKey, { ts: Date.now() }, dedupeCfg.maxAgeMin * 60).catch((err: unknown) =>
+                        console.warn(`boundary dedupe marker write failed for ${symbol}:`, err),
+                    );
+                }
+                const decision = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'no_new_information',
+                    reason: `flat_skip_dedupe_boundary_same_setup_${actionability.reason}`,
+                };
+                await recordTickOutcome({
+                    kind: 'skip',
+                    stage: 'flat_dedupe',
+                    reason: decision.reason,
+                    gates: gatesOut.gates,
+                    metrics: {
+                        ...gatesOut.metrics,
+                        dedupe: {
+                            variant: 'boundary',
+                            ageMin: Number(ageMin.toFixed(1)),
+                            priceMoveAtr: priceMoveAtr === null ? null : Number(priceMoveAtr.toFixed(3)),
+                            actionabilityReason: actionability.reason,
+                        },
+                    },
+                });
+                emitGateDebug('flat_boundary_dedupe', {
+                    gate: 'FLAT_DEDUPE',
+                    variant: 'boundary',
+                    ageMin: Number(ageMin.toFixed(1)),
+                    priceMoveAtr,
+                    actionabilityReason: actionability.reason,
                 });
                 return res.status(200).json({
                     symbol,
