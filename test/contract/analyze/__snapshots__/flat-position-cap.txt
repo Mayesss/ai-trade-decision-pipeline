@@ -1,0 +1,75 @@
+GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  SELECT platform, symbol, status FROM swing.ai_threads WHERE status IN ('pending_entry', 'in_position')
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.tick_log (ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb )",
+    "values": [
+      <NOW_MS>,
+      "BTCUSDT",
+      "bitget",
+      "skip",
+      "asset_class_occupied",
+      "asset_class_occupied:crypto:ETHUSDT",
+      "manual",
+      true,
+      null,
+      null
+    ]
+  }
+
+POST https://kv.boundary.test/SETEX/decision%3A1787941545796%3Abitget%3ABTCUSDT/604800/%7B%22timestamp%22%3A1787941545796%2C%22symbol%22%3A%22BTCUSDT%22%2C%22category%22%3A%22crypto%22%2C%22platform%22%3A%22bitget%22%2C%22instrumentId%22%3A%22bitget%3ABTCUSDT%22%2C%22newsSource%22%3A%22coindesk%22%2C%22timeFrame%22%3A%224H%22%2C%22dryRun%22%3Atrue%2C%22prompt%22%3Anull%2C%22aiDecision%22%3A%7B%22action%22%3A%22HOLD%22%2C%22bias%22%3A%22NEUTRAL%22%2C%22signal_strength%22%3A%22LOW%22%2C%22summary%22%3A%22asset_class_occupied%22%2C%22reason%22%3A%22asset_class_occupied%3Acrypto%3AETHUSDT%22%2C%22decision_source%22%3A%22pre_ai_skip%22%2C%22promptSkipped%22%3Atrue%2C%22skipStage%22%3A%22asset_class_occupied%22%7D%2C%22execResult%22%3A%7B%22placed%22%3Afalse%2C%22orderId%22%3Anull%2C%22clientOid%22%3Anull%2C%22reason%22%3A%22asset_class_occupied%22%7D%2C%22snapshot%22%3A%7B%22category%22%3A%22crypto%22%2C%22platform%22%3A%22bitget%22%2C%22newsSource%22%3A%22coindesk%22%2C%22instrumentId%22%3A%22bitget%3ABTCUSDT%22%2C%22promptSkipped%22%3Atrue%2C%22skipStage%22%3A%22asset_class_occupied%22%2C%22skipReason%22%3A%22asset_class_occupied%3Acrypto%3AETHUSDT%22%2C%22usedTape%22%3Afalse%2C%22portfolioCap%22%3A%7B%22openCount%22%3A1%2C%22maxOpen%22%3A4%2C%22occupants%22%3A%5B%22ETHUSDT%22%5D%7D%7D%2C%22biasTimeframes%22%3A%7B%22context%22%3A%221W%22%2C%22macro%22%3A%221D%22%2C%22primary%22%3A%224H%22%2C%22micro%22%3A%221H%22%7D%7D
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZADD/decision%3Aindex/<NOW_MS>/decision%3A1787941545796%3Abitget%3ABTCUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZADD/decision%3Asymidx%3Abitget%3ABTCUSDT/<NOW_MS>/decision%3A1787941545796%3Abitget%3ABTCUSDT
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREMRANGEBYSCORE/decision%3Aindex/0/1787336745796
+  authorization: Bearer <TOKEN>
+
+POST https://kv.boundary.test/ZREMRANGEBYSCORE/decision%3Asymidx%3Abitget%3ABTCUSDT/0/1787336745796
+  authorization: Bearer <TOKEN>
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.decisions ( decided_at_ms, symbol, platform, category, instrument_id, news_source, time_frame, dry_run, action, applied_leverage, target_leverage, prompt_json, ai_decision_json, exec_result_json, snapshot_json, bias_timeframes_json ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb ) ON CONFLICT (decided_at_ms, platform, symbol) DO UPDATE SET category = EXCLUDED.category, instrument_id = EXCLUDED.instrument_id, news_source = EXCLUDED.news_source, time_frame = EXCLUDED.time_frame, dry_run = EXCLUDED.dry_run, action = EXCLUDED.action, applied_leverage = EXCLUDED.applied_leverage, target_leverage = EXCLUDED.target_leverage, prompt_json = EXCLUDED.prompt_json, ai_decision_json = EXCLUDED.ai_decision_json, exec_result_json = EXCLUDED.exec_result_json, snapshot_json = EXCLUDED.snapshot_json, bias_timeframes_json = EXCLUDED.bias_timeframes_json RETURNING id;",
+    "values": [
+      <NOW_MS>,
+      "BTCUSDT",
+      "bitget",
+      "crypto",
+      "bitget:BTCUSDT",
+      "coindesk",
+      "4H",
+      true,
+      "HOLD",
+      null,
+      null,
+      null,
+      "{\"action\":\"HOLD\",\"bias\":\"NEUTRAL\",\"signal_strength\":\"LOW\",\"summary\":\"asset_class_occupied\",\"reason\":\"asset_class_occupied:crypto:ETHUSDT\",\"decision_source\":\"pre_ai_skip\",\"promptSkipped\":true,\"skipStage\":\"asset_class_occupied\"}",
+      "{\"placed\":false,\"orderId\":null,\"clientOid\":null,\"reason\":\"asset_class_occupied\"}",
+      "{\"category\":\"crypto\",\"platform\":\"bitget\",\"newsSource\":\"coindesk\",\"instrumentId\":\"bitget:BTCUSDT\",\"promptSkipped\":true,\"skipStage\":\"asset_class_occupied\",\"skipReason\":\"asset_class_occupied:crypto:ETHUSDT\",\"usedTape\":false,\"portfolioCap\":{\"openCount\":1,\"maxOpen\":4,\"occupants\":[\"ETHUSDT\"]}}",
+      "{\"context\":\"1W\",\"macro\":\"1D\",\"primary\":\"4H\",\"micro\":\"1H\"}"
+    ]
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:dashboard:summary:stale:v1",
+    21600,
+    "{\"at\":<NOW_MS>}"
+  ]

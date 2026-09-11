@@ -3,8 +3,8 @@
 // Responses-dialect client for the swing decision (SWING_AI_PROVIDER=responses,
 // legacy alias 'openai', and the default). The dialect is the gateway's, not a
 // vendor's: the gateway serves this wire format for every provider it hosts, so
-// DEFAULT_AI_MODEL rides this client whatever vendor it names (zai/glm-5.3
-// today) — which is why the module is named for the endpoint and not for whoever
+// DEFAULT_AI_MODEL rides this client whatever vendor it names (openai/gpt-5.6-sol
+// today, zai/glm-5.3 before 2026-09-11) — which is why the module is named for the endpoint and not for whoever
 // answers on it. Sibling of lib/gatewayMessages.ts: both call the SAME Vercel AI
 // Gateway and differ only in which dialect they speak, and lib/aiProvider.ts is
 // the switch between them.

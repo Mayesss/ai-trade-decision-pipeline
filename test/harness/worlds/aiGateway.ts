@@ -33,7 +33,7 @@ function responsesEnvelope(
 ) {
     return {
         id: opts.responseId ?? 'resp_test-1',
-        model: opts.model ?? 'zai/glm-5.3',
+        model: opts.model ?? 'openai/gpt-5.6-sol',
         status: 'completed',
         output: [
             { type: 'reasoning', summary: [] },

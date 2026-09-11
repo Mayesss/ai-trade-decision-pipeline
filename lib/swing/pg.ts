@@ -693,6 +693,28 @@ export async function listSwingInPositionThreads(): Promise<
     }));
 }
 
+// Every thread that has capital committed — in a position or parked on a
+// resting entry — in one query. The portfolio cap gate (lib/swing/portfolioCap.ts)
+// reads this on every flat tick, so it stays a single indexed scan of a table
+// that holds at most one row per (platform, symbol).
+export type SwingActiveThread = { platform: string; symbol: string; status: SwingAiThreadStatus };
+
+export async function listSwingActiveThreads(): Promise<SwingActiveThread[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ platform: string; symbol: string; status: string }>>(sql`
+        SELECT platform, symbol, status
+        FROM swing.ai_threads
+        WHERE status IN ('pending_entry', 'in_position')
+    `);
+    return rows.map((row) => ({
+        platform: String(row.platform),
+        symbol: String(row.symbol).toUpperCase(),
+        status: row.status === 'pending_entry' ? 'pending_entry' : 'in_position',
+    }));
+}
+
 // Replace the thread's in-position wake bands with what the latest real AI call
 // asked for — nulls included (replace-on-every-look: a decision that carries no
 // bands CLEARS them; a stale band is worse than a forgotten one). Called only
@@ -2311,6 +2333,56 @@ export async function loadClosedSwingPositions(opts: {
         pnlGrossPct: finite(row.pnl_gross_pct),
         notional: finite(row.notional),
         leverage: finite(row.entry_leverage),
+    }));
+}
+
+// Closed positions with the risk budgeted at entry, for R-multiple statistics
+// (lib/swing/rStats.ts). The budget lives on the PLACING decision
+// (ai_decision_json.risk_sizing.risk_usd, written by analyze.ts at execution)
+// and positions.decision_id links to it — a position whose decision carries no
+// budget (legacy fixed sizing, unlinked venue-side row) comes back with
+// riskUsd null and is counted but not measured.
+export type SwingClosedRiskRow = {
+    platform: string;
+    symbol: string;
+    exitTsMs: number | null;
+    pnlNet: number | null;
+    riskUsd: number | null;
+};
+
+export async function loadClosedPositionRiskRows(opts: {
+    fromMs: number;
+    toMs?: number;
+    limit?: number;
+}): Promise<SwingClosedRiskRow[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const fromMs = finite(opts.fromMs) ?? 0;
+    const toMs = finite(opts.toMs) ?? Date.now();
+    const limit = Math.max(1, Math.min(20000, Math.floor(Number(opts.limit) || 5000)));
+    const db = swingPg();
+    const rows = await db.$queryRaw<
+        Array<{ platform: unknown; symbol: unknown; exit_ts_ms: unknown; pnl_net: unknown; risk_usd: unknown }>
+    >(sql`
+        SELECT p.platform, p.symbol, p.exit_ts_ms, p.pnl_net,
+               CASE WHEN jsonb_typeof(d.ai_decision_json -> 'risk_sizing' -> 'risk_usd') = 'number'
+                    THEN (d.ai_decision_json -> 'risk_sizing' ->> 'risk_usd')::float8
+                    ELSE NULL END AS risk_usd
+        FROM swing.positions p
+        LEFT JOIN swing.decisions d ON d.id = p.decision_id
+        WHERE p.status = 'closed'
+          AND p.pnl_net IS NOT NULL
+          AND p.exit_ts_ms IS NOT NULL
+          AND p.exit_ts_ms >= ${fromMs} AND p.exit_ts_ms <= ${toMs}
+        ORDER BY p.exit_ts_ms ASC
+        LIMIT ${limit};
+    `);
+    return (rows || []).map((row) => ({
+        platform: String(row.platform || ''),
+        symbol: String(row.symbol || ''),
+        exitTsMs: finite(row.exit_ts_ms),
+        pnlNet: finite(row.pnl_net),
+        riskUsd: finitePos(row.risk_usd),
     }));
 }
 

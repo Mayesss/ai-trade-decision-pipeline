@@ -2,7 +2,7 @@
 //
 // Dialect switch for every swing AI call — WHICH WIRE FORMAT, not which
 // vendor: 'responses' routes to the Responses client in lib/gatewayResponses.ts
-// (which carries whatever vendor DEFAULT_AI_MODEL names — zai/glm-5.3 today),
+// (which carries whatever vendor DEFAULT_AI_MODEL names — openai/gpt-5.6-sol today),
 // 'messages' to the Messages client in lib/gatewayMessages.ts. Decided by
 // SWING_AI_PROVIDER (env, legacy name — it takes the legacy 'openai'/'claude'
 // values as well as the dialect names) or else inferred from the model id.

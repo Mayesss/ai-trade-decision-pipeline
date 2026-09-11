@@ -298,3 +298,47 @@ Caveat on the margin gate: it tests the MOST permissive leverage (10×). Last
 week 38 of the 66 dropped calls would have been skipped by it; the other 28 had
 enough spendable for a 10× entry but the model asked for 5× and was dropped
 post-AI. That residue is the model's leverage choice, not a gate question.
+
+## 12. Applied 2026-09-11: survive first, then measure
+
+The literature on why systems like this one lose (Carver, *Systematic
+Trading*; López de Prado, *AFML* ch. 10–14; Bailey et al. on backtest
+overfitting; Harvey & Liu on the t-stat bar; Grinold & Kahn on breadth) points
+the same way: the account has to outlive the sample needed to know anything,
+the bets have to be independent, and the result has to be read in R against a
+pre-set count — not in cash, and not after every tweak. Four changes, one
+deploy, then nothing else until the sample is in.
+
+1. **Risk per trade 10% → 1% of equity** (`RISK_EQUITY_PCT` default,
+   `lib/swing/riskSizing.ts`). Prod carried no override, so the code default
+   was live. At the measured 19% win rate five straight losses are routine;
+   at 10% each that is a 41% drawdown, at 1% under 5%. Consequence to expect:
+   on a small account the 1% budget will not buy the venue's minimum size on
+   some Capital instruments, and those entries are dropped
+   (`risk_budget_below_min_size`) — that is the account being too small for
+   the instrument, not a bug.
+2. **Portfolio cap, pre-AI** (`lib/swing/portfolioCap.ts`, gate in
+   `pages/api/analyze.ts` right after the open-warmup gate): at most
+   `SWING_MAX_OPEN_POSITIONS` (default 4) threads committed (position OR
+   resting entry), and with one standing in an asset class no *other* symbol
+   of that class is analyzed (`SWING_ONE_PER_ASSET_CLASS`, default on). A
+   blocked symbol costs one `ai_threads` query — no market reads, no news, no
+   model. Skip stages `position_cap` / `asset_class_occupied`; in-position
+   ticks and the symbol's own resting thread pass. Fails open on a DB miss.
+3. **Model back to `openai/gpt-5.6-sol`** (`DEFAULT_AI_MODEL`). The glm swap
+   landed in the same commit as the overhaul (§4), so the week could not be
+   attributed. Sol is the pre-overhaul baseline model; it stays fixed for the
+   window. Effort `medium` (its own scale) — see `lib/aiModel.ts`.
+4. **Results in R** (`lib/swing/rStats.ts`, `loadClosedPositionRiskRows`):
+   R = `pnl_net / risk_sizing.risk_usd` of the placing decision. The summary
+   API carries `rStats.sample` since `R_SAMPLE_SINCE_MS` (2026-09-11) against
+   `R_SAMPLE_TARGET` (200 closes) plus the range-scoped line; the header shows
+   `R · n/200` next to Today, full stat line in the tooltip. A clean stop-out
+   is −1R; a worst-trade below −1.3R means slippage or a gap, not a decision.
+
+**Pre-registered read.** Do not judge the window before 200 measured closes.
+Expected effects of the 09-10 + 09-11 changes together: median stop ≥ 1 ATR,
+win rate off 19% toward the low 30s, average loss ≈ −1R, trades/day well under
+10. If avg R is still ≤ 0 at 200 with those holding, the edge is not there and
+the next change is to the entry logic — not the prompt tone, not the stop, not
+the model.

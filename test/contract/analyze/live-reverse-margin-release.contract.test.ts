@@ -35,10 +35,11 @@ const REVERSE = {
 };
 
 // The open long holds 775.44 of margin (0.05 × 77,543.7 ÷ 5). Free margin is
-// set BELOW the reversal's own requirement so the only way this trade can
-// pass the gate is by counting what the close gives back.
+// set BELOW the reversal's own requirement (~525: 1% of 10,000 equity over a
+// 3.8% stop, at 5×) so the only way this trade can pass the gate is by
+// counting what the close gives back.
 const POSITION_MARGIN = '775.44';
-const FREE_MARGIN = '3500';
+const FREE_MARGIN = '350';
 
 startBoundary(
     () => ({

@@ -28,6 +28,9 @@ import {
 } from '../../../lib/swing/lastScan';
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
+import { loadClosedPositionRiskRows } from '../../../lib/swing/pg';
+import { summarizeRStats, type RStats } from '../../../lib/swing/rStats';
+import { R_SAMPLE_SINCE_MS } from '../../../lib/swing/decisionConfig';
 import { kvGetJson, kvMGetJson, kvSetJson } from '../../../lib/kv';
 import { fetchPositionTpsl, getTradeProductType } from '../../../lib/trading';
 import { requireAdminAccess } from '../../../lib/admin';
@@ -133,7 +136,12 @@ const SUMMARY_CACHE_TTL_SECONDS = (() => {
   return Number.isFinite(n) && n >= 0 ? n : 3600;
 })();
 
-type SummaryPayload = { symbols: string[]; data: SummaryEntry[]; range: SummaryRangeKey };
+// Book-level R statistics (lib/swing/rStats.ts): `range` over this blob's
+// lookback, `sample` over the measurement window that started at the freeze
+// (R_SAMPLE_SINCE_MS) — the running count against the sample target the
+// header shows. Null when Postgres is unavailable.
+type SummaryRStats = { range: RStats; sample: RStats & { sinceMs: number } } | null;
+type SummaryPayload = { symbols: string[]; data: SummaryEntry[]; range: SummaryRangeKey; rStats?: SummaryRStats };
 type CachedSummary = { payload: SummaryPayload; generatedAtMs: number };
 
 const scalePct = (value: number | null | undefined, factor: number): number | null | undefined => {
@@ -770,7 +778,25 @@ export async function buildAndCacheSwingSummary(
     }),
   );
 
-  const payload: SummaryPayload = { symbols, data, range };
+  // Two cheap indexed reads (positions ⋈ decisions by id). Best-effort: a
+  // miss leaves the header's R block empty, never the whole summary.
+  const rStats: SummaryRStats = await (async () => {
+    try {
+      const [rangeRows, sampleRows] = await Promise.all([
+        loadClosedPositionRiskRows({ fromMs: windowFromMs, toMs: nowMs }),
+        loadClosedPositionRiskRows({ fromMs: R_SAMPLE_SINCE_MS, toMs: nowMs }),
+      ]);
+      return {
+        range: summarizeRStats(rangeRows),
+        sample: { ...summarizeRStats(sampleRows), sinceMs: R_SAMPLE_SINCE_MS },
+      };
+    } catch (err) {
+      console.warn('summary R stats failed:', err);
+      return null;
+    }
+  })();
+
+  const payload: SummaryPayload = { symbols, data, range, rStats };
   const generatedAtMs = Date.now();
 
   // write-through: materialize the blob so subsequent polls within the window

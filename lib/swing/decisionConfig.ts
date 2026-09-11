@@ -305,6 +305,50 @@ const flagOn = (raw: unknown) => ['1', 'true', 'yes', 'on'].includes(String(raw 
 export const flagOff = (raw: unknown) => ['0', 'false', 'no', 'off'].includes(String(raw ?? '').trim().toLowerCase());
 
 // ------------------------------
+// Portfolio cap — pre-AI, flat ticks only
+// ------------------------------
+// Breadth means INDEPENDENT bets (Grinold & Kahn: skill × √breadth). The week
+// of 2026-09-07 opened 102 positions in four days with no cap at all, and the
+// Capital side ran several forex/index positions at once — one macro bet at
+// several times the size, not several bets. Two code gates, evaluated before
+// any market read or AI call so a blocked symbol costs one Postgres query:
+//
+//  - MAX_OPEN_POSITIONS: total (platform, symbol) threads that are in a
+//    position OR parked on a resting entry. 0 disables.
+//  - ONE_POSITION_PER_ASSET_CLASS: with a crypto/forex/index/commodity
+//    position (or resting entry) standing, no OTHER symbol of that class is
+//    analyzed. Off with SWING_ONE_PER_ASSET_CLASS=0.
+//
+// Both exempt the symbol's own thread (its ticks manage what is already on),
+// and both only ever skip work — they never override a decision (the
+// ai-bouncer rule, lib/swing/flatGates.ts).
+export const MAX_OPEN_POSITIONS = (() => {
+    const n = Number(process.env.SWING_MAX_OPEN_POSITIONS);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
+})();
+
+export const ONE_POSITION_PER_ASSET_CLASS = !flagOff(process.env.SWING_ONE_PER_ASSET_CLASS);
+
+// ------------------------------
+// R-multiple measurement window
+// ------------------------------
+// Results are read in R (pnl_net / risk budgeted at entry), never in cash, and
+// only once the sample is large enough to mean anything: with a per-trade
+// Sharpe around 0.2 a t-stat of 3 needs ~225 closes (Harvey & Liu 2015). The
+// window starts at the freeze that shipped this measurement; a rule change
+// that alters expectancy should move it (SWING_R_SAMPLE_SINCE, ISO date).
+export const R_SAMPLE_TARGET = (() => {
+    const n = Number(process.env.SWING_R_SAMPLE_TARGET);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
+})();
+
+export const R_SAMPLE_SINCE_MS = (() => {
+    const raw = String(process.env.SWING_R_SAMPLE_SINCE || '').trim();
+    const parsed = raw ? Date.parse(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-11T00:00:00Z');
+})();
+
+// ------------------------------
 // Resting entry orders — the TOOL, not a strategy
 // ------------------------------
 // A resting entry is an order parked away from live price. Two kinds, defined

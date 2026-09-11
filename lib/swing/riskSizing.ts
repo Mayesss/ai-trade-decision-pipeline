@@ -19,10 +19,16 @@ export type RiskBasedSizing = {
     source: 'equity_pct' | 'fallback_fixed';
 };
 
-// Risk per trade as % of account equity.
+// Risk per trade as % of account equity. Default 1%: the fixed-fractional
+// literature (Carver, Systematic Trading; López de Prado, AFML ch. 10) puts
+// the ceiling at 1–2%, and the measured week of 2026-09-07 (19% win rate,
+// 102 closes) makes five straight losses routine — at the old 10% default
+// that streak was a 41% drawdown, at 1% it is under 5%. This does not create
+// an edge; it keeps the account alive long enough to measure whether one
+// exists (docs/week-one-review-2026-09-10.md §12).
 export const RISK_EQUITY_PCT = (() => {
     const n = Number(process.env.SWING_RISK_EQUITY_PCT);
-    return Number.isFinite(n) && n > 0 && n <= 20 ? n : 10;
+    return Number.isFinite(n) && n > 0 && n <= 20 ? n : 1;
 })();
 
 // Absolute risk used when no equity reading is available (fetch failed and no

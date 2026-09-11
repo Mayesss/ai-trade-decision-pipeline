@@ -36,8 +36,9 @@ const REVERSE = {
     take_profit_price: 72000,
 };
 
-// Sizing wants 4,000 of margin; the long releases 775.44 and only 100 is free,
-// so the reversal is unaffordable however generously it is measured.
+// Sizing wants ~525 of margin (1% of 10,000 equity over a 3.8% stop, at 5×);
+// the long releases 400 and only 100 is free, so the reversal is unaffordable
+// however generously it is measured.
 startBoundary(
     () => ({
         http: [
@@ -49,7 +50,7 @@ startBoundary(
                 openedAtMs: fixture.capturedAtMs - 2 * 24 * 3600_000,
                 takeProfit: '84000',
                 stopLoss: '74500',
-                marginSize: '775.44',
+                marginSize: '400.00',
                 availableUsd: '100',
             }),
             ...kvWorld(),
@@ -77,7 +78,7 @@ test('live REVERSE refused on margin: action preserved for the UI, bracket torn 
     expect(body.decision.entry_dropped).toBe('insufficient_available_margin');
     // The note names both halves of the affordability read, so the reason
     // string alone explains the refusal.
-    expect(String(body.decision.reason)).toContain('reverse_release≈775.44');
+    expect(String(body.decision.reason)).toContain('reverse_release≈400.00');
 
     // The reversal's bracket is gone — not merely rejected downstream.
     expect(body.decision.stop_loss_price).toBeNull();

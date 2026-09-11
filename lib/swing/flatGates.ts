@@ -25,7 +25,7 @@ import { EXPOSURE_CAP_EQUITY_MULT, RISK_EQUITY_PCT } from './riskSizing';
 
 // The margin a risk-sized entry needs at the most permissive leverage. The
 // exposure cap (EXPOSURE_CAP_EQUITY_MULT × equity) binds for every stop tighter
-// than RISK_EQUITY_PCT / EXPOSURE_CAP_EQUITY_MULT of price (5% at the defaults) —
+// than RISK_EQUITY_PCT / EXPOSURE_CAP_EQUITY_MULT of price (0.5% at the defaults) —
 // i.e. every swing stop — so the entry's notional IS the cap and its margin is
 // cap / leverage. Taking the maximum leverage the model may request makes this
 // the SMALLEST margin any compliant entry could post: if even that does not fit,

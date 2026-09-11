@@ -2,12 +2,15 @@ export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
 // All AI traffic routes through the Vercel AI Gateway (BYOK provider keys are
 // configured in the gateway dashboard, not here). Model ids use the gateway's
 // `provider/model` slug format — version numbers with dots, not hyphens.
-// Switched off openai/gpt-5.6-sol on 2026-09-03: same measured capability at
-// materially lower cost (Artificial Analysis index 60 at max effort vs sol's
-// 56 at medium; $1.40/$4.40 per 1M in/out vs $2/$10, cached input $0.14 vs
-// $0.20). Every non-Anthropic id speaks the OpenAI dialect through the
-// gateway — see dialectForAiModel in lib/aiModel.ts.
-export const DEFAULT_AI_MODEL = 'zai/glm-5.3';
+// 2026-09-03: switched openai/gpt-5.6-sol → zai/glm-5.3 for cost (AA index
+// 60 vs 56; $1.40/$4.40 per 1M in/out vs $2/$10). 2026-09-11: switched BACK
+// to gpt-5.6-sol — the model swap landed in the same commit as the prompt/
+// gate overhaul, so the losing week that followed could not be attributed
+// (docs/week-one-review-2026-09-10.md §4, §12). One variable at a time: sol
+// is the model the pre-overhaul baseline ran on, and it stays fixed until
+// the measurement window closes. Every non-Anthropic id speaks the OpenAI
+// dialect through the gateway — see dialectForAiModel in lib/aiModel.ts.
+export const DEFAULT_AI_MODEL = 'openai/gpt-5.6-sol';
 export const FALLBACK_AI_MODEL = 'anthropic/claude-opus-4.8';
 export const AI_BASE_URL = 'https://ai-gateway.vercel.sh/v1';
 // Anthropic-compatible endpoint of the same gateway (the SDK appends /v1).

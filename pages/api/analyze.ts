@@ -47,6 +47,7 @@ import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
 import { BITGET_MAX_AI_LEVERAGE, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
+import { evaluatePortfolioCapGate, loadPortfolioOccupants, portfolioCapEnabled } from '../../lib/swing/portfolioCap';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
@@ -794,6 +795,85 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                                   blockedBy: 'OPEN_WARMUP',
                                   minutesSinceOpen: Math.round(minutesSinceOpen),
                                   warmupMinutes: openWarmupMinutes,
+                              },
+                          }
+                        : {}),
+                });
+            }
+        }
+        // Portfolio cap (flat only): with MAX_OPEN_POSITIONS threads committed,
+        // or a position/resting entry already standing in this symbol's asset
+        // class, a fresh look here can only produce an entry the book should
+        // not take — so it is not spent. Sits BEFORE every venue read: the
+        // cost of a blocked symbol is one Postgres query. In-position ticks
+        // and the symbol's own resting-entry thread pass untouched (they
+        // manage what is already on). Fails open on a DB miss
+        // (lib/swing/portfolioCap.ts).
+        if (!positionOpen && portfolioCapEnabled()) {
+            const occupants = await loadPortfolioOccupants();
+            const verdict = evaluatePortfolioCapGate({ self: { platform, symbol, category }, occupants });
+            if (verdict.blocked) {
+                emitGateDebug(verdict.stage, {
+                    gate: 'PORTFOLIO_CAP',
+                    stage: verdict.stage,
+                    openCount: verdict.openCount,
+                    maxOpen: verdict.maxOpen,
+                    occupants: verdict.occupants,
+                });
+                // A wake fire refused here re-fires from the watcher; stamp the
+                // hold so the look that eventually runs reports the deferral
+                // (same contract as the warmup gate above). Best-effort.
+                if (wakeFireRequest && !dryRun) {
+                    await markSwingWakeGateHeld(platform, symbol).catch((err: unknown) =>
+                        console.warn(`portfolio cap wake-hold stamp failed for ${symbol}:`, err),
+                    );
+                }
+                const decision: TradeDecision & Record<string, unknown> = {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: verdict.stage,
+                    reason: verdict.reason,
+                };
+                const execRes = { placed: false, orderId: null, clientOid: null, reason: verdict.stage };
+                // Quarter ticks skip persistence (same policy as the warmup and
+                // closed-market gates): while the book is full every flat
+                // symbol would otherwise write a skip row four times an hour.
+                if (!quarterTick) {
+                    await persistPreAiSkip({
+                        stage: verdict.stage,
+                        decision,
+                        execResult: execRes,
+                        snapshot: {
+                            portfolioCap: {
+                                openCount: verdict.openCount,
+                                maxOpen: verdict.maxOpen,
+                                occupants: verdict.occupants,
+                            },
+                        },
+                    });
+                }
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision,
+                    execRes,
+                    usedTape: false,
+                    promptSkipped: true,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'PORTFOLIO_CAP',
+                                  stage: verdict.stage,
+                                  openCount: verdict.openCount,
+                                  maxOpen: verdict.maxOpen,
+                                  occupants: verdict.occupants,
                               },
                           }
                         : {}),

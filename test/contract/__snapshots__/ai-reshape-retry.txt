@@ -5,9 +5,9 @@ POST https://ai-gateway.vercel.sh/v1/responses
     "input": "STATE: flat. MARKET: rangebound chop around VWAP.",
     "instructions": "You are the swing trading desk.",
     "max_output_tokens": 16000,
-    "model": "zai/glm-5.3",
+    "model": "openai/gpt-5.6-sol",
     "reasoning": {
-      "effort": "high"
+      "effort": "medium"
     },
     "tool_choice": "required",
     "tools": [
@@ -57,9 +57,9 @@ POST https://ai-gateway.vercel.sh/v1/responses
     ],
     "instructions": "You are the swing trading desk.",
     "max_output_tokens": 16000,
-    "model": "zai/glm-5.3",
+    "model": "openai/gpt-5.6-sol",
     "reasoning": {
-      "effort": "high"
+      "effort": "medium"
     },
     "tool_choice": "required",
     "tools": [

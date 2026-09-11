@@ -163,10 +163,28 @@ type DashboardSummaryRow = {
   avgLossPct?: number | null;
 };
 
+// Book-level R-multiple statistics (mirrors lib/swing/rStats.ts). `sample` is
+// the measurement window since the last strategy freeze — the count against
+// its target is what says whether the numbers next to it mean anything yet.
+type DashboardRStats = {
+  closed: number;
+  measured: number;
+  target: number;
+  avgR: number | null;
+  sumR: number | null;
+  winRate: number | null;
+  avgWinR: number | null;
+  avgLossR: number | null;
+  payoff: number | null;
+  minR: number | null;
+  curve: number[];
+};
+
 type DashboardSummaryResponse = {
   symbols: string[];
   data: DashboardSummaryRow[];
   range?: DashboardRangeKey;
+  rStats?: { range: DashboardRStats; sample: DashboardRStats & { sinceMs: number } } | null;
 };
 
 type DashboardDecisionResponse = {
@@ -406,6 +424,11 @@ export default function Home() {
   const [swingWeekLoadedAtMs, setSwingWeekLoadedAtMs] = useState<number | null>(
     null,
   );
+  // Book-level R stats from the summary blob (since the last strategy freeze
+  // + over the selected range). Header block next to "Today".
+  const [swingRStats, setSwingRStats] = useState<
+    DashboardSummaryResponse["rStats"] | undefined
+  >(undefined);
   // Chart-only range: superset of DashboardRangeKey ("4H" shows 5m bars but the
   // summary pipeline only warms 1D/7D/30D/6M caches, so 4H maps to 1D for PnL).
   // On phones, the chart defaults to the 4H range (desktop keeps 1D; PnL stays
@@ -929,6 +952,7 @@ export default function Home() {
         const summaryRows = Array.isArray(summaryJson.data)
           ? summaryJson.data
           : [];
+        setSwingRStats(summaryJson.rStats ?? null);
         const resolvedSummaryRange = summaryJson.range || requestedRange;
         setTabData((prev) => {
           const next = { ...prev };
@@ -1579,6 +1603,31 @@ export default function Home() {
     }
     return cells;
   })();
+  // Tooltip for the R block: the sample window's full stat line, then the
+  // same line over the selected range.
+  const rStatsTitle = (() => {
+    if (!swingRStats) return "";
+    const line = (label: string, r: DashboardRStats) => {
+      if (!r.measured) return `${label}: ${r.closed} closed, none with a risk budget yet`;
+      const pct = r.winRate === null ? "–" : `${Math.round(r.winRate * 100)}%`;
+      return [
+        `${label}: ${r.measured} measured of ${r.closed} closed`,
+        `avg ${r.avgR === null ? "–" : `${r.avgR >= 0 ? "+" : ""}${r.avgR.toFixed(2)}R`}`,
+        `sum ${r.sumR === null ? "–" : `${r.sumR >= 0 ? "+" : ""}${r.sumR.toFixed(1)}R`}`,
+        `win ${pct}`,
+        `avg win ${r.avgWinR === null ? "–" : `+${r.avgWinR.toFixed(2)}R`}`,
+        `avg loss ${r.avgLossR === null ? "–" : `${r.avgLossR.toFixed(2)}R`}`,
+        `payoff ${r.payoff === null ? "–" : r.payoff.toFixed(2)}`,
+        `worst ${r.minR === null ? "–" : `${r.minR.toFixed(2)}R`}`,
+      ].join(" · ");
+    };
+    const since = new Date(swingRStats.sample.sinceMs).toISOString().slice(0, 10);
+    return [
+      line(`Since freeze ${since} (target ${swingRStats.sample.target})`, swingRStats.sample),
+      line(`Selected range`, swingRStats.range),
+      "R = net PnL / risk budgeted at entry; a clean stop-out is −1R.",
+    ].join("\n");
+  })();
   // The panel's headline: today's money, realized + still open. Same number as
   // the calendar's last cell — a summary and its breakdown, deliberately — but
   // sitting where the eye lands first instead of at the far end of a 24-cell
@@ -2165,6 +2214,33 @@ export default function Home() {
                   ) : loading && !error ? (
                     <span className="skeleton-shimmer h-[26px] w-16 shrink-0 rounded bg-slate-200" />
                   ) : null}
+                  {/* Expectancy in R since the last strategy freeze, with the
+                      sample count against its target: the number that says
+                      whether the money next to it is signal or noise yet. The
+                      range-scoped stats live in the tooltip. */}
+                  {swingRStats?.sample ? (
+                    <div
+                      className="flex shrink-0 flex-col justify-center border-l border-slate-200 pl-3"
+                      title={rStatsTitle}
+                    >
+                      <span className="text-[8px] font-semibold uppercase leading-none tracking-wide text-slate-400">
+                        R · {swingRStats.sample.measured}/{swingRStats.sample.target}
+                      </span>
+                      <span
+                        className={`mt-[3px] text-[15px] font-semibold leading-none tabular-nums ${
+                          swingRStats.sample.avgR === null
+                            ? "text-slate-300"
+                            : swingRStats.sample.avgR >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                        }`}
+                      >
+                        {swingRStats.sample.avgR === null
+                          ? "–"
+                          : `${swingRStats.sample.avgR >= 0 ? "+" : ""}${swingRStats.sample.avgR.toFixed(2)}R`}
+                      </span>
+                    </div>
+                  ) : null}
                   {/* Measured separately from the headline, so the day count
                       uses the space actually left for cells. */}
                   <div
@@ -2319,11 +2395,15 @@ export default function Home() {
                         // and hover only deepen the card's OWN border (and
                         // fill, when selected) — an outline drew a second
                         // frame around the first and read as a glitch.
+                        // The limit card's greys live in globals.css
+                        // (.limit-card*): its rest border was a light slate the
+                        // dark remap never touched, so in dark mode the
+                        // UNSELECTED card had the brightest frame.
                         const tone = pendingLimit
                           ? {
-                              base: "border-dashed text-slate-600",
-                              rest: "border-slate-300 hover:border-slate-500",
-                              active: "border-slate-500 bg-slate-100",
+                              base: "border-dashed limit-card",
+                              rest: "",
+                              active: "limit-card-active",
                             }
                           : (openPnlValue ?? 0) >= 0
                             ? {
