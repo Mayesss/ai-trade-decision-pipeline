@@ -112,6 +112,9 @@ type LimitOrderSegment = {
   fromTime: number;
   toTime: number;
   filled?: boolean;
+  // Set client-side by clipSegmentsAtWithdrawals: the segment ends because a
+  // schedule gate withdrew the order, not because the AI cancelled it.
+  withdrawn?: boolean;
 };
 
 // A live resting entry (Bitget pending/plan order, Capital working order),
@@ -247,9 +250,11 @@ const timelineTickLabel = (tick: ChartTimelineTick): string => {
           }`
         : tick.kind === 'ai_call'
           ? ` · AI ${timelineTickActionLabel(tick)}${timelineTickCooldownSuffix(tick)}`
-          : tick.stage
-            ? ` · skipped: ${tick.reason || tick.stage}`
-            : ' · scanned'
+          : isRestingEntryWithdrawnTick(tick)
+            ? ` · resting entry WITHDRAWN (${restingEntryWithdrawnCause(tick.reason)})`
+            : tick.stage
+              ? ` · skipped: ${tick.reason || tick.stage}`
+              : ' · scanned'
   }`;
 };
 
@@ -308,6 +313,7 @@ type ChartPanelProps = {
     leverage: number | null;
     effectiveLeverage: number | null;
     entryPrice: number | null;
+    stopLossPrice: number | null;
   } | null) => void;
   onPositionSummaryChange?: (summary: {
     closedPnlPct: number | null;
@@ -702,7 +708,14 @@ class PositionOverlayRenderer {
   constructor(
     private readonly items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[],
     private readonly bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[],
-    private readonly limitItems: { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[],
+    private readonly limitItems: {
+      left: number;
+      right: number;
+      y: number;
+      side: 'buy' | 'sell';
+      filled: boolean;
+      withdrawn?: boolean;
+    }[],
     private readonly theme: OverlayTheme,
   ) {}
   draw(target: {
@@ -766,6 +779,16 @@ class PositionOverlayRenderer {
             ctx.beginPath();
             ctx.arc(right, y, 2.5, 0, Math.PI * 2);
             ctx.fill();
+          } else if (order.withdrawn) {
+            // Gate-withdrawn order: a small × where the segment ends, so the
+            // line visibly STOPS rather than trailing off.
+            const r = 3;
+            ctx.beginPath();
+            ctx.moveTo(right - r, y - r);
+            ctx.lineTo(right + r, y + r);
+            ctx.moveTo(right - r, y + r);
+            ctx.lineTo(right + r, y - r);
+            ctx.stroke();
           }
         }
       }
@@ -811,7 +834,14 @@ class PositionOverlayRenderer {
 class PositionOverlayPaneView {
   private items: { left: number; right: number; partials: number[]; datum: OverlayPrimitiveDatum }[] = [];
   private bandItems: { left: number; right: number; yAbove: number | null; yBelow: number | null }[] = [];
-  private limitItems: { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[] = [];
+  private limitItems: {
+    left: number;
+    right: number;
+    y: number;
+    side: 'buy' | 'sell';
+    filled: boolean;
+    withdrawn?: boolean;
+  }[] = [];
   constructor(private readonly source: PositionOverlayPrimitive) {}
   update() {
     const chart = this.source.chart;
@@ -841,7 +871,14 @@ class PositionOverlayPaneView {
               ) {
                 return null;
               }
-              return { left: Math.min(x1, x2), right: Math.max(x1, x2), y, side: order.side, filled: order.filled };
+              return {
+                left: Math.min(x1, x2),
+                right: Math.max(x1, x2),
+                y,
+                side: order.side,
+                filled: order.filled,
+                withdrawn: order.withdrawn,
+              };
             })
             .filter(Boolean) as { left: number; right: number; y: number; side: 'buy' | 'sell'; filled: boolean }[])
         : [];
@@ -901,7 +938,14 @@ type CooldownBandItem = { fromTime: number; toTime: number; above: number | null
 
 // A resting limit's window, candle-snapped: dashed side-colored segment at the
 // limit price; `filled` draws a dot at the segment end (the fill moment).
-type LimitOrderItem = { fromTime: number; toTime: number; price: number; side: 'buy' | 'sell'; filled: boolean };
+type LimitOrderItem = {
+  fromTime: number;
+  toTime: number;
+  price: number;
+  side: 'buy' | 'sell';
+  filled: boolean;
+  withdrawn?: boolean;
+};
 
 // Exported for the unit test that pins autoscaleInfo() — see
 // test/unit/swing/chartRestingAutoscale.test.ts.
@@ -1149,6 +1193,51 @@ const buildCooldownBandItems = (
 // dropped — on the short ranges (4H) most resting entries were issued before the
 // window opens, and dropping them left the chart with no line at all.
 // Exported for the unit test that pins exactly that.
+// A quarter-tick skip whose gate WITHDREW a standing resting entry — today the
+// session-decision window (analyze.ts: "…_resting_entry_withdrawn"). The
+// withdrawal lives only in the tick log, never in a decision row, so the
+// server-side window builder (restingEntryWindows.ts) cannot see it and lets
+// the dashed segment run to now. The timeline ticks are already on the client;
+// clipping here costs no extra query.
+export const isRestingEntryWithdrawnTick = (tick: Pick<ChartTimelineTick, 'kind' | 'reason'>): boolean =>
+  (tick.kind === 'scan_skip' || tick.kind === 'gate_skip') &&
+  typeof tick.reason === 'string' &&
+  tick.reason.endsWith('_resting_entry_withdrawn');
+
+// Human wording for the withdrawal reason, e.g.
+// "flat_skip_session_window_pre_open_london_open_resting_entry_withdrawn" →
+// "session window pre open london open".
+export const restingEntryWithdrawnCause = (reason: string | undefined): string => {
+  const core = String(reason || '')
+    .replace(/^flat_skip_/, '')
+    .replace(/_resting_entry_withdrawn$/, '')
+    .replace(/_/g, ' ')
+    .trim();
+  return core || 'gate';
+};
+
+// End every resting segment at the first withdrawal tick that falls inside it.
+// Pure; exported for the unit test.
+export const clipSegmentsAtWithdrawals = (
+  segments: LimitOrderSegment[],
+  ticks: ReadonlyArray<Pick<ChartTimelineTick, 'ts' | 'kind' | 'reason'>>,
+): LimitOrderSegment[] => {
+  const withdrawalsSec = ticks
+    .filter(isRestingEntryWithdrawnTick)
+    .map((t) => Math.floor(Number(t.ts) / 1000))
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
+  if (!withdrawalsSec.length) return segments;
+  return segments.map((segment) => {
+    if (segment.filled === true) return segment;
+    const from = Number(segment.fromTime);
+    const to = Number(segment.toTime);
+    const cut = withdrawalsSec.find((t) => t > from && t < to);
+    if (cut === undefined) return segment;
+    return { ...segment, toTime: Math.max(from + 60, cut), withdrawn: true };
+  });
+};
+
 export const buildLimitOrderItems = (
   chartData: { time: number; value: number }[],
   orders: LimitOrderSegment[],
@@ -1177,6 +1266,7 @@ export const buildLimitOrderItems = (
       price,
       side: order.side,
       filled: order.filled === true,
+      withdrawn: order.withdrawn === true,
     });
   }
   return items;
@@ -1377,6 +1467,10 @@ export default function ChartPanel(props: ChartPanelProps) {
             effectiveLeverage:
               typeof openPosition.effectiveLeverage === 'number' ? openPosition.effectiveLeverage : null,
             entryPrice: typeof openPosition.entryPrice === 'number' ? openPosition.entryPrice : null,
+            stopLossPrice:
+              typeof openPosition.stopLossPrice === 'number' && openPosition.stopLossPrice > 0
+                ? openPosition.stopLossPrice
+                : null,
           }
         : null,
     );
@@ -1870,8 +1964,10 @@ export default function ChartPanel(props: ChartPanelProps) {
 
   // Resting-limit windows: same feed pattern as the cooldown bands above.
   useEffect(() => {
-    overlayPrimitiveRef.current?.setLimitOrders(buildLimitOrderItems(chartData, limitOrderSegments));
-  }, [limitOrderSegments, chartData, chartInitToken]);
+    overlayPrimitiveRef.current?.setLimitOrders(
+      buildLimitOrderItems(chartData, clipSegmentsAtWithdrawals(limitOrderSegments, timelineTicks ?? [])),
+    );
+  }, [limitOrderSegments, chartData, chartInitToken, timelineTicks]);
 
   // Standing exchange-side bracket of the open position: thin horizontal price
   // lines — TP green, SL red. Recreated whenever the overlay payload or the
@@ -2062,9 +2158,11 @@ export default function ChartPanel(props: ChartPanelProps) {
           ? 0
           : tick.kind === 'ai_call'
             ? 1
-            : tick.hourly
-              ? 2
-              : 3;
+            : isRestingEntryWithdrawnTick(tick)
+              ? 1.5
+              : tick.hourly
+                ? 2
+                : 3;
       // Selection floats a dot ahead of its own kind, but a selected non-action
       // dot never outranks BUY/SELL/trim dots: the default "live" selection is
       // often a scan tick newer than the last candle, which snaps onto the
@@ -2671,6 +2769,9 @@ export default function ChartPanel(props: ChartPanelProps) {
               );
             // A flat HOLD that armed a cooldown gets clock hands inside the dot.
             const isCooldownHold = tick.kind === 'ai_call' && Number(tick.cooldownMinutes) > 0;
+            // A gate that withdrew a resting entry gets a crossed ring: the
+            // moment an order of ours stopped existing deserves its own mark.
+            const isWithdrawal = isRestingEntryWithdrawnTick(tick);
             const label = timelineTickLabel(tick);
             return (
               <button
@@ -2688,7 +2789,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                     tick,
                   )} ${isContextSkip ? 'timeline-dot-context-skip' : ''} ${
                     isCooldownHold ? 'timeline-dot-clock' : ''
-                  } ${isSelected ? 'timeline-dot-selected' : ''}`}
+                  } ${isWithdrawal ? 'timeline-dot-withdrawn' : ''} ${isSelected ? 'timeline-dot-selected' : ''}`}
                 />
               </button>
             );

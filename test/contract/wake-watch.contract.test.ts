@@ -171,6 +171,7 @@ test('venue-side close: in_position thread with a flat venue fires the reconcile
     const summary = await conversationSummary();
     const fire = summary.find((line) => line.includes(`${SELF_HOST}/api/swing/analyze`));
     expect(fire).toContain('enforcePrimaryCloseGate=1');
+    expect(fire).toContain('postCloseReconcile=1');
     expect(fire).toContain('wake=1');
 });
 

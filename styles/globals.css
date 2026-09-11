@@ -372,27 +372,6 @@ body {
   color: rgb(24 24 27 / 1);
 }
 
-/* Symbol-pill decision dot: stays a CIRCLE despite the global sharp-corner
-   rule above (same escape as .timeline-dot — Tailwind's rounded-full loses to
-   the `* { border-radius: 0 !important }` reset). Colored by the shared
-   timeline-dot-* fill classes. */
-.pill-decision-dot {
-  border-radius: 9999px !important;
-}
-
-/* Hollow variant: a resting pullback limit renders as a RING in the action's
-   color (filled dot = executed/hold). Combined with the timeline-dot-* fill
-   classes, which set outline-color alongside background-color — outline
-   instead of border because box-shadow is globally disabled and a border
-   would shrink the visible ring. Negative offset draws the ring fully inside
-   the dot's 8px box. */
-.pill-dot-hollow {
-  background-color: transparent !important;
-  outline-style: solid;
-  outline-width: 1.5px;
-  outline-offset: -1.5px;
-}
-
 /* Chart loading shimmer: an empty panel with a soft highlight sweeping
    left → right. Plain background-image (not a bg-gradient-* utility) so the
    terminal gradient-flattening rule above doesn't strip it. */
@@ -571,6 +550,87 @@ body {
 .theme-dark .timeline-dot-clock::before,
 .theme-dark .timeline-dot-clock::after {
   background-color: rgb(15 23 42 / 1);
+}
+
+/* Withdrawn-entry variant: a quarter skip whose gate cancelled a resting
+   order of ours (session window). Hollow ring with an × inside, in the
+   ai-call contrast colour, so it reads as "something ended here" and never
+   disappears into the row of plain skip dots. */
+.timeline-dot-withdrawn {
+  position: relative;
+  background-color: transparent !important;
+  outline-style: solid;
+  outline-width: 1.5px;
+  outline-offset: -1.5px;
+  outline-color: rgb(15 23 42 / 1);
+}
+
+.theme-dark .timeline-dot-withdrawn {
+  outline-color: rgb(255 255 255 / 1);
+}
+
+.timeline-dot-withdrawn::before,
+.timeline-dot-withdrawn::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 55%;
+  height: 1.5px;
+  margin-left: -27.5%;
+  margin-top: -0.75px;
+  background-color: rgb(15 23 42 / 1);
+}
+
+.timeline-dot-withdrawn::before {
+  transform: rotate(45deg);
+}
+
+.timeline-dot-withdrawn::after {
+  transform: rotate(-45deg);
+}
+
+.theme-dark .timeline-dot-withdrawn::before,
+.theme-dark .timeline-dot-withdrawn::after {
+  background-color: rgb(255 255 255 / 1);
+}
+
+/* Header watchlist chips: explicit resting / hover / selected surfaces per
+   theme. Written out rather than composed from bg-slate-* utilities because
+   the dark remap collapsed hover and selected onto the same zinc-800 fill —
+   a hovered chip looked selected. Selected is one step lighter than hover in
+   both themes, and carries a visible border; hover has none. */
+.symbol-chip {
+  border-color: transparent;
+  color: rgb(100 116 139 / 1); /* slate-500 */
+}
+
+.symbol-chip:hover {
+  background-color: rgb(241 245 249 / 1); /* slate-100 */
+  color: rgb(15 23 42 / 1);
+}
+
+.symbol-chip-active,
+.symbol-chip-active:hover {
+  border-color: rgb(203 213 225 / 1); /* slate-300 */
+  background-color: rgb(226 232 240 / 1); /* slate-200 */
+  color: rgb(15 23 42 / 1);
+}
+
+.theme-dark .symbol-chip {
+  color: rgb(161 161 170 / 1); /* zinc-400 */
+}
+
+.theme-dark .symbol-chip:hover {
+  background-color: rgb(39 39 42 / 1); /* zinc-800 */
+  color: rgb(244 244 245 / 1);
+}
+
+.theme-dark .symbol-chip-active,
+.theme-dark .symbol-chip-active:hover {
+  border-color: rgb(113 113 122 / 1); /* zinc-500 */
+  background-color: rgb(63 63 70 / 1); /* zinc-700 */
+  color: rgb(250 250 250 / 1);
 }
 
 /* Trim/partial-close keeps its amber in BOTH themes — a custom property so the

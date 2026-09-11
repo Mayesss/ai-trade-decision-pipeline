@@ -68,6 +68,9 @@ type EvaluationEntry = {
   // overstates any position that has been partly trimmed.
   openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
+  // Standing exchange-side stop (null = none reported). The position card
+  // shows the live price distance to it as "SL 1.3%".
+  openStopLossPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
@@ -122,8 +125,8 @@ type DashboardSummaryRow = {
   // Per-Berlin-day closed nets in venue cash (mirrors the summary API) —
   // folded across symbols into the header week-calendar strip.
   pnlDaily?: Array<{ day: string; net: number | null; trades: number }> | null;
-  // A pullback entry limit is resting on the venue — ranks the pill between
-  // open positions and fresh AI decisions.
+  // A pullback entry limit is resting on the venue — the symbol joins the
+  // positions group in the header row as a dashed "limit" card.
   pendingEntry?: boolean;
   openPnl?: number | null;
   // Open PnL in venue cash + the margin behind it. The money calendar adds
@@ -138,16 +141,18 @@ type DashboardSummaryRow = {
   // overstates any position that has been partly trimmed.
   openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
+  // Standing exchange-side stop (null = none reported). The position card
+  // shows the live price distance to it as "SL 1.3%".
+  openStopLossPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: "long" | "short" | null;
   lastPositionLeverage?: number | null;
   lastWasAiCall?: boolean;
-  // Freshest real AI call in the history window — drives the recency-sorted
-  // pill order (pre-AI skips don't count).
+  // Freshest real AI call in the history window (pre-AI skips don't count).
   lastAiDecisionTs?: number | null;
-  // Its action (BUY/SELL/CLOSE/HOLD/…) — colors the pill's decision dot.
+  // Its action (BUY/SELL/CLOSE/HOLD/…) — names the side of a resting limit.
   lastAiDecisionAction?: string | null;
-  // Flat-HOLD cooldown that call armed, if any — clock hands inside the dot.
+  // Flat-HOLD cooldown that call armed, if any.
   lastAiDecisionCooldownMinutes?: number | null;
   marketClosed?: boolean;
   lastScanAt?: number | null;
@@ -435,6 +440,11 @@ export default function Home() {
   // Latest tick the user asked for; a slower earlier fetch must not overwrite
   // a newer selection.
   const tickSelectionSeqRef = useRef(0);
+  // When the per-symbol summary (and with it every lastScanAt marker) last
+  // landed — the reference clock for the header row's stale-scan flag. A
+  // state value rather than Date.now() in render, so the component stays
+  // pure; staleness can only change when the markers themselves refresh.
+  const [swingSummaryLoadedAtMs, setSwingSummaryLoadedAtMs] = useState<number | null>(null);
   const [swingSummaryRange, setSwingSummaryRange] =
     useState<DashboardRangeKey | null>(null);
   const swingDashboardRequestIdRef = useRef(0);
@@ -936,10 +946,11 @@ export default function Home() {
           return next;
         });
         setSwingSummaryRange(resolvedSummaryRange);
+        setSwingSummaryLoadedAtMs(Date.now());
 
-        // Default selection: the attention-sorted leftmost pill (open position
-        // → resting limit → fresh AI decision → |range pnl|) — computable only
-        // now that the summary is in. Skipped once the user picks a pill
+        // Default selection: the leftmost card of the header row (open
+        // position → resting limit → watchlist order) — computable only now
+        // that the summary is in. Skipped once the user picks a symbol
         // themselves.
         if (!userPickedSymbolRef.current && orderedSymbols.length) {
           const rowBySymbol = new Map(
@@ -948,25 +959,21 @@ export default function Home() {
               .map((row) => [String(row.symbol).toUpperCase(), row] as const),
           );
           // [rank, tiebreak] — lower wins; mirrors orderedSymbolPills:
-          // open position → resting limit → AI-decision recency → closed.
-          const rankOf = (sym: string): [number, number] => {
+          // open position → resting limit → idle → closed, configured
+          // symbol order within a bucket (stable — the row never reshuffles).
+          const rankOf = (sym: string, idx: number): [number, number] => {
             const row = rowBySymbol.get(sym.toUpperCase());
-            if (!row) return [2, 0];
-            const aiRecency =
-              typeof row.lastAiDecisionTs === "number" &&
-              row.lastAiDecisionTs > 0
-                ? -row.lastAiDecisionTs
-                : 0;
-            if (row.marketClosed === true) return [3, aiRecency];
+            if (!row) return [2, idx];
+            if (row.marketClosed === true) return [3, idx];
             if (row.openDirection === "long" || row.openDirection === "short")
-              return [0, aiRecency];
-            if (row.pendingEntry === true) return [1, aiRecency];
-            return [2, aiRecency];
+              return [0, idx];
+            if (row.pendingEntry === true) return [1, idx];
+            return [2, idx];
           };
           let bestIdx = 0;
           let bestRank: [number, number] = [Infinity, 0];
           orderedSymbols.forEach((sym, idx) => {
-            const rank = rankOf(sym);
+            const rank = rankOf(sym, idx);
             if (
               rank[0] < bestRank[0] ||
               (rank[0] === bestRank[0] && rank[1] < bestRank[1])
@@ -1420,23 +1427,13 @@ export default function Home() {
     typeof effectiveRangePnlWithOpen === "number"
       ? `${effectiveRangePnlWithOpen.toFixed(2)}%`
       : null;
-  // Attention-first pill ordering: the header row gets scanned for "what's up"
-  // on every visit — open positions first, then resting entry limits, then
-  // everything else by AI-decision recency (freshest real AI call first, so an
-  // hourly-tick decision naturally outranks stale ones; symbols the AI never
-  // looked at trail the bucket), market-closed at the very end. Ties keep the
-  // original symbol order, and clicks keep working because each pill carries
-  // its original index into `symbols`.
-  const rangePnlForPill = (tab?: EvaluationEntry): number | null => {
-    if (!swingSummaryMatchesRange || !tab) return null;
-    if (typeof tab.pnl7dWithOpen === "number") return tab.pnl7dWithOpen;
-    if (typeof tab.pnl7d === "number") return tab.pnl7d;
-    return null;
-  };
-  const aiRecencyForPill = (tab?: EvaluationEntry): number | null =>
-    typeof tab?.lastAiDecisionTs === "number" && tab.lastAiDecisionTs > 0
-      ? tab.lastAiDecisionTs
-      : null;
+  // Header row ordering: exposure first (open positions, then resting entry
+  // limits), then the watchlist in configured order, market-closed at the
+  // very end. Deliberately STABLE within a bucket — this row is a navigation
+  // control, and an earlier version that sorted idle symbols by AI-decision
+  // recency reshuffled them every tick once nearly every symbol got an AI
+  // call, so no position for "where is GOLD" ever formed. Clicks keep working
+  // because each entry carries its original index into `symbols`.
   const orderedSymbolPills = symbols
     .map((sym, index) => {
       const tab = tabData[sym];
@@ -1446,24 +1443,39 @@ export default function Home() {
         (tab?.openDirection === "long" || tab?.openDirection === "short")
           ? tab.openDirection
           : null;
-      const pnl = rangePnlForPill(tab);
-      const aiTs = aiRecencyForPill(tab);
-      const rank = marketClosed
-        ? 3
-        : openDirection
-          ? 0
-          : tab?.pendingEntry === true
-            ? 1
-            : 2;
-      return { sym, index, tab, marketClosed, openDirection, pnl, aiTs, rank };
+      const pendingLimit = !marketClosed && !openDirection && tab?.pendingEntry === true;
+      const rank = marketClosed ? 3 : openDirection ? 0 : pendingLimit ? 1 : 2;
+      return { sym, index, tab, marketClosed, openDirection, pendingLimit, rank };
     })
-    .sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      // Within every bucket (including market-closed): fresher AI decision
-      // first; never-AI-called symbols (aiTs null → 0) fall to the tail.
-      const tsDiff = (b.aiTs ?? 0) - (a.aiTs ?? 0);
-      if (tsDiff !== 0) return tsDiff;
-      return a.index - b.index;
+    .sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.index - b.index));
+  // The row splits into two groups with a divider: exposure cards (rank 0/1)
+  // and plain watchlist chips (rank 2/3).
+  const exposureEntries = orderedSymbolPills.filter((entry) => entry.rank <= 1);
+  const watchlistEntries = orderedSymbolPills.filter((entry) => entry.rank >= 2);
+  // Scan health is shown by EXCEPTION only: with the gates loosened nearly
+  // every symbol gets a scan each 15-minute tick, so "was scanned recently"
+  // carries no information — "was NOT scanned" does. A chip flags amber once
+  // its last scan is older than two cadence windows plus slack; the row's
+  // right edge names the freshest scan across all symbols as the liveness
+  // reading.
+  const SCAN_STALE_MS = 35 * 60 * 1000;
+  const scanStaleFor = (tab?: EvaluationEntry): boolean =>
+    swingSummaryLoadedAtMs !== null &&
+    tab?.marketClosed !== true &&
+    typeof tab?.lastScanAt === "number" &&
+    tab.lastScanAt > 0 &&
+    swingSummaryLoadedAtMs - tab.lastScanAt > SCAN_STALE_MS;
+  const freshestScanAt = symbols.reduce<number | null>((best, sym) => {
+    const ts = tabData[sym]?.lastScanAt;
+    return typeof ts === "number" && ts > 0 && (best === null || ts > best) ? ts : best;
+  }, null);
+  // Berlin wall clock, 24h — same convention as the decision-card timestamp.
+  const formatClock = (ts: number) =>
+    new Date(ts).toLocaleTimeString("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: BERLIN_TZ,
     });
   // How many days the strip shows: whatever fits the panel, measured. It used
   // to be a fixed 7 with the two oldest hidden under `sm:` — a breakpoint guess
@@ -1480,22 +1492,33 @@ export default function Home() {
   // and an open position's money is only real once you count it. Preference
   // order per symbol: margin x the live percent (moves with the 3s quote),
   // else the venue's own cash figure from the last summary build.
-  const liveOpenCashEur = (() => {
+  // One symbol's open money in €, or null when neither source has a figure.
+  // Shared by the header total and the position cards, so the cards always
+  // sum to the header.
+  const liveOpenCashEurFor = (
+    sym: string,
+    tab: EvaluationEntry | undefined,
+  ): { eur: number; live: boolean; converted: boolean } | null => {
+    if (tab?.openDirection !== "long" && tab?.openDirection !== "short") return null;
     const rate = eurUsdRate ?? EUR_USD_FALLBACK_RATE;
+    const margin = typeof tab?.openMargin === "number" ? tab.openMargin : null;
+    const livePct = liveOpenPnlPct(tab, livePrices[sym]?.price ?? null);
+    const fromLive = margin !== null && livePct !== null ? (margin * livePct) / 100 : null;
+    const cash = fromLive ?? (typeof tab?.openPnlCash === "number" ? tab.openPnlCash : null);
+    if (cash === null) return null;
+    const converted = platformCurrencySymbol(tab?.lastPlatform) !== "€";
+    return { eur: converted ? cash / rate : cash, live: fromLive !== null, converted };
+  };
+  const liveOpenCashEur = (() => {
     let total = 0;
     let live = false;
     let counted = 0;
     for (const sym of symbols) {
-      const tab = tabData[sym];
-      if (tab?.openDirection !== "long" && tab?.openDirection !== "short") continue;
-      const margin = typeof tab?.openMargin === "number" ? tab.openMargin : null;
-      const livePct = liveOpenPnlPct(tab, livePrices[sym]?.price ?? null);
-      const fromLive = margin !== null && livePct !== null ? (margin * livePct) / 100 : null;
-      const cash = fromLive ?? (typeof tab?.openPnlCash === "number" ? tab.openPnlCash : null);
-      if (cash === null) continue;
-      if (fromLive !== null) live = true;
+      const one = liveOpenCashEurFor(sym, tabData[sym]);
+      if (!one) continue;
+      if (one.live) live = true;
       counted += 1;
-      total += platformCurrencySymbol(tab?.lastPlatform) === "€" ? cash : cash / rate;
+      total += one.eur;
     }
     return counted ? { eur: total, live, positions: counted } : null;
   })();
@@ -1739,6 +1762,7 @@ export default function Home() {
       leverage: number | null;
       effectiveLeverage: number | null;
       entryPrice: number | null;
+      stopLossPrice: number | null;
     } | null,
   ) => {
     if (!symbol) return;
@@ -1751,12 +1775,14 @@ export default function Home() {
       const nextOpenLeverage = position?.leverage ?? null;
       const nextOpenEffectiveLeverage = position?.effectiveLeverage ?? null;
       const nextOpenEntryPrice = position?.entryPrice ?? null;
+      const nextOpenStopLossPrice = position?.stopLossPrice ?? null;
       if (
         existing.openPnl === nextOpenPnl &&
         existing.openDirection === nextOpenDirection &&
         existing.openLeverage === nextOpenLeverage &&
         existing.openEffectiveLeverage === nextOpenEffectiveLeverage &&
-        existing.openEntryPrice === nextOpenEntryPrice
+        existing.openEntryPrice === nextOpenEntryPrice &&
+        existing.openStopLossPrice === nextOpenStopLossPrice
       ) {
         return prev;
       }
@@ -1769,6 +1795,7 @@ export default function Home() {
           openLeverage: nextOpenLeverage,
           openEffectiveLeverage: nextOpenEffectiveLeverage,
           openEntryPrice: nextOpenEntryPrice,
+          openStopLossPrice: nextOpenStopLossPrice,
         },
       };
     });
@@ -2229,94 +2256,87 @@ export default function Home() {
                 </div>
                 {!error &&
                 (symbols.length || isInitialLoading) ? (
-                  // One always-single-line, horizontally scrollable pill row —
-                  // attention-sorted (open → fresh AI → |pnl| → idle → closed),
-                  // so "what's up" sits at the left edge without hunting.
+                  // One always-single-line, horizontally scrollable header row
+                  // in two groups: exposure CARDS (open positions, resting
+                  // limits — the only place saturated color is allowed), a
+                  // divider, then plain watchlist CHIPS in configured order.
+                  // Hierarchy comes from size and grouping, not from painting
+                  // every symbol's range PnL green/red — that number already
+                  // lives in the calendar strip and the chart header.
+                  <div className="mt-1.5 flex items-center gap-2">
                   <div
                     ref={pillRowRef}
-                    className="scrollbar-none mt-1.5 flex flex-nowrap items-center gap-1 overflow-x-auto"
+                    className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
                   >
-                    {orderedSymbolPills.map(
-                      ({ sym, index, tab, marketClosed, openDirection, pnl }) => {
+                    {exposureEntries.map(
+                      ({ sym, index, tab, openDirection, pendingLimit }) => {
                         const isActive = index === active;
-                        // Decision dot on the symbol segment: shown when the
-                        // AI decided within the last hour (skips don't light
-                        // it) or a pullback limit is resting. Color = the last
-                        // AI action, using the timeline's palette; a HOLLOW
-                        // ring means the order is a resting limit (not yet
-                        // filled), filled means executed/hold.
-                        const aiDecisionRecent = tab?.lastWasAiCall === true;
-                        const pendingLimit = tab?.pendingEntry === true;
+                        const stale = scanStaleFor(tab);
                         const lastAiAction = String(
                           tab?.lastAiDecisionAction || "",
                         ).toUpperCase();
-                        const decisionDotClass =
-                          lastAiAction === "BUY"
-                            ? "timeline-dot-buy"
-                            : lastAiAction === "SELL"
-                              ? "timeline-dot-sell"
-                              : lastAiAction === "CLOSE" ||
-                                  lastAiAction === "REVERSE"
-                                ? "timeline-dot-trim"
-                                : "timeline-dot-ai";
-                        // A flat HOLD that armed a cooldown gets clock hands
-                        // inside the dot instead of a plain filled circle.
-                        const holdCooldown =
-                          lastAiAction === "HOLD" &&
-                          Number(tab?.lastAiDecisionCooldownMinutes) > 0;
+                        const livePrice = livePrices[sym]?.price ?? null;
                         // Live quote first, summary snapshot as the floor: an
                         // open position's PnL moves with price, and the summary
                         // figure is minutes old by the time it is read.
                         const openPnlValue = openDirection
-                          ? (liveOpenPnlPct(tab, livePrices[sym]?.price ?? null) ??
+                          ? (liveOpenPnlPct(tab, livePrice) ??
                             (typeof tab?.openPnl === "number" ? tab.openPnl : null))
                           : null;
-                        // Split pill: neutral symbol segment + one signal
-                        // segment carrying the most important number. Color
-                        // lives in the segment, not the whole pill, so the row
-                        // reads calmer while still scannable.
-                        const containerClass = marketClosed
-                          ? `border-dashed border-slate-200 grayscale ${isActive ? "opacity-70" : "opacity-45"}`
-                          : isActive
-                            ? "border-slate-400 shadow-sm"
-                            : "border-slate-200 hover:border-slate-300";
-                        const symbolSegClass = isActive
-                          ? "bg-slate-100 text-slate-900"
-                          : "text-slate-600 hover:text-slate-900";
-                        let signalSegClass = "border-slate-100 text-slate-400";
-                        let signalContent: React.ReactNode = "–";
-                        if (marketClosed) {
-                          signalContent = (
-                            <Moon className="h-2.5 w-2.5" aria-hidden="true" />
-                          );
-                        } else if (openDirection) {
-                          // Arrow shape = side (▲ long / ▼ short); segment tone
-                          // = open PnL sign.
-                          signalSegClass =
-                            (openPnlValue ?? 0) >= 0
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : "border-rose-200 bg-rose-50 text-rose-700";
-                          signalContent = (
-                            <>
-                              {typeof openPnlValue === "number"
-                                ? `${openPnlValue >= 0 ? "+" : ""}${openPnlValue.toFixed(1)}%`
-                                : "open"}
-                              <span className="text-[9px] leading-none">
-                                {openDirection === "long" ? "▲" : "▼"}
-                              </span>
-                            </>
-                          );
-                        } else if (typeof pnl === "number") {
-                          // Full-strength bg-emerald-50/rose-50 (no /60): the
-                          // opacity variants aren't covered by the .theme-dark
-                          // remap and would render as light-mode mint/pink on
-                          // the dark background.
-                          signalSegClass =
-                            pnl >= 0
-                              ? "border-emerald-100 bg-emerald-50 text-emerald-700"
-                              : "border-rose-100 bg-rose-50 text-rose-700";
-                          signalContent = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%`;
-                        }
+                        // The position's live money in €, same figure the
+                        // header total is built from.
+                        const openCash = openDirection ? liveOpenCashEurFor(sym, tab) : null;
+                        const leverageLabel =
+                          typeof tab?.openLeverage === "number" && tab.openLeverage > 0
+                            ? `${Math.round(tab.openLeverage)}x`
+                            : "";
+                        const titleParts = [
+                          openDirection
+                            ? `${sym} — open ${openDirection}${
+                                typeof tab?.openEntryPrice === "number"
+                                  ? ` from ${tab.openEntryPrice}`
+                                  : ""
+                              }${
+                                typeof tab?.openStopLossPrice === "number"
+                                  ? ` · stop ${tab.openStopLossPrice}`
+                                  : " · no exchange-side stop"
+                              }`
+                            : `${sym} — resting limit entry${
+                                lastAiAction === "BUY" || lastAiAction === "SELL"
+                                  ? ` (${lastAiAction.toLowerCase()})`
+                                  : ""
+                              }`,
+                          typeof tab?.lastScanAt === "number" && tab.lastScanAt > 0
+                            ? `last scan ${formatClock(tab.lastScanAt)}${
+                                tab?.lastScanStage
+                                  ? ` — skipped: ${tab.lastScanReason || tab.lastScanStage}`
+                                  : ""
+                              }${stale ? " — STALE" : ""}`
+                            : null,
+                        ];
+                        // Card tone = open PnL sign; a resting limit is a
+                        // dashed neutral outline (not yet exposed). Selection
+                        // and hover only deepen the card's OWN border (and
+                        // fill, when selected) — an outline drew a second
+                        // frame around the first and read as a glitch.
+                        const tone = pendingLimit
+                          ? {
+                              base: "border-dashed text-slate-600",
+                              rest: "border-slate-300 hover:border-slate-500",
+                              active: "border-slate-500 bg-slate-100",
+                            }
+                          : (openPnlValue ?? 0) >= 0
+                            ? {
+                                base: "text-emerald-700",
+                                rest: "border-emerald-200 bg-emerald-50 hover:border-emerald-500",
+                                active: "border-emerald-500 bg-emerald-100",
+                              }
+                            : {
+                                base: "text-rose-700",
+                                rest: "border-rose-200 bg-rose-50 hover:border-rose-500",
+                                active: "border-rose-500 bg-rose-100",
+                              };
+                        const toneClass = `${tone.base} ${isActive ? tone.active : tone.rest}`;
                         return (
                           <button
                             key={sym}
@@ -2325,66 +2345,159 @@ export default function Home() {
                               userPickedSymbolRef.current = true;
                               setActive(index);
                             }}
-                            title={
-                              [
-                                marketClosed
-                                  ? `${sym} — market closed`
-                                  : openDirection
-                                    ? `${sym} — open ${openDirection}`
-                                    : pendingLimit
-                                      ? `${sym} — resting limit entry${
-                                          lastAiAction === "BUY" || lastAiAction === "SELL"
-                                            ? ` (${lastAiAction.toLowerCase()})`
-                                            : ""
-                                        }`
-                                      : null,
-                                // Cron liveness: quarter-tick scans don't write
-                                // decision rows, so the KV last-scan marker is
-                                // the only evidence the 15m cadence ran — plus
-                                // which gate stopped it and why, when it skipped.
-                                typeof tab?.lastScanAt === "number" && tab.lastScanAt > 0
-                                  ? `last scan ${new Date(tab.lastScanAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${
-                                      tab?.lastScanStage
-                                        ? ` — skipped: ${tab.lastScanReason || tab.lastScanStage}`
-                                        : ""
-                                    }`
-                                  : null,
-                              ]
-                                .filter(Boolean)
-                                .join(" · ") || undefined
-                            }
-                            className={`inline-flex shrink-0 items-stretch overflow-hidden rounded-full border text-[11px] font-semibold transition ${containerClass}`}
+                            title={titleParts.filter(Boolean).join(" · ")}
+                            className={`inline-flex shrink-0 items-center gap-2 border px-2.5 py-1 text-[11px] font-semibold transition ${toneClass}`}
                           >
-                            <span
-                              className={`flex items-center gap-1 px-2 py-0.5 ${symbolSegClass}`}
+                            {/* Inline SVG rather than ▲/▼/◌ glyphs: the text
+                                glyphs sit on the font's own metrics and never
+                                centred on the label line — an SVG box does. */}
+                            <svg
+                              viewBox="0 0 10 10"
+                              className="h-2.5 w-2.5 shrink-0"
+                              aria-hidden="true"
                             >
-                              {aiDecisionRecent || pendingLimit ? (
-                                <span
-                                  className={`pill-decision-dot h-2 w-2 shrink-0 ${
-                                    holdCooldown ? "timeline-dot-clock" : ""
-                                  } ${decisionDotClass} ${
-                                    pendingLimit ? "pill-dot-hollow" : ""
-                                  }`}
+                              {pendingLimit ? (
+                                <circle
+                                  cx="5"
+                                  cy="5"
+                                  r="3.5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                  strokeDasharray="2.2 1.6"
                                 />
-                              ) : null}
-                              {sym}
-                            </span>
-                            <span
-                              className={`flex items-center gap-0.5 border-l px-1.5 py-0.5 text-[10px] tabular-nums ${signalSegClass}`}
-                            >
-                              {signalContent}
-                            </span>
+                              ) : (
+                                <polygon
+                                  fill="currentColor"
+                                  points={
+                                    openDirection === "long"
+                                      ? "5,1 9.5,9 0.5,9"
+                                      : "0.5,1 9.5,1 5,9"
+                                  }
+                                />
+                              )}
+                            </svg>
+                            <span className="text-slate-900">{sym}</span>
+                            {pendingLimit ? (
+                              <span className="text-[10px] font-medium text-slate-500">
+                                limit
+                                {lastAiAction === "BUY"
+                                  ? " long"
+                                  : lastAiAction === "SELL"
+                                    ? " short"
+                                    : ""}
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-[10px] font-medium tabular-nums text-slate-500">
+                                  {openDirection === "long" ? "L" : "S"}
+                                  {leverageLabel}
+                                </span>
+                                <span className="tabular-nums">
+                                  {typeof openPnlValue === "number"
+                                    ? `${openPnlValue >= 0 ? "+" : ""}${openPnlValue.toFixed(2)}%`
+                                    : "open"}
+                                </span>
+                                {openCash ? (
+                                  <span
+                                    className="text-[10px] font-medium tabular-nums text-slate-500"
+                                    title={openCash.converted ? "≈ € at the live EURUSD rate" : undefined}
+                                  >
+                                    {openCash.eur >= 0 ? "+" : ""}
+                                    {Math.abs(openCash.eur) < 10
+                                      ? // Small positions would all round to €0
+                                        // in the whole-euro header format.
+                                        `${openCash.eur < 0 ? "-" : ""}€${Math.abs(openCash.eur).toFixed(2)}`
+                                      : formatCash(openCash.eur, "€")}
+                                  </span>
+                                ) : null}
+                              </>
+                            )}
+                            {stale ? (
+                              <AlertTriangle
+                                className="h-2.5 w-2.5 text-amber-500"
+                                aria-label="scan stale"
+                              />
+                            ) : null}
                           </button>
                         );
                       },
                     )}
+                    {exposureEntries.length && watchlistEntries.length ? (
+                      <span
+                        className="mx-1.5 h-5 w-px shrink-0 bg-slate-200"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    {watchlistEntries.map(({ sym, index, tab, marketClosed }) => {
+                      const isActive = index === active;
+                      const stale = scanStaleFor(tab);
+                      const titleParts = [
+                        marketClosed ? `${sym} — market closed` : null,
+                        // Cron liveness: quarter-tick scans don't write
+                        // decision rows, so the KV last-scan marker is the
+                        // only evidence the 15m cadence ran — plus which gate
+                        // stopped it and why, when it skipped.
+                        typeof tab?.lastScanAt === "number" && tab.lastScanAt > 0
+                          ? `last scan ${formatClock(tab.lastScanAt)}${
+                              tab?.lastScanStage
+                                ? ` — skipped: ${tab.lastScanReason || tab.lastScanStage}`
+                                : ""
+                            }${stale ? " — STALE" : ""}`
+                          : null,
+                      ];
+                      // Surfaces live in globals.css (.symbol-chip*) with
+                      // explicit light/dark values — see the note there. The
+                      // border is always present (transparent at rest) so
+                      // selecting a chip never nudges the row.
+                      const chipClass = `symbol-chip ${isActive ? "symbol-chip-active font-semibold" : "font-medium"} ${
+                        marketClosed ? (isActive ? "opacity-80" : "opacity-50 hover:opacity-80") : ""
+                      }`;
+                      return (
+                        <button
+                          key={sym}
+                          data-active-pill={isActive ? "true" : undefined}
+                          onClick={() => {
+                            userPickedSymbolRef.current = true;
+                            setActive(index);
+                          }}
+                          title={titleParts.filter(Boolean).join(" · ") || undefined}
+                          className={`inline-flex shrink-0 items-center gap-1 border px-2 py-0.5 text-[11px] transition ${chipClass}`}
+                        >
+                          {marketClosed ? (
+                            <Moon className="h-2.5 w-2.5" aria-hidden="true" />
+                          ) : null}
+                          {sym}
+                          {stale ? (
+                            <AlertTriangle
+                              className="h-2.5 w-2.5 text-amber-500"
+                              aria-label="scan stale"
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    })}
                     {isInitialLoading &&
                       Array.from({ length: 3 }).map((_, idx) => (
                         <span
                           key={`tab-skeleton-${idx}`}
-                          className="skeleton-shimmer h-5 w-16 shrink-0 rounded-full border border-slate-200 bg-slate-100"
+                          className="skeleton-shimmer h-5 w-16 shrink-0 border border-slate-200 bg-slate-100"
                         />
                       ))}
+                  </div>
+                    {freshestScanAt !== null ? (
+                      // Row-level liveness, OUTSIDE the scroll container so it
+                      // stays pinned at the right edge however long the
+                      // watchlist gets. Replaces the per-symbol "AI looked at
+                      // me" dot, which lit on nearly every symbol once the
+                      // gates loosened.
+                      <span
+                        className="shrink-0 text-[10px] font-medium tabular-nums text-slate-400"
+                        title="Freshest 15m scan across all symbols"
+                      >
+                        scan {formatClock(freshestScanAt)}
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

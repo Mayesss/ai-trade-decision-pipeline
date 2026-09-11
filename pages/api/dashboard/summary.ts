@@ -29,6 +29,7 @@ import {
 import { syncSwingClosedPositions, mergePositionWindows } from '../../../lib/swing/sync';
 import { loadClosedSwingPositions, upsertSwingPosition, listSwingPendingEntryThreads } from '../../../lib/swing/pg';
 import { kvGetJson, kvMGetJson, kvSetJson } from '../../../lib/kv';
+import { fetchPositionTpsl, getTradeProductType } from '../../../lib/trading';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
@@ -72,6 +73,10 @@ type SummaryEntry = {
   // that has been partly trimmed. See PositionInfo.effectiveLeverage.
   openEffectiveLeverage?: number | null;
   openEntryPrice?: number | null;
+  // Standing exchange-side stop of the open position, when the venue reports
+  // one. The header position card turns it into "SL −1.3%" (price distance to
+  // the stop) — the one number that says how much room the trade has left.
+  openStopLossPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
@@ -444,6 +449,7 @@ export async function buildAndCacheSwingSummary(
       let openLeverage: number | null | undefined = null;
       let openEffectiveLeverage: number | null = null;
       let openEntryPrice: number | null | undefined = null;
+      let openStopLossPrice: number | null = null;
       let lastPositionPnl: number | null | undefined = null;
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
       let lastPositionLeverage: number | null | undefined = null;
@@ -663,6 +669,19 @@ export async function buildAndCacheSwingSummary(
               const margin = finiteNumber(pos.marginCash);
               return margin !== null && margin > 0 ? margin : null;
             })();
+            // Capital exposes the bracket on the position row; Bitget resting
+            // TP/SL live as plan orders and need their own read (same split as
+            // /api/chart). Best-effort — a failure just hides the SL distance.
+            const rowStop = finiteNumber(pos.stopLossPrice);
+            openStopLossPrice = rowStop !== null && rowStop > 0 ? rowStop : null;
+            if (platform === 'bitget') {
+              try {
+                const tpsl = await fetchPositionTpsl(symbol, getTradeProductType());
+                openStopLossPrice = tpsl.stopLoss?.price ?? null;
+              } catch (err) {
+                console.warn(`Could not fetch standing TP/SL for ${symbol}:`, err);
+              }
+            }
           } else {
             openPnl = null;
             openPnlCash = null;
@@ -671,6 +690,7 @@ export async function buildAndCacheSwingSummary(
             openLeverage = null;
             openEffectiveLeverage = null;
             openEntryPrice = null;
+            openStopLossPrice = null;
           }
         } catch (err) {
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
@@ -731,6 +751,7 @@ export async function buildAndCacheSwingSummary(
         openLeverage,
         openEffectiveLeverage,
         openEntryPrice,
+        openStopLossPrice,
         lastPositionPnl,
         lastPositionDirection,
         lastPositionLeverage,

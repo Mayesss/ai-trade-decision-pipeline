@@ -426,6 +426,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // above). This request param forces the gate on for a single call even
         // when the env flag is off (debug / manual boundary checks).
         const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, false);
+        // Set by the wake-watcher's position_closed fire: this tick exists to
+        // reconcile a venue-side close, never to take a fresh flat look (see the
+        // post-close skip below the upkeep surface).
+        const postCloseReconcile = parseBoolParam(body.postCloseReconcile as string | string[] | undefined, false);
         const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const emitGateDebug = (stage: string, payload: Record<string, unknown>) => {
@@ -952,6 +956,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // The thread row claims a resting entry is live while we are flat —
         // cross-checked against what the hourly sweep actually finds below.
         let aiThreadWasPendingEntry = false;
+        // This tick found the position gone (thread said in_position, venue is
+        // flat): the venue closed it since the last look. Drives the post-close
+        // skip below — the reconcile is code-only.
+        let positionClosedSinceLastTick = false;
         if (!dryRun) {
             try {
                 const aiThread = await getSwingAiThread(platform, symbol);
@@ -973,6 +981,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             };
                         }
                     } else if (aiThread.status === 'in_position') {
+                        positionClosedSinceLastTick = true;
                         await endSwingAiThread(platform, symbol);
                         // The previous tick had a position, now flat with no AI CLOSE
                         // in between ⇒ the venue closed it (TP/SL bracket, stop-out,
@@ -1615,6 +1624,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             } catch (err) {
                 console.warn(`session window owed-look read failed for ${symbol}:`, err);
             }
+        }
+
+        // Post-close reconcile is code-only. A tick that just discovered the
+        // position gone (thread in_position → venue flat) or the watcher's
+        // position_closed fire has finished the upkeep above — thread end,
+        // Capital close persistence + post-mortem enqueue, order reads. It must
+        // NOT also take a fresh flat look at the symbol: the post-mortem /
+        // win-evaluation pipeline owns "what happened", and the next regular 4H
+        // close owns "what now". Before 2026-09-11 an exit landing inside the
+        // boundary tolerance window slipped through the cadence gate and bought
+        // a flat AI call one minute after the model's own CLOSE (ETHUSDT 18:01,
+        // NATURALGAS 10:01 on 2026-09-10).
+        if (!positionOpen && (positionClosedSinceLastTick || postCloseReconcile)) {
+            emitGateDebug('post_close_reconcile', {
+                gate: 'POST_CLOSE_RECONCILE',
+                threadEnded: positionClosedSinceLastTick,
+                wakeFire: postCloseReconcile,
+            });
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: 'LOW',
+                summary: 'post_close_reconcile',
+                reason: positionClosedSinceLastTick ? 'flat_skip_post_close_reconcile' : 'flat_skip_post_close_wake_fire',
+            };
+            await recordTickOutcome({
+                kind: 'skip',
+                stage: 'post_close_reconcile',
+                reason: decision.reason,
+                metrics: { threadEnded: positionClosedSinceLastTick, wakeFire: postCloseReconcile },
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'post_close_reconcile' },
+                usedTape: false,
+                promptSkipped: true,
+            });
         }
 
         // Flat off-boundary ticks under the 4H-close cadence: no AI call unless

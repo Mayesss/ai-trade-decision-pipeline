@@ -213,7 +213,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     platform,
                     decisionPolicy: 'balanced',
                     wake: true,
-                    ...(reason === 'position_closed' ? { enforcePrimaryCloseGate: true } : {}),
+                    // postCloseReconcile makes analyze skip the AI outright
+                    // after the close upkeep — even inside the 4H boundary
+                    // tolerance window, where the cadence gate alone let a
+                    // fresh flat look through one minute after the close.
+                    ...(reason === 'position_closed' ? { enforcePrimaryCloseGate: true, postCloseReconcile: true } : {}),
                     ...(forwardDryRun ? { dryRun: true } : {}),
                 },
                 // Held open for the whole analyze run (~60-120s of AI latency):
