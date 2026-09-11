@@ -92,6 +92,10 @@ type MarketPayload = {
         expired?: boolean;
         sustained_minutes?: number;
         break_extension_atr?: number;
+        // Deferred wake: minutes since the cross, and minutes a session
+        // decision window / open warmup held the fired look before it ran.
+        crossed_minutes_ago?: number;
+        gate_held_minutes?: number;
         note?: string;
     };
     wake_band_sweeps?: Array<{
@@ -140,6 +144,7 @@ type MarketPayload = {
     };
     venue_session?: CapitalMarketContextForPrompt['venue_session'];
     venue_events?: CapitalMarketContextForPrompt['venue_events'];
+    session_windows_upcoming?: CapitalMarketContextForPrompt['session_windows_upcoming'];
 };
 
 // Two-phase by design: computes signal_strength + the decision
@@ -189,6 +194,12 @@ export function computeSwingState(
         expired?: boolean;
         sustainedMinutes?: number | null;
         breakExtensionAtr?: number | null;
+        // `crossedMinutesAgo` / `gateHeldMinutes` = deferred wake: the cross
+        // happened that long ago and a schedule gate held the fired look that
+        // long (lib/swing/wakeWatch.wakeLookTiming). Surface separately so the
+        // hold never reads as confirmation strength.
+        crossedMinutesAgo?: number | null;
+        gateHeldMinutes?: number | null;
     } | null,
     // Set when the position's break-entry trigger has been closed back through
     // by a primary bar (the model's own failed-break lesson). Surfaces as
@@ -969,6 +980,17 @@ export function computeSwingState(
             ...(Number.isFinite(Number(cooldownWake.breakExtensionAtr)) && Number(cooldownWake.breakExtensionAtr) > 0
                 ? { break_extension_atr: Math.round(Number(cooldownWake.breakExtensionAtr) * 100) / 100 }
                 : {}),
+            // Deferred wake (schedule gate parked the fire): when the cross
+            // happened, and how long the look was held — prose tells the model
+            // sustained_minutes is what it asked for, not the hold.
+            // (null-guarded first: Number(null) is 0 and would render a false
+            // "crossed 0 minutes ago" on instant bands, which keep no touch.)
+            ...(cooldownWake.crossedMinutesAgo != null && Number.isFinite(Number(cooldownWake.crossedMinutesAgo)) && Number(cooldownWake.crossedMinutesAgo) >= 0
+                ? { crossed_minutes_ago: Math.round(Number(cooldownWake.crossedMinutesAgo)) }
+                : {}),
+            ...(cooldownWake.gateHeldMinutes != null && Number.isFinite(Number(cooldownWake.gateHeldMinutes)) && Number(cooldownWake.gateHeldMinutes) > 0
+                ? { gate_held_minutes: Math.round(Number(cooldownWake.gateHeldMinutes)) }
+                : {}),
         };
         if (typeof cooldownWake.note === 'string' && cooldownWake.note.trim()) {
             market.cooldown_wake.note = cooldownWake.note.trim();
@@ -1080,6 +1102,9 @@ export function computeSwingState(
     if (capitalMarketContext?.venue_events) {
         market.venue_events = capitalMarketContext.venue_events;
     }
+    if (Array.isArray(capitalMarketContext?.session_windows_upcoming)) {
+        market.session_windows_upcoming = capitalMarketContext.session_windows_upcoming;
+    }
 
     // SITUATIONAL DOCTRINE gating. Each block below explains how to READ one
     // optional market.* payload — measured in prod, most are absent on a
@@ -1096,6 +1121,7 @@ export function computeSwingState(
     const hasSessionContext = !!market.forex_session || !!market.venue_events;
     const hasVenueSession = !!market.venue_session;
     const hasVenueEvents = !!market.venue_events;
+    const hasSessionWindowsUpcoming = Array.isArray(market.session_windows_upcoming);
     const hasCooldownWake = !!market.cooldown_wake;
     const hasWakeSweeps = Array.isArray(market.wake_band_sweeps) && market.wake_band_sweeps.length > 0;
     const hasReclaim = !!market.reclaim_wake || !!market.session_reclaim;
@@ -1140,7 +1166,11 @@ export function computeSwingState(
     const sessionWindowCfg = resolveSessionWindowConfig();
     const sessionWindowNote =
         isCapital && hasVenueEvents && sessionWindowCfg.enabled
-            ? ` Session decision windows (enforced in code): while flat you are NOT evaluated from ${sessionWindowCfg.preOpenMin} min before a cash open until ${sessionWindowCfg.postOpenMin} min after it, nor for ${sessionWindowCfg.postCloseMin} min after a cash close (home venue and cross-venue events alike, e.g. the European close for US instruments) — a bar close or a wake landing there is skipped and the first tick after the window is evaluated instead. A resting entry still standing when a window opens is WITHDRAWN by code: an order you want filled through the open cannot be placed ahead of it; place it in the look after the window. In-position management is unaffected.`
+            ? ` Session decision windows (enforced in code): while flat you are NOT evaluated from ${sessionWindowCfg.preOpenMin} min before a cash open until ${sessionWindowCfg.postOpenMin} min after it, nor for ${sessionWindowCfg.postCloseMin} min after a cash close (home venue and cross-venue events alike, e.g. the European close for US instruments) — a bar close or a wake landing there is skipped and the first tick after the window is evaluated instead. A resting entry still standing when a window opens is WITHDRAWN by code: an order you want filled through the open cannot be placed ahead of it; place it in the look after the window. In-position management is unaffected.${
+                  hasSessionWindowsUpcoming
+                      ? ' market.session_windows_upcoming lists the windows inside your maximum cooldown horizon (from_utc/to_utc, starts_in_min/ends_in_min, events; empty = none ahead): a wake band crossed inside one is NOT seen until to_utc — size cooldown_minutes and cooldown_wake_confirm_minutes against those spans, and write the note for the look that will actually run.'
+                      : ''
+              }`
             : '';
 
     // Session doctrine, two modes (SESSION_OFFENSE_ENABLED, default OFF):
@@ -1201,7 +1231,7 @@ export function computeSwingState(
     // How to read a FIRED wake band. Gated on market.cooldown_wake: ~78% of
     // flat ticks are routine scans that never carry it.
     const wakeTriggerGuidance = hasCooldownWake
-        ? `Wake-band trigger (market.cooldown_wake): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: you are woken within ~a minute of the cross, and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip. Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes or break_extension_atr is present, this wake is already CONFIRMED by construction — price either held beyond your band for the window you asked for, or broke with ≥0.5 primary-ATR of force — so the sweep-vs-break question is answered; weigh entry timing and location instead. RETEST WAKES: when the note marks this as the planned retest entry of an ALREADY-CONFIRMED break, the acceptance question was settled when the break confirmed — do NOT re-demand fresh BOS/acceptance evidence at the retest and do NOT treat the level as an anonymous cross; the confirmed break plus your presence at the level IS the setup you scheduled. Judge only whether structure has GENUINELY changed since confirmation (a primary bar closed back through the level, a regime flip, invalidating news) — otherwise execute the plan. Declining a planned retest entry requires naming the specific structural change, not restating generic location caution. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
+        ? `Wake-band trigger (market.cooldown_wake): THIS evaluation exists because price crossed the wake band you set on a previous flat HOLD (crossed = which side, level, set_minutes_ago, note = the plan you attached when you set it). Treat it as the breakout/breakdown check you scheduled, not a routine scan — and treat the note as a standing order from your past self: EXECUTE it if current structure confirms it, or explicitly override it in your reason (what changed?), but never ignore it and rediscover the level from scratch. Extension on this tick: unless gate_held_minutes is present you are woken within ~a minute of the cross (or of its confirmation), and a level that gets crossed is almost always crossed FAST — elevated |extension_atr.micro| or a crest channel_pos at the instant of the cross is the expected signature of the very event you scheduled, NOT by itself a reason to skip. Judge instead: is the move through the level real (acceptance, structure break) or a sweep/fake-out, and is price still workably near the level (within ~1 primary-ATR) so the entry's risk anchors to it? When sustained_minutes or break_extension_atr is present, this wake is already CONFIRMED by construction — price either held beyond your band for the window you asked for, or broke with ≥0.5 primary-ATR of force — so the sweep-vs-break question is answered; weigh entry timing and location instead. DEFERRED wakes (gate_held_minutes present): the cross happened crossed_minutes_ago; the watcher confirmed it after sustained_minutes, then a session decision window held this look for gate_held_minutes. sustained_minutes is the window YOU asked for, NOT the length of the hold, and nobody judged the tape that formed during the hold for you — confirmation stands, freshness does not. Judge the move as it trades NOW (accepted, run away, or back at the level?) and anchor any entry to the level as it stands now, not to the moment of the cross. RETEST WAKES: when the note marks this as the planned retest entry of an ALREADY-CONFIRMED break, the acceptance question was settled when the break confirmed — do NOT re-demand fresh BOS/acceptance evidence at the retest and do NOT treat the level as an anonymous cross; the confirmed break plus your presence at the level IS the setup you scheduled. Judge only whether structure has GENUINELY changed since confirmation (a primary bar closed back through the level, a regime flip, invalidating news) — otherwise execute the plan. Declining a planned retest entry requires naming the specific structural change, not restating generic location caution. EXPIRED wakes (expired: true, or a large set_minutes_ago): the band crossed only AFTER the plan's horizon had passed — a venue closure or an outage kept you from watching the market between setting the plan and now. The note is then a stale IDEA from a market state you never saw evolve, NOT a standing order: re-derive the setup from current structure as if scanning fresh, and mention the old plan in your reason only as background. Executing a stale plan because "past me scheduled it" is exactly the failure this flag exists to prevent. ${
               'If the move is real but price has already run multiple ATR beyond the level, you have both a resting entry back at the level and a fresh wake band on it WITH a note naming the intended entry ("retest of X after breakout → long on hold"); either beats chasing, and which one fits is yours to judge.'
           } ACT-OR-FOLD: this wake look ends one of exactly three ways — you ENTER (market or a resting entry), you arm the OPPOSITE side (e.g. the broken level’s retest per the retest protocol), or you FOLD the level (HOLD; the symbol returns to the normal cadence). Refusing a wake costs the watch even when you judge the cross a fake-out (the re-armed fired side is dropped — see the hard constraints), so do not spend this look re-scheduling the same rejection; if the level still matters after a fake-out, the evidence will be in wake_band_sweeps and the next scheduled scan can re-derive it.`
         : '';
@@ -1451,7 +1481,7 @@ Scale: ${primaryTimeframe} is the execution timeframe and you are consulted on i
 
 CADENCE (how often you are actually consulted)
 - You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
-- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.
+- Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. One exception: a FLAT band crossed inside a session decision window (Capital venues) is deferred to the window's end. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.
 - A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.
 
 INPUTS
@@ -1499,7 +1529,7 @@ ${
             ? ''
             : `- Flat plan (flat HOLD only; ignored on any other action — enforced in code). When you are not committing this tick you may still leave a plan behind, built from four fields that each answer ONE question:
   • cooldown_minutes — how long to stay quiet. Suppresses routine flat re-scans of this symbol only; it never mutes in-position management or resting-entry re-evaluations. Clamps to ${HOLD_COOLDOWN_MIN_MINUTES}–${HOLD_COOLDOWN_MAX_MINUTES}. null = keep the normal cadence.
-  • cooldown_wake_above / cooldown_wake_below — WHERE you want to be looking: the price levels that would change your mind. Crossing one ends the cooldown and brings you back. They are watched roughly once per MINUTE, so place them exactly at your decision levels, with no padding.
+  • cooldown_wake_above / cooldown_wake_below — WHERE you want to be looking: the price levels that would change your mind. Crossing one ends the cooldown and brings you back. They are watched roughly once per MINUTE, so place them exactly at your decision levels, with no padding — except inside a session decision window (Capital venues; market.session_windows_upcoming when present), where a crossing is deferred to the window's end and reaches you flagged gate_held_minutes.
   • cooldown_wake_note — REQUIRED whenever you set a band. One short line stating the plan the band encodes ("acceptance above 3.42 → breakout check", "retest of broken 118.4k → long on reclaim"). The wake evaluation is a fresh stateless scan; without the note your future self receives an anonymous level cross and has to rediscover the idea.
   • cooldown_wake_confirm_minutes — WHAT COUNTS as an event at that level, and nothing else. Set it and the wake fires only if price is STILL beyond the band that many minutes after first touch; a poke that reclaims sooner never wakes you and comes back instead as market.wake_band_sweeps (evidence of a liquidity grab, not acceptance). About 10 minutes is the measured figure for "the level actually went"; clamps to ${WAKE_CONFIRM_MIN_MINUTES}–${WAKE_CONFIRM_MAX_MINUTES}. null = the touch ITSELF is the event, unfiltered — right when any tag of the level changes your read. Either way a break that extends ≥${wakeBreakConfirmAtr()} primary-ATR beyond the band confirms IMMEDIATELY by force, before the clock, so you are never late on a runner.
 - A wake band is a WATCH. It never trades for you — however it fires, it brings you back to decide, and cooldown_wake_confirm_minutes only changes what is worth waking you for. If you want to COMMIT to a break rather than look at it, that is a resting stop order beyond the level: same trigger, placed at the venue, no second decision. Choose deliberately — the band keeps the decision and costs you a beat; the order takes the trade and can be swept. Nothing filters an order the way confirm_minutes filters a band.

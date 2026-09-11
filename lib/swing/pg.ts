@@ -245,6 +245,14 @@ async function ensureSwingSchema(): Promise<void> {
         // moment). Set atomically when a look claims the event; reset by every
         // fresh cooldown upsert (new plan, new budget).
         await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS reclaim_looked_at_ms BIGINT`);
+        // wake_gate_held_at_ms: the first moment a FIRED wake on this row was
+        // refused by a schedule gate (session decision window / open warmup)
+        // and parked until the window ends. The look that finally runs reports
+        // the deferral as market.cooldown_wake.gate_held_minutes instead of
+        // folding it into sustained_minutes (DE40 2026-09-11: a 10-min confirm
+        // read as "sustained 119 min" after a 110-min pre-open hold). Reset by
+        // every fresh upsert and whenever a touch fails (sweep).
+        await db.$executeRaw(sql`ALTER TABLE swing.ai_cooldowns ADD COLUMN IF NOT EXISTS wake_gate_held_at_ms BIGINT`);
 
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
@@ -760,6 +768,9 @@ export type SwingAiCooldown = {
     // Reclaim-wake one-shot: when a sweep of this row's band already earned
     // its immediate AI look (null = budget available).
     reclaimLookedAtMs: number | null;
+    // First schedule-gate refusal of a fired wake on this row (null = the
+    // wake has not been parked). See markSwingWakeGateHeld.
+    gateHeldAtMs: number | null;
 };
 
 type CooldownDbRow = {
@@ -775,10 +786,11 @@ type CooldownDbRow = {
     wake_atr: unknown;
     wake_sweeps: unknown;
     reclaim_looked_at_ms: unknown;
+    wake_gate_held_at_ms: unknown;
 };
 
 const COOLDOWN_SELECT_COLUMNS = sql`until_ms, wake_above, wake_below, wake_note, set_at_ms,
-        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms`;
+        wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms, wake_gate_held_at_ms`;
 
 function parseWakeSweeps(raw: unknown): SwingWakeSweep[] {
     // Driver-dependent: jsonb may arrive parsed or as text.
@@ -825,6 +837,7 @@ function parseCooldownRow(row: CooldownDbRow): SwingAiCooldown | null {
         atr: finitePos(row.wake_atr),
         sweeps: parseWakeSweeps(row.wake_sweeps),
         reclaimLookedAtMs: finitePos(row.reclaim_looked_at_ms),
+        gateHeldAtMs: finitePos(row.wake_gate_held_at_ms),
     };
 }
 
@@ -893,6 +906,7 @@ export async function upsertSwingAiCooldown(params: {
             wake_touch_extreme = NULL,
             wake_sweeps = NULL,
             reclaim_looked_at_ms = NULL,
+            wake_gate_held_at_ms = NULL,
             updated_at = NOW()
     `);
 }
@@ -966,6 +980,24 @@ export async function replaceSwingWakeSweeps(
             wake_touch_side = NULL,
             wake_touch_started_ms = NULL,
             wake_touch_extreme = NULL,
+            wake_gate_held_at_ms = NULL,
+            updated_at = NOW()
+        WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
+    `);
+}
+
+// First refusal of a FIRED wake by a schedule gate (session decision window,
+// open warmup): stamp the row once — COALESCE keeps the earliest — so the look
+// that finally runs can tell "held beyond the band" from "held by the gate"
+// (lib/swing/wakeWatch.wakeLookTiming). Idempotent; the watcher re-fires the
+// same parked wake every few minutes and every refusal lands here.
+export async function markSwingWakeGateHeld(platform: string, symbol: string, nowMs: number = Date.now()): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    await db.$executeRaw(sql`
+        UPDATE swing.ai_cooldowns
+        SET wake_gate_held_at_ms = COALESCE(wake_gate_held_at_ms, ${Math.floor(nowMs)}),
             updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);

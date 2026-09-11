@@ -158,6 +158,17 @@ export type CapitalMarketContextForPrompt = {
         recent: Array<{ event: string; at_utc: string; minutes_ago: number }>;
         upcoming: Array<{ event: string; at_utc: string; minutes_to: number }>;
     } | null;
+    // Session decision windows ahead (lib/swing/sessionEvents
+    // listSessionDecisionWindows, prompt-shaped): present only when the gate
+    // is on and the symbol is flat — the model sizes its flat plan against
+    // these blind spans. Empty array = no window inside the horizon.
+    session_windows_upcoming?: Array<{
+        from_utc: string;
+        to_utc: string;
+        starts_in_min: number;
+        ends_in_min: number;
+        events: string[];
+    }> | null;
     overnight_fee_pct_per_day: { long: number | null; short: number | null } | null;
 };
 

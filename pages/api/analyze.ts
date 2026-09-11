@@ -42,10 +42,10 @@ import { loadFearGreedContext } from '../../lib/swing/fearGreed';
 import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
-import { buildVenueSessionEvents, evaluateSessionDecisionWindow } from '../../lib/swing/sessionEvents';
+import { buildVenueSessionEvents, evaluateSessionDecisionWindow, listSessionDecisionWindows } from '../../lib/swing/sessionEvents';
 import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { BITGET_MAX_AI_LEVERAGE, ENTRY_SL_MIN_ATR, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { BITGET_MAX_AI_LEVERAGE, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
@@ -86,6 +86,7 @@ import {
     type SessionSweepEvent,
     wakeBandCrossed,
     wakeBreakConfirmAtr,
+    wakeLookTiming,
     wakeWatchRefKey,
     type WakeWatchRef,
 } from '../../lib/swing/wakeWatch';
@@ -104,6 +105,7 @@ import {
     insertSwingTickLog,
     loadClosedSwingPositions,
     markSwingAiThreadInPosition,
+    markSwingWakeGateHeld,
     setSwingThreadWake,
     setSwingWakeTouch,
     upsertSwingAiCooldown,
@@ -743,6 +745,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     minutesSinceOpen: Math.round(minutesSinceOpen),
                     warmupMinutes: openWarmupMinutes,
                 });
+                // A wake fire refused here is re-fired by the watcher every few
+                // minutes until warmup ends. Stamp the FIRST refusal on the
+                // cooldown row so the look that finally runs reports the deferral
+                // (market.cooldown_wake.gate_held_minutes) instead of folding it
+                // into sustained_minutes. Best-effort.
+                if (wakeFireRequest && !dryRun) {
+                    await markSwingWakeGateHeld(platform, symbol).catch((err: unknown) =>
+                        console.warn(`open warmup wake-hold stamp failed for ${symbol}:`, err),
+                    );
+                }
                 const reason = `open_warmup:${Math.round(minutesSinceOpen)}m_of_${openWarmupMinutes}m_since_open`;
                 const decision: TradeDecision & Record<string, unknown> = {
                     action: 'HOLD',
@@ -1568,6 +1580,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     kvSetJson(wakeWatchFiredKey(platform, symbol), { ts: Date.now(), reason: 'session_window' }, remainingSec).catch(
                         (err: unknown) => console.warn(`session window wake hold failed for ${symbol}:`, err),
                     );
+                    // Stamp the first refusal on the cooldown row: the owed look
+                    // then reports gate_held_minutes apart from sustained_minutes
+                    // (DE40 2026-09-11 read a 110-min hold as "sustained 119").
+                    await markSwingWakeGateHeld(platform, symbol).catch((err: unknown) =>
+                        console.warn(`session window wake-hold stamp failed for ${symbol}:`, err),
+                    );
                 }
             }
             const reason = `flat_skip_session_window_${sessionWindow.kind}_${sessionWindow.event}${withdrawn ? '_resting_entry_withdrawn' : ''}`;
@@ -1917,6 +1935,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // Set when the wake confirmed by EXTENSION (≥ wakeBreakConfirmAtr
             // primary-ATRs beyond the level) rather than by holding the window.
             breakExtensionAtr?: number | null;
+            // Minutes since the first watcher minute beyond the band (sustained
+            // bands only — instant bands keep no touch).
+            crossedMinutesAgo?: number | null;
+            // Minutes a schedule gate (session decision window / open warmup)
+            // held the fired wake before this look ran — reported apart from
+            // sustainedMinutes so a deferral never reads as confirmation.
+            gateHeldMinutes?: number | null;
         } | null = null;
         // True when THIS run holds the claim lease on a triggered wake row.
         // The row is deleted only after the wake's decision is durably
@@ -2003,7 +2028,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             extensionAtr !== null && extensionAtr >= wakeBreakConfirmAtr();
                         if (confirmedByTime || confirmedByExtension) {
                             if (heldMs !== null) {
-                                cooldownWakeSustainedMinutes = Math.max(1, Math.round(heldMs / 60_000));
+                                // Sustained stops accruing where a schedule gate
+                                // parked the fire (wakeLookTiming): the hold is
+                                // reported as gate_held_minutes below, never as
+                                // confirmation strength.
+                                cooldownWakeSustainedMinutes = wakeLookTiming({
+                                    touchStartedMs: cooldown.touchStartedMs,
+                                    gateHeldAtMs: cooldown.gateHeldAtMs,
+                                    nowMs: Date.now(),
+                                }).sustainedMinutes;
                             }
                             if (confirmedByExtension) cooldownWakeExtensionAtr = extensionAtr;
                         } else {
@@ -2169,6 +2202,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             });
                         }
                         cooldownRowClaimed = true;
+                        const wakeTiming = wakeLookTiming({
+                            touchStartedMs:
+                                cooldown.touchSide === (wokenAbove ? 'above' : 'below') ? cooldown.touchStartedMs : null,
+                            gateHeldAtMs: cooldown.gateHeldAtMs,
+                            nowMs: Date.now(),
+                        });
                         cooldownWake = {
                             crossed: wokenAbove ? 'above' : 'below',
                             level: (wokenAbove ? cooldown.wakeAbove : cooldown.wakeBelow) as number,
@@ -2183,6 +2222,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             // and how far it extended if force confirmed it.
                             sustainedMinutes: cooldownWakeSustainedMinutes,
                             breakExtensionAtr: cooldownWakeExtensionAtr,
+                            crossedMinutesAgo: wakeTiming.crossedMinutesAgo,
+                            gateHeldMinutes: wakeTiming.gateHeldMinutes,
                         };
                         emitGateDebug('flat_cooldown_woken', {
                             gate: 'AI_COOLDOWN',
@@ -2359,6 +2400,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform === 'capital' && category && SESSION_LEVEL_CATEGORIES.has(category)
                 ? buildVenueSessionEvents({ symbol, category, nowMs: Date.now() })
                 : null;
+        // The decision windows ahead, prompt-shaped (market.session_windows_upcoming):
+        // gate on, symbol flat, horizon = the longest cooldown the model may ask
+        // for. The model sizes cooldown/confirm against these blind spans instead
+        // of the minute-level watcher it is otherwise promised (DE40 2026-09-11).
+        const sessionWindowsUpcoming = (() => {
+            if (!venueEvents || positionOpen || !sessionWindowConfig.enabled) return null;
+            const nowMs = Date.now();
+            const spans = listSessionDecisionWindows({
+                symbol,
+                category,
+                nowMs,
+                horizonMin: HOLD_COOLDOWN_MAX_MINUTES,
+                preOpenMin: sessionWindowConfig.preOpenMin,
+                postOpenMin: sessionWindowConfig.postOpenMin,
+                postCloseMin: sessionWindowConfig.postCloseMin,
+            });
+            return spans
+                ? spans.map((s) => ({
+                      from_utc: new Date(s.startMs).toISOString(),
+                      to_utc: new Date(s.endMs).toISOString(),
+                      starts_in_min: Math.max(0, Math.round((s.startMs - nowMs) / 60_000)),
+                      ends_in_min: Math.max(0, Math.round((s.endMs - nowMs) / 60_000)),
+                      events: s.events,
+                  }))
+                : null;
+        })();
 
         // Quarter-tick cooldown skip: while the re-entry cooldown is active the
         // AI can only HOLD (same side blocked) or open the opposite side — a
@@ -2625,6 +2692,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 ? {
                       venue_session: venueSession,
                       venue_events: venueEvents,
+                      session_windows_upcoming: sessionWindowsUpcoming,
                       overnight_fee_pct_per_day: capitalMarketInfo?.overnightFeePctPerDay ?? null,
                   }
                 : null;

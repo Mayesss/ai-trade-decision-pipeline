@@ -435,3 +435,66 @@ export function evaluateSessionDecisionWindow(params: {
     }
     return best ?? { active: false, kind: null, event: null, startMs: null, endMs: null };
 }
+
+// ---------------------------------------------------------------------------
+// The decision windows AHEAD, for the model's flat plan. A wake band crossing
+// inside a window is not evaluated until the window ends (the analyze gate
+// parks the fire), so cooldown_minutes and cooldown_wake_confirm_minutes have
+// to be sized against these spans, not against the minute-level watcher —
+// DE40 2026-09-11 armed a 10-minute confirm at 04:02 UTC for a level that was
+// unwatchable from 05:00 to 07:30. Contiguous/overlapping windows merge into
+// one span (an open's pre_open + opening_drive; a cross-venue open inside a
+// home post_close): one blind stretch is what the model needs, not the gate's
+// bookkeeping. A span already under way is included; spans starting past the
+// horizon are not. Null = no venue calendar for this instrument.
+// ---------------------------------------------------------------------------
+export type SessionDecisionWindowSpan = {
+    startMs: number;
+    endMs: number;
+    kinds: SessionDecisionWindowKind[];
+    events: string[];
+};
+
+export function listSessionDecisionWindows(params: {
+    symbol: string;
+    category?: string | null;
+    nowMs?: number;
+    horizonMin: number;
+    preOpenMin: number;
+    postOpenMin: number;
+    postCloseMin: number;
+}): SessionDecisionWindowSpan[] | null {
+    const calendar = calendarFor(params.symbol, params.category);
+    if (!calendar) return null;
+    const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
+    const horizonEndMs = nowMs + Math.max(0, Number(params.horizonMin) || 0) * 60_000;
+    const raw: Array<{ kind: SessionDecisionWindowKind; event: string; startMs: number; endMs: number }> = [];
+    const push = (kind: SessionDecisionWindowKind, event: string, startMs: number, endMs: number) => {
+        if (endMs <= startMs) return;
+        if (endMs <= nowMs || startMs >= horizonEndMs) return;
+        raw.push({ kind, event, startMs, endMs });
+    };
+    for (const e of instancesFor(calendar, nowMs)) {
+        if (e.kind === 'open') {
+            push('pre_open', e.event, e.atMs - params.preOpenMin * 60_000, e.atMs);
+            push('opening_drive', e.event, e.atMs, e.atMs + params.postOpenMin * 60_000);
+        } else if (e.kind === 'break_end') {
+            push('opening_drive', e.event, e.atMs, e.atMs + params.postOpenMin * 60_000);
+        } else if (e.kind === 'close') {
+            push('post_close', e.event, e.atMs, e.atMs + params.postCloseMin * 60_000);
+        }
+    }
+    raw.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const spans: SessionDecisionWindowSpan[] = [];
+    for (const w of raw) {
+        const last = spans[spans.length - 1];
+        if (last && w.startMs <= last.endMs) {
+            last.endMs = Math.max(last.endMs, w.endMs);
+            if (!last.kinds.includes(w.kind)) last.kinds.push(w.kind);
+            if (!last.events.includes(w.event)) last.events.push(w.event);
+        } else {
+            spans.push({ startMs: w.startMs, endMs: w.endMs, kinds: [w.kind], events: [w.event] });
+        }
+    }
+    return spans;
+}

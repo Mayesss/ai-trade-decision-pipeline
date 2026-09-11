@@ -60,6 +60,47 @@ export function flatWakePlanStale(
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Wake-look timing, split three ways so a DEFERRED look cannot pass a schedule-
+// gate hold off as confirmation strength. touchStartedMs = the first watcher
+// minute beyond the band (null for instant bands, which keep no touch);
+// gateHeldAtMs = the first fire attempt a schedule gate refused (session
+// decision window / open warmup — swing.ai_cooldowns.wake_gate_held_at_ms;
+// null when the look ran unimpeded). sustained stops accruing at the hold:
+// what the model asked for was "held N minutes beyond the band", and once the
+// gate parked the fire nobody was measuring that any more (DE40 2026-09-11:
+// touch 05:31, fire refused 05:41, look 07:31 — reported as "sustained 119
+// min" and read by the model as a stronger break).
+// ---------------------------------------------------------------------------
+
+export type WakeLookTiming = {
+    crossedMinutesAgo: number | null;
+    sustainedMinutes: number | null;
+    gateHeldMinutes: number | null;
+};
+
+export function wakeLookTiming(params: {
+    touchStartedMs: number | null | undefined;
+    gateHeldAtMs: number | null | undefined;
+    nowMs: number;
+}): WakeLookTiming {
+    const { nowMs } = params;
+    const touch = Number(params.touchStartedMs);
+    const held = Number(params.gateHeldAtMs);
+    const hasTouch = Number.isFinite(touch) && touch > 0 && touch <= nowMs;
+    const hasHold = Number.isFinite(held) && held > 0 && held <= nowMs;
+    // A stamp older than the touch belongs to an earlier crossing of the same
+    // row (a parked fire whose touch then failed and re-armed) — not this
+    // event's hold. The sweep path clears the stamp, this is the backstop.
+    const holdForThisTouch = hasHold && (!hasTouch || held >= touch);
+    const mins = (ms: number) => Math.max(0, Math.round(ms / 60_000));
+    return {
+        crossedMinutesAgo: hasTouch ? mins(nowMs - touch) : null,
+        sustainedMinutes: hasTouch ? Math.max(1, mins((holdForThisTouch ? held : nowMs) - touch)) : null,
+        gateHeldMinutes: holdForThisTouch ? mins(nowMs - held) : null,
+    };
+}
+
 // Same semantics as the analyze cooldown handler: at/beyond either band = wake.
 export function wakeBandCrossed(
     price: number | null | undefined,
