@@ -176,3 +176,10 @@ replay-results/
 
 .vercel
 .env*
+
+# Research study scratch: scripts are committed, data is not.
+# Panels are regenerable from the venue APIs; decisions/trades dumps contain
+# live prod trading data. See docs/alpha-lab-spec.md.
+.study/*.json
+.study/panel-wide/
+.study/panel-holdout/
