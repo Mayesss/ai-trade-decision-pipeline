@@ -346,8 +346,8 @@ Each blocks work downstream. Recommendation given; owner decides.
 
 | # | decision | recommendation | status |
 |---|---|---|---|
-| 6.1 | Does the live trader keep running? | — | **LOCKED 2026-09-12: NO.** Trading is done. The machinery is repurposed as the hypothesis generator / mutator (§4.5). Correction to the earlier recommendation: keeping it running was premised on auditing a *decision engine*; under the factor framing forward bars accrue without trading, so the clean post-cutoff panel grows for free. Only new fill data for cost modelling is lost, and 282 closes are already banked. |
-| 6.2 | Do post-mortems keep running? | Follows 6.1 — no. Disable minting; keep the raw outcome rows already collected. | **LOCKED: NO** |
+| 6.1 | Does the live trader keep running? | — | **REVERSED 2026-09-14: YES, it keeps running.** Supersedes the 2026-09-12 "retire" decision — do NOT decommission, do NOT flip the cron kill switch, do NOT delete anything in §4.3. The owner is keeping it live and monitoring it by hand while the horizon expansion (§9) is prepared. The §7.0b decommissioning checklist is therefore **not** to be executed. Economics remain as measured (total capital ~$140, lifetime realised −$76.38 over 292 trades, infrastructure cost exceeding the account) — it is running as an experiment, not as a business. |
+| 6.2 | Do post-mortems keep running? | Now open again, since 6.1 reversed. They are the single largest token cost (post-mortem spend exceeded decision spend). Disabling minting is the cheapest cost cut available that does not touch trading logic. | **OPEN** |
 | 6.3 | Which generator model, and its training cutoff? | Must be pinned explicitly — the cutoff *is* the custody boundary (plan §3.2). Re-pin whenever the model changes. | **OPEN — blocks stage 1** |
 | 6.4 | First trial budget size | Small. The whole panel is worth ~2,000–4,300 effective observations; that is roughly one honest answer. | **OPEN** |
 | 6.5 | Is `.study/` committed? | Contains prod decision data; the audit §9 cites it as the reproduction path. | **OPEN** |
@@ -548,4 +548,89 @@ rediscover the hard way. Newest last.
   valid, replicated statistics but dies on the mean/median skew; vol_per_atr
   dies on construction and inference. Two permanent guards were added to the
   instrument as a result, both found empirically rather than by argument.
+
+---
+
+## 9. Horizon expansion — handoff for a dedicated session
+
+**Decided 2026-09-14.** Shift the primary timeframe 4H -> 1D, in its own
+session, on `main`, with the live system left running until the change is ready
+to deploy. This section exists so that session does not rediscover what was
+already measured today.
+
+### 9.1 Why — and why NOT
+
+**Not for edge.** The horizon scan (`.study/35-horizon-scan.mjs`) tested the
+replicated composite at 24h / 48h / 7d / 14d on both panels:
+
+| horizon | discovery net/yr @6bp | holdout net/yr @6bp | turnover |
+|---|---|---|---|
+| 24h | −68.2% | −14.5% | 126% |
+| 48h | −29.1% | −24.9% | 146% |
+| 7d | **−38.6%** | **+33.1%** | 156% |
+| 14d | **−72.0%** | **+42.2%** | 155% |
+
+The sign **disagrees between periods** exactly where it looks good, on 55–126
+rebalances. That is the same pattern that killed the price tilt. Longer holds
+also did **not** cut turnover (~150% throughout) because turnover is driven by
+signal *persistence*, not holding period — the composite is built from `ret_1`,
+`ret_2`, `rsi14`, which have near-zero persistence. The slow, persistent signals
+(`ret_120`, `ret_180`, `ema50_200`, `px_vs_ema200`) were all in the sweep and
+all showed nothing.
+
+**The real reasons** are operational: ~6x fewer decisions per day, so token
+spend (currently exceeding the account balance) falls sharply; less fee drag per
+unit of time; fewer, more considered decisions to monitor by hand. Expect lower
+bleed, **not** an edge.
+
+### 9.2 Two blockers found 2026-09-14 — solve these first
+
+1. **Capital has no MONTH resolution.** `toCapitalResolution`
+   (`lib/capital.ts:455`) tops out at `WEEK`. The current ladder is
+   15m / 1H / 4H / 1D / 1W; shifting every rung up leaves MACRO and CONTEXT both
+   at 1W. Decide deliberately: collapse to a 4-rung ladder, or accept the
+   duplication, or stop the shift at MACRO.
+2. **Bitget history is thin at high timeframes.** Per the comment at
+   `lib/indicators.ts:683`, a request returns ~90 bars at 1D and ~13 at 1W. A 1D
+   primary needs EMA200. The `SPOT_BACKFILL_GRANULARITY` path exists for exactly
+   this — verify it actually delivers enough warmup at the new rungs **before**
+   trusting any indicator.
+
+### 9.3 Blast radius (measured, smaller than feared)
+
+- 6 files reference `PRIMARY_TIMEFRAME`.
+- `lib/swing/prompt.ts` has **zero** hardcoded "4H" — every mention is
+  interpolated from the constants, so prompt text updates itself.
+- The boundary gate (`primary_close_off_boundary`, `pages/api/analyze.ts:912`)
+  keys off primary close, so decision cadence changes automatically.
+- **Contract fixtures and snapshots are 4H** — all 39 contract files need
+  `npm run test:fixtures:capture` then a snapshot re-baseline. Per the
+  `swing-fixtures` skill: after re-capture, verify `promptSkipped` and the entry
+  direction, because a BUY can silently be demoted to HOLD and turn an entry
+  test into a hold test.
+- Gates tuned for the 4H cadence need re-reading, not just re-passing: wake
+  thresholds, quiet-tick, boundary dedupe, session windows, and
+  `ENTRY_SL_MIN_ATR` — whose *unit* changes meaning when the primary ATR becomes
+  a daily ATR (a 1-ATR floor becomes ~2.4x wider in price terms).
+
+### 9.4 Safe order
+
+pause (cron kill switch) -> change -> re-capture fixtures -> `npx tsc --noEmit`,
+`npm run lint`, `npm test` -> verify one dry-run tick per venue -> resume.
+Do not deploy the ladder change with the crons live.
+
+### 9.5 Cheap fallback if the ladder shift stalls
+
+Env-only, no code, instantly reversible, achieves most of the economic effect:
+`SWING_ENTRY_SL_MIN_ATR` 1 -> 3 (stops ~a daily ATR, so positions stop dying to
+intrabar noise and holds lengthen), `SWING_REENTRY_COOLDOWN_MIN` 240 -> 1440,
+and cut the symbol list from 24 crons to ~8 (linear token-cost reduction, and
+easier to watch by hand).
+
+### 9.6 Reading the results
+
+Widening the stop floor does not move brackets on positions already open, so the
+first days mix two geometries. Mark the changeover timestamp and read before and
+after separately. And per the 09-11 audit: a few days is 5–20 trades, which
+cannot distinguish a real change from noise. Judge the burn rate, not the P&L.
 
