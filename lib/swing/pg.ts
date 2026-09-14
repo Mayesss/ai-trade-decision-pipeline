@@ -2336,18 +2336,31 @@ export async function loadClosedSwingPositions(opts: {
     }));
 }
 
-// Closed positions with the risk budgeted at entry, for R-multiple statistics
-// (lib/swing/rStats.ts). The budget lives on the PLACING decision
-// (ai_decision_json.risk_sizing.risk_usd, written by analyze.ts at execution)
-// and positions.decision_id links to it — a position whose decision carries no
-// budget (legacy fixed sizing, unlinked venue-side row) comes back with
-// riskUsd null and is counted but not measured.
+// Closed positions with everything needed to put PnL on a risk scale, for
+// R-multiple statistics (lib/swing/rStats.ts). Both live on the PLACING
+// decision (ai_decision_json.risk_sizing / stop_loss_price, written by
+// analyze.ts at execution) and positions.decision_id links to it.
+//
+// This deliberately returns INGREDIENTS rather than one risk number: which
+// denominator is correct is an R-semantics question, so rStats owns it
+// (resolveRealizedRiskUsd). A row that cannot produce one is counted as closed
+// but not measured.
 export type SwingClosedRiskRow = {
     platform: string;
     symbol: string;
     exitTsMs: number | null;
     pnlNet: number | null;
-    riskUsd: number | null;
+    // Risk BUDGETED at entry (equity × RISK_EQUITY_PCT). NOT the risk taken
+    // whenever the exposure cap bound — kept for provenance, never a divisor.
+    budgetRiskUsd: number | null;
+    // Risk implied by the notional actually sized, recorded from 2026-09-11.
+    // Null on every decision written before that.
+    effectiveRiskUsd: number | null;
+    // Reconstruction path for rows predating effective_risk_usd: the fill's own
+    // notional and entry against the stop the placing decision shipped.
+    notionalUsd: number | null;
+    entryPrice: number | null;
+    stopPrice: number | null;
 };
 
 export async function loadClosedPositionRiskRows(opts: {
@@ -2362,12 +2375,23 @@ export async function loadClosedPositionRiskRows(opts: {
     const limit = Math.max(1, Math.min(20000, Math.floor(Number(opts.limit) || 5000)));
     const db = swingPg();
     const rows = await db.$queryRaw<
-        Array<{ platform: unknown; symbol: unknown; exit_ts_ms: unknown; pnl_net: unknown; risk_usd: unknown }>
+        Array<{
+            platform: unknown; symbol: unknown; exit_ts_ms: unknown; pnl_net: unknown;
+            risk_usd: unknown; effective_risk_usd: unknown;
+            notional: unknown; entry_price: unknown; stop_price: unknown;
+        }>
     >(sql`
         SELECT p.platform, p.symbol, p.exit_ts_ms, p.pnl_net,
                CASE WHEN jsonb_typeof(d.ai_decision_json -> 'risk_sizing' -> 'risk_usd') = 'number'
                     THEN (d.ai_decision_json -> 'risk_sizing' ->> 'risk_usd')::float8
-                    ELSE NULL END AS risk_usd
+                    ELSE NULL END AS risk_usd,
+               CASE WHEN jsonb_typeof(d.ai_decision_json -> 'risk_sizing' -> 'effective_risk_usd') = 'number'
+                    THEN (d.ai_decision_json -> 'risk_sizing' ->> 'effective_risk_usd')::float8
+                    ELSE NULL END AS effective_risk_usd,
+               p.notional, p.entry_price,
+               CASE WHEN jsonb_typeof(d.ai_decision_json -> 'stop_loss_price') = 'number'
+                    THEN (d.ai_decision_json ->> 'stop_loss_price')::float8
+                    ELSE NULL END AS stop_price
         FROM swing.positions p
         LEFT JOIN swing.decisions d ON d.id = p.decision_id
         WHERE p.status = 'closed'
@@ -2382,7 +2406,11 @@ export async function loadClosedPositionRiskRows(opts: {
         symbol: String(row.symbol || ''),
         exitTsMs: finite(row.exit_ts_ms),
         pnlNet: finite(row.pnl_net),
-        riskUsd: finitePos(row.risk_usd),
+        budgetRiskUsd: finitePos(row.risk_usd),
+        effectiveRiskUsd: finitePos(row.effective_risk_usd),
+        notionalUsd: finitePos(row.notional),
+        entryPrice: finitePos(row.entry_price),
+        stopPrice: finitePos(row.stop_price),
     }));
 }
 

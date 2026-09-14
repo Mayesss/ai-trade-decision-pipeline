@@ -3776,6 +3776,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 emitGateDebug('risk_sizing', {
                     gate: 'RISK_SIZING',
                     riskUsd: Number(riskSizing.riskUsd.toFixed(2)),
+                    effectiveRiskUsd: Number(riskSizing.effectiveRiskUsd.toFixed(4)),
+                    exposureCapped: riskSizing.exposureCapped,
                     notionalUsd: Number(riskSizing.notionalUsd.toFixed(2)),
                     marginUsd: Number(riskSizing.marginUsd.toFixed(2)),
                     stopDistancePct: Number((riskSizing.stopDistancePct * 100).toFixed(3)),
@@ -3834,6 +3836,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 // realized risk against the budget.
                 decision.risk_sizing = {
                     risk_usd: Number(riskSizing.riskUsd.toFixed(2)),
+                    // What a stop-out actually costs at the notional sized. R is
+                    // measured against THIS, not risk_usd — see rStats.ts.
+                    effective_risk_usd: Number(riskSizing.effectiveRiskUsd.toFixed(4)),
+                    exposure_capped: riskSizing.exposureCapped,
                     notional_usd: Number(riskSizing.notionalUsd.toFixed(2)),
                     margin_usd: Number(riskSizing.marginUsd.toFixed(2)),
                     stop_distance_pct: Number((riskSizing.stopDistancePct * 100).toFixed(3)),

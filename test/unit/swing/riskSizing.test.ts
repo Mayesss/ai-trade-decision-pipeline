@@ -58,6 +58,24 @@ test('tight stops cannot blow exposure past 2x equity', () => {
     assert.ok(out);
     assert.equal(out.notionalUsd, 2000);
     assert.equal(out.marginUsd, 400);
+    // The cap bound, so the BUDGET is no longer what a stop-out costs: $10
+    // budgeted, $2 actually at risk. R must divide by the latter (rStats.ts).
+    assert.equal(out.riskUsd, 10);
+    assert.equal(out.exposureCapped, true);
+    assert.equal(Number(out.effectiveRiskUsd.toFixed(6)), 2);
+});
+
+test('when the exposure cap does not bind, effective risk IS the budget', () => {
+    const out = resolveRiskBasedSizing({
+        entryPrice: 100,
+        stopPrice: 98, // 2% stop → notional 500, well under the 2,000 ceiling
+        equityUsd: 1000,
+        leverage: 5,
+        riskEquityPct: 1,
+    });
+    assert.ok(out);
+    assert.equal(out.exposureCapped, false);
+    assert.equal(Number(out.effectiveRiskUsd.toFixed(6)), out.riskUsd);
 });
 
 test('invalid entry/stop or a stop on top of entry returns null (caller keeps legacy sizing)', () => {

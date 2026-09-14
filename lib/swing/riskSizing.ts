@@ -6,9 +6,21 @@
 // how close the model happened to place its stop.
 
 export type RiskBasedSizing = {
-    // What a full stop-out should cost, in account currency.
+    // What a full stop-out was BUDGETED to cost, in account currency
+    // (equity × RISK_EQUITY_PCT). Only equals the real cost when the exposure
+    // cap below does not bind — which, at any normal swing stop, it does.
     riskUsd: number;
-    // Position size (exposure) that makes the stop cost exactly riskUsd.
+    // What a full stop-out ACTUALLY costs at the notional finally sized:
+    // notionalUsd × stopDistancePct. Equal to riskUsd until EXPOSURE_CAP_EQUITY_MULT
+    // clamps the notional, after which it is strictly smaller. This is the
+    // denominator R must use — dividing by the budget instead reports a clean
+    // stop-out as a fraction of 1R and compresses every R toward zero
+    // (measured 2026-09-11: median loser −0.05R, nothing worse than −0.75R,
+    // against budgets 5–16× the risk actually taken).
+    effectiveRiskUsd: number;
+    // Whether the exposure ceiling bound, i.e. whether the two differ.
+    exposureCapped: boolean;
+    // Position size (exposure) that makes the stop cost exactly effectiveRiskUsd.
     notionalUsd: number;
     // Margin to post for that notional at the given leverage — this is the
     // "sideSize" figure both execution paths take as input.
@@ -96,8 +108,10 @@ export function resolveRiskBasedSizing(params: {
     // so out loud (see DECISION OWNERSHIP in prompt.ts): a model told its stop
     // width is risk-neutral would shrink stops for nominal R and quietly trade a
     // fraction of the intended book.
+    let exposureCapped = false;
     if (equityUsd !== null && notionalUsd > equityUsd * EXPOSURE_CAP_EQUITY_MULT) {
         notionalUsd = equityUsd * EXPOSURE_CAP_EQUITY_MULT;
+        exposureCapped = true;
     }
 
     const lev = Number.isFinite(params.leverage as number) && (params.leverage as number) > 0
@@ -107,6 +121,8 @@ export function resolveRiskBasedSizing(params: {
 
     return {
         riskUsd,
+        effectiveRiskUsd: notionalUsd * stopDistancePct,
+        exposureCapped,
         notionalUsd,
         marginUsd,
         stopDistancePct,
