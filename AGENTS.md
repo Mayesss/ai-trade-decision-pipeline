@@ -2,6 +2,20 @@
 
 Guidance for coding agents working in this repository.
 
+## Active migration (read first)
+This repo is mid-pivot from "LLM picks trades" to an alpha-discovery lab. The
+live trader still runs and is **frozen** — additive-only changes.
+
+- `docs/alpha-lab-spec.md` — **living spec**: invariants, repo keep/recycle/delete
+  disposition, test policy, open decisions, stage checklist. Start here.
+- `docs/alpha-lab-plan-2026-09-12.md` — architecture rationale and paper review.
+- `docs/decision-engine-edge-audit-2026-09-11.md` — the audit that prompted it:
+  no detectable edge, on a sample too small to have detected one.
+
+Hard rules from that spec: never evaluate without a ledger row; never pull bulk
+bar data out of Neon (bars live in R2 — a prior violation cost ~EUR 400); never
+refactor or delete anything in the spec's FROZEN list while the trader runs.
+
 ## Goal
 Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and decision logic changes should be observable, reversible, and testable in dry-run mode.
 
