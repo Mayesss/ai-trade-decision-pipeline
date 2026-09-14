@@ -91,11 +91,9 @@ style preferences.
 4. **Holdout slices are consumed once.** One slice per generation, never reused.
 5. **Synthetic nulls are indistinguishable from real hypotheses** at evaluation
    time. The evaluator must not be able to tell.
-6. **Decommission in order: flatten → disable → recycle → delete.** The trader
-   is retired (§6.1), but nothing is deleted until positions are flat, crons are
-   off, and everything on the recycle list has been ported. Deleting code that
-   still has money behind it, or that the lab still needs, is the one
-   irreversible mistake available here (§7.0b).
+6. **The live system stays live.** It is running and being monitored. Research
+   work is additive and must not alter live trading behaviour as a side effect;
+   any change to trading logic is a deliberate, separately decided act.
 7. **Every published number carries its trial count.**
 
 ## 3. Target architecture, one screen
@@ -246,11 +244,11 @@ sample is the failure mode this entire design exists to prevent.
 
 Grounded in the actual dependency graph, not intent. Sizes are lines.
 
-### 4.1 RETIRING — the live trader (decision 6.1)
+### 4.1 LIVE — the running trader
 
-Trading stops. These are decommissioned in the order of §7.0b — **not deleted
-on sight**. `pages/api/analyze.ts` in particular is 4,433 lines that still
-contain the market-state computation the lab needs (§4.5).
+This is the system in production. Leave it alone unless a change is explicitly
+decided. `pages/api/analyze.ts` is 4,433 lines and also holds the market-state
+computation the research side reuses (§4.5).
 
 | what | size |
 |---|---|
@@ -282,19 +280,14 @@ to catch (§5).
 | `lib/swing/positionDecisionMatch.ts` / `capitalWindows.ts` | 465 / 470 | attribution; twice-repaired, hard to rebuild |
 | `lib/swing/rStats.ts` + `.study/04`–`09` | — | inference → port to Python |
 
-### 4.3 DELETE — unblocked, but gated on §7.0b
+### 4.3 Not currently used by the live path
 
-| module | size | why it goes |
-|---|---|---|
-| `lib/swing/lessons.ts` | 314 | the loop that could not generalize (`week-one-review` §3) |
-| `lib/swing/postmortem.ts` | 1,330 | post-mortem tokens exceeded decision tokens; see §6.2 |
-| `lib/swing/perplexity.ts` | 165 | in-position news, tied to the live trader |
-
-**Trigger: unblocked by 6.1, gated on §7.0b.** Delete only after positions are
-flat, crons are off, and the recycle list of §4.2 plus the generator parts of
-§4.5 have been ported and are green under test. The temptation to tidy first is
-exactly how you delete something the lab turns out to need — and `postmortem.ts`
-at 1,330 lines contains outcome-labelling logic worth reading before it goes.
+`lib/swing/lessons.ts` (314), `lib/swing/postmortem.ts` (1,330) and
+`lib/swing/perplexity.ts` (165). The lessons loop did not generalise
+(`week-one-review` §3) and post-mortems are the largest token cost. Nothing is
+removed: the live system is running, and `postmortem.ts` holds outcome-labelling
+logic worth reading before anything is decided about it. If cost is the concern,
+minting can be disabled by config without touching code.
 
 ### 4.4 Coupling to fix early
 
@@ -346,8 +339,8 @@ Each blocks work downstream. Recommendation given; owner decides.
 
 | # | decision | recommendation | status |
 |---|---|---|---|
-| 6.1 | Does the live trader keep running? | — | **REVERSED 2026-09-14: YES, it keeps running.** Supersedes the 2026-09-12 "retire" decision — do NOT decommission, do NOT flip the cron kill switch, do NOT delete anything in §4.3. The owner is keeping it live and monitoring it by hand while the horizon expansion (§9) is prepared. The §7.0b decommissioning checklist is therefore **not** to be executed. Economics remain as measured (total capital ~$140, lifetime realised −$76.38 over 292 trades, infrastructure cost exceeding the account) — it is running as an experiment, not as a business. |
-| 6.2 | Do post-mortems keep running? | Now open again, since 6.1 reversed. They are the single largest token cost (post-mortem spend exceeded decision spend). Disabling minting is the cheapest cost cut available that does not touch trading logic. | **OPEN** |
+| 6.1 | Does the live trader keep running? | — | **2026-09-14: the system is LIVE and stays live.** The owner is running it and monitoring by hand. Recent near-flat results reflect the 2026-09-11 changes (risk 10% -> 1%, portfolio cap, per-venue hard gates), which cut position size and trade count — small dollar swings are the expected consequence of smaller size, not evidence about edge. The measurement window is deliberately being allowed to run; see §10. |
+| 6.2 | Do post-mortems keep running? | They are the single largest token cost (post-mortem spend exceeded decision spend). Disabling minting is the cheapest cost reduction that does not touch trading logic. | **OPEN** |
 | 6.3 | Which generator model, and its training cutoff? | Must be pinned explicitly — the cutoff *is* the custody boundary (plan §3.2). Re-pin whenever the model changes. | **OPEN — blocks stage 1** |
 | 6.4 | First trial budget size | Small. The whole panel is worth ~2,000–4,300 effective observations; that is roughly one honest answer. | **OPEN** |
 | 6.5 | Is `.study/` committed? | Contains prod decision data; the audit §9 cites it as the reproduction path. | **OPEN** |
@@ -388,39 +381,11 @@ Local:
 - [ ] Python toolchain (`uv`), `polars` / `pyarrow` / `numpy` / `scipy`
 - [ ] Gitignored local panel mirror directory
 
-### 7.0b Decommissioning the live trader — ORDERED, do not reorder
-
-Stopping a live trading system is not "delete the crons". Real money and
-venue-side state are involved, and two of these steps are irreversible.
-
-1. [ ] **Flatten.** Close all open positions on both venues. `swing.positions`
-       only stores CLOSED positions — open Bitget positions live in
-       `swing.ai_threads` and on the venue, so check **both** venues directly,
-       not the dashboard.
-2. [ ] **Cancel resting state.** Withdraw every standing entry order and every
-       exchange-side TP/SL bracket. A bracket left behind will still fill after
-       the crons are off, with nothing watching it.
-3. [ ] **Disable the crons.** Remove the 24 `/api/swing/analyze` entries plus
-       wake-watch, postmortem-drain, weekly-digest from `vercel.json`. Deploy.
-       Confirm `swing.tick_log` goes quiet.
-4. [ ] **Verify silence for one full session cycle** (24h) — no new rows in
-       `swing.decisions`, no new positions, no venue activity.
-5. [ ] **Record the closing measurement.** Final R sample per §6.6, with the
-       corrected denominator. This is the last number the old system produces.
-6. [ ] **Revoke or scope down venue API keys** to read-only. Irreversible-ish
-       and the strongest guarantee that nothing trades again by accident.
-7. [ ] **Only now**: port the §4.2 recycle list and §4.5 generator parts,
-       green under test.
-8. [ ] **Only after that**: delete per §4.3.
-
-Steps 1–2 protect money. Steps 3–4 protect against zombie execution. Step 6 is
-the one that lets you stop worrying. Do not start step 8 early.
-
 ### 7.1 Stages
 
 Mirrors plan §6. Tick as completed; record surprises in §8.
 
-- [ ] **0** — §6.1 locked. Pin §6.3 (generator model + training cutoff). Run §7.0b steps 1–6. Add the lab's own universe manifest (§4.4).
+- [ ] **0** — Pin §6.3 (generator model + training cutoff). Add the lab's own universe manifest (§4.4).
 - [ ] **1** — `research.hypotheses` / `trials` / `budgets` + custody gate in code. No engine.
 - [ ] **2** — `research.jobs` queue cloned from `claimSwingPostmortemById`; Python worker skeleton on Vercel project #2; end-to-end "claimed a job, wrote a row".
 - [ ] **3** — Panel builder → Parquet → R2 + local mirror; registers `research.panel_versions`.
@@ -551,12 +516,14 @@ rediscover the hard way. Newest last.
 
 ---
 
-## 9. Horizon expansion — handoff for a dedicated session
+## 9. Horizon expansion — PARKED, notes kept
 
-**Decided 2026-09-14.** Shift the primary timeframe 4H -> 1D, in its own
-session, on `main`, with the live system left running until the change is ready
-to deploy. This section exists so that session does not rediscover what was
-already measured today.
+**Status 2026-09-14: parked, not scheduled.** Shifting the primary timeframe
+4H -> 1D was considered and deliberately deferred — the current configuration
+has only been live since 2026-09-11 and changing it again would reset the
+measurement window before it has produced anything readable (§10). These notes
+are kept so that if it is picked up later, the work already done is not
+repeated.
 
 ### 9.1 Why — and why NOT
 
@@ -613,11 +580,12 @@ bleed, **not** an edge.
   `ENTRY_SL_MIN_ATR` — whose *unit* changes meaning when the primary ATR becomes
   a daily ATR (a 1-ATR floor becomes ~2.4x wider in price terms).
 
-### 9.4 Safe order
+### 9.4 Deploy care
 
-pause (cron kill switch) -> change -> re-capture fixtures -> `npx tsc --noEmit`,
-`npm run lint`, `npm test` -> verify one dry-run tick per venue -> resume.
-Do not deploy the ladder change with the crons live.
+Change -> re-capture fixtures -> `npx tsc --noEmit`, `npm run lint`,
+`npm test` -> verify a dry-run tick per venue -> deploy. A timeframe change
+alters bracket geometry and decision cadence for anything already open, so plan
+how in-flight positions are handled before deploying, not after.
 
 ### 9.5 Cheap fallback if the ladder shift stalls
 
@@ -634,3 +602,40 @@ first days mix two geometries. Mark the changeover timestamp and read before and
 after separately. And per the 09-11 audit: a few days is 5–20 trades, which
 cannot distinguish a real change from noise. Judge the burn rate, not the P&L.
 
+---
+
+## 10. Current posture: let the 2026-09-11 configuration run
+
+**Decided 2026-09-14.** No further changes to trading logic, sizing, gates,
+prompt, model or timeframe. The system runs as configured and is monitored.
+
+### Why
+
+The configuration deployed 2026-09-11 — risk 10% -> 1%, portfolio cap
+(`SWING_MAX_OPEN_POSITIONS`), per-venue hard gates, entry stop floor, model
+pinned to `openai/gpt-5.6-sol` — has been live for three days. Changing anything
+now restarts the clock, and "tweak until it works" is the failure mode the
+window exists to prevent (`week-one-review` §12).
+
+### How to read it, and how not to
+
+- **Small dollar swings are expected.** Cutting risk 10% -> 1% cuts position
+  size roughly tenfold, and the portfolio cap plus hard gates cut trade count.
+  Near-flat P&L is the designed consequence of smaller size. It is not evidence
+  about edge in either direction.
+- **Do not read a few days.** 5-20 trades cannot distinguish a real change from
+  noise. Measured 2026-09-14: n=17 since the freeze, mean R -0.202 against
+  -0.151 before, difference t = -0.34 — indistinguishable from zero, and stated
+  here so nobody later mistakes it for a negative finding. It is a
+  *no-information* result.
+- **Read R, not cash** (`rStats`, now on the corrected denominator), and read
+  the burn rate: token spend per day, Neon transfer, trade count against
+  expectation.
+- **Judge at a pre-set count, not on a feeling.** Per the audit, 200 closes is a
+  survival checkpoint rather than enough power to settle whether an edge exists;
+  whatever is claimed from this window must state the power it actually had.
+
+### What would justify acting before then
+
+A safety or cost problem — runaway spend, a gate misfiring, positions opening
+outside intent. Not a run of red days, and not a run of green ones.
