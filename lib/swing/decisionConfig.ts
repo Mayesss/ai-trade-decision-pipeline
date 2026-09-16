@@ -340,17 +340,42 @@ export function decisionHourUtcFor(platform: string | null | undefined): number 
     return String(platform || '').toLowerCase() === 'capital' ? DECISION_HOUR_UTC.capital : DECISION_HOUR_UTC.bitget;
 }
 
-// Tolerance mirrors isPrimaryCloseTime in /api/analyze (cron jitter around
-// :00); the wrap handles 23:59 for a 00:00 hour.
-export function isDailyDecisionTime(
-    platform: string | null | undefined,
-    now = new Date(),
-    toleranceMinutes = 2,
-): boolean {
-    const target = decisionHourUtcFor(platform) * 60;
-    const total = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const diff = Math.abs(total - target);
-    return Math.min(diff, 1440 - diff) <= toleranceMinutes;
+// The daily look is OWED, not timed. Under the 4H cadence a boundary tick that
+// missed the 2-minute tolerance (cron jitter, a long-running upkeep) or died
+// on the AI call cost four hours; under the daily cadence the same miss would
+// cost a day. Measured 2026-09-16, the day this shipped: BTCUSDT's 08:00 UTC
+// look died on a gateway 402 (no credit balance) and its 12:00 UTC close was
+// skipped as off-boundary with the tick logged at 12:00:15. So the gate asks
+// "has today's look been served?" rather than "is it :00 now?": from the
+// decision hour until DECISION_RETRY_WINDOW_MIN later, every cron tick is due
+// until one claims the day (analyze.ts writes the served marker when it takes
+// the look and deletes it again if that tick dies before a decision). Outside
+// the window the day is over — a gateway that stays dead for six hours has
+// latched the health flag and the next day gets a fresh attempt.
+export const DECISION_RETRY_WINDOW_MIN = (() => {
+    const n = Number(process.env.SWING_DECISION_RETRY_WINDOW_MIN);
+    return Number.isFinite(n) && n >= 15 && n <= 12 * 60 ? Math.round(n) : 6 * 60;
+})();
+
+// The UTC day key ('YYYY-MM-DD') of the decision-day whose retry window
+// contains `now`, or null when `now` is outside every window. The key names
+// the day the decision HOUR fell on, so a window that crosses midnight (a
+// 22:00 hour) stays one day.
+export function decisionDayKey(platform: string | null | undefined, now = new Date()): string | null {
+    const hour = decisionHourUtcFor(platform);
+    const windowMs = DECISION_RETRY_WINDOW_MIN * 60_000;
+    const nowMs = now.getTime();
+    for (const dayOffset of [0, -1]) {
+        const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + dayOffset, hour);
+        if (nowMs >= start && nowMs < start + windowMs) {
+            return new Date(start).toISOString().slice(0, 10);
+        }
+    }
+    return null;
+}
+
+export function scheduledLookServedKey(platform: string | null | undefined, symbol: string): string {
+    return `swing:decision:served:v1:${String(platform || 'bitget').toLowerCase()}:${String(symbol).toUpperCase()}`;
 }
 
 // ------------------------------

@@ -801,6 +801,7 @@ Research summary, written up in the session that decided this:
 |---|---|---|---|
 | Scheduled AI look | every primary (4H) close | **once a day per venue** | `DECISION_CADENCE='1D'` (env `SWING_DECISION_CADENCE=primary` restores) |
 | Decision hour | — | Bitget **00:00 UTC**, Capital **08:00 UTC** | `DECISION_HOUR_UTC` (env `SWING_DECISION_HOUR_UTC_BITGET/_CAPITAL`) |
+| Retry window for an unserved look | — (2-min tolerance) | **6 h** | `DECISION_RETRY_WINDOW_MIN` (env `SWING_DECISION_RETRY_WINDOW_MIN`) |
 | Flat cooldown clamp | 360–1440 min | **1470–10080** | `HOLD_COOLDOWN_*` derive from the cadence |
 | Perplexity digest | in-position ticks only | **flat and in-position** | `analyze.ts` bundle; `PERPLEXITY_FRESH_HOURS` 6 → 24 under the daily cadence |
 | Symbol universe | 8 | **9** (see below) | `vercel.json` |
@@ -824,6 +825,19 @@ and bracket geometry intact. The daily-scale geometry comes from the 3-ATR
 entry floor (§11). The cadence gate is `isDailyDecisionTime` in
 `decisionConfig.ts`; both venue hours are 4H closes, so every indicator is
 still read on closed bars (asserted in `decisionConfig.decisionTime.test.ts`).
+
+**The look is owed, not timed.** The 4H gate asked "is it :00 now?" with a
+2-minute tolerance, and a miss cost four hours. Under a daily cadence a miss
+costs a day, and on 2026-09-16 itself two were measured on BTCUSDT: the 08:00
+UTC look died on a gateway **402** (no credit balance on the AI Gateway — check
+the balance, a BYOK key does not exempt you) and the 12:00 UTC close was
+skipped as off-boundary with the tick logged at 12:00:15. So `analyze.ts` now
+asks "has today's look been served?": from the decision hour for
+`DECISION_RETRY_WINDOW_MIN` (6h) every cron tick is due until one claims the
+day (KV marker `swing:decision:served:v1:<venue>:<symbol>`), and a tick that
+dies before deciding releases the claim so the next 15-min tick retries.
+Deterministic gate skips (session window, base gates, cap) keep the claim —
+those are decisions, not failures. Manual and dryRun calls never claim.
 
 **Still fires off-schedule:** wake bands (flat and in-position), the in-position
 emergency look (now 3 ATR), a swept resting entry's re-issue decision,

@@ -45,7 +45,7 @@ import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents, evaluateSessionDecisionWindow, listSessionDecisionWindows } from '../../lib/swing/sessionEvents';
 import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, isDailyDecisionTime, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, decisionDayKey, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, scheduledLookServedKey, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
 import { evaluatePortfolioCapGate, loadPortfolioOccupants, portfolioCapEnabled } from '../../lib/swing/portfolioCap';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
@@ -397,6 +397,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         cadence: 'hourly' | 'quarter' | 'manual';
         dryRun: boolean;
     } | null = null;
+    // KV key of the daily scheduled-look claim this tick holds (null when it
+    // is not the scheduled look); released in the catch if the tick dies.
+    let scheduledLookClaimedKey: string | null = null;
     try {
         if (req.method !== 'GET') {
             return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -904,11 +907,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
         // The scheduled look: under DECISION_CADENCE='1D' (default since
-        // 2026-09-16) once a day at the venue's decision hour, which is itself a
-        // primary bar close; under 'primary' every primary (4H) close. The name
-        // is kept — everything below reads "is this a scheduled look".
-        const primaryCloseTime =
-            DECISION_CADENCE === '1D' ? isDailyDecisionTime(platform) : isPrimaryCloseTime(timeFrame);
+        // 2026-09-16) once a day per venue, OWED from the decision hour until it
+        // is served (decisionConfig.ts decisionDayKey — covers cron jitter and a
+        // dead AI call, which under a daily cadence would otherwise cost a day);
+        // under 'primary' every primary (4H) close by the clock. The name is
+        // kept — everything below reads "is this a scheduled look". The served
+        // marker is claimed here, before the gates, and released in the catch
+        // below if this tick dies before a decision. Manual and dryRun calls
+        // never claim a day: they are not the schedule.
+        const primaryCloseTime = await (async () => {
+            if (DECISION_CADENCE !== '1D') return isPrimaryCloseTime(timeFrame);
+            const dayKey = decisionDayKey(platform);
+            if (!dayKey) return false;
+            if (dryRun || !automationCron) return true;
+            const servedKey = scheduledLookServedKey(platform, symbol);
+            try {
+                const served = await kvGetJson<{ day?: string }>(servedKey);
+                if (served?.day === dayKey) return false;
+                await kvSetJson(servedKey, { day: dayKey, claimedAtMs: Date.now() }, 36 * 3600);
+                scheduledLookClaimedKey = servedKey;
+                return true;
+            } catch (err) {
+                // Fail toward taking the look: a KV hiccup must not silence a
+                // whole day. Worst case is one duplicate look.
+                console.warn(`scheduled-look marker failed for ${symbol}:`, err);
+                return true;
+            }
+        })();
         // Scheduled-look cadence active for this tick? Env flag governs cron ticks;
         // the request param forces it for manual calls. The gate itself sits
         // AFTER the watcher surface below (bracket read, thread reconcile,
@@ -4400,6 +4425,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // evidence in tick_log at all. insertSwingTickLog never throws.
         // An AI-call failure (typed AiCallError — quota lapse, bad key, model
         // outage) gets its own stage so it's tellable apart from code crashes.
+        // This tick claimed today's scheduled look and died before deciding:
+        // hand the day back so the next cron tick inside the retry window takes
+        // it (decisionConfig.ts DECISION_RETRY_WINDOW_MIN). Best-effort.
+        if (scheduledLookClaimedKey) {
+            await kvDel(scheduledLookClaimedKey).catch((e: unknown) =>
+                console.warn('scheduled-look marker release failed:', e),
+            );
+        }
         if (tickErrorContext) {
             const stage = err instanceof AiCallError ? 'ai_unavailable' : 'handler_error';
             const reason = String(errMessage || err).slice(0, 300);
