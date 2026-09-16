@@ -283,11 +283,75 @@ export const ACTIONABILITY_WALL_ATR = (() => {
 // 19 same-symbol re-entries within 2h of a losing close, 4 wins, net −1.52 —
 // the model did not decline them. The block is back as a code default; its
 // sweep-reclaim exception stays behind SWING_SESSION_OFFENSE_ENABLED.
+// 240 -> 1440 (one day) on 2026-09-16 with the horizon loosening
+// (docs/alpha-lab-spec.md §11): one bar was enough to stop the same-hour
+// churn but not the same-day churn, and a 3-ATR stop that just fired says the
+// day's read was wrong, not the hour's.
 // SWING_REENTRY_COOLDOWN_MIN=0 switches it off again.
 export const REENTRY_COOLDOWN_MIN = (() => {
     const n = Number(process.env.SWING_REENTRY_COOLDOWN_MIN);
-    return Number.isFinite(n) && n >= 0 ? n : 240;
+    return Number.isFinite(n) && n >= 0 ? n : 1440;
 })();
+
+// ------------------------------
+// Decision cadence (WHEN the model is consulted on schedule)
+// ------------------------------
+// 'primary' = every primary (4H) bar close — the cadence the system ran on
+// until 2026-09-16. '1D' (default) = once a day per venue, at DECISION_HOUR_UTC,
+// which must itself be a primary bar close so every indicator is read on
+// closed bars. Only the SCHEDULED look changes: everything that interrupts on
+// a MOVE (wake bands, the emergency in-position look, a swept resting entry,
+// failed-break fires, manual calls) is untouched. That split is deliberate —
+// the scheduled look is the time-based half of the system, and the time-based
+// half should be as slow as the signal allows (Gârleanu & Pedersen: trade
+// slowly toward the target, act on moves not on the clock).
+//
+// Measured motive (docs/alpha-lab-spec.md §11–12): no information at any
+// horizon in three months of decisions, each AI call a noisy draw whose
+// variance rivals the expected return, token spend above the account balance.
+// The timeframe ladder (4H primary) is NOT shifted — fixtures, ATR units and
+// bracket geometry keep their meaning; the daily-scale geometry comes from the
+// 3-ATR entry floor. SWING_DECISION_CADENCE=primary restores the old cadence.
+export type DecisionCadence = 'primary' | '1D';
+export const DECISION_CADENCE: DecisionCadence = (() => {
+    const raw = String(process.env.SWING_DECISION_CADENCE ?? '')
+        .trim()
+        .toLowerCase();
+    return raw === 'primary' || raw === '4h' ? 'primary' : '1D';
+})();
+
+// Bitget: 00:00 UTC — the daily candle close, crypto trades through it.
+// Capital: 08:00 UTC — London morning: every kept instrument is open and
+// liquid, and in summer time the hour sits outside every session decision
+// window (Xetra opens 07:00 UTC, the US pre-open window starts 11:30 UTC). In
+// winter Xetra opens AT 08:00 UTC, so DE40's scheduled look lands inside its
+// post-open window and the gate defers it to the window's end via the owed
+// look — accepted, not a bug. Both hours are 4H closes; keep them so.
+const decisionHour = (raw: unknown, fallback: number) => {
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 && n <= 23 ? n : fallback;
+};
+export const DECISION_HOUR_UTC: Record<'bitget' | 'capital', number> = {
+    bitget: decisionHour(process.env.SWING_DECISION_HOUR_UTC_BITGET, 0),
+    capital: decisionHour(process.env.SWING_DECISION_HOUR_UTC_CAPITAL, 8),
+};
+
+export function decisionHourUtcFor(platform: string | null | undefined): number {
+    return String(platform || '').toLowerCase() === 'capital' ? DECISION_HOUR_UTC.capital : DECISION_HOUR_UTC.bitget;
+}
+
+// Tolerance mirrors isPrimaryCloseTime in /api/analyze (cron jitter around
+// :00); the wrap handles 23:59 for a 00:00 hour.
+export function isDailyDecisionTime(
+    platform: string | null | undefined,
+    now = new Date(),
+    toleranceMinutes = 2,
+): boolean {
+    const target = decisionHourUtcFor(platform) * 60;
+    const total = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const diff = Math.abs(total - target);
+    return Math.min(diff, 1440 - diff) <= toleranceMinutes;
+}
 
 // ------------------------------
 // Intraday tactics — flag-gated OFF for the swing model
@@ -337,6 +401,10 @@ export const ONE_POSITION_PER_ASSET_CLASS = !flagOff(process.env.SWING_ONE_PER_A
 // Sharpe around 0.2 a t-stat of 3 needs ~225 closes (Harvey & Liu 2015). The
 // window starts at the freeze that shipped this measurement; a rule change
 // that alters expectancy should move it (SWING_R_SAMPLE_SINCE, ISO date).
+// Moved 2026-09-11 -> 2026-09-16: the §11-12 set (3-ATR floor, daily cadence,
+// 9 symbols, glm-5.3) is a different strategy from the 09-11 one, and pooling
+// the two would read a geometry that no longer runs. Set the env to the exact
+// deploy time if the deploy is not on the 16th.
 export const R_SAMPLE_TARGET = (() => {
     const n = Number(process.env.SWING_R_SAMPLE_TARGET);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
@@ -345,7 +413,7 @@ export const R_SAMPLE_TARGET = (() => {
 export const R_SAMPLE_SINCE_MS = (() => {
     const raw = String(process.env.SWING_R_SAMPLE_SINCE || '').trim();
     const parsed = raw ? Date.parse(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-11T00:00:00Z');
+    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-16T00:00:00Z');
 })();
 
 // ------------------------------
@@ -473,10 +541,12 @@ export const POSITION_WAKE_ENABLED = !flagOff(process.env.ENABLE_POSITION_WAKE_B
 
 // Min band distance from current price in primary-ATR units — the churn guard:
 // a band glued to price would re-fire a full AI call every ~5 min (the
-// watcher's fired-marker TTL).
+// watcher's fired-marker TTL). 0.3 -> 1 on 2026-09-16 alongside the 3-ATR
+// entry floor (docs/alpha-lab-spec.md §11): a band inside one bar's noise is
+// the intrabar consultation the wider stop exists to remove. The harness pins 0.3.
 export const POSITION_WAKE_MIN_ATR = (() => {
     const n = Number(process.env.SWING_POSITION_WAKE_MIN_ATR);
-    return Number.isFinite(n) && n > 0 ? n : 0.3;
+    return Number.isFinite(n) && n > 0 ? n : 1;
 })();
 
 export type LastClosedPosition = {
@@ -536,23 +606,25 @@ export type PromptDecisionContext = {
 };
 
 // AI-requested quiet period on a flat symbol. Bounds are sized for the
-// 4H-close cadence: the floor (default 360 = 6h) guarantees any cooldown
-// suppresses at least the NEXT bar-close evaluation — anything shorter than
-// one bar expires before the next look and does nothing, and exactly 4h would
-// race the close-time cron jitter. The ceiling (default 1440 = one day, up to
-// six evaluations) exists because the wake bands only cover PRICE — a cooldown
-// is blind to news, session flips and regime changes, so it must stay
-// renewable rather than open-ended. Renewal is cheap (one gated call per
-// cooldown). Legacy 15-min cadence (SWING_EVAL_PRIMARY_CLOSE_ONLY=0): set
+// scheduled cadence: the floor guarantees any cooldown suppresses at least the
+// NEXT scheduled evaluation — anything shorter expires before the next look
+// and does nothing, and exactly one interval would race the cron jitter. Under
+// the 4H-close cadence that is 360 (6h); under the daily cadence 1470 (24h30).
+// The ceiling (one day = up to six 4H looks; seven days under the daily
+// cadence) exists because the wake bands only cover PRICE — a cooldown is
+// blind to news, session flips and regime changes, so it must stay renewable
+// rather than open-ended. Renewal is cheap (one gated call per cooldown).
+// Legacy 15-min cadence (SWING_EVAL_PRIMARY_CLOSE_ONLY=0): set
 // SWING_AI_COOLDOWN_MIN_MIN=15 to restore short cooldowns.
 export const HOLD_COOLDOWN_MIN_MINUTES = (() => {
     const n = Number(process.env.SWING_AI_COOLDOWN_MIN_MIN);
-    return Number.isFinite(n) && n >= 1 ? Math.round(n) : 360;
+    return Number.isFinite(n) && n >= 1 ? Math.round(n) : DECISION_CADENCE === '1D' ? 1470 : 360;
 })();
 
 export const HOLD_COOLDOWN_MAX_MINUTES = (() => {
     const n = Number(process.env.SWING_AI_COOLDOWN_MAX_MIN);
-    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : Math.max(1440, HOLD_COOLDOWN_MIN_MINUTES);
+    const fallback = DECISION_CADENCE === '1D' ? 7 * 1440 : 1440;
+    return Number.isFinite(n) && n >= HOLD_COOLDOWN_MIN_MINUTES ? Math.round(n) : Math.max(fallback, HOLD_COOLDOWN_MIN_MINUTES);
 })();
 
 // Entry TP fallback mirrors the 3×ATR catastrophe stop in /api/analyze, so an
@@ -613,9 +685,31 @@ export const BRACKET_MIN_GAP_ATR = 0.1;
 // own post-mortems wrote "stop ≥0.5–1 primary-ATR" about twenty times, once per
 // symbol; this is that lesson, stated once, where it cannot be forgotten.
 // Targets keep no floor — range trades stay expressible.
-// SWING_ENTRY_SL_MIN_ATR overrides; 0 disables.
+// 1 -> 3 on 2026-09-16 (docs/alpha-lab-spec.md §11): three 4H-ATR is roughly a
+// daily ATR, so a stop clears a day's noise rather than a bar's and holds
+// lengthen without touching the timeframe ladder. Sizing shrinks with it
+// (risk is fixed, distance triples), so this lowers notional, not risk.
+// SWING_ENTRY_SL_MIN_ATR overrides; 0 disables. The test harness pins 1.
 export const ENTRY_SL_MIN_ATR = (() => {
     const n = Number(process.env.SWING_ENTRY_SL_MIN_ATR);
+    return Number.isFinite(n) && n >= 0 ? n : 3;
+})();
+
+// Amend stop floor, in primary ATR from the CURRENT price (there is no entry
+// price to anchor an amend to, and the failure this prevents is a stop parked
+// inside the current bar's noise). Added 2026-09-15 alongside the entry floor
+// going 1 -> 3 in prod: the entry floor only shapes the bracket at open, and
+// without a floor on amends the model could re-create the sub-ATR stop that
+// the week-one review measured as the entire loss (33 stop-outs, price back at
+// entry within 12h 15 times of 15) on the very next bar close. A sub-floor
+// amend is DROPPED — the standing stop stays, exactly like a loosening amend —
+// never widened, because the model may have meant "lock profit here" and a
+// wider stop would be a different decision. Lower than the entry floor on
+// purpose: one primary bar's noise is the width a stop must survive; how much
+// open profit to give back beyond that is the model's call.
+// SWING_AMEND_SL_MIN_ATR overrides; 0 disables.
+export const AMEND_SL_MIN_ATR = (() => {
+    const n = Number(process.env.SWING_AMEND_SL_MIN_ATR);
     return Number.isFinite(n) && n >= 0 ? n : 1;
 })();
 

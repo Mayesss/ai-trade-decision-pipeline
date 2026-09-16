@@ -45,7 +45,7 @@ import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents, evaluateSessionDecisionWindow, listSessionDecisionWindows } from '../../lib/swing/sessionEvents';
 import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { BITGET_MAX_AI_LEVERAGE, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, isDailyDecisionTime, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
 import { evaluatePortfolioCapGate, loadPortfolioOccupants, portfolioCapEnabled } from '../../lib/swing/portfolioCap';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
@@ -307,9 +307,13 @@ const EVAL_PRIMARY_CLOSE_ONLY = (() => {
 // Off-boundary in-position wake threshold under the 4H cadence. Deliberately
 // far wider than IN_POSITION_QUARTER_MOVE_ATR: this is an emergency look
 // ("something structural may have happened"), not routine management.
+// 1.5 -> 3 on 2026-09-16 with the 3-ATR entry stop floor (docs/alpha-lab-spec.md
+// §11): at 1.5 every position halfway to its stop would have earned an early
+// AI look, which is exactly the intrabar consultation the wider stop removes.
+// Equal to the floor, so the look fires around where the stop would anyway.
 const IN_POSITION_EMERGENCY_MOVE_ATR = (() => {
     const n = Number(process.env.SWING_INPOS_EMERGENCY_MOVE_ATR);
-    return Number.isFinite(n) && n > 0 ? n : 1.5;
+    return Number.isFinite(n) && n > 0 ? n : 3;
 })();
 
 // ------------------------------------------------------------------
@@ -899,8 +903,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 equityUsd: snapshotEquityUsd,
             });
         }
-        const primaryCloseTime = isPrimaryCloseTime(timeFrame);
-        // 4H-close cadence active for this tick? Env flag governs cron ticks;
+        // The scheduled look: under DECISION_CADENCE='1D' (default since
+        // 2026-09-16) once a day at the venue's decision hour, which is itself a
+        // primary bar close; under 'primary' every primary (4H) close. The name
+        // is kept — everything below reads "is this a scheduled look".
+        const primaryCloseTime =
+            DECISION_CADENCE === '1D' ? isDailyDecisionTime(platform) : isPrimaryCloseTime(timeFrame);
+        // Scheduled-look cadence active for this tick? Env flag governs cron ticks;
         // the request param forces it for manual calls. The gate itself sits
         // AFTER the watcher surface below (bracket read, thread reconcile,
         // pending-entry sweep, chart warm) so off-boundary ticks still do all
@@ -911,6 +920,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (offBoundaryTick) {
             emitGateDebug('primary_close_off_boundary', {
                 gate: 'PRIMARY_CLOSE_TIME',
+                cadence: DECISION_CADENCE,
                 primaryCloseTime,
                 positionOpen,
                 enforcePrimaryCloseGate,
@@ -3289,12 +3299,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             loadPromptLessons(symbol, category),
             // Fresh search-grounded news+social digest (Perplexity sonar via
             // the AI gateway, KV-cached). SWING_PERPLEXITY_ENABLED opt-in;
-            // fails open to null like the rest of the bundle. IN-POSITION ONLY
-            // since 2026-09-10: flat scans ran a Sonar search on every AI call
-            // (110–145/day across 24 symbols) with no measured effect on entry
-            // quality; a position being managed is where a fresh news item can
-            // change the answer. Flat entries keep the venue news feed.
-            positionOpen ? loadPerplexityContext(symbol, { platform, category }) : Promise.resolve(null),
+            // fails open to null like the rest of the bundle. Flat AND
+            // in-position since 2026-09-16: the 2026-09-10 in-position-only cut
+            // answered 110–145 Sonar calls/day across 24 symbols on the 4H
+            // cadence; under the daily cadence on 9 symbols the whole bill is
+            // about one digest per symbol per day, and a flat entry decided
+            // once a day deserves the same fresh read as a managed position.
+            loadPerplexityContext(symbol, { platform, category }),
             // Daily crypto Fear & Greed index (alternative.me, KV-cached 1h,
             // market-wide so one value serves every symbol). Crypto only;
             // default-on with SWING_FEAR_GREED_ENABLED as kill switch; fails

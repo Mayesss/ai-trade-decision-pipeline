@@ -98,7 +98,7 @@ TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
 # DEFAULT_AI_MODEL, FALLBACK_AI_MODEL and AI_BASE_URL are set in lib/constants.ts; the provider
 # is inferred from the model id ('claude' → Anthropic, 'gpt' → OpenAI). Current pair:
-# default openai/gpt-5.6-sol, fallback anthropic/claude-opus-4.8 (AI Gateway slugs).
+# default zai/glm-5.3, fallback anthropic/claude-opus-4.8 (AI Gateway slugs).
 # SWING_AI_PROVIDER (env) still forces a provider.
 ```
 
@@ -171,6 +171,7 @@ each: the rate limiter serializes calls against the frozen clock.
     - `decisionPolicy` (`strict|balanced`, default `balanced`)
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
+    - Scheduled AI look: once a day per venue (Bitget 00:00 UTC, Capital 08:00 UTC) since 2026-09-16 — `SWING_DECISION_CADENCE=primary` restores every-4H-close; see docs/alpha-lab-spec.md §12
   - Persists prompt, decision, execution result, and snapshot (including `platform`, `newsSource`, `category`, and instrument identifier).
   - For `category=forex`, a compact macro-event context block is attached to prompt/snapshot as advisory input only (non-blocking).
   - When swing cron hard-deactivate is enabled, Vercel cron-triggered `/api/swing/analyze` requests no-op with a HOLD response (manual/admin-triggered calls still run).

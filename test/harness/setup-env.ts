@@ -87,10 +87,30 @@ Object.assign(process.env, {
     CAPITAL_MAX_REQUESTS_PER_SECOND: '1000',
     CAPITAL_RATE_LIMIT_SAFETY_MS: '0',
     CAPITAL_MAX_429_RETRIES: '0',
-    // Re-entry cooldown is default-ON in prod again (240 min since 2026-09-10).
-    // Pinned OFF here so the flat-scan snapshots and the disabled-behaviour
-    // unit test stay stable; decisionRules.reentryEnabled.test.ts stubs it ON.
+    // Re-entry cooldown is default-ON in prod (240 min since 2026-09-10, 1440
+    // since 2026-09-16). Pinned OFF here so the flat-scan snapshots and the
+    // disabled-behaviour unit test stay stable; decisionRules.reentryEnabled.test.ts
+    // stubs it ON.
     SWING_REENTRY_COOLDOWN_MIN: '0',
+    // Entry stop floor and wake-band min distance went 1 -> 3 and 0.3 -> 1 in
+    // prod on 2026-09-16 (docs/alpha-lab-spec.md §11). Both are interpolated
+    // into the prompt and the fixtures' stubbed stops/bands were written
+    // against the old values, so the new floors would silently demote entry
+    // scenarios to HOLD. Pinned at the historical values; the prod defaults
+    // are asserted in decisionConfig.prodDefaults.test.ts.
+    SWING_ENTRY_SL_MIN_ATR: '1',
+    SWING_POSITION_WAKE_MIN_ATR: '0.3',
+    // Scheduled-look cadence is once a day per venue in prod since 2026-09-16
+    // (decisionConfig.ts DECISION_CADENCE='1D'). Pinned to the 4H-close cadence
+    // here: the fixtures' frozen clocks sit on 4H boundaries, the prompt's
+    // CADENCE block and the cooldown clamp bounds are interpolated from it.
+    // decisionConfig.decisionTime.test.ts covers the daily gate.
+    SWING_DECISION_CADENCE: 'primary',
+    // Amend stop floor is default-ON in prod (1 primary-ATR from current price,
+    // 2026-09-15). Pinned OFF here so the in-position snapshots and the
+    // exchangeTpSl unit test keep the pre-floor amend behaviour;
+    // decisionRules.amendFloorEnabled.test.ts stubs it ON.
+    SWING_AMEND_SL_MIN_ATR: '0',
     // Session decision windows are default-ON in prod (2026-09-10). Pinned OFF
     // here — the fixtures' frozen clocks would otherwise land some Capital
     // scenarios inside a window; capital-session-window.contract.test.ts

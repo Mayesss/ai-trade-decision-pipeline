@@ -1,10 +1,10 @@
 // Contract: SWING_PERPLEXITY_ENABLED on an IN-POSITION manage tick — the tick
 // fetches the sonar digest via the gateway's chat/completions endpoint
 // (KV-cached) and the FRESH SENTIMENT block lands in the decision prompt's
-// USER turn. Since 2026-09-10 this is the ONLY tick kind that fetches it: flat
-// scans skip the digest (pinned in flat-hold.contract.test.ts, whose world has
-// no perplexity handler). The snapshot captures the full outgoing conversation
-// including that prompt — the regression net for the block's wording/placement.
+// USER turn. From 2026-09-10 to 2026-09-16 this was the ONLY tick kind that
+// fetched it; flat scans fetch it again since (flat-perplexity.contract.test.ts).
+// The snapshot captures the full outgoing conversation including that prompt —
+// the regression net for the block's wording/placement.
 import { expect, test, vi } from 'vitest';
 
 import btcFixtureJson from '../fixtures/bitget-BTCUSDT.json';

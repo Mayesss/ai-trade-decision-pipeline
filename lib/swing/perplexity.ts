@@ -20,6 +20,7 @@ import { AI_BASE_URL } from '../constants';
 import { kvGetJson, kvSetJson } from '../kv';
 import { baseFromSymbol } from '../news';
 import { resolveAiGatewayKey } from '../aiModel';
+import { DECISION_CADENCE } from './decisionConfig';
 
 export type PerplexityContext = {
     // Trimmed digest prose, hard-capped at PERPLEXITY_TEXT_MAX_CHARS.
@@ -50,13 +51,14 @@ const PERPLEXITY_TTL_SECONDS = (() => {
     return Number.isFinite(n) && n >= 300 && n <= 7200 ? Math.round(n) : 2700;
 })();
 
-// Detailed-coverage window in hours. Default 6 ≈ one primary (4H) bar plus
-// slack: the digest leads with what changed since the model's last look, and
-// only carries older (≤24h) items as one-line backdrop — the decision model's
-// chained transcript already holds earlier context.
+// Detailed-coverage window in hours: the digest leads with what changed since
+// the model's last look, and only carries older items as one-line backdrop —
+// the decision model's chained transcript already holds earlier context. One
+// scheduled interval plus slack: 6 under the 4H-close cadence, 24 under the
+// daily cadence (decisionConfig.ts DECISION_CADENCE).
 const PERPLEXITY_FRESH_HOURS = (() => {
     const n = Number(process.env.SWING_PERPLEXITY_FRESH_HOURS);
-    return Number.isFinite(n) && n >= 2 && n <= 24 ? Math.round(n) : 6;
+    return Number.isFinite(n) && n >= 2 && n <= 24 ? Math.round(n) : DECISION_CADENCE === '1D' ? 24 : 6;
 })();
 
 const PERPLEXITY_MAX_TOKENS = 700;
@@ -99,8 +101,10 @@ function buildPrompts(symbol: string, category?: string | null): { system: strin
     return { system, user };
 }
 
-// Entry point for /api/analyze — called on IN-POSITION ticks only (flat scans
-// skip it since 2026-09-10, see the bundle in analyze.ts). Returns null on
+// Entry point for /api/analyze — called on every tick that reaches the prompt,
+// flat scans and in-position management alike (flat scans skipped it from
+// 2026-09-10 to 2026-09-16 as a cost cut under the 4H cadence; under the
+// daily cadence one digest per symbol per day is the whole bill). Returns null on
 // flag-off or ANY failure so the caller's prompt block is simply absent —
 // never throws.
 export async function loadPerplexityContext(

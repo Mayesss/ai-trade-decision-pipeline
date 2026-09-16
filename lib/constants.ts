@@ -6,11 +6,15 @@ export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
 // 60 vs 56; $1.40/$4.40 per 1M in/out vs $2/$10). 2026-09-11: switched BACK
 // to gpt-5.6-sol — the model swap landed in the same commit as the prompt/
 // gate overhaul, so the losing week that followed could not be attributed
-// (docs/week-one-review-2026-09-10.md §4, §12). One variable at a time: sol
-// is the model the pre-overhaul baseline ran on, and it stays fixed until
-// the measurement window closes. Every non-Anthropic id speaks the OpenAI
-// dialect through the gateway — see dialectForAiModel in lib/aiModel.ts.
-export const DEFAULT_AI_MODEL = 'openai/gpt-5.6-sol';
+// (docs/week-one-review-2026-09-10.md §4, §12). 2026-09-16: back to
+// zai/glm-5.3 by owner decision (docs/alpha-lab-spec.md §12): reasoning
+// close to sol at a fraction of the price, and the 09-11 window was reset by
+// the cadence/geometry changes of §11–12 anyway, so the confound argument no
+// longer buys anything. Every non-Anthropic id speaks the OpenAI dialect
+// through the gateway — see dialectForAiModel in lib/aiModel.ts; GLM has no
+// json_schema mode, which is why schema calls go out as forced tool calls
+// (lib/gatewayResponses.ts).
+export const DEFAULT_AI_MODEL = 'zai/glm-5.3';
 export const FALLBACK_AI_MODEL = 'anthropic/claude-opus-4.8';
 export const AI_BASE_URL = 'https://ai-gateway.vercel.sh/v1';
 // Anthropic-compatible endpoint of the same gateway (the SDK appends /v1).

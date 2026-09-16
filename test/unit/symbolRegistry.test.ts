@@ -7,7 +7,9 @@ import { getCronSymbolConfigs, getCronSymbols } from "../../lib/symbolRegistry";
 
 test("parses the swing analyze crons from vercel.json", () => {
   const configs = getCronSymbolConfigs();
-  assert.ok(configs.length >= 20, `expected a full symbol universe, got ${configs.length}`);
+  // 24 -> 8 symbols on 2026-09-15 (docs/alpha-lab-spec.md §10): two per asset
+  // class, because the portfolio cap is 4 with one position per class.
+  assert.ok(configs.length >= 8, `expected the trimmed symbol universe, got ${configs.length}`);
 
   const bySymbol = new Map(configs.map((c) => [c.symbol, c]));
   // No duplicate symbols.
@@ -19,10 +21,12 @@ test("parses the swing analyze crons from vercel.json", () => {
   assert.equal(btc.category, "crypto");
   assert.equal(btc.decisionPolicy, "balanced");
 
-  const gold = bySymbol.get("GOLD");
-  assert.ok(gold);
-  assert.equal(gold.platform, "capital");
-  assert.equal(gold.category, "commodity");
+  // No Capital commodity is openable at 1% risk with a 3-ATR stop on the
+  // current account (docs/alpha-lab-spec.md §12), so the class is absent.
+  const us500 = bySymbol.get("US500");
+  assert.ok(us500);
+  assert.equal(us500.platform, "capital");
+  assert.equal(us500.category, "index");
 
   const eurusd = bySymbol.get("EURUSD");
   assert.ok(eurusd);

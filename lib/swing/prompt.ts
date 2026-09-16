@@ -35,6 +35,9 @@ import {
     HOLD_COOLDOWN_MIN_MINUTES,
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
+    AMEND_SL_MIN_ATR,
+    DECISION_CADENCE,
+    decisionHourUtcFor,
     ENTRY_SL_MIN_ATR,
     ENTRY_LIMIT_MIN_ATR,
     ENTRY_LIMIT_MAX_ATR,
@@ -1381,6 +1384,11 @@ export function computeSwingState(
                   `Entry stop floor: on ${inPosition ? 'REVERSE (the new side)' : 'BUY/SELL'} stop_loss_price must sit at least ${ENTRY_SL_MIN_ATR} primary-ATR from the entry price (the resting price when the entry rests). Closer and the ENTRY is refused — coerced to HOLD, nothing placed, a wasted call — never widened for you. Targets have no floor. A null stop gets the wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe default.`,
               ]
             : []),
+        ...(inPosition && AMEND_SL_MIN_ATR > 0
+            ? [
+                  `Amend stop floor: on HOLD/partial CLOSE an amended stop_loss_price must sit at least ${AMEND_SL_MIN_ATR} primary-ATR from the CURRENT price. Closer and the amendment is dropped — the standing stop stays, nothing moves, a wasted field — never widened for you. It must still survive one full primary bar on its own.`,
+              ]
+            : []),
         ...(!inPosition && REENTRY_COOLDOWN_MIN > 0
             ? [
                   `Re-entry cooldown: for ${REENTRY_COOLDOWN_MIN} min after a position closes, re-entering the SAME direction is blocked (state.position.reentry_cooldown shows the blocked side when active; the opposite direction stays allowed).${SESSION_OFFENSE_ENABLED ? ' Exception: a sweep-reclaim re-entry passes — when the matching reclaim signal is live (market.forex_session.signals.bullishLiquidityReclaim for a blocked long, bearishLiquidityRejection for a blocked short), the block is lifted, so a stop-out on a swept extreme does NOT forfeit the reclaim trade.' : ''}`,
@@ -1472,15 +1480,27 @@ export function computeSwingState(
               .join('\n')}`
         : '';
 
+    // Scheduled-look cadence (decisionConfig.ts DECISION_CADENCE). Byte-stable
+    // per platform, so it lives in the cached system prefix.
+    const dailyCadence = DECISION_CADENCE === '1D';
+    const decisionHourLabel = `${String(decisionHourUtcFor(platform)).padStart(2, '0')}:00`;
     const sys = `
 You are a swing-trading market-structure analyst. Decide one action and size it.
 
 TIMEFRAMES (fixed)
 - micro=${microTimeframe} (entry timing/confirmation), primary=${primaryTimeframe} (setup+execution), macro=${macroTimeframe} (regime bias), context=${contextTimeframe} (HTF location + major levels, risk lever)${inPosition ? '' : `, nano=${NANO_TIMEFRAME} (state.geometry.nano, flat entry scans only — fine-timing of an already-valid entry, never a setup by itself and never an exit signal)`}.
-Scale: ${primaryTimeframe} is the execution timeframe and you are consulted on its bar close, so a position typically lives days rather than minutes. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.
+${
+        dailyCadence
+            ? `Scale: ${primaryTimeframe} is the execution timeframe, but you are consulted only once per DAY (at ${decisionHourLabel} UTC, on a closed ${primaryTimeframe} bar), so a position typically lives days to weeks rather than hours. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.`
+            : `Scale: ${primaryTimeframe} is the execution timeframe and you are consulted on its bar close, so a position typically lives days rather than minutes. That is a property of the cadence, not a target — which setups on which timeframes are worth taking is yours to decide.`
+    }
 
 CADENCE (how often you are actually consulted)
-- You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.
+${
+        dailyCadence
+            ? `- You are evaluated once per DAY, at ${decisionHourLabel} UTC — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for a full day of ${primaryTimeframe} bars, through sessions you will not see.`
+            : `- You are evaluated once per ${primaryTimeframe} bar close — flat scans and in-position management alike. Between looks the exchange-side TP/SL bracket is the ONLY manager, so every bracket you leave behind must stand on its own for at least one full ${primaryTimeframe} bar.`
+    }
 - Earlier looks happen only when: a wake band you set is crossed${POSITION_WAKE_ENABLED ? ' (flat or in a position)' : ' (flat)'} or, in a position, price has moved several primary-ATRs since your last look (emergency check — do not rely on it for routine management). Both conditions are watched roughly once per MINUTE, so a crossed band reaches you almost immediately — place bands exactly at the decision levels, no padding needed. One exception: a FLAT band crossed inside a session decision window (Capital venues) is deferred to the window's end. A wake band and an entry placed now are two tools for the same level: the band keeps the decision and costs you a beat, the entry commits and cannot be reconsidered until it fills or you withdraw it. Which one fits the level is yours.
 - A resting entry needs no look at all: it stands on the venue between evaluations and fills whenever price reaches it, without consulting you. You find out by arriving to an OPEN POSITION on a later tick. That is the point of the tool — but it also means a standing order is exposure you are carrying while unable to reconsider, so place it only where you would still want the fill on the tape you cannot see.
 

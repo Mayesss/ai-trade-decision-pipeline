@@ -513,10 +513,40 @@ rediscover the hard way. Newest last.
   valid, replicated statistics but dies on the mean/median skew; vol_per_atr
   dies on construction and inference. Two permanent guards were added to the
   instrument as a result, both found empirically rather than by argument.
+- **2026-09-15** — §10 patience posture broken one day in, under its own cost
+  exception (§11). The §9.5 env fallback is applied instead of the ladder
+  shift; the ladder shift stays parked as the second step. One code addition
+  found necessary while doing it: the entry stop floor never reached AMENDS, so
+  the model could re-create a sub-ATR stop on the next bar close — an amend
+  floor (`AMEND_SL_MIN_ATR`, 1 primary-ATR from current price, drop-not-widen)
+  now closes that. Symbol universe 24 -> 8.
+- **2026-09-16** — The four §11 thresholds became code defaults instead of
+  Vercel env vars (the env write was blocked in-session; a default the repo
+  asserts beats a value only visible in a dashboard). Harness pins the entry
+  floor and wake distance at the historical values; `decisionConfig.prodDefaults`
+  asserts the live ones.
+- **2026-09-16** — Scheduled AI look moved from every 4H close to ONCE A DAY
+  per venue (§12) without shifting the timeframe ladder: the two §9.2
+  blockers turned out to be API facts (Capital serves no MONTH resolution;
+  Bitget serves ~90 daily bars), so cadence and ladder were decoupled instead.
+  Perplexity digest restored on flat scans. Capital account measured at $81
+  equity: at 1% risk with a 3-ATR stop no commodity clears its minimum deal
+  size — GOLD and OIL_CRUDE out, US100/TLT/GBPUSD in, 9 symbols.
+- **2026-09-16** — Decision model back to `zai/glm-5.3` (owner decision, cost).
+  The R sample start moves to this deploy: everything since 09-11 was a
+  different geometry, cadence, universe and model.
 
 ---
 
 ## 9. Horizon expansion — PARKED, notes kept
+
+**Status 2026-09-16: parked indefinitely — no longer needed for cadence.**
+§12 moved the scheduled look to once a day while keeping the 4H ladder, which
+was the whole economic point of the shift. What remains here is only the
+question of whether the model should *see* daily bars as primary, and nothing
+measured so far says it matters.
+
+**Status 2026-09-15: still parked; the §9.5 fallback was applied instead (§11).**
 
 **Status 2026-09-14: parked, not scheduled.** Shifting the primary timeframe
 4H -> 1D was considered and deliberately deferred — the current configuration
@@ -589,6 +619,9 @@ how in-flight positions are handled before deploying, not after.
 
 ### 9.5 Cheap fallback if the ladder shift stalls
 
+**Applied 2026-09-15 — see §11 for what was actually set and why it grew by one
+code change.**
+
 Env-only, no code, instantly reversible, achieves most of the economic effect:
 `SWING_ENTRY_SL_MIN_ATR` 1 -> 3 (stops ~a daily ATR, so positions stop dying to
 intrabar noise and holds lengthen), `SWING_REENTRY_COOLDOWN_MIN` 240 -> 1440,
@@ -639,3 +672,206 @@ window exists to prevent (`week-one-review` §12).
 
 A safety or cost problem — runaway spend, a gate misfiring, positions opening
 outside intent. Not a run of red days, and not a run of green ones.
+
+**Invoked 2026-09-15** on the cost clause — see §11. Doing this a second time
+inside the window would be the "tweak until it works" failure, not another
+exception.
+
+---
+
+## 11. Horizon loosening — applied 2026-09-15
+
+### Why now, and why this is the §10 exception rather than a breach
+
+- Token spend was already stated (§9.1) to exceed the account balance. That is
+  the cost problem §10 names.
+- 24 symbols were scanning for **4** slots (`SWING_MAX_OPEN_POSITIONS=4`, one
+  per asset class). Six times the analysis cost for the same exposure.
+- The 09-11 freeze was about **sizing** (risk 10% -> 1%, cap, hard gates).
+  Bracket geometry and hold length were never part of what it measured, and
+  the week-one review already attributed the losses to stops inside one bar's
+  noise.
+- Cheapest route that gets most of the daily-cadence effect (§9.5), reversible
+  by env.
+
+### What changed
+
+All thresholds are **code defaults** (decided 2026-09-16: the Vercel env write
+was blocked in-session, and a default the repo asserts is easier to find than
+an env var). The env names still override; none is set in production.
+
+| Lever | Before | After | Where |
+|---|---|---|---|
+| Entry stop floor | 1 primary-ATR | **3** | `ENTRY_SL_MIN_ATR` (env `SWING_ENTRY_SL_MIN_ATR`) |
+| Re-entry cooldown (same side) | 240 min | **1440** | `REENTRY_COOLDOWN_MIN` (env `SWING_REENTRY_COOLDOWN_MIN`) |
+| In-position emergency look | 1.5 ATR move | **3** | `IN_POSITION_EMERGENCY_MOVE_ATR` in analyze.ts (env `SWING_INPOS_EMERGENCY_MOVE_ATR`) |
+| Position wake band min distance | 0.3 ATR | **1** | `POSITION_WAKE_MIN_ATR` (env `SWING_POSITION_WAKE_MIN_ATR`) |
+| **Amend** stop floor (new) | none | **1** ATR from current price | `AMEND_SL_MIN_ATR` (env `SWING_AMEND_SL_MIN_ATR`) |
+| Symbol universe | 24 crons | **8** (→ 9, reshaped in §12 the next day) | `vercel.json` |
+
+`test/unit/swing/decisionConfig.prodDefaults.test.ts` asserts the four
+decisionConfig values, so a default cannot drift silently. The harness pins the
+entry floor at 1 and the wake distance at 0.3 (fixtures were written against
+them; the new floors would demote entry scenarios to HOLD).
+
+Kept: BTCUSDT, ETHUSDT, GOLD, OIL_CRUDE, US500, DE40, EURUSD, USDJPY — two per
+class. Dropped the crypto alts first (they close six bars a day, no session
+gap, so they were the bulk of the calls).
+
+The two emergency/wake thresholds move **with** the stop: at a 3-ATR stop a
+1.5-ATR emergency look would fire on every position halfway to its stop — the
+intrabar consultation the change exists to remove.
+
+**Why the amend floor had to be code.** `sanitizeExchangeTpSl` applied the
+entry floor to entries only (by design: a trail to breakeven is legitimate).
+So the model could open at 3 ATR and pull the stop back to 0.6 ATR on the very
+next 4H tick, and the whole change would have been cosmetic. The amend floor is
+measured from the **current** price (there is no entry to anchor to), is
+deliberately lower than the entry floor (one bar's noise is the width a stop
+must survive; how much profit to give back beyond that is the model's call),
+and a sub-floor amend is **dropped** — standing stop stays, like a loosening
+amend — never widened. Stated in the in-position HARD CONSTRAINTS. Pinned OFF
+in the test harness per the swing-fixtures convention;
+`decisionRules.amendFloorEnabled.test.ts` covers the ON path.
+
+### Not changed
+
+Risk 1%, cap 4, one per class, primary 4H (the ladder shift stays parked, §9),
+everything else in the prompt. (The model was still sol on 09-15; it went to
+GLM on 09-16, see §12.)
+
+### Deploy order (owner)
+
+1. Nothing to set in Vercel — the thresholds are code defaults. Check that
+   none of the four env names is set there (as of 2026-09-16 none was), or an
+   old override would win.
+2. Commit + deploy. Record the deploy timestamp here as the **changeover**.
+3. Dry-run tick per venue (`swing-tick`). Two things to look for: on Capital,
+   whether the 3x smaller notional at 1% risk falls under an instrument's
+   minimum size (which either bumps risk above 1% or refuses the trade), and
+   the share of entries refused with `entry_stop_below_floor`.
+4. Positions open at changeover keep their old brackets and the old
+   thresholds do not apply to them retroactively — mixed geometry for a few
+   days, as §9.6 warned.
+
+### How to read it
+
+- Split at the changeover; never pool the two geometries.
+- Watch the **refusal counts** first: `entry_stop_below_floor` on flat ticks,
+  `sl_below_amend_floor_dropped` in the bracket notes on in-position ticks. A
+  high entry-refusal rate means paying for HOLDs while the model learns the
+  new floor; fewer trades is the intended effect, near-zero trades is not.
+- Then the burn rate: AI calls/day should fall roughly 3x from the symbol cut
+  alone, and wake-driven calls further.
+- Then R, and only at a pre-set count (§10). Expect longer holds and fewer,
+  larger-per-trade stop-outs in R terms; do not read the first week's P&L.
+- Second step, only after this has run: the ladder shift (§9), whose two
+  blockers (§9.2) remain unsolved.
+
+---
+
+## 12. Daily decision cadence — applied 2026-09-16
+
+### Why
+
+Research summary, written up in the session that decided this:
+
+- LLM trading agents in the literature decide once a day per ticker; the field
+  audit found 1 of 19 studies modeling transaction costs, and its worked
+  example loses 11% of cumulative return at 10 bp of friction and 27% at 25 bp.
+- A reproducibility study of the TradingAgents framework measured output
+  variance at roughly half the expected return; stochastic configurations
+  underperform a passive benchmark. Six looks a day is six draws from that
+  distribution.
+- Gârleanu & Pedersen: trade slowly toward the target, act on **moves**, not
+  on the clock. The wake bands and the emergency look are the move-based half
+  of this system and are untouched; only the time-based half slows down.
+- Own data (§9.1, edge audit): no information at any horizon; the one measured
+  effect of 4H looks was churn.
+- Nothing class-specific favours more frequency anywhere: trend persistence
+  runs 1–12 months in all four classes; forex volatility concentrates in the
+  London/NY overlap, so more forex calls would be calls at the noisiest hours
+  on the instrument with the worst spread per ATR. Index returns accrue
+  overnight, so a decision at a fixed hour, sized for the gap, is the fitting
+  cadence. **One cadence for all symbols.**
+
+### What changed
+
+| Lever | Before | After | Where |
+|---|---|---|---|
+| Scheduled AI look | every primary (4H) close | **once a day per venue** | `DECISION_CADENCE='1D'` (env `SWING_DECISION_CADENCE=primary` restores) |
+| Decision hour | — | Bitget **00:00 UTC**, Capital **08:00 UTC** | `DECISION_HOUR_UTC` (env `SWING_DECISION_HOUR_UTC_BITGET/_CAPITAL`) |
+| Flat cooldown clamp | 360–1440 min | **1470–10080** | `HOLD_COOLDOWN_*` derive from the cadence |
+| Perplexity digest | in-position ticks only | **flat and in-position** | `analyze.ts` bundle; `PERPLEXITY_FRESH_HOURS` 6 → 24 under the daily cadence |
+| Symbol universe | 8 | **9** (see below) | `vercel.json` |
+| Decision model | `openai/gpt-5.6-sol` | **`zai/glm-5.3`** (effort `high`, the middle of GLM's low/high/max) | `DEFAULT_AI_MODEL` in `lib/constants.ts` |
+
+**Model.** Owner decision 2026-09-16: GLM's reasoning is close to sol's at
+roughly $1.40/$4.40 per 1M in/out against $2/$10. The 09-11 argument for
+pinning sol was the model confound inside one measurement window; §11–12 reset
+that window anyway, so the pin bought nothing further. GLM has no json_schema
+mode — schema calls already go out as forced tool calls
+(`lib/gatewayResponses.ts`), which is what made GLM usable in September. Watch
+the `reshape` retry rate and output-token counts in the first days (GLM
+measured 883–3150 output tokens per tick against sol's 299–1763).
+
+**Ladder unchanged.** The §9 shift (4H → 1D primary) was the planned route to a
+daily cadence, but its two blockers are API facts, not code debt: Capital's
+price API has no MONTH resolution, so a 1W macro would leave nothing for
+context, and Bitget serves ~90 daily bars where EMA200 needs 200. Decoupling
+cadence from ladder gets the economic effect with the 4H fixtures, ATR units
+and bracket geometry intact. The daily-scale geometry comes from the 3-ATR
+entry floor (§11). The cadence gate is `isDailyDecisionTime` in
+`decisionConfig.ts`; both venue hours are 4H closes, so every indicator is
+still read on closed bars (asserted in `decisionConfig.decisionTime.test.ts`).
+
+**Still fires off-schedule:** wake bands (flat and in-position), the in-position
+emergency look (now 3 ATR), a swept resting entry's re-issue decision,
+failed-break fires, session-window owed looks, manual/API calls.
+
+**Capital hour caveat.** 08:00 UTC is outside every session decision window in
+summer time. In winter Xetra opens at 08:00 UTC, so DE40's scheduled look
+lands inside its 30-min post-open window and the gate defers it to the
+window's end via the owed look. Accepted.
+
+### Symbol set, measured
+
+Probe run 2026-09-16 against the live Capital account (read-only): equity
+**$81.17**, available margin $71.54. At 1% risk ($0.81) and a 3×4H-ATR stop:
+
+| symbol | 4H ATR % | min notional | notional @3 ATR | opens? | max floor (ATR) |
+|---|---|---|---|---|---|
+| GOLD | 0.72 | $43.35 | $37.57 | no | 2.6 |
+| OIL_CRUDE | 1.74 | $99.52 | $15.53 | no | 0.5 |
+| US500 | 0.31 | $76.03 | $86.17 | **thin** | 3.4 |
+| DE40 | 0.49 | $25.44 | $55.72 | yes | 6.6 |
+| US100 | 0.49 | $29.08 | $55.34 | yes | 5.7 |
+| TLT | 0.45 | $8.08 | $60.42 | yes | 22 |
+| EURUSD | 0.13 | $115.41 | $209.33 | yes | 5.4 |
+| USDJPY | 0.26 | $100.00 | $105.50 | yes | 3.2 |
+| GBPUSD | 0.15 | $134.71 | $185.72 | yes | 4.1 |
+| NATURALGAS / COPPER / SILVER / HK50 / UK100 | — | — | — | no | ≤ 2.5 |
+
+"Max floor" is the widest stop, in 4H ATR, at which the 1%-risk notional still
+clears the minimum deal size. **No Capital commodity is openable**, so that
+class is absent from the book and the one-per-class cap leaves at most three
+Capital classes plus crypto. US500 and USDJPY clear by a thin margin: a stop
+the model sets much wider than the floor drops the entry to HOLD with
+`MIN_SIZE_EXCEEDS_REQUESTED_NOTIONAL`, and a volatility rise flips them. Kept
+deliberately, read the refusal reasons.
+
+Kept: BTCUSDT, ETHUSDT, US500, US100, DE40, TLT, EURUSD, USDJPY, GBPUSD.
+
+At $81 of equity, 1% risk is under a dollar a trade and fees are a large
+fraction of it. This does not change any decision here — the freeze reads R,
+not cash — but it is the number to keep in view when reading the burn rate.
+
+### How to read it
+
+- Expected scheduled AI calls: **9 per day** (2 crypto at 00:00 UTC, 7 Capital
+  at 08:00 UTC on trading days), plus wakes. Materially more than that is a
+  gate defect.
+- Perplexity: about one uncached digest per symbol per day.
+- Changeover = the deploy timestamp; split every read at it (§9.6).
+- Then as §11: refusal counts first, burn rate second, R at a pre-set count.
+

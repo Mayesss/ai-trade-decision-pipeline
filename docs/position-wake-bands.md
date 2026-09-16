@@ -8,7 +8,8 @@ flag gating lives in the `postprocessDecision` routing, read at CALL time like
 ## Problem
 
 In a position, the AI's early-wake surface is blunt: the 1-min watcher fires only on a
-≥1.5-ATR move since the last AI look (`SWING_INPOS_EMERGENCY_MOVE_ATR`), plus the
+≥1.5-ATR move since the last AI look (`SWING_INPOS_EMERGENCY_MOVE_ATR`; default 3 since
+2026-09-16, see alpha-lab-spec.md §11), plus the
 failed-break recross. The model usually *knows* the decision-relevant level — "thesis
 dead if we lose 3.42", "at 117.8k decide trail-vs-take" — and those levels are routinely
 inside 1.5 ATR. A slow grind to the structural level never trips the emergency wake, so
@@ -105,7 +106,7 @@ Rules (each violation drops that band with a note; never fails the decision):
    - short: `TP < wake_below < price < wake_above < SL`
    Missing bracket level on a side → only checks 2 and 4 apply on that side.
 4. Min distance from price: `|band − price| ≥ SWING_POSITION_WAKE_MIN_ATR × primaryAtr`
-   (default **0.3**). This is the churn guard — a band glued to price would fire every
+   (default **1** since 2026-09-16; was 0.3). This is the churn guard — a band glued to price would fire every
    ~5 min (fired-marker TTL), each fire a full AI call. ATR unknown → keep the band
    (checks 2–3 still bound it), note `wake_min_dist_unverified`.
 5. Note kept only alongside ≥1 surviving band; trimmed, 200 chars (same as flat).
@@ -215,7 +216,7 @@ Decision-JSON surfaces (dashboard detail, legacy band read) show the sanitized
   persistence. Ship default-off, flip after a dry-run smoke test (repo flag pattern,
   cf. `ENABLE_CRYPTO_MARGIN_RECYCLE`).
 - `SWING_POSITION_WAKE_MIN_ATR` — min band distance from price in primary-ATR units,
-  default 0.3.
+  default 1 (0.3 until 2026-09-16; the test harness still pins 0.3).
 
 ## Tests
 

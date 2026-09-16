@@ -22,6 +22,7 @@ import {
     HOLD_COOLDOWN_MAX_MINUTES,
     EXCHANGE_TP_FALLBACK_ATR_MULT,
     BRACKET_MIN_GAP_ATR,
+    AMEND_SL_MIN_ATR,
     ENTRY_SL_MIN_ATR,
 } from './decisionConfig';
 import { MIN_SIZEABLE_STOP_PCT } from './riskSizing';
@@ -586,7 +587,8 @@ export type ExchangeTpSl = {
  * current position side — same treatment. In-position (HOLD / partial CLOSE):
  * both legs may amend the standing bracket (null = leave unchanged), and a
  * stop amendment may only TIGHTEN protection vs `standingStopLossPrice` —
- * never further from price than the stop already resting.
+ * never further from price than the stop already resting — and must clear the
+ * current price by AMEND_SL_MIN_ATR (a closer amend is dropped, standing stays).
  */
 export function sanitizeExchangeTpSl(params: {
     action: string;
@@ -689,6 +691,13 @@ export function sanitizeExchangeTpSl(params: {
                 // caller refuses the entry instead (analyze.ts dropEntry).
                 notes.push('sl_below_entry_floor');
                 entryStopBelowFloor = true;
+            } else if (isAmend && atr && AMEND_SL_MIN_ATR > 0 && Math.abs(price - sl) < AMEND_SL_MIN_ATR * atr) {
+                // Amend stop floor (decisionConfig.ts AMEND_SL_MIN_ATR), measured
+                // from the current price. Dropped like a loosening amend — the
+                // standing stop stays — not widened: a wider stop would be a
+                // different decision than the one the model made.
+                notes.push('sl_below_amend_floor_dropped');
+                sl = null;
             }
         }
         // Tighten-only guard on amends: a new stop below the standing stop

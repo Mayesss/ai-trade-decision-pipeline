@@ -46,7 +46,7 @@ test('entry SL on the wrong side is dropped; a sub-floor stop is kept but flagge
     assert.ok(wrongSide.notes.includes('sl_wrong_side_dropped'));
     assert.equal(wrongSide.stopLossPrice, null);
     assert.equal(wrongSide.entryStopBelowFloor, false);
-    // 0.5 ATR — inside ENTRY_SL_MIN_ATR (1). Returned as asked (the record of
+    // 0.5 ATR — inside ENTRY_SL_MIN_ATR (pinned to 1 by the harness; prod 3). Returned as asked (the record of
     // what the model wanted) and flagged: analyze.ts refuses the entry on the
     // flag instead of widening the stop or dropping it to the 3×ATR default.
     const tight = entry('BUY', 104, 99);
@@ -81,11 +81,15 @@ test('entry stop floor: exactly 1 ATR passes, both sides, and REVERSE measures t
     assert.ok(rev.notes.includes('sl_below_entry_floor'));
 });
 
-test('entry stop floor never applies to amends — a 0.3-ATR tightened stop is a legitimate trail', () => {
+test('entry stop floor never applies to amends — a 0.3-ATR tightened stop passes here (amend floor pinned OFF in the harness)', () => {
+    // The amend floor (AMEND_SL_MIN_ATR, prod default 1) is pinned to 0 by
+    // test/harness/setup-env.ts; decisionRules.amendFloorEnabled.test.ts pins
+    // the ON behaviour. This asserts the ENTRY floor alone never reaches an amend.
     const trail = amend('long', null, PRICE - 0.3 * ATR, { standingStopLossPrice: PRICE - 2 * ATR });
     assert.equal(trail.stopLossPrice, PRICE - 0.3 * ATR);
     assert.equal(trail.entryStopBelowFloor, false);
     assert.ok(!trail.notes.includes('sl_below_entry_floor'));
+    assert.ok(!trail.notes.includes('sl_below_amend_floor_dropped'));
 });
 
 test('entry without a TP falls back to 3×ATR on the profit side', () => {
