@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
 import { loadDecisionAt, loadDecisionHistory, type DecisionHistoryEntry } from '../../../lib/history';
+import { readSwingLastScan, scanIsLaterTickThan } from '../../../lib/swing/lastScan';
 import { getSwingDecisionPrompt } from '../../../lib/swing/pg';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/platform';
@@ -59,14 +60,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // payload when the entry is missing/expired.
   const tsParam = Array.isArray(req.query.ts) ? req.query.ts[0] : req.query.ts;
   const requestedTs = Number(tsParam);
+  const wantsLatest = !(Number.isFinite(requestedTs) && requestedTs > 0);
 
   try {
-    const latest =
-      Number.isFinite(requestedTs) && requestedTs > 0
-        ? await loadDecisionAt(symbolRaw, requestedTs, platform ?? undefined)
-        : (platform
-            ? await loadDecisionHistory(symbolRaw, 1, platform)
-            : await loadDecisionHistory(symbolRaw, 1))[0];
+    const latest = wantsLatest
+      ? (platform ? await loadDecisionHistory(symbolRaw, 1, platform) : await loadDecisionHistory(symbolRaw, 1))[0]
+      : await loadDecisionAt(symbolRaw, requestedTs, platform ?? undefined);
     if (latest) {
       payload = {
         symbol: symbolRaw,
@@ -94,6 +93,56 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             ? latest.snapshot.newsSource
             : null,
       };
+    }
+    // Fall back to the scan marker when the last TICK is newer than the last
+    // persisted DECISION row. Three gates — primary_close_gate,
+    // session_window_gate, flat_cooldown — short-circuit via recordTickOutcome
+    // only: they write a tick_log row and stamp this marker, but never a
+    // decision row. Without this the panel keeps presenting an hours-old row
+    // as "Latest Decision" (a symbol sat on `asset_class_occupied` for 15h
+    // after the book went flat). A marker carries a `stage` only when its tick
+    // ended in a SKIP — real AI calls pass kvMarker:false and are surfaced by
+    // the decision row they wrote.
+    //
+    // The model's reasoning outranks a bare gate stub while it is still CURRENT:
+    // a real decision from the last tick stays up, so an AI call is not buried
+    // by the routine skip 15 minutes behind it. It is retired once a whole cycle
+    // has passed without a new one — reasoning older than a tick no longer says
+    // what the pipeline is doing. A row that was itself a pre-AI skip carries no
+    // reasoning to protect, so the freshest gate always wins there.
+    if (wantsLatest && platform) {
+      const marker = await readSwingLastScan(platform, symbolRaw).catch(() => null);
+      const markerTs = Number(marker?.ts);
+      const stage = typeof marker?.stage === 'string' ? marker.stage : '';
+      const rowTs = payload.lastDecisionTs ?? 0;
+      const rowWasPreAiSkip =
+        payload.lastDecision?.decision_source === 'pre_ai_skip' ||
+        payload.lastDecision?.promptSkipped === true;
+      const supersedes = rowWasPreAiSkip || scanIsLaterTickThan(markerTs, rowTs);
+      if (stage && Number.isFinite(markerTs) && markerTs > rowTs && supersedes) {
+        const reason = typeof marker?.reason === 'string' && marker.reason ? marker.reason : stage;
+        payload = {
+          ...payload,
+          platform,
+          // Same shape persistPreAiSkip writes for an hourly gate skip, so the
+          // panel renders it exactly as it renders a persisted one.
+          lastDecisionTs: markerTs,
+          lastDecision: {
+            action: 'HOLD',
+            bias: 'NEUTRAL',
+            signal_strength: 'LOW',
+            summary: stage,
+            reason,
+            decision_source: 'pre_ai_skip',
+            promptSkipped: true,
+            skipStage: stage,
+          } as DecisionPayload['lastDecision'],
+          // Belong to the superseded row, not to this tick.
+          lastPrompt: null,
+          lastMetrics: null,
+          lastBiasTimeframes: null,
+        };
+      }
     }
   } catch (err) {
     console.warn(`Could not load latest decision for ${symbolRaw}:`, err);

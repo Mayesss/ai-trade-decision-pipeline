@@ -18,6 +18,24 @@ const TTL_SECONDS = 7 * 24 * 60 * 60;
 const TICK_LOG_KEY_PREFIX = 'swing:scanTicks:v1';
 const TICK_LOG_MAX_ENTRIES = 400;
 
+// One analyze cron cycle (vercel.json runs the symbol crons */15), plus grace
+// for cron slip. A decision row is timestamped AFTER its AI call while the next
+// tick's marker lands a second into that tick, so a row from the immediately
+// preceding tick sits ~14-15 min behind the marker and a row from two ticks ago
+// sits ~29 min behind — the grace separates them without retiring reasoning a
+// cycle early when a tick fires late.
+export const TICK_CYCLE_MS = 15 * 60 * 1000;
+const TICK_SLIP_GRACE_MS = 3 * 60 * 1000;
+
+/**
+ * Is `markerTs` a scan from a LATER tick than the decision row at `rowTs` —
+ * i.e. has a whole cycle passed with no new decision row? Used by the dashboard
+ * to decide when a decision has stopped describing what the pipeline is doing.
+ */
+export function scanIsLaterTickThan(markerTs: number, rowTs: number): boolean {
+    return markerTs - rowTs > TICK_CYCLE_MS + TICK_SLIP_GRACE_MS;
+}
+
 export type LastScanMarker = {
     ts: number;
     // Set when the scan ended in an UNPERSISTED quarter-tick skip — the gate

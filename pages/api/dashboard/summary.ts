@@ -23,6 +23,7 @@ import { loadDecisionHistory, extractCapturedLeverages, type DecisionHistoryEntr
 import {
   readSwingLastScan,
   readSwingLastScanMany,
+  scanIsLaterTickThan,
   swingLastScanKey,
   type LastScanMarker,
 } from '../../../lib/swing/lastScan';
@@ -487,12 +488,30 @@ export async function buildAndCacheSwingSummary(
         lastScanStage = lastScan?.stage ?? null;
         lastScanReason = lastScan?.reason ?? null;
         const latest = history[0];
+        // The three short-circuit gates (primary_close_gate,
+        // session_window_gate, flat_cooldown) write a tick_log row and stamp
+        // the scan marker but never a decision row, so `latest` can be hours
+        // older than the last tick. A marker carries a stage only when its tick
+        // ended in a skip (real AI calls pass kvMarker:false), so a staged
+        // marker newer than the row is the better read of what just happened.
+        const latestTs = Number(latest?.timestamp) || 0;
+        const scanIsNewer =
+          Boolean(lastScanStage) && typeof lastScanAt === 'number' && lastScanAt > latestTs;
+        // Whether it also overrides the DECISION the row carries. A real AI call
+        // from the last tick is still current and keeps the tab on its verdict;
+        // once a whole cycle passes with no new one, the gate is the honest
+        // answer. A pre-AI skip row has no verdict worth holding onto.
+        const scanSupersedesDecision =
+          scanIsNewer &&
+          (latest?.aiDecision?.decision_source === 'pre_ai_skip' ||
+            latest?.aiDecision?.promptSkipped === true ||
+            scanIsLaterTickThan(Number(lastScanAt), latestTs));
         const isRealAiCall = (entry: (typeof history)[number]): boolean =>
           entry.aiDecision?.decision_source !== 'pre_ai_skip' &&
           !entry.aiDecision?.promptSkipped;
         // Was the most recent decision (history is newest-first) a real AI call,
         // or a calm-market / below-min-signal-strength pre-AI skip?
-        lastWasAiCall = latest ? isRealAiCall(latest) : false;
+        lastWasAiCall = scanSupersedesDecision ? false : latest ? isRealAiCall(latest) : false;
         // …and when did the AI last actually look at this symbol, regardless of
         // how many skip rows landed since — plus what it decided.
         const latestAiCall = history.find(isRealAiCall);
@@ -503,7 +522,12 @@ export async function buildAndCacheSwingSummary(
         // Venue closed at the last cron tick — analyze.ts skips before the AI
         // with skipStage === 'capital_market_closed'. Crypto (bitget) never
         // hits this gate, so it stays open 24/7.
-        marketClosed = latest?.aiDecision?.skipStage === 'capital_market_closed';
+        // Pure current state, so it takes the freshest signal unconditionally:
+        // a venue that closed one tick ago must grey the tab now, even while a
+        // still-current AI decision holds the panel above.
+        marketClosed = scanIsNewer
+          ? lastScanStage === 'capital_market_closed'
+          : latest?.aiDecision?.skipStage === 'capital_market_closed';
         if (latest) {
           category =
             typeof latest.category === 'string'
