@@ -535,6 +535,15 @@ rediscover the hard way. Newest last.
 - **2026-09-16** — Decision model back to `zai/glm-5.3` (owner decision, cost).
   The R sample start moves to this deploy: everything since 09-11 was a
   different geometry, cadence, universe and model.
+- **2026-09-16** — Post-deploy: dashed resting-entry lines drawn to "now" or to
+  the 48h backstop on BTCUSDT and EURUSD were chart artifacts, not orders.
+  Cause: the window builder read fills only inside the chart window and gate
+  withdrawals only from the ticks the client had loaded, so an order issued
+  before the window could never be ended. Fixed server-side: fills and
+  `…_resting_entry_withdrawn` ticks are read over the same 48h lookback as the
+  issuing decisions. Also found: the 08:00 UTC look died on a gateway 402 (no
+  credit balance) and the 12:00 close was skipped as off-boundary — the daily
+  look is now owed until served (§12).
 
 ---
 

@@ -122,3 +122,54 @@ test('a resting entry with no cancel is still capped by the age backstop', () =>
   assert.equal(windows.length, 1);
   assert.equal(windows[0].toTime, (NOW - 24 * 60 * MIN) / 1000);
 });
+
+test('a gate withdrawal in the tick log ends the window there and marks it withdrawn (2026-09-16 EURUSD)', () => {
+  // SELL issued 50h ago, withdrawn by a session window 4h later, no decision
+  // row ever recorded the cancel. Without the tick it would draw to the 48h
+  // backstop (2h ago); with it, it ends at the withdrawal.
+  const withdrawnAt = NOW - 46 * 60 * MIN;
+  const windows = buildRestingEntryWindows({
+    nowMs: NOW,
+    history: [decision(50 * 60, { action: 'SELL', entry_limit_price: 1.1577 })],
+    positions: [],
+    pendingOrders: [],
+    withdrawalsMs: [withdrawnAt],
+  });
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].toTime, withdrawnAt / 1000);
+  assert.equal(windows[0].withdrawn, true);
+  assert.equal(windows[0].filled, false);
+});
+
+test('a withdrawal before the issue or after the natural end does not clip, and a fill wins over a later withdrawal', () => {
+  const issuedAt = NOW - 10 * 60 * MIN;
+  const filledAt = NOW - 8 * 60 * MIN;
+  const windows = buildRestingEntryWindows({
+    nowMs: NOW,
+    history: [decision(10 * 60, { action: 'BUY', entry_stop_price: 77750 })],
+    positions: [{ side: 'long', entryTime: filledAt / 1000, entryPrice: 77760 }],
+    pendingOrders: [],
+    // one before the issue, one after the fill
+    withdrawalsMs: [issuedAt - 60 * MIN, NOW - 6 * 60 * MIN],
+  });
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].filled, true);
+  assert.equal(windows[0].withdrawn, undefined);
+  assert.equal(windows[0].toTime, filledAt / 1000);
+});
+
+test('a live resting order does not revive a withdrawn chain at the same price; it opens a fresh segment', () => {
+  const withdrawnAt = NOW - 5 * 60 * MIN;
+  const windows = buildRestingEntryWindows({
+    nowMs: NOW,
+    history: [decision(8 * 60, { action: 'SELL', entry_limit_price: 100 })],
+    positions: [],
+    pendingOrders: [{ side: 'sell', price: 100, createdAtMs: NOW - 60 * MIN }],
+    withdrawalsMs: [withdrawnAt],
+  });
+  assert.equal(windows.length, 2);
+  assert.equal(windows[0].toTime, withdrawnAt / 1000);
+  assert.equal(windows[0].withdrawn, true);
+  assert.equal(windows[1].fromTime, (NOW - 60 * MIN) / 1000);
+  assert.equal(windows[1].toTime, NOW / 1000);
+});

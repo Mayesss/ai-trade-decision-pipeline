@@ -20,6 +20,9 @@ export type RestingEntryWindow = {
   fromTime: number;
   toTime: number;
   filled: boolean;
+  // The segment ends because a schedule gate WITHDREW the order (tick log),
+  // not because the model cancelled it or it aged out.
+  withdrawn?: boolean;
 };
 
 // Structural views of the rows this reads: indexed decision history, the chart
@@ -64,8 +67,19 @@ export function buildRestingEntryWindows(params: {
   history: DecisionRow[] | null | undefined;
   positions: PositionRow[];
   pendingOrders: PendingOrderRow[];
+  // Tick-log times (ms) at which a schedule gate withdrew the standing resting
+  // entry (analyze.ts session_window_gate "…_resting_entry_withdrawn"). Those
+  // withdrawals never become decision rows, so without them a withdrawn order
+  // draws on to the age backstop — measured 2026-09-16 on EURUSD (a SELL
+  // withdrawn on the 14th drawn for the full 48h) and BTCUSDT. Read over the
+  // same lookback as `history`; the caller decides the range.
+  withdrawalsMs?: number[];
 }): RestingEntryWindow[] {
   const { nowMs, positions, pendingOrders } = params;
+  const withdrawalsMs = (params.withdrawalsMs || [])
+    .map((t) => Number(t))
+    .filter((t) => Number.isFinite(t) && t > 0)
+    .sort((a, b) => a - b);
   const history = params.history || [];
   const restRows = history
     .filter((h) => {
@@ -142,12 +156,24 @@ export function buildRestingEntryWindows(params: {
       const opened = positionEntries.find((e) => e.ms > chain.firstMs + FILL_GRACE_MS && e.ms <= endMs);
       if (opened) endMs = Math.max(opened.ms, chain.firstMs + 60_000);
     }
+    // A gate withdrawal inside the window ends it there — unless the order
+    // filled first, in which case the fill is the truth and the later tick is
+    // about a different order.
+    let withdrawn = false;
+    if (fill === undefined) {
+      const cut = withdrawalsMs.find((t) => t > chain.lastMs && t < endMs);
+      if (cut !== undefined) {
+        endMs = Math.max(cut, chain.firstMs + 60_000);
+        withdrawn = true;
+      }
+    }
     return {
       side: chain.side,
       price: chain.price,
       fromTime: Math.floor(chain.firstMs / 1000),
       toTime: Math.floor(endMs / 1000),
       filled: fill !== undefined,
+      ...(withdrawn ? { withdrawn: true } : {}),
     };
   });
 
@@ -158,6 +184,7 @@ export function buildRestingEntryWindows(params: {
     const chain = windows.find(
       (s) =>
         !s.filled &&
+        !s.withdrawn &&
         s.side === order.side &&
         s.price === order.price &&
         (order.createdAtMs == null || order.createdAtMs / 1000 <= s.toTime + 120),

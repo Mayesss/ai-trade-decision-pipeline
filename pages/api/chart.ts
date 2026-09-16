@@ -15,6 +15,7 @@ import { requireAdminAccess } from '../../lib/admin';
 import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 import {
   loadClosedSwingPositions,
+  loadSwingTickLog,
   loadSwingBracketTrail,
   getSwingAiCooldown,
   getSwingAiThread,
@@ -589,11 +590,57 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Resting-entry windows (side-colored dashed segments at the resting price),
     // built from the indexed decisions, the position overlays and the live
     // resting orders — see lib/swing/restingEntryWindows.ts for the rest rules.
+    //
+    // Two inputs are read over the SAME 48h lookback as the history, not the
+    // chart window, because an order issued before the window can only be
+    // ended by evidence that may also sit before it (2026-09-16: BTCUSDT's
+    // stop entry from the 15th filled and closed outside a 1D window and drew
+    // as still resting; EURUSD's SELL from the 14th was withdrawn by a session
+    // gate and drew to the 48h backstop):
+    //  - closed positions, so a fill before the window clips its chain;
+    //  - tick-log withdrawals, which never become decision rows. The client
+    //    clips on the ticks it has too (ChartPanel clipSegmentsAtWithdrawals),
+    //    but it only holds the visible window's ticks.
+    const [restingFills, restingWithdrawalsMs] = await Promise.all([
+      loadClosedSwingPositions({
+        platform,
+        symbol,
+        fromMs: restingHistoryFromMs,
+        toMs: nowMs,
+        limit: 200,
+      }).catch((err) => {
+        console.warn(`resting-window fills read failed for ${symbol}:`, err);
+        return [];
+      }),
+      loadSwingTickLog({ symbol, platform, fromMs: restingHistoryFromMs, toMs: nowMs, limit: 5000 })
+        .then((rows) =>
+          rows
+            .filter(
+              (r) =>
+                r.kind === 'skip' &&
+                typeof r.reason === 'string' &&
+                r.reason.endsWith('_resting_entry_withdrawn'),
+            )
+            .map((r) => Number(r.tsMs)),
+        )
+        .catch((err) => {
+          console.warn(`resting-window withdrawals read failed for ${symbol}:`, err);
+          return [] as number[];
+        }),
+    ]);
     const limitOrders = buildRestingEntryWindows({
       nowMs,
       history: restingHistory,
-      positions,
+      positions: [
+        ...positions,
+        ...restingFills.map((p) => ({
+          side: p.side,
+          entryTime: typeof p.entryTimestamp === 'number' ? p.entryTimestamp / 1000 : null,
+          entryPrice: p.entryPrice,
+        })),
+      ],
       pendingOrders,
+      withdrawalsMs: restingWithdrawalsMs,
     });
 
     // Cooldown wake bands: each flat-HOLD cooldown draws its wake_above/below
