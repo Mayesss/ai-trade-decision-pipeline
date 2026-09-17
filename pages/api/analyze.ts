@@ -3999,12 +3999,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // replaces any stale row while previous_response_id keeps a re-issued
         // limit on its original conversation). An in-position tick ADVANCES the
         // chain head (HOLD / partial CLOSE / REVERSE — the reversal keeps its
-        // conversation). A full CLOSE that executed ends it, and so does a flat
-        // tick that chained onto a resting limit's conversation but did NOT
-        // re-issue (entry dropped → conversation over; also cleans up a
-        // lingering row when the order vanished before the sweep). TP/SL fills
-        // between ticks are caught by the reconcile at the top of the next
-        // tick. Best-effort, never blocks the trading path.
+        // conversation). A flat tick whose order is still RESTING keeps the
+        // thread on pending_entry: the look managed the order (kept it), so the
+        // conversation continues and the row keeps representing the committed
+        // capital. A full CLOSE that executed ends the thread, and so does a
+        // flat tick with nothing standing — entry dropped, or the order vanished
+        // before the sweep. TP/SL fills between ticks are caught by the
+        // reconcile at the top of the next tick. Best-effort, never blocks the
+        // trading path.
         if (!dryRun && aiResponseId) {
             try {
                 const entryPlacedNow =
@@ -4054,6 +4056,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         platform,
                         symbol,
                         status: 'in_position',
+                        lastResponseId: aiResponseId,
+                        dialect: activeDialect,
+                        transcript: nextTranscript,
+                    });
+                } else if (standingEntry) {
+                    // Flat, nothing placed THIS tick, but the model's order is
+                    // still on the venue — the routine "keep the resting limit"
+                    // look. `standingEntry` is the venue read, nulled above
+                    // whenever the order actually went away (aged out,
+                    // superseded, withdrawn), so this cannot resurrect a
+                    // cancelled order. Without this branch the catch-all below
+                    // ended the thread while capital was still committed
+                    // (2026-09-17 USDJPY: limit resting at 155.34, the 08:00
+                    // look said "keep it", the thread was deleted anyway) —
+                    // which drops the symbol out of the dashboard's
+                    // pending-entry pill, stops the portfolio cap counting it,
+                    // and throws away the conversation that placed it.
+                    await upsertSwingAiThread({
+                        platform,
+                        symbol,
+                        status: 'pending_entry',
                         lastResponseId: aiResponseId,
                         dialect: activeDialect,
                         transcript: nextTranscript,
@@ -4273,13 +4296,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // force) — the cohort that used to be entered mechanically. Kept
             // as its own stage so "does the model convert its own confirmed
             // plans now that it has stop orders?" stays one SQL query.
+            // 'session_window_owed' is the look the session-window gate
+            // DEFERRED to the window's end, not the scheduled cadence look.
+            // Both used to record as 'decision', which made the daily cadence
+            // unauditable: USDJPY 2026-09-17 logged three identical 'decision'
+            // calls when only the 08:00 one was scheduled (the other two were
+            // owed looks released at the Tokyo and London opening-drive window
+            // ends). Ranked below the move-triggered fires — those are the more
+            // specific reason when a tick is both.
             stage: confirmedWakeFire
                 ? 'confirmed_wake'
                 : reclaimWake
                   ? 'reclaim_wake'
                   : sessionReclaim
                     ? 'session_reclaim'
-                    : 'decision',
+                    : sessionWindowOwedLook
+                      ? 'session_window_owed'
+                      : 'decision',
             reason: String(decision.action || 'HOLD'),
             gates: gatesOut.gates,
             metrics: gatesOut.metrics,
