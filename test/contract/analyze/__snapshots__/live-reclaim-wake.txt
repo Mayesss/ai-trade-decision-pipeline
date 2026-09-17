@@ -664,19 +664,6 @@ GET https://api.bitget.com/api/v2/mix/market/funding-time?productType=usdt-futur
   content-type: application/json
   locale: en-US
 
-SQL neon-postgres
-  {
-    "text": "SELECT id, scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts, status, updated_at FROM swing.lessons WHERE status = 'active' AND ( scope = 'global' OR (scope = 'symbol' AND $1::text IS NOT NULL AND symbol = $2) OR (scope = 'symbol' AND $3::boolean = TRUE) OR (scope = 'asset_class' AND $4::text IS NOT NULL AND asset_class = $5) ) ORDER BY confidence DESC, support_count DESC, updated_at DESC LIMIT $6;",
-    "values": [
-      "BTCUSDT",
-      "BTCUSDT",
-      false,
-      "crypto",
-      "crypto",
-      100
-    ]
-  }
-
 GET https://data-api.coindesk.com/news/v1/article/list?categories=BTC&limit=25&lang=EN
   authorization: Bearer <TOKEN>
 
@@ -941,24 +928,6 @@ SQL neon-postgres
       false,
       "{\"spread_ok\":true,\"liquidity_ok\":true,\"atr_ok\":true,\"slippage_ok\":true,\"regime_trend_up\":true,\"regime_trend_down\":false,\"tier\":\"BTC\"}",
       "{\"spreadBpsNow\":0.012895954153054442,\"bandBps\":50,\"bidBandUsdNow\":11031919.966790002,\"askBandUsdNow\":11475279.75545,\"expectedSlippageBps\":0.006447972917822398,\"atrPctNow\":0.038354317814157886,\"spreadBpsMax\":3,\"depthMinUSD\":1000000,\"atrPctFloor\":0.003429285639896449,\"atrPctCeil\":0.07348469228349533,\"slippageBpsMax\":2}"
-    ]
-  }
-
-SQL neon-postgres
-  {
-    "text": "INSERT INTO swing.postmortems ( platform, symbol, position_key, trigger_source, side, entry_ts_ms, exit_ts_ms, entry_price, exit_price, pnl_pct, pnl_net ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 ) ON CONFLICT (platform, position_key) DO NOTHING RETURNING id;",
-    "values": [
-      "bitget",
-      "BTCUSDT",
-      "refusal:BTCUSDT:<NOW_MS>",
-      "refusal",
-      null,
-      <NOW_MS>,
-      <NOW_MS>,
-      77543.7,
-      null,
-      null,
-      null
     ]
   }
 

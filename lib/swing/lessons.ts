@@ -13,8 +13,16 @@
 // (symbol ∪ its asset class ∪ global), confidence-sorted, capped per scope
 // bucket (PROMPT_LESSON_SCOPE_CAPS), and render them as a cautionary block in
 // the USER prompt (the cached system prefix stays byte-stable).
-// SWING_LESSONS_MODE=off disables injection; the library keeps building
-// regardless.
+//
+// OFF BY DEFAULT since 2026-09-17. The library overfits: 21 of 41 active rows
+// rested on a single post-mortem, 35 of 41 carried a hand-invented numeric
+// threshold (15 distinct ATR values between 0.05 and 2), and nothing has ever
+// scored a lesson against the decisions it was shown at — there is no
+// lesson_impressions table, so every row is in-sample by construction. The
+// write side is off too (SWING_POSTMORTEM_MODE, postmortem.ts), so no new
+// lessons are minted while injection is off. SWING_LESSONS_MODE=on restores
+// injection from the library as it stands; the rows are untouched, and the
+// alpha lab reads them (docs/alpha-lab-spec.md).
 import {
     insertSwingLesson,
     loadActiveSwingLessons,
@@ -45,7 +53,9 @@ export function resolveSwingLessonsMode(): SwingLessonsMode {
     const raw = String(process.env.SWING_LESSONS_MODE || '')
         .trim()
         .toLowerCase();
-    return raw === 'off' ? 'off' : 'on';
+    // Default 'off' — injection is opt-in now (see the header). Only the
+    // explicit string turns it back on; anything else, unset included, is off.
+    return raw === 'on' ? 'on' : 'off';
 }
 
 // originLabel: compact human provenance ("2 losses, 1 missed entry") rendered

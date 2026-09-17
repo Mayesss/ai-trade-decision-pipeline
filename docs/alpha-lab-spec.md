@@ -898,3 +898,124 @@ not cash — but it is the number to keep in view when reading the burn rate.
 - Changeover = the deploy timestamp; split every read at it (§9.6).
 - Then as §11: refusal counts first, burn rate second, R at a pre-set count.
 
+
+---
+
+## 13. Lesson loop off — applied 2026-09-17
+
+### Why
+
+The lesson library overfits, measured against the live rows on 09-17:
+
+- **41 active lessons, 21 of them resting on a single post-mortem.** Symbol
+  scope (27 rows) averages 1.26 supporting post-mortems and is single-symbol by
+  construction.
+- **35 of 41 carry a hand-invented numeric threshold** — 15 distinct ATR values
+  between 0.05 and 2.0 (0.5 nine times, 0.3 eight, 0.1 six, 0.25 twice), and 30
+  carry a minute threshold as well. One-to-four trades cannot distinguish 0.25
+  from 0.3 ATR; that precision is noise written down as doctrine.
+- **`confidence` is a self-report that only rises** — `mergeSwingLesson` takes
+  `max(new, existing)` and only an explicit `revise` lowers it. The prompt's
+  per-scope caps then select what the model sees *by that number*, so the
+  selection criterion is the one field with no feedback.
+- **The evidence channel is one-way.** 253 `right_to_skip` post-mortems against
+  27 `wrong_to_skip`, and `right_to_skip` is hard-gated to reinforce-only.
+  Vetoes accumulate support; permissions structurally cannot. Half the active
+  rows open with "Never / Do not / Veto".
+- **Nothing has ever been tested out of sample.** There is still no
+  `lesson_impressions` table, so no lesson has been joined to the decisions it
+  was shown at. Gap 1 of `docs/opinionation-and-learning-loop.md` is open, and
+  every row is in-sample by construction.
+- **No decay, no expiry.** 58 of the 77 rows ever written were minted in the
+  two weeks around the stop-floor removal, ~20 of them restatements of "put the
+  floor back". The floor returned in §11; nothing removes lessons fitted to the
+  regime that no longer exists.
+
+What survives the criticism is the code-owned scope ladder: every `global` row
+is backed by 4–9 distinct symbols and 4–20 distinct positions. That mechanism —
+not the rows it produced — is what §1.3's correlation-gated library admission
+should inherit.
+
+### What changed
+
+| Lever | Before | After | Where |
+|---|---|---|---|
+| Lesson injection | on | **off** (env `SWING_LESSONS_MODE=on` restores) | `resolveSwingLessonsMode`, `lib/swing/lessons.ts` |
+| Post-mortem analyst | `all` (losses + wins + refusals) | **off** (env `SWING_POSTMORTEM_MODE=all\|loss` restores) | `resolveSwingPostmortemMode`, `lib/swing/postmortem.ts` |
+| Lesson prose in the prompt | failed-break doctrine cited "your own post-mortem lesson standard" | **no mention of lessons on a lesson-free tick** | `prompt.ts`; asserted in `prompt.situationalDoctrine.test.ts` |
+| Decision model | `zai/glm-5.3` | **unchanged** — opus-5 priced and rejected, below | `DEFAULT_AI_MODEL`, `lib/constants.ts` |
+
+Rows are untouched: 41 active lessons and 469 post-mortems stay readable for
+the lab. Manual and backfill post-mortem triggers still bypass the mode filter,
+so a single analysis can be asked for on demand.
+
+**Why both halves go, not just injection.** The analyst pass exists to feed the
+library. With injection off its only product is unread rows — bought as the
+pipeline's largest token consumer by a wide margin: 255 calls over the 14 days
+to 09-16 spent 9.9M input and 1.35M output tokens, at ~39k input per call with
+essentially no cache reads (51k cached out of 9.9M). That is ~$21/month at GLM
+promo pricing, ~$43 at list, for rows nothing reads.
+
+**And the prompt must not mention what it no longer has.** The `LESSONS` block
+and its doctrine paragraph were already gated on the payload; the failed-break
+doctrine was not, and told the model a break "has FAILED by your own
+post-mortem lesson standard". An instruction that cites a memory the model does
+not have is worse than silence — it invites acting on one. Now cut, with a unit
+test asserting `/lesson/i` matches nothing in a lesson-free tick's prompt.
+
+### opus-5: measured, then rejected
+
+The freed budget was nearly spent on `anthropic/claude-opus-5` for the decision
+call (registry `agent_loop_hard`: 96% of the top bench score at half the output
+price of `fable-5.1` / `gpt-6-astra`). It was measured rather than modelled — a
+real 09-16 prompt replayed twice through the gateway at effort `high`, the
+second pass confirming the 1h cache breakpoint:
+
+| | opus-5, measured | glm-5.3 |
+|---|---|---|
+| Cached system block | 8,996 tok @ $0.50/1M read, $6.25 write | @ $0.12/1M read |
+| Uncached input | 4,916 tok @ $5/1M | @ $0.70/1M |
+| Output | 1,379–1,516 tok @ $25/1M | @ $2.20/1M |
+| Per decision | **$0.117 cold / $0.065 warm** | **~$0.010** |
+| Latency | 20–23 s | sub-second TTFT |
+
+Monthly, with the analyst already off: ~$24 at the scheduled 9 calls/day, ~$45
+at 15/day, ~$81 at 25/day — against ~$3–8 for the same traffic on GLM. **Owner
+decision: not at this account size.** §12's equity note is the context — at $81
+of equity, $80/month of inference is not a rounding error, and nothing measured
+says the decision quality gap is worth it. The 09-16 reasoning for GLM stands
+unchanged.
+
+What the exercise did establish, and is worth keeping: the decision prompt is
+**13,912 tokens**, 8,996 of them in the cacheable system block, and the 1h
+breakpoint works exactly as designed.
+
+### Trap found on the way, for whoever changes the model next
+
+`SWING_AI_PROVIDER` is **set in Production** (Secret, 58 days old, value not
+readable from the CLI). `resolveSwingAiDialect` honours it *over* the model id,
+so changing `DEFAULT_AI_MODEL` to an Anthropic id while that var still reads
+`openai`/`responses` routes the tick to the Responses client and runs
+`FALLBACK_AI_MODEL` instead — the old model, with nothing in the logs saying
+so. Any future swap across dialects must set or clear that var in the same
+deploy, and confirm the vendor on the decision row afterwards. It is also the
+no-deploy rollback in the other direction.
+
+Nothing to do for this deploy: the model did not change, so the dialect did
+not either.
+
+### How to read it
+
+- Changeover = the deploy timestamp; split every read at it (§9.6). One change
+  only, and it IS a prompt change: the lesson block and its doctrine paragraph
+  leave the user turn on the ~10% of ticks that carried them.
+- Post-mortems stop accruing, so the weekly digest's verdict counts freeze.
+  `right_to_skip` / refusal investigations no longer answer "was that skip
+  right" — that question moves to the lab's skip counterfactual.
+- Expect the AI-call count to fall to roughly the scheduled 9/day plus wakes,
+  with no analyst traffic behind it — and the monthly bill with it, by the
+  ~$21–43 the analyst was costing.
+- Decision rows do not persist `usage`, so the table above had to be measured
+  out of band. Storing the `usage` the provider already returns
+  (`SwingDecisionCallResult`) on the decision row would make the next model
+  question a query instead of a probe.

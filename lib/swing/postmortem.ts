@@ -1,7 +1,8 @@
 // Post-loss trade post-mortems (phase 2). When a closed position lands in
 // swing.positions the close-persistence paths call maybeEnqueueSwingPostmortem;
-// losses (default — SWING_POSTMORTEM_MODE=all|off widens/kills the filter) get
-// one row in swing.postmortems and a detached worker request. The worker
+// with SWING_POSTMORTEM_MODE=loss|all (OFF BY DEFAULT since 2026-09-17) a
+// qualifying close gets one row in swing.postmortems and a detached worker
+// request. The worker
 // (pages/api/swing/postmortem.ts) rebuilds the trade's full tick series from
 // swing.decisions (prompts included) + swing.tick_log, feeds the dossier to the
 // swing AI provider with a forensic prompt, and persists the report plus a 1-2
@@ -49,10 +50,16 @@ export function resolveSwingPostmortemMode(): SwingPostmortemMode {
         .trim()
         .toLowerCase();
     if (raw === 'all' || raw === 'off' || raw === 'loss') return raw;
-    // 'all' since win evaluations (docs/win-evaluation.md): losses get the
-    // loss analyst, wins the win-evaluation analyst — the runner branches by
-    // PnL sign. 'loss' restores the old losses-only behavior.
-    return 'all';
+    // Default 'off' since 2026-09-17. The analyst pass exists to feed the
+    // lesson library, and the library overfits (see lessons.ts header): with
+    // injection off the analyst's only product is unread rows, bought at
+    // ~39k input / 5.3k output tokens per call with ~0% cache reads — the
+    // most expensive traffic in the pipeline by a wide margin (255 calls =
+    // 9.9M input tokens over the 14 days to 09-16). 'all' restores losses +
+    // wins + refusal investigations, 'loss' the losses-only filter. Manual
+    // and backfill triggers bypass this filter entirely, so an operator can
+    // still ask for a single post-mortem on demand.
+    return 'off';
 }
 
 // Sign is all that matters; prefer net over gross, absolute over pct only in

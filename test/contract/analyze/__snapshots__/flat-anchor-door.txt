@@ -651,19 +651,6 @@ GET https://api.bitget.com/api/v2/mix/market/candles?granularity=1H&limit=172&pr
   content-type: application/json
   locale: en-US
 
-SQL neon-postgres
-  {
-    "text": "SELECT id, scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts, status, updated_at FROM swing.lessons WHERE status = 'active' AND ( scope = 'global' OR (scope = 'symbol' AND $1::text IS NOT NULL AND symbol = $2) OR (scope = 'symbol' AND $3::boolean = TRUE) OR (scope = 'asset_class' AND $4::text IS NOT NULL AND asset_class = $5) ) ORDER BY confidence DESC, support_count DESC, updated_at DESC LIMIT $6;",
-    "values": [
-      "ETHUSDT",
-      "ETHUSDT",
-      false,
-      "crypto",
-      "crypto",
-      100
-    ]
-  }
-
 GET https://data-api.coindesk.com/news/v1/article/list?categories=ETH&limit=25&lang=EN
   authorization: Bearer <TOKEN>
 

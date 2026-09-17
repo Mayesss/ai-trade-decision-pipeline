@@ -14,6 +14,14 @@ export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
 // through the gateway — see dialectForAiModel in lib/aiModel.ts; GLM has no
 // json_schema mode, which is why schema calls go out as forced tool calls
 // (lib/gatewayResponses.ts).
+//
+// 2026-09-17: anthropic/claude-opus-5 was priced and rejected. Measured on a
+// real prompt through the gateway (effort high, adaptive thinking): 8,996
+// cached + 4,916 uncached input, ~1,450 output, 20-23s — $0.117 cold / $0.065
+// warm per decision against ~$0.010 here, i.e. ~$24/month at the scheduled 9
+// calls a day and ~$81 at the wake volume actually observed. Not worth it at
+// this account size; the lesson loop went off the same day anyway
+// (docs/alpha-lab-spec.md §13), which is where the analyst's token budget was.
 export const DEFAULT_AI_MODEL = 'zai/glm-5.3';
 export const FALLBACK_AI_MODEL = 'anthropic/claude-opus-4.8';
 export const AI_BASE_URL = 'https://ai-gateway.vercel.sh/v1';

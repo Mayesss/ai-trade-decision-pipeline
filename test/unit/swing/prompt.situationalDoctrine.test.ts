@@ -182,6 +182,19 @@ const cases: Array<[string, Opts, string]> = [
     ],
 ];
 
+// The lesson library is OFF in production (SWING_LESSONS_MODE, 2026-09-17), so
+// loadPromptLessons hands this assembler []. The model must then not be told
+// that lessons exist at all — an instruction about a block it never receives is
+// worse than silence, it invites the model to act on a memory it does not have.
+// The failed-break tick is included because its doctrine used to cite "your own
+// post-mortem lesson standard" unconditionally, which is exactly this leak.
+test('no lessons on the tick: the word never reaches the model', () => {
+    for (const opts of [{}, { failedBreak: { bar_close: 100, side: 'long', bar_closed_minutes_ago: 5 } }]) {
+        const sys = systemFor(opts);
+        assert.ok(!/lesson/i.test(sys), `lesson-free tick leaked: ${/.{0,90}lesson.{0,90}/i.exec(sys)?.[0]}`);
+    }
+});
+
 for (const [name, opts, phrase] of cases) {
     test(`${name}: doctrine renders in the situational tail when its payload is present`, () => {
         const sys = systemFor(opts);

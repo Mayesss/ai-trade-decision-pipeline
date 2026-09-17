@@ -345,19 +345,6 @@ GET https://api-capital.backend-capital.com/api/v1/prices/EURUSD?max=130&resolut
 POST https://kv.boundary.test/GET/news%3Amarketaux%3AEUR
   authorization: Bearer <TOKEN>
 
-SQL neon-postgres
-  {
-    "text": "SELECT id, scope, symbol, asset_class, lesson, confidence, support_count, source_postmortem_ids, origin_counts, status, updated_at FROM swing.lessons WHERE status = 'active' AND ( scope = 'global' OR (scope = 'symbol' AND $1::text IS NOT NULL AND symbol = $2) OR (scope = 'symbol' AND $3::boolean = TRUE) OR (scope = 'asset_class' AND $4::text IS NOT NULL AND asset_class = $5) ) ORDER BY confidence DESC, support_count DESC, updated_at DESC LIMIT $6;",
-    "values": [
-      "EURUSD",
-      "EURUSD",
-      false,
-      "forex",
-      "forex",
-      100
-    ]
-  }
-
 GET https://api.marketaux.com/v1/news/all?symbols=EUR&language=en&limit=25&filter_entities=true&api_token=<TOKEN>
 
 POST https://kv.boundary.test/SETEX/news%3Amarketaux%3AEUR/21600/%7B%22timestamp%22%3A1787943394241%2C%22sentiment%22%3A%22POSITIVE%22%2C%22headlines%22%3A%5B%22Euro%20steadies%20after%20PMI%20beat%22%5D%7D

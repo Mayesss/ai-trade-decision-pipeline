@@ -1255,10 +1255,14 @@ export function computeSwingState(
     // Failed break-entry: the cheapest exit the model will be offered. Gated on
     // the payload (present on ~0.3% of ticks).
     const failedBreakGuidance = hasFailedBreak
-        ? `Failed-break trigger (market.failed_break): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED by your own post-mortem lesson standard, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.`
+        ? `Failed-break trigger (market.failed_break): you entered this position on a break of trigger_price and a ${primaryTimeframe} bar has now CLOSED back through it (bar_close, side, bar_closed_minutes_ago) — the break has FAILED on its own terms, and the first close back through the trigger is usually the cheapest exit you will be offered. Default action: CLOSE. Staying (or trimming instead) requires an explicit CURRENT structural reason stated in your reason — e.g. the close-through was a sweep that has already decisively reclaimed the level — not the entry thesis restated and not hope for a reclaim.`
         : '';
 
     // Lessons doctrine — how to weigh the LESSONS block. Gated on lessons
+    // being present, which is also the kill switch: SWING_LESSONS_MODE is off
+    // by default (lib/swing/lessons.ts), loadPromptLessons then returns [] and
+    // NOTHING about lessons reaches the model — not this paragraph, not the
+    // block below, and no other line in this file may mention them either.
     // actually being attached: measured in prod, only ~10% of ticks carry any,
     // so the other 90% were paying ~1.4K chars to be told how to read a block
     // that wasn't there.
