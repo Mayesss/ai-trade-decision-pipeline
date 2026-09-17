@@ -446,3 +446,131 @@ test("capitalMidPriceFromMarketRow fails quiet on closed markets and junk", () =
   assert.equal(capitalMidPriceFromMarketRow({}), null);
   assert.equal(capitalMidPriceFromMarketRow({ snapshot: { bid: "n/a", offer: -1 } }), null);
 });
+
+// A trim the venue cannot express — the position sits AT minDealSize, so any
+// slice of it quantizes to either nothing or the whole thing. Until 2026-09-17
+// this threw out of the exec path and killed the tick: COPPER lost 2h41m of
+// management to it on 09-16 (36 consecutive ticks, no decision row written).
+// The rule now is the owner's: <50% is dropped, >=50% becomes a full close.
+function minSizePositionFetch(
+  requests: Array<{ method: string; path: string; body: any }>,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = String(init?.method || "GET").toUpperCase();
+    const body =
+      typeof init?.body === "string" && init.body
+        ? JSON.parse(init.body)
+        : null;
+    requests.push({ method, path: url.pathname, body });
+
+    if (method === "POST" && url.pathname === "/api/v1/session") {
+      return new Response("{}", {
+        status: 200,
+        headers: { CST: "test-cst", "X-SECURITY-TOKEN": "test-token" },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/v1/markets/MINSIZETEST") {
+      return Response.json({
+        market: { dealingRules: { minDealSize: { value: 1 } } },
+      });
+    }
+    if (method === "GET" && url.pathname === "/api/v1/positions") {
+      return Response.json({
+        positions: [
+          {
+            market: { epic: "MINSIZETEST" },
+            // Size IS the minimum — no partial slice of it is expressible.
+            position: { dealId: "deal-1", direction: "BUY", size: 1 },
+          },
+        ],
+      });
+    }
+    if (method === "DELETE" && url.pathname === "/api/v1/positions/deal-1") {
+      return Response.json({ dealReference: "full-close-ref" });
+    }
+    return Response.json(
+      { errorCode: `unexpected ${method} ${url.pathname}` },
+      { status: 500 },
+    );
+  }) as typeof fetch;
+}
+
+function withCapitalCreds(t: { onTestFinished: (fn: () => void) => void }) {
+  const originalFetch = globalThis.fetch;
+  const original = {
+    CAPITAL_API_KEY: process.env.CAPITAL_API_KEY,
+    CAPITAL_IDENTIFIER: process.env.CAPITAL_IDENTIFIER,
+    CAPITAL_PASSWORD: process.env.CAPITAL_PASSWORD,
+  };
+  process.env.CAPITAL_API_KEY = "test-key";
+  process.env.CAPITAL_IDENTIFIER = "test-user";
+  process.env.CAPITAL_PASSWORD = "test-pass";
+  t.onTestFinished(() => {
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of Object.entries(original)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+}
+
+test("Capital trim under 50% that the venue cannot size is dropped, not thrown", async (t) => {
+  withCapitalCreds(t);
+  const requests: Array<{ method: string; path: string; body: any }> = [];
+  globalThis.fetch = minSizePositionFetch(requests);
+
+  const result = await executeCapitalDecision(
+    "MINSIZETEST",
+    100,
+    { action: "CLOSE", summary: "trim", reason: "test", exit_size_pct: 30 },
+    false,
+  );
+
+  // The tick survives and says what happened; the position runs on.
+  assert.equal(result.placed, false);
+  assert.equal(result.closed, false);
+  assert.equal(result.note, "trim_below_venue_min_size");
+  assert.equal(
+    requests.some(
+      (r) => r.method === "POST" && r.path === "/api/v1/positions",
+    ),
+    false,
+  );
+  assert.equal(
+    requests.some(
+      (r) => r.method === "DELETE" && r.path === "/api/v1/positions/deal-1",
+    ),
+    false,
+  );
+});
+
+test("Capital trim of 50% or more that the venue cannot size becomes a full close", async (t) => {
+  withCapitalCreds(t);
+  const requests: Array<{ method: string; path: string; body: any }> = [];
+  globalThis.fetch = minSizePositionFetch(requests);
+
+  const result = await executeCapitalDecision(
+    "MINSIZETEST",
+    100,
+    { action: "CLOSE", summary: "trim", reason: "test", exit_size_pct: 60 },
+    false,
+  );
+
+  assert.equal(result.placed, true);
+  assert.equal(result.closed, true);
+  assert.equal(result.partial, false);
+  // The log must not read as if the model asked to close everything.
+  assert.equal(result.note, "trim_escalated_to_full_close");
+  assert.ok(
+    requests.some(
+      (r) => r.method === "DELETE" && r.path === "/api/v1/positions/deal-1",
+    ),
+  );
+  assert.equal(
+    requests.some(
+      (r) => r.method === "POST" && r.path === "/api/v1/positions",
+    ),
+    false,
+  );
+});

@@ -14,7 +14,11 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdminAccess } from '../../../lib/admin';
 import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { claimQueuedSwingPostmortems, isSwingPgConfigured } from '../../../lib/swing/pg';
-import { resolveSwingPostmortemDelayMs, runSwingPostmortem } from '../../../lib/swing/postmortem';
+import {
+    resolveSwingPostmortemDelayMs,
+    resolveSwingPostmortemMode,
+    runSwingPostmortem,
+} from '../../../lib/swing/postmortem';
 
 const DRAIN_LIMIT = 3;
 
@@ -26,6 +30,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     if (!isSwingPgConfigured()) {
         return res.status(200).json({ ok: true, processed: 0, note: 'pg_not_configured' });
+    }
+
+    // The analyst is OFF by default (2026-09-17, lib/swing/postmortem.ts). The
+    // mode gates ENQUEUE — but rows queued before it flipped are still mature
+    // and still claimable, so an ungated drain would make exactly the AI calls
+    // the switch exists to stop (4 refusal rows were sitting queued when it
+    // flipped, maturing hours later). Rows are LEFT QUEUED rather than marked
+    // skipped: turning the analyst back on resumes them where they stand.
+    // /api/swing/postmortem is unaffected — that route is admin-only and is
+    // how an operator asks for one analysis on purpose.
+    if (resolveSwingPostmortemMode() === 'off') {
+        return res.status(200).json({ ok: true, processed: 0, note: 'postmortem_mode_off' });
     }
 
     // AI provider down for a non-self-healing reason (subscription lapse, bad

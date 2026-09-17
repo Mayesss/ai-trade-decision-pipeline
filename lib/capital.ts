@@ -3357,6 +3357,18 @@ async function closeCapitalPosition(
       : fullSize;
   const isPartialClose = partialClosePct !== null && partialClosePct < 100;
 
+  // A trim the VENUE cannot express: quantizing against minDealSize lands the
+  // requested slice at zero, or at the whole position. At this account size
+  // every Capital position sits at or near the minimum deal size, so that is
+  // most trims — and until 2026-09-17 it threw, which killed the whole tick.
+  // COPPER lost 2h41m of management to it on 09-16 (36 consecutive ticks, no
+  // decision row written for any of them) because the model kept asking for a
+  // trim it could not have. Owner's rule, 2026-09-17: a trim of HALF or more
+  // escalates to a full close (the intent is decisively risk-off, and the
+  // venue's only expressible version of it is all of it); anything smaller is
+  // dropped and the position runs on. Either way the tick survives, and the
+  // bracket amend the caller already applied before this point stands.
+  let escalatedFromTrim = false;
   if (isPartialClose) {
     const details = await loadMarketDetails(epic);
     const partialSize = quantizeSize(
@@ -3364,41 +3376,51 @@ async function closeCapitalPosition(
       details.minDealSize,
       details.sizeDecimals,
     );
-    if (
-      !(
-        Number.isFinite(partialSize) &&
-        partialSize > 0 &&
-        Number.isFinite(fullSize as number) &&
-        partialSize < Number(fullSize)
-      )
-    ) {
-      throw new Error("Cannot resolve partial close size for Capital position");
+    const sizable =
+      Number.isFinite(partialSize) &&
+      partialSize > 0 &&
+      Number.isFinite(fullSize as number) &&
+      partialSize < Number(fullSize);
+
+    if (!sizable && (partialClosePct as number) < 50) {
+      return {
+        payload: null,
+        orderId: null,
+        partial: true,
+        // Nothing was sent to the venue — the caller reports this as an
+        // unplaced exit, not as a close.
+        skipped: "trim_below_venue_min_size" as const,
+      };
     }
+    escalatedFromTrim = !sizable;
 
     // Capital's documented DELETE close endpoint is full-close only. Live prod
     // validation showed the sized DELETE variant also closes the whole position.
     // A market order in the opposite direction with forceOpen=false reduces the
     // existing deal without opening a hedge when hedging is off.
-    const payload = (await capitalFetch(
-      "POST",
-      "/api/v1/positions",
-      {},
-      {
-        epic,
-        direction: closeDirection,
-        size: partialSize,
-        orderType: "MARKET",
-        currencyCode: "USD",
-        forceOpen: false,
-        dealReference: clientOid,
-      },
-      true,
-    )) as CapitalDealResponsePayload | null;
-    return {
-      payload,
-      orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
-      partial: true,
-    };
+    if (sizable) {
+      const payload = (await capitalFetch(
+        "POST",
+        "/api/v1/positions",
+        {},
+        {
+          epic,
+          direction: closeDirection,
+          size: partialSize,
+          orderType: "MARKET",
+          currencyCode: "USD",
+          forceOpen: false,
+          dealReference: clientOid,
+        },
+        true,
+      )) as CapitalDealResponsePayload | null;
+      return {
+        payload,
+        orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
+        partial: true,
+      };
+    }
+    // Unsizable and ≥50%: fall through to the DELETE full close below.
   }
 
   const payload = (await capitalFetch(
@@ -3412,6 +3434,10 @@ async function closeCapitalPosition(
     payload,
     orderId: payload?.dealId ?? payload?.dealReference ?? dealId,
     partial: false,
+    // True when the caller asked for a ≥50% trim the venue could not size and
+    // this became a full close instead — the caller surfaces it so the log does
+    // not read as if the model asked to close everything.
+    escalatedFromTrim,
   };
 }
 
@@ -3719,6 +3745,22 @@ export async function executeCapitalDecision(
           })
         : null;
     const closed = await closeCapitalPosition(open, partialClosePct, clientOid);
+    // Trim the venue could not size, under the escalation threshold: nothing
+    // was sent, the position runs on. Reported as an unplaced exit so the
+    // decision row and the dashboard say so — the bracket amend above still
+    // went through, which is the part that matters for an unmanaged position.
+    if ("skipped" in closed && closed.skipped) {
+      return {
+        placed: false,
+        orderId: null,
+        clientOid,
+        closed: false,
+        partial: true,
+        partialClosePct,
+        tpsl: trimTpsl,
+        note: closed.skipped,
+      };
+    }
     return {
       placed: true,
       orderId: closed.orderId,
@@ -3727,6 +3769,10 @@ export async function executeCapitalDecision(
       partial: closed.partial,
       partialClosePct,
       tpsl: trimTpsl,
+      // A ≥50% trim the venue could not express, executed as a full close.
+      ...("escalatedFromTrim" in closed && closed.escalatedFromTrim
+        ? { note: "trim_escalated_to_full_close" }
+        : {}),
     };
   }
 

@@ -1019,3 +1019,66 @@ not either.
   out of band. Storing the `usage` the provider already returns
   (`SwingDecisionCallResult`) on the decision row would make the next model
   question a query instead of a probe.
+
+---
+
+## 14. Two defects found auditing call volume — fixed 2026-09-17
+
+Both surfaced while counting AI calls per day in `swing.tick_log`; neither was
+visible from the dashboard.
+
+### The drain ignored the analyst switch
+
+`SWING_POSTMORTEM_MODE` gates **enqueue** (§13). The cron drain
+(`/api/swing/postmortem-drain`, every 15 min) claimed and ran any mature queued
+row regardless — and four refusal investigations were already sitting queued
+when the switch flipped, created 09-16 18:48–19:46 and maturing 12 h later. They
+would have made four analyst calls a few hours after the analyst was turned off,
+on a cron, with nothing in the dashboard saying so.
+
+The drain now returns `postmortem_mode_off` and claims nothing. Rows are left
+**queued, not skipped**: turning the analyst back on resumes them where they
+stand. `/api/swing/postmortem` is untouched — admin-only, and the way an
+operator asks for one analysis on purpose. Contract test:
+`test/contract/postmortemDrain.contract.test.ts` (any DB query or outbound host
+fails it).
+
+### An unsizeable trim killed the tick
+
+`closeCapitalPosition` threw `Cannot resolve partial close size for Capital
+position` when a trim quantized against `minDealSize` to zero or to the whole
+position. It threw from inside the exec path, so it escaped to the top-level
+handler: the tick died, no decision row was written, and the model's stop
+management in that same decision was lost with it.
+
+**COPPER, 09-16: 36 consecutive ticks over 2 h 41 m (10:01–12:42 UTC) on an open
+position, every one of them lost.** The position was only released at 12:47,
+when the model happened to ask for a 100% close — which quantizes fine. 39
+occurrences all-time since 08-13 (GBPUSD twice, COPPER otherwise); this is the
+same failure class as the Bitget 40762 tick-killer fixed on 07-24.
+
+Root cause is structural at this account size: §12's equity note is $81, so
+every Capital position sits at or near the venue minimum and **most trims are
+inexpressible**. Owner's rule, 2026-09-17:
+
+| Requested trim | Behaviour |
+|---|---|
+| ≥ 50%, unsizeable | **Escalates to a full close** — the intent is decisively risk-off and all of it is the only version the venue can express. `note: trim_escalated_to_full_close` so the log does not read as a model-requested 100% exit. |
+| < 50%, unsizeable | **Dropped.** Position runs on, `placed: false`, `note: trim_below_venue_min_size`. |
+
+Either way the tick survives, and the bracket amend the caller applies *before*
+the trim still lands — which is the part that matters for a position that would
+otherwise go unmanaged. Unit tests in `test/unit/capital.test.ts`.
+
+**Not done:** the model is never told that partial exits are unavailable on an
+instrument, so it will keep asking. A measurement in the prompt ("minimum deal
+size on this epic equals your position size") is the honest fix, and it belongs
+with the §13 style — state the measurement, let the model draw the conclusion.
+
+### Also seen, not fixed
+
+A **402 Payment Required** from the gateway killed 44 ticks between 03:00 and
+09:00 UTC on 09-16 (`stage='ai_unavailable'`, "A positive credit balance is
+required for all requests, including BYOK"). The health flag did its job — the
+drain and the ticks backed off rather than hammering — and it cleared on its
+own, but nothing alerts on it: six hours with no AI at all read as a quiet day.
