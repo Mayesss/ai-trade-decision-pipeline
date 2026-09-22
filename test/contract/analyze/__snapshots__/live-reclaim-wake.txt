@@ -495,6 +495,14 @@ SQL neon-postgres
     ]
   }
 
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
+
 POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Abitget%3ABTCUSDT/0/11
   authorization: Bearer <TOKEN>
 
@@ -943,6 +951,14 @@ SQL neon-postgres
       "BTCUSDT"
     ]
   }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
 
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>

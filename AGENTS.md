@@ -27,6 +27,10 @@ depend downward only — `decisionConfig` ← `signals` ← {`prompt`, `decision
 - `lib/swing/prompt.ts`: `computeSwingState` — builds the STATE/MARKET payloads and the system/user turns.
 - `lib/swing/decisionRules.ts`: what happens to the model's answer (`postprocessDecision` + the field sanitizers). The prompt's "enforced in code" claims ARE these functions.
 - `lib/swing/decisionSchema.ts`: the response JSON schemas (leverage / no-leverage variants).
+- `lib/swing/wakeWorkCache.ts` / `lib/swing/wakeWorkVersion.ts`: KV snapshot of the
+  1-minute wake-watcher's work list. **Any new writer to `swing.ai_cooldowns`,
+  `swing.break_triggers` or `swing.ai_threads` must call `bumpWakeWorkVersion()`**
+  after the write, or the watcher runs on a stale list. See `docs/neon-compute-cost.md`.
 - `lib/aiProvider.ts`: provider switch (`callSwingDecision`) — the single choke point for all swing AI traffic.
 - `lib/gatewayResponses.ts` / `lib/gatewayMessages.ts`: transport only. Same Vercel AI Gateway, different dialects (Responses vs Messages); `SWING_AI_PROVIDER` picks one.
 - `pages/api/analyze.ts`: single-symbol analysis pipeline.

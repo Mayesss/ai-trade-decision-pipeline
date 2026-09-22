@@ -57,12 +57,10 @@ import { invokeCronEndpoint } from '../../../lib/cronChaining';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import {
     clearSwingBreakTrigger,
-    listSwingAiCooldownsWithWakeBands,
-    listSwingBreakTriggers,
-    listSwingInPositionThreads,
     replaceSwingWakeSweeps,
     setSwingWakeTouch,
 } from '../../../lib/swing/pg';
+import { loadWakeWork } from '../../../lib/swing/wakeWorkCache';
 import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { loadSwingCronControlState } from '../../../lib/swing/cronControl';
 import {
@@ -237,18 +235,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
     };
 
-    const [bandRows, breakTriggerRows, inPositionThreads, bitgetPositionsRaw, capitalMarkers] = await Promise.all([
-        listSwingAiCooldownsWithWakeBands().catch((err) => {
-            console.warn('[wake-watch] cooldown list failed:', err);
-            return [];
-        }),
-        listSwingBreakTriggers().catch((err) => {
-            console.warn('[wake-watch] break-trigger list failed:', err);
-            return [];
-        }),
-        listSwingInPositionThreads().catch((err) => {
-            console.warn('[wake-watch] in-position thread list failed:', err);
-            return [];
+    // One KV-cached read of all three work lists instead of three Postgres
+    // round trips per watcher minute — the cron that kept the Neon compute from
+    // ever scaling to zero. Falls back to Postgres on any cache miss or KV
+    // failure; see lib/swing/wakeWorkCache.ts for the invalidation contract.
+    const [wakeWork, bitgetPositionsRaw, capitalMarkers] = await Promise.all([
+        loadWakeWork().catch((err) => {
+            console.warn('[wake-watch] work list failed:', err);
+            return { bands: [], triggers: [], threads: [], source: 'pg' as const };
         }),
         bitgetFetch('GET', '/api/v2/mix/position/all-position', {
             productType: getTradeProductType() as string,
@@ -260,6 +254,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }),
         fetchCapitalOpenPositionMarkers(),
     ]);
+
+    const bandRows = wakeWork.bands;
+    const breakTriggerRows = wakeWork.triggers;
+    const inPositionThreads = wakeWork.threads;
 
     const bitgetFetchOk = Array.isArray(bitgetPositionsRaw);
     const capitalFetchOk = Array.isArray(capitalMarkers);
@@ -602,6 +600,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         positionsChecked: positionMarkers.length,
         breakTriggersChecked,
         inPositionThreads: inPositionThreads.length,
+        // 'kv' = this minute cost zero Postgres round trips. Watching this
+        // field is how you confirm the work-list cache is actually serving.
+        workSource: wakeWork.source,
         closesDetected,
         emergencyThresholdAtr: EMERGENCY_MOVE_ATR,
         fired,

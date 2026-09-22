@@ -1,5 +1,9 @@
 # Neon Egress Guardrails
 
+> Egress is not usually the expensive axis on this project — compute-hours are.
+> See [neon-compute-cost.md](neon-compute-cost.md) for the 2026-09 budget
+> warning and the scale-to-zero rules.
+
 ## Account Guardrail
 
 Set a Neon organization spending limit and data-transfer alert from the Neon dashboard. This is intentionally not controlled by application code.

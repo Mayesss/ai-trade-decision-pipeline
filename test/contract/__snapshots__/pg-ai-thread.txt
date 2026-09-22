@@ -11,6 +11,14 @@ SQL neon-postgres
     ]
   }
 
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
+
 SQL neon-postgres
   {
     "text": "SELECT status, last_response_id, turns, provider, transcript, wake_above, wake_below, wake_note, wake_set_at_ms FROM swing.ai_threads WHERE platform = $1 AND symbol = $2",

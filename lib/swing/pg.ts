@@ -5,6 +5,7 @@
 // stays in front of these as a cache (step 3).
 import { isPgConfigured, pgClient } from '../db/client';
 import { sql } from '../db/sql';
+import { bumpWakeWorkVersion } from './wakeWorkVersion';
 import type { DecisionHistoryEntry } from '../history';
 import type { PositionWindow } from '../analytics';
 import type { ExitDispositionRow } from './positionDecisionMatch';
@@ -647,6 +648,9 @@ export async function upsertSwingAiThread(params: {
             turns = swing.ai_threads.turns + 1,
             updated_at = NOW()
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // All symbols whose conversation is parked on a resting entry order — one
@@ -741,6 +745,9 @@ export async function setSwingThreadWake(params: {
             updated_at = NOW()
         WHERE platform = ${normalizePlatform(params.platform)} AND symbol = ${String(params.symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // Resting entry filled → the same conversation now manages the position.
@@ -753,6 +760,9 @@ export async function markSwingAiThreadInPosition(platform: string, symbol: stri
         SET status = 'in_position', updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // --------------------------------------------------------------------------
@@ -931,6 +941,9 @@ export async function upsertSwingAiCooldown(params: {
             wake_gate_held_at_ms = NULL,
             updated_at = NOW()
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // Atomically claim the row's one-shot reclaim look (a fresh sweep of the band
@@ -953,6 +966,9 @@ export async function claimSwingReclaimLook(platform: string, symbol: string): P
           AND (claimed_until_ms IS NULL OR claimed_until_ms < ${now})
         RETURNING set_at_ms
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
     return Boolean(rows?.length);
 }
 
@@ -976,6 +992,9 @@ export async function setSwingWakeTouch(
             updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // A touch failed to confirm (price reclaimed the band before the sustain
@@ -1006,6 +1025,9 @@ export async function replaceSwingWakeSweeps(
             updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // First refusal of a FIRED wake by a schedule gate (session decision window,
@@ -1023,6 +1045,9 @@ export async function markSwingWakeGateHeld(platform: string, symbol: string, no
             updated_at = NOW()
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // Atomically lease a triggered cooldown row for one analyze run. The lease
@@ -1053,6 +1078,9 @@ export async function claimSwingAiCooldown(
           AND (claimed_until_ms IS NULL OR claimed_until_ms < ${now})
         RETURNING ${COOLDOWN_SELECT_COLUMNS}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
     const row = rows?.[0];
     if (!row) return null;
     return parseCooldownRow(row);
@@ -1065,17 +1093,30 @@ export async function claimSwingAiCooldown(
 // crossing, never on bare expiry). Rows under a live claim lease are excluded:
 // an analyze run is already working that wake, and if it dies the lease expiry
 // puts the row back on this list.
-export type SwingAiCooldownRow = SwingAiCooldown & { platform: string; symbol: string };
+// claimedUntilMs rides along so the "is another run already working this
+// wake?" test can be applied at READ time rather than in SQL. That matters
+// because the watcher's work list is cached (lib/swing/wakeWorkCache.ts): a
+// lease lapsing is a purely time-based transition with no accompanying write,
+// so a SQL-side filter would have frozen a crashed run's row out of the list
+// for a whole extra cache TTL — precisely the added wake latency the lease was
+// introduced to avoid (BGBUSDT 2026-07-29). Filtering in JS against the
+// current clock means a cached row re-arms the moment its lease expires.
+export type SwingAiCooldownRow = SwingAiCooldown & {
+    platform: string;
+    symbol: string;
+    claimedUntilMs: number | null;
+};
 
 export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldownRow[]> {
     if (!isSwingPgConfigured()) return [];
     await ensureSwingSchema();
     const db = swingPg();
-    const rows = await db.$queryRaw<Array<CooldownDbRow & { platform: unknown; symbol: unknown }>>(sql`
-        SELECT platform, symbol, ${COOLDOWN_SELECT_COLUMNS}
+    const rows = await db.$queryRaw<
+        Array<CooldownDbRow & { platform: unknown; symbol: unknown; claimed_until_ms: unknown }>
+    >(sql`
+        SELECT platform, symbol, claimed_until_ms, ${COOLDOWN_SELECT_COLUMNS}
         FROM swing.ai_cooldowns
         WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL)
-          AND (claimed_until_ms IS NULL OR claimed_until_ms < ${Date.now()})
     `);
     return (rows || [])
         .map((row) => {
@@ -1085,12 +1126,19 @@ export async function listSwingAiCooldownsWithWakeBands(): Promise<SwingAiCooldo
                 ...parsed,
                 platform: String(row.platform || ''),
                 symbol: String(row.symbol || ''),
+                claimedUntilMs: finitePos(row.claimed_until_ms),
             };
         })
         .filter(
             (row): row is SwingAiCooldownRow =>
                 row !== null && Boolean(row.platform && row.symbol) && (row.wakeAbove !== null || row.wakeBelow !== null),
         );
+}
+
+// The claim-lease predicate that used to live in the SQL above. Applied by the
+// cache wrapper on every read, cached or fresh.
+export function swingCooldownClaimIsLive(row: SwingAiCooldownRow, nowMs: number = Date.now()): boolean {
+    return row.claimedUntilMs !== null && row.claimedUntilMs >= nowMs;
 }
 
 export async function clearSwingAiCooldown(platform: string, symbol: string): Promise<void> {
@@ -1101,6 +1149,9 @@ export async function clearSwingAiCooldown(platform: string, symbol: string): Pr
         DELETE FROM swing.ai_cooldowns
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // --------------------------------------------------------------------------
@@ -1171,6 +1222,9 @@ export async function upsertSwingBreakTrigger(params: {
             entry_at_ms = EXCLUDED.entry_at_ms,
             updated_at = NOW()
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // The 1-minute watcher's work list. Rows whose position meanwhile closed are
@@ -1202,6 +1256,9 @@ export async function clearSwingBreakTrigger(platform: string, symbol: string): 
         DELETE FROM swing.break_triggers
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // Limit expired unfilled, or position closed → conversation over.
@@ -1213,6 +1270,9 @@ export async function endSwingAiThread(platform: string, symbol: string): Promis
         DELETE FROM swing.ai_threads
         WHERE platform = ${normalizePlatform(platform)} AND symbol = ${String(symbol || '').toUpperCase()}
     `);
+
+    // Work-list cache invalidation — see lib/swing/wakeWorkVersion.ts.
+    await bumpWakeWorkVersion();
 }
 
 // --------------------------------------------------------------------------

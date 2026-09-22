@@ -495,6 +495,14 @@ SQL neon-postgres
     ]
   }
 
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
+
 POST https://kv.boundary.test/ZREVRANGE/decision%3Asymidx%3Abitget%3ABTCUSDT/0/11
   authorization: Bearer <TOKEN>
 
@@ -946,6 +954,14 @@ SQL neon-postgres
     ]
   }
 
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
+
 SQL neon-postgres
   {
     "text": "UPDATE swing.ai_threads SET wake_above = $1, wake_below = $2, wake_note = $3, wake_set_at_ms = $4, updated_at = NOW() WHERE platform = $5 AND symbol = $6",
@@ -958,6 +974,14 @@ SQL neon-postgres
       "BTCUSDT"
     ]
   }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
 
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>

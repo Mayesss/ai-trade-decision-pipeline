@@ -1,3 +1,12 @@
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "MGET",
+    "swing:wake-work:v",
+    "swing:wake-work:snap"
+  ]
+
 GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-futures
   access-key: test-bitget-key
   access-passphrase: test-bitget-passphrase
@@ -6,20 +15,6 @@ GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-fut
   content-type: application/json
   locale: en-US
 
-SQL neon-postgres
-  {
-    "text": "SELECT platform, symbol, until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms, wake_gate_held_at_ms FROM swing.ai_cooldowns WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL) AND (claimed_until_ms IS NULL OR claimed_until_ms < $1)",
-    "values": [
-      <NOW_MS>
-    ]
-  }
-
-SQL neon-postgres
-  SELECT platform, symbol, side, trigger_price, time_frame, entry_at_ms FROM swing.break_triggers
-
-SQL neon-postgres
-  SELECT platform, symbol, wake_above, wake_below FROM swing.ai_threads WHERE status = 'in_position'
-
 POST https://api-capital.backend-capital.com/api/v1/session
   content-type: application/json
   x-cap-api-key: test-capital-key
@@ -27,6 +22,25 @@ POST https://api-capital.backend-capital.com/api/v1/session
     "identifier": "test-capital-user",
     "password": "test-capital-pass"
   }
+
+SQL neon-postgres
+  SELECT platform, symbol, claimed_until_ms, until_ms, wake_above, wake_below, wake_note, set_at_ms, wake_sustain_minutes, wake_touch_side, wake_touch_started_ms, wake_touch_extreme, wake_atr, wake_sweeps, reclaim_looked_at_ms, wake_gate_held_at_ms FROM swing.ai_cooldowns WHERE (wake_above IS NOT NULL OR wake_below IS NOT NULL)
+
+SQL neon-postgres
+  SELECT platform, symbol, side, trigger_price, time_frame, entry_at_ms FROM swing.break_triggers
+
+SQL neon-postgres
+  SELECT platform, symbol, wake_above, wake_below FROM swing.ai_threads WHERE status = 'in_position'
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:wake-work:snap",
+    900,
+    "{\"v\":0,\"ts\":<NOW_MS>,\"bands\":[],\"triggers\":[{\"side\":\"long\",\"triggerPrice\":77000,\"timeFrame\":\"4H\",\"entryAtMs\":1786478700000,\"platform\":\"bitget\",\"symbol\":\"BTCUSDT\"}],\"threads\":[]}"
+  ]
 
 GET https://api-capital.backend-capital.com/api/v1/positions
   content-type: application/json
