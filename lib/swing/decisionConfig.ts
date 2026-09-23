@@ -411,6 +411,13 @@ export const flagOff = (raw: unknown) => ['0', 'false', 'no', 'off'].includes(St
 // Both exempt the symbol's own thread (its ticks manage what is already on),
 // and both only ever skip work — they never override a decision (the
 // ai-bouncer rule, lib/swing/flatGates.ts).
+//
+// The pre-AI read cannot see a sibling that is mid-AI in the same cron minute,
+// so both limits are enforced again at commit time: a live flat entry takes a
+// 'class:<category>' claim and one of MAX_OPEN_POSITIONS 'slot:N' claims in
+// swing.entry_claims right before placing, and drops to HOLD if it loses
+// (claimEntryCapacity, lib/swing/portfolioCap.ts). That one does override a
+// decision — it is the same hard limit, applied where the capital commits.
 export const MAX_OPEN_POSITIONS = (() => {
     const n = Number(process.env.SWING_MAX_OPEN_POSITIONS);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;

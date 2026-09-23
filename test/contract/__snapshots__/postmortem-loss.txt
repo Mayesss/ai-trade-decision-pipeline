@@ -59,6 +59,9 @@ SQL neon-postgres
   ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_set_at_ms BIGINT
 
 SQL neon-postgres
+  CREATE TABLE IF NOT EXISTS swing.entry_claims ( claim_key TEXT PRIMARY KEY, platform TEXT NOT NULL, symbol TEXT NOT NULL, claimed_at_ms BIGINT NOT NULL )
+
+SQL neon-postgres
   CREATE TABLE IF NOT EXISTS swing.ai_cooldowns ( platform TEXT NOT NULL, symbol TEXT NOT NULL, until_ms BIGINT NOT NULL, wake_above NUMERIC, wake_below NUMERIC, set_at_ms BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT ai_cooldowns_key PRIMARY KEY (platform, symbol) )
 
 SQL neon-postgres

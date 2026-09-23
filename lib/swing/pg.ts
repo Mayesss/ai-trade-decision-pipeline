@@ -192,6 +192,22 @@ async function ensureSwingSchema(): Promise<void> {
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_note TEXT`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS wake_set_at_ms BIGINT`);
 
+        // entry_claims: the commit-time half of the portfolio cap. The pre-AI
+        // gate reads ai_threads, but a thread is written only AFTER the order
+        // is placed — two flat ticks in the same cron minute both see an empty
+        // book and both enter (2026-09-23 BTCUSDT + ETHUSDT resting entries).
+        // Right before placing, a tick takes 'class:<category>' and one of
+        // 'slot:1..N' with a single conditional upsert each; the primary key
+        // serializes concurrent takers. No release step: a claim is dead once
+        // it is stale AND its holder has no active thread (lib/swing/portfolioCap.ts).
+        await db.$executeRaw(sql`
+            CREATE TABLE IF NOT EXISTS swing.entry_claims (
+              claim_key     TEXT PRIMARY KEY,
+              platform      TEXT NOT NULL,
+              symbol        TEXT NOT NULL,
+              claimed_at_ms BIGINT NOT NULL
+            )`);
+
         // ai_cooldowns: AI-requested quiet periods on FLAT symbols ("nothing to
         // do here, don't re-evaluate for N minutes — unless price crosses a wake
         // band"). One row per (platform, symbol); consulted by the pre-AI
@@ -717,6 +733,77 @@ export async function listSwingActiveThreads(): Promise<SwingActiveThread[]> {
         symbol: String(row.symbol).toUpperCase(),
         status: row.status === 'pending_entry' ? 'pending_entry' : 'in_position',
     }));
+}
+
+// Entry claims (see the swing.entry_claims table comment). The table holds at
+// most one row per asset class plus MAX_OPEN_POSITIONS slot rows.
+export type SwingEntryClaim = { claimKey: string; platform: string; symbol: string; claimedAtMs: number };
+
+export async function listSwingEntryClaims(): Promise<SwingEntryClaim[]> {
+    if (!isSwingPgConfigured()) return [];
+    await ensureSwingSchema();
+    const db = swingPg();
+    const rows = await db.$queryRaw<Array<{ claim_key: string; platform: string; symbol: string; claimed_at_ms: unknown }>>(sql`
+        SELECT claim_key, platform, symbol, claimed_at_ms
+        FROM swing.entry_claims
+    `);
+    return rows.map((row) => ({
+        claimKey: String(row.claim_key),
+        platform: String(row.platform),
+        symbol: String(row.symbol).toUpperCase(),
+        claimedAtMs: Number(row.claimed_at_ms),
+    }));
+}
+
+// Take (or refresh) one claim. Wins when the key is free, already ours, or
+// held by a dead claim — stale AND its holder has no committed thread. The
+// staleness grace covers the window between claiming and the thread upsert
+// that follows the order. Atomic on the primary key: a concurrent taker waits
+// on the winner's row and then fails the WHERE against it.
+export async function trySwingEntryClaim(params: {
+    claimKey: string;
+    platform: string;
+    symbol: string;
+    nowMs: number;
+    staleBeforeMs: number;
+}): Promise<boolean> {
+    if (!isSwingPgConfigured()) return true;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const platform = normalizePlatform(params.platform);
+    const symbol = String(params.symbol || '').toUpperCase();
+    const rows = await db.$queryRaw<Array<{ claim_key: string }>>(sql`
+        INSERT INTO swing.entry_claims AS c (claim_key, platform, symbol, claimed_at_ms)
+        VALUES (${params.claimKey}, ${platform}, ${symbol}, ${params.nowMs})
+        ON CONFLICT (claim_key) DO UPDATE
+          SET platform = EXCLUDED.platform, symbol = EXCLUDED.symbol, claimed_at_ms = EXCLUDED.claimed_at_ms
+          WHERE (c.platform = EXCLUDED.platform AND c.symbol = EXCLUDED.symbol)
+             OR (c.claimed_at_ms < ${params.staleBeforeMs}
+                 AND NOT EXISTS (
+                   SELECT 1 FROM swing.ai_threads t
+                   WHERE t.platform = c.platform AND t.symbol = c.symbol
+                     AND t.status IN ('pending_entry', 'in_position')))
+        RETURNING claim_key
+    `);
+    return rows.length > 0;
+}
+
+// Give back a claim this tick took but will not use — only while the holder
+// has no committed thread (a symbol superseding its own resting entry keeps it).
+export async function releaseSwingEntryClaim(params: { claimKey: string; platform: string; symbol: string }): Promise<void> {
+    if (!isSwingPgConfigured()) return;
+    await ensureSwingSchema();
+    const db = swingPg();
+    const platform = normalizePlatform(params.platform);
+    const symbol = String(params.symbol || '').toUpperCase();
+    await db.$executeRaw(sql`
+        DELETE FROM swing.entry_claims c
+        WHERE c.claim_key = ${params.claimKey} AND c.platform = ${platform} AND c.symbol = ${symbol}
+          AND NOT EXISTS (
+            SELECT 1 FROM swing.ai_threads t
+            WHERE t.platform = c.platform AND t.symbol = c.symbol
+              AND t.status IN ('pending_entry', 'in_position'))
+    `);
 }
 
 // Replace the thread's in-position wake bands with what the latest real AI call

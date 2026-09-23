@@ -47,7 +47,13 @@ import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
 import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, decisionDayKey, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, scheduledLookServedKey, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
-import { evaluatePortfolioCapGate, loadPortfolioOccupants, portfolioCapEnabled } from '../../lib/swing/portfolioCap';
+import {
+    claimEntryCapacity,
+    evaluatePortfolioCapGate,
+    loadPortfolioOccupants,
+    pgEntryClaimStore,
+    portfolioCapEnabled,
+} from '../../lib/swing/portfolioCap';
 import { SWING_DECISION_SCHEMA, SWING_DECISION_SCHEMA_NO_LEVERAGE } from '../../lib/swing/decisionSchema';
 import { computeMomentumSignals, resolveReentryCooldown } from '../../lib/swing/signals';
 import { computeSwingState } from '../../lib/swing/prompt';
@@ -3882,6 +3888,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     equity_usd: equityUsd,
                     source: riskSizing.source,
                 };
+            }
+        }
+
+        // Commit-time portfolio claim. The pre-AI cap gate cannot see a sibling
+        // tick that is mid-AI in the same cron minute — its thread is written
+        // only after its order goes in — so a fresh entry takes its asset-class
+        // claim and a slot atomically right before placing, and drops to HOLD
+        // if another symbol got there first (lib/swing/portfolioCap.ts). Placed
+        // before the resting-entry supersede so a lost claim never cancels this
+        // symbol's own standing order. Fails open on a DB miss, like the gate.
+        if (
+            !dryRun &&
+            !positionOpen &&
+            (decision.action === 'BUY' || decision.action === 'SELL') &&
+            portfolioCapEnabled()
+        ) {
+            try {
+                const claim = await claimEntryCapacity({
+                    self: { platform, symbol, category },
+                    occupants: await loadPortfolioOccupants(),
+                    store: pgEntryClaimStore({ platform, symbol }, Date.now()),
+                });
+                if (!claim.granted) {
+                    entryDroppedAfterBracket = true;
+                    dropEntry(claim.stage, claim.reason);
+                }
+            } catch (err) {
+                console.warn(`entry claim failed for ${symbol}, failing open:`, err);
             }
         }
 

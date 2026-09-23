@@ -179,10 +179,13 @@ export function capitalInPositionPrivateWorld(params: {
 // --- swing Postgres ---------------------------------------------------------------
 
 /** Answers the queries a tick issues; anything unexpected throws named. */
-export const analyzePg: PgResponder = (text) => {
+export const analyzePg: PgResponder = (text, values) => {
     const kind = text.split(' ')[0].toUpperCase();
     if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'].includes(kind)) return 0; // schema bootstrap DDL
     if (text.startsWith('INSERT INTO swing.decisions')) return [{ id: 4711 }];
+    // Commit-time portfolio claim: an empty claim table, every claim granted.
+    if (text.startsWith('INSERT INTO swing.entry_claims')) return [{ claim_key: values[0] }];
+    if (text.includes('FROM swing.entry_claims')) return [];
     if (kind === 'INSERT' || kind === 'UPDATE' || kind === 'DELETE') return 1;
     if (text.includes('FROM swing.positions')) return [];
     // Bracket trail (which TP/SL was resting when a position closed).
