@@ -45,7 +45,7 @@ import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents, evaluateSessionDecisionWindow, listSessionDecisionWindows } from '../../lib/swing/sessionEvents';
 import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
-import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, decisionDayKey, ENTRY_SL_MIN_ATR, HOLD_COOLDOWN_MAX_MINUTES, scheduledLookServedKey, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
+import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, decisionDayKey, ENTRY_SL_MIN_ATR, ENTRY_TP_MIN_R, HOLD_COOLDOWN_MAX_MINUTES, IN_POSITION_EMERGENCY_MOVE_ATR, scheduledLookServedKey, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
 import {
     claimEntryCapacity,
@@ -310,17 +310,8 @@ const EVAL_PRIMARY_CLOSE_ONLY = (() => {
         .toLowerCase();
     return !['0', 'false', 'no', 'off'].includes(raw);
 })();
-// Off-boundary in-position wake threshold under the 4H cadence. Deliberately
-// far wider than IN_POSITION_QUARTER_MOVE_ATR: this is an emergency look
-// ("something structural may have happened"), not routine management.
-// 1.5 -> 3 on 2026-09-16 with the 3-ATR entry stop floor (docs/alpha-lab-spec.md
-// §11): at 1.5 every position halfway to its stop would have earned an early
-// AI look, which is exactly the intrabar consultation the wider stop removes.
-// Equal to the floor, so the look fires around where the stop would anyway.
-const IN_POSITION_EMERGENCY_MOVE_ATR = (() => {
-    const n = Number(process.env.SWING_INPOS_EMERGENCY_MOVE_ATR);
-    return Number.isFinite(n) && n > 0 ? n : 3;
-})();
+// Off-boundary in-position emergency threshold: IN_POSITION_EMERGENCY_MOVE_ATR
+// (decisionConfig.ts), shared with the wake-watcher.
 
 // ------------------------------------------------------------------
 // In-memory position tracking for best-effort hold timing (resets on cold start).
@@ -3561,6 +3552,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     ? (Math.abs(bracketAnchor - askedSl) / primaryAtrSane).toFixed(2)
                     : '?';
             dropEntry('entry_stop_below_floor', `entry_stop_below_floor stop≈${distAtr}ATR floor=${ENTRY_SL_MIN_ATR}ATR`);
+            exchangeTpsl.takeProfitPrice = null;
+            exchangeTpsl.stopLossPrice = null;
+            exchangeTpsl.notes.push('bracket_dropped_with_entry');
+            decision.take_profit_price = null;
+            decision.stop_loss_price = null;
+        }
+        // Entry target floor (decisionConfig.ts ENTRY_TP_MIN_R): same refusal
+        // contract as the stop floor above — a target that cannot pay for the
+        // entry's own stop declines the trade, it is never pushed out for you.
+        if (exchangeTpsl.entryTargetBelowStopRatio && opensFreshExposure) {
+            const tpDist = Math.abs(Number(exchangeTpsl.takeProfitPrice) - bracketAnchor);
+            const slDist = Math.abs(bracketAnchor - Number(exchangeTpsl.stopLossPrice));
+            const ratio = slDist > 0 ? (tpDist / slDist).toFixed(2) : '?';
+            dropEntry(
+                'entry_target_below_stop_ratio',
+                `entry_target_below_stop_ratio tp/sl≈${ratio} floor=${ENTRY_TP_MIN_R}`,
+            );
             exchangeTpsl.takeProfitPrice = null;
             exchangeTpsl.stopLossPrice = null;
             exchangeTpsl.notes.push('bracket_dropped_with_entry');

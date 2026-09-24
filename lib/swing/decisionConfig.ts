@@ -437,6 +437,8 @@ export const ONE_POSITION_PER_ASSET_CLASS = !flagOff(process.env.SWING_ONE_PER_A
 // 9 symbols, glm-5.3) is a different strategy from the 09-11 one, and pooling
 // the two would read a geometry that no longer runs. Set the env to the exact
 // deploy time if the deploy is not on the 16th.
+// Moved 2026-09-16 -> 2026-09-24 (docs/alpha-lab-spec.md §15): amend floor =
+// entry floor and a 1R target floor change the trade geometry itself.
 export const R_SAMPLE_TARGET = (() => {
     const n = Number(process.env.SWING_R_SAMPLE_TARGET);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
@@ -445,7 +447,7 @@ export const R_SAMPLE_TARGET = (() => {
 export const R_SAMPLE_SINCE_MS = (() => {
     const raw = String(process.env.SWING_R_SAMPLE_SINCE || '').trim();
     const parsed = raw ? Date.parse(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-16T00:00:00Z');
+    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-24T00:00:00Z');
 })();
 
 // ------------------------------
@@ -739,10 +741,45 @@ export const ENTRY_SL_MIN_ATR = (() => {
 // wider stop would be a different decision. Lower than the entry floor on
 // purpose: one primary bar's noise is the width a stop must survive; how much
 // open profit to give back beyond that is the model's call.
-// SWING_AMEND_SL_MIN_ATR overrides; 0 disables.
+// 1 -> ENTRY_SL_MIN_ATR (3) on 2026-09-23: at 1 the entry floor did not hold
+// past the first management look. The model treated the 3-ATR stop as a
+// borrowed "catastrophe leg" and tightened it straight back to its own ~1-ATR
+// invalidation (BTCUSDT 09-21: 78200 -> 80400, 1.3 ATR from price, nine hours
+// after entry), so trades stayed intraday-sized under a daily cadence. Tied to
+// the entry floor so a stop can trail, but never tighter than the width an
+// entry had to have. SWING_AMEND_SL_MIN_ATR overrides; 0 disables.
 export const AMEND_SL_MIN_ATR = (() => {
     const n = Number(process.env.SWING_AMEND_SL_MIN_ATR);
+    return Number.isFinite(n) && n >= 0 ? n : ENTRY_SL_MIN_ATR;
+})();
+
+// Entry target floor, as a multiple of the entry's OWN stop distance: an entry
+// whose take_profit_price sits closer to the entry price than
+// ENTRY_TP_MIN_R × |entry − stop| is REFUSED (entry_dropped=
+// 'entry_target_below_stop_ratio'), never widened. Added 2026-09-23: with the
+// 3-ATR stop floor and no target rule the model kept its natural 1-1.7 ATR
+// targets, so entries shipped at TP/SL 0.47-0.8 (BTCUSDT, DE40, GBPUSD after
+// 09-16), a geometry that needs a ~65% hit rate to break even. Deliberately a
+// ratio to the stop, not the ATR floor removed 2026-09-02 (ENTRY_TP_MIN_ATR=2):
+// that one widened a near target to a far one; this one only declines a trade
+// whose target cannot pay for the stop it was forced to carry.
+// SWING_ENTRY_TP_MIN_R overrides; 0 disables.
+export const ENTRY_TP_MIN_R = (() => {
+    const n = Number(process.env.SWING_ENTRY_TP_MIN_R);
     return Number.isFinite(n) && n >= 0 ? n : 1;
+})();
+
+// Off-boundary in-position emergency look, in primary ATR moved since the AI's
+// last look. Deliberately far wider than routine management: this is "something
+// structural may have happened", not a check-in. 1.5 -> 3 on 2026-09-16 with the
+// 3-ATR entry stop floor (docs/alpha-lab-spec.md §11), equal to the floor so
+// the look fires around where the stop would anyway. Shared by the analyze
+// route and the 1-minute wake-watcher; until 2026-09-23 each read the env with
+// its own default and the watcher's stayed at 1.5, re-arming on every look it
+// fired. SWING_INPOS_EMERGENCY_MOVE_ATR overrides.
+export const IN_POSITION_EMERGENCY_MOVE_ATR = (() => {
+    const n = Number(process.env.SWING_INPOS_EMERGENCY_MOVE_ATR);
+    return Number.isFinite(n) && n > 0 ? n : 3;
 })();
 
 // Resting-entry distance envelope, in primary ATR from live price. An invalid

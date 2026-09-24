@@ -43,7 +43,7 @@ export const config = { runtime: 'nodejs', maxDuration: 300 };
 // when the lease expires instead of losing it until the next primary close.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { POSITION_WAKE_ENABLED } from '../../../lib/swing/decisionConfig';
+import { IN_POSITION_EMERGENCY_MOVE_ATR, POSITION_WAKE_ENABLED } from '../../../lib/swing/decisionConfig';
 import { requireAdminAccess } from '../../../lib/admin';
 import { bitgetFetch } from '../../../lib/bitget';
 import {
@@ -95,10 +95,7 @@ const SESSION_SWEEP_CATEGORIES = new Set(['forex', 'commodity', 'index']);
 import { getTradeProductType } from '../../../lib/trading';
 
 // Same knob the analyze route uses for its own off-boundary in-position look.
-const EMERGENCY_MOVE_ATR = (() => {
-    const n = Number(process.env.SWING_INPOS_EMERGENCY_MOVE_ATR);
-    return Number.isFinite(n) && n > 0 ? n : 1.5;
-})();
+const EMERGENCY_MOVE_ATR = IN_POSITION_EMERGENCY_MOVE_ATR;
 
 // Failed-break checks only make sense right after a primary bar close (the
 // condition can't change mid-bar), so candle fetches are throttled to this

@@ -1082,3 +1082,77 @@ A **402 Payment Required** from the gateway killed 44 ticks between 03:00 and
 required for all requests, including BYOK"). The health flag did its job — the
 drain and the ticks backed off rather than hammering — and it cleared on its
 own, but nothing alerts on it: six hours with no AI at all read as a quiet day.
+
+---
+
+## 15. Swing geometry made to stick — applied 2026-09-23
+
+### Why
+
+A week after §11–12 the positions still looked like scalps. Four trades had
+closed since the 09-16 deploy (8 `swing.positions` rows; the extras are
+Capital position splits). That is far too few to measure anything, but the
+model's own reasons showed the mechanism, and the code confirmed each step:
+
+| Trade | Entry fired by | Stop | TP | TP/SL | Then | Hold |
+|---|---|---|---|---|---|---|
+| BTCUSDT long 09-20 | wake band 15:11 | 3.19% (3 ATR) | 1.5% | 0.47 | next look: stop 78200 → 80400; TP filled | 10h |
+| DE40 short 09-22 | wake band 07:31 | 1.18% | 0.95% | 0.8 | stop tightened 30 min later; own band fired → CLOSE | 1.3h |
+| GBPUSD short 09-21 | wake band 18:48 | 0.55% | 0.31% | 0.56 | CLOSE at the next 4H close (failed break) | 9h |
+| US100 long 09-17 | wake-fired check 14:20 | 1.76% | 2.9% | 1.6 | 35% trim + stop to breakeven at the first daily look | 18–26h |
+
+1. **The floored stop was treated as borrowed.** BTC at entry: "the 3-ATR
+   floor forces the exchange stop to 78200 as the catastrophe leg". Nine hours
+   later: "The 78200 stop is a 3-ATR catastrophe default and far too loose…
+   tighten it to 80400". The 1-ATR amend floor (§11) allowed that on the very
+   next look, so the entry floor held for one look only.
+2. **Targets never widened.** The prompt said "Targets have no floor… no
+   required ratio to the stop", so the model kept its natural 1–1.7 ATR
+   targets against 3-ATR stops. At TP/SL 0.5 a trade needs about a 67% hit
+   rate to break even.
+3. **Wake bands carry the intraday looks.** None of the four entries happened
+   at the scheduled hour. The in-position band prose still described a 4H-close
+   schedule under the daily cadence.
+4. **Bug:** the wake-watcher read `SWING_INPOS_EMERGENCY_MOVE_ATR` with its own
+   default of 1.5 while analyze defaulted it to 3 (§11 changed only one of the
+   two). Each look it fired re-armed it.
+
+### What changed
+
+| Lever | Before | After | Where |
+|---|---|---|---|
+| Amend stop floor | 1 ATR from price | **= entry floor (3)** | `AMEND_SL_MIN_ATR` (env `SWING_AMEND_SL_MIN_ATR`) |
+| Entry target floor (new) | none | **TP ≥ 1× the entry's own stop distance**, refused (not widened) | `ENTRY_TP_MIN_R` (env `SWING_ENTRY_TP_MIN_R`), `entry_dropped='entry_target_below_stop_ratio'` |
+| Watcher emergency look | 1.5 ATR (bug) | **3**, one shared constant | `IN_POSITION_EMERGENCY_MOVE_ATR` in decisionConfig.ts |
+| Prompt | "catastrophe" stop, "targets have no floor", 4H-close band prose | floor = the minimum width of an invalidation; target floor stated; bands relative to the daily look | `lib/swing/prompt.ts` HARD CONSTRAINTS + bracket section |
+| R window | since 2026-09-16 | **since 2026-09-24** | `R_SAMPLE_SINCE_MS` |
+
+The target floor is **not** the `ENTRY_TP_MIN_ATR=2` removed on 09-02. That
+one was a fixed ATR distance, and a violating target was widened to the
+fallback, so asking for a near target produced a far one. This one is a ratio
+to the model's own stop and refuses the trade. A range trade with a stop
+proportionate to its target stays expressible; what is refused is a small
+target carrying a wide stop.
+
+Harness: `SWING_ENTRY_TP_MIN_R` is pinned to 0 (fixtures carry sub-1R
+targets); `decisionRules.targetFloorEnabled.test.ts` tests it switched on.
+`decisionConfig.prodDefaults.test.ts` asserts all three defaults.
+
+### Not changed
+
+Wake bands, flat and in-position, stay on. Turning them off (entries and
+exits only at the daily look plus the bracket) was the cleaner "real swing"
+option, but it removes the entry timing the model currently relies on. It is
+the next step if holds stay short.
+
+### How to read it
+
+- The window restarts at the deploy (only 4 closes were lost). Split every
+  read there.
+- Expect fewer entries: `entry_target_below_stop_ratio` refusals where the
+  nearest structure sits under 1R. Count them in `swing.decisions` before
+  calling the drop a problem.
+- Expect `sl_below_amend_floor_dropped` notes on in-position looks: the model
+  still trying to tighten. If they dominate, the prompt wording is not landing.
+- Hold time and TP/SL at entry are the geometry to watch; avg R needs the
+  sample size §10 describes.

@@ -111,6 +111,11 @@ Object.assign(process.env, {
     // exchangeTpSl unit test keep the pre-floor amend behaviour;
     // decisionRules.amendFloorEnabled.test.ts stubs it ON.
     SWING_AMEND_SL_MIN_ATR: '0',
+    // Entry target floor (TP >= 1x the entry's own stop distance) is default-ON
+    // in prod since 2026-09-23. Pinned OFF: several fixtures' stubbed entries
+    // carry sub-1R targets and would silently become HOLD scenarios;
+    // decisionRules.targetFloorEnabled.test.ts stubs it ON.
+    SWING_ENTRY_TP_MIN_R: '0',
     // Session decision windows are default-ON in prod (2026-09-10). Pinned OFF
     // here — the fixtures' frozen clocks would otherwise land some Capital
     // scenarios inside a window; capital-session-window.contract.test.ts

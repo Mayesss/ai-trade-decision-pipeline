@@ -24,6 +24,7 @@ import {
     BRACKET_MIN_GAP_ATR,
     AMEND_SL_MIN_ATR,
     ENTRY_SL_MIN_ATR,
+    ENTRY_TP_MIN_R,
 } from './decisionConfig';
 import { MIN_SIZEABLE_STOP_PCT } from './riskSizing';
 import type {
@@ -572,6 +573,10 @@ export type ExchangeTpSl = {
     // asked); the caller REFUSES the entry rather than shipping or widening it.
     // Never set on amends.
     entryStopBelowFloor: boolean;
+    // Entry only: the target sits closer to the entry than ENTRY_TP_MIN_R × the
+    // entry's own stop distance. Same contract as entryStopBelowFloor — both
+    // legs returned as given, the caller refuses the entry. Never set on amends.
+    entryTargetBelowStopRatio: boolean;
 };
 
 /**
@@ -617,7 +622,13 @@ export function sanitizeExchangeTpSl(params: {
         (action === 'HOLD' ||
             (action === 'CLOSE' && params.exitSizePct != null && params.exitSizePct < 100));
     if (!(price > 0) || (!isEntry && !isAmend)) {
-        return { takeProfitPrice: null, stopLossPrice: null, notes: ['tpsl_not_applicable'], entryStopBelowFloor: false };
+        return {
+            takeProfitPrice: null,
+            stopLossPrice: null,
+            notes: ['tpsl_not_applicable'],
+            entryStopBelowFloor: false,
+            entryTargetBelowStopRatio: false,
+        };
     }
 
     const side: 'long' | 'short' = isReverse
@@ -632,9 +643,9 @@ export function sanitizeExchangeTpSl(params: {
     const dir = side === 'long' ? 1 : -1;
 
     // Take profit: on the profit side of price, clearing it by more than noise.
-    // That is the whole check — no minimum distance, no maximum, no minimum R.
-    // Whether a target pays for its stop is the model's call, made with the
-    // levels in view (see the floors-removed note in decisionConfig.ts).
+    // No minimum ATR distance and no maximum. On entries one ratio applies once
+    // the stop is known (ENTRY_TP_MIN_R, checked below): the target must pay
+    // for the stop the entry carries.
     let tp = Number.isFinite(params.takeProfitPrice as number) && (params.takeProfitPrice as number) > 0 ? Number(params.takeProfitPrice) : null;
     if (tp != null) {
         if (dir * (tp - price) <= 0) {
@@ -714,7 +725,19 @@ export function sanitizeExchangeTpSl(params: {
     }
     if (sl != null && !(sl > 0)) sl = null;
 
-    return { takeProfitPrice: tp, stopLossPrice: sl, notes, entryStopBelowFloor };
+    // Entry target floor (decisionConfig.ts ENTRY_TP_MIN_R), relative to the
+    // entry's own stop. Skipped when the stop already failed its floor (one
+    // refusal reason is enough) or is absent (the caller's default stop is not
+    // the model's, so there is no stop of its own to measure against).
+    let entryTargetBelowStopRatio = false;
+    if (isEntry && !entryStopBelowFloor && ENTRY_TP_MIN_R > 0 && tp != null && sl != null) {
+        if (Math.abs(tp - price) < ENTRY_TP_MIN_R * Math.abs(price - sl)) {
+            notes.push('tp_below_entry_stop_ratio');
+            entryTargetBelowStopRatio = true;
+        }
+    }
+
+    return { takeProfitPrice: tp, stopLossPrice: sl, notes, entryStopBelowFloor, entryTargetBelowStopRatio };
 }
 
 // ------------------------------

@@ -1,5 +1,5 @@
 // The amend stop floor is pinned OFF for the test run (test/harness/setup-env.ts
-// sets SWING_AMEND_SL_MIN_ATR=0; the prod default is 1 since 2026-09-15), so
+// sets SWING_AMEND_SL_MIN_ATR=0; prod default 1 from 2026-09-15, = the entry floor (3) from 2026-09-23), so
 // decisionRules.exchangeTpSl.test.ts pins the DISABLED amend behaviour. This
 // file pins the mechanism as it behaves when ON — the production state.
 //

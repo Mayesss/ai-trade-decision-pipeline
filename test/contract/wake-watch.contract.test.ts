@@ -178,9 +178,9 @@ test('venue-side close: in_position thread with a flat venue fires the reconcile
 test('in-position emergency move beyond the ATR threshold fires an early look', async () => {
     boundary.use(
         bitgetGet('/api/v2/mix/position/all-position', [
-            { symbol: 'BTCUSDT', markPrice: '80000', total: '0.05' },
+            { symbol: 'BTCUSDT', markPrice: '82000', total: '0.05' },
         ]),
-        // Fresh AI-look reference: |80000 - 77543.7| / 1200 ≈ 2.05 ATR ≥ 1.5.
+        // Fresh AI-look reference: |82000 - 77543.7| / 1200 ≈ 3.71 ATR ≥ 3.
         ...kvWorld({
             'swing:wakewatch:ref:bitget:BTCUSDT': JSON.stringify({
                 price: 77543.7,
@@ -201,7 +201,33 @@ test('in-position emergency move beyond the ATR threshold fires an early look', 
     expect(body.fired[0]).toMatchObject({
         platform: 'bitget',
         symbol: 'BTCUSDT',
-        reason: 'emergency_move_2.05atr',
+        reason: 'emergency_move_3.71atr',
         invoked: true,
     });
+});
+
+
+test('a 2 ATR move stays below the shared 3-ATR emergency threshold (the watcher used to default to 1.5)', async () => {
+    boundary.use(
+        bitgetGet('/api/v2/mix/position/all-position', [
+            { symbol: 'BTCUSDT', markPrice: '80000', total: '0.05' },
+        ]),
+        // |80000 - 77543.7| / 1200 ≈ 2.05 ATR: fired before 2026-09-23, must not now.
+        ...kvWorld({
+            'swing:wakewatch:ref:bitget:BTCUSDT': JSON.stringify({
+                price: 77543.7,
+                atr: 1200,
+                ts: FIXED_NOW_MS - 10 * 60_000,
+            }),
+        }),
+    );
+    installWakeState({
+        threads: [{ platform: 'bitget', symbol: 'BTCUSDT', wake_above: null, wake_below: null }],
+    });
+
+    const out = await runWakeWatch();
+
+    const body = out.body as Record<string, any>;
+    expect(body.positionsChecked).toBe(1);
+    expect(body.fired).toEqual([]);
 });

@@ -39,6 +39,7 @@ import {
     DECISION_CADENCE,
     decisionHourUtcFor,
     ENTRY_SL_MIN_ATR,
+    ENTRY_TP_MIN_R,
     ENTRY_LIMIT_MIN_ATR,
     ENTRY_LIMIT_MAX_ATR,
 } from './decisionConfig';
@@ -1225,7 +1226,7 @@ export function computeSwingState(
     // IN-POSITION variant only; the per-minute watch fact lives in CADENCE and
     // the code-enforced drop rules in the Output-hygiene hard constraint.
     const positionWakeGuidance = POSITION_WAKE_ENABLED && inPosition
-        ? `\n  • Wake bands (HOLD or partial CLOSE only): set cooldown_wake_above / cooldown_wake_below to the price levels INSIDE your bracket where you want to look again the MOMENT price touches them instead of at the next ${primaryTimeframe} close — the structural levels that would change your management ("losing 3.42 support = thesis damaged → decide exit", "at 117.8k resistance decide trail vs take"). Bands suppress nothing (your regular ${primaryTimeframe}-close look still happens) and they are never protection — the bracket remains the guard, a band is only an early look. Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the decision you plan to make there; it returns as market.position_wake.note when the band fires. Your bands are REPLACED by every decision you make: re-state them each look if you still want them (market.position_wake_armed shows what is currently armed); null clears them.`
+        ? `\n  • Wake bands (HOLD or partial CLOSE only): set cooldown_wake_above / cooldown_wake_below to the price levels INSIDE your bracket where you want to look again the MOMENT price touches them instead of at ${DECISION_CADENCE === '1D' ? 'your next scheduled daily look' : `the next ${primaryTimeframe} close`} — the structural levels that would change your management ("losing 3.42 support = thesis damaged → decide exit", "at 117.8k resistance decide trail vs take"). Bands suppress nothing (your regular ${DECISION_CADENCE === '1D' ? 'daily' : `${primaryTimeframe}-close`} look still happens) and they are never protection — the bracket remains the guard, a band is only an early look. Whenever you set a band, ALSO set cooldown_wake_note — one short line stating the decision you plan to make there; it returns as market.position_wake.note when the band fires. Your bands are REPLACED by every decision you make: re-state them each look if you still want them (market.position_wake_armed shows what is currently armed); null clears them.`
         : '';
     const positionWakeTriggerGuidance = POSITION_WAKE_ENABLED && hasPositionWake
         ? `Position-wake trigger (market.position_wake): THIS look exists because price crossed the wake band you set on a previous management look (crossed = which side, level, set_minutes_ago, note = the plan you attached). Treat the note as a standing order from your past self: execute that plan if current structure confirms it, or explicitly override it in your reason (what changed?) — never ignore it. Being woken within ~a minute of a fast cross is the expected signature of the event you scheduled, not by itself alarming; judge whether the move through the level is real (acceptance, structure break) or a sweep, and manage accordingly. If expired: true (set_minutes_ago is past ~one primary candle — no management look happened in between: venue closure or an outage), the plan predates a blind window: judge the position fresh against current structure (and any gap) first, and treat the note as background, not as the decision.`
@@ -1385,12 +1386,17 @@ export function computeSwingState(
             : 'Base gates: if any of state.gates.{spread_ok,liquidity_ok,atr_ok,slippage_ok} is false → entries forced to HOLD.',
         ...(ENTRY_SL_MIN_ATR > 0
             ? [
-                  `Entry stop floor: on ${inPosition ? 'REVERSE (the new side)' : 'BUY/SELL'} stop_loss_price must sit at least ${ENTRY_SL_MIN_ATR} primary-ATR from the entry price (the resting price when the entry rests). Closer and the ENTRY is refused — coerced to HOLD, nothing placed, a wasted call — never widened for you. Targets have no floor. A null stop gets the wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR catastrophe default.`,
+                  `Entry stop floor: on ${inPosition ? 'REVERSE (the new side)' : 'BUY/SELL'} stop_loss_price must sit at least ${ENTRY_SL_MIN_ATR} primary-ATR from the entry price (the resting price when the entry rests). Closer and the ENTRY is refused — coerced to HOLD, nothing placed, a wasted call — never widened for you. This is the minimum width of an invalidation at this cadence, not a borrowed outer stop around a tighter one: if the level that actually voids your setup sits closer, the setup is too small to take here — skip it rather than enter planning to pull the stop in later${inPosition || AMEND_SL_MIN_ATR <= 0 ? '' : ` (the amend floor keeps any later stop at least ${AMEND_SL_MIN_ATR} primary-ATR from price)`}. A null stop gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default.`,
+              ]
+            : []),
+        ...(ENTRY_TP_MIN_R > 0
+            ? [
+                  `Entry target floor: on ${inPosition ? 'REVERSE (the new side)' : 'BUY/SELL'} take_profit_price must sit at least ${ENTRY_TP_MIN_R}× the entry's own stop distance from the entry price (|target − entry| ≥ ${ENTRY_TP_MIN_R} × |entry − stop|). Closer and the ENTRY is refused — coerced to HOLD, nothing placed — never widened for you. If the nearest structural target is closer than that, the trade does not pay for its stop.`,
               ]
             : []),
         ...(inPosition && AMEND_SL_MIN_ATR > 0
             ? [
-                  `Amend stop floor: on HOLD/partial CLOSE an amended stop_loss_price must sit at least ${AMEND_SL_MIN_ATR} primary-ATR from the CURRENT price. Closer and the amendment is dropped — the standing stop stays, nothing moves, a wasted field — never widened for you. It must still survive one full primary bar on its own.`,
+                  `Amend stop floor: on HOLD/partial CLOSE an amended stop_loss_price must sit at least ${AMEND_SL_MIN_ATR} primary-ATR from the CURRENT price. Closer and the amendment is dropped — the standing stop stays, nothing moves, a wasted field — never widened for you. It must still survive one full primary bar on its own.${AMEND_SL_MIN_ATR >= ENTRY_SL_MIN_ATR && ENTRY_SL_MIN_ATR > 0 ? ' It equals the entry floor on purpose: the stop you entered with is the trade, and it can trail but never come back inside the width an entry had to have.' : ''}`,
               ]
             : []),
         ...(!inPosition && REENTRY_COOLDOWN_MIN > 0
@@ -1429,7 +1435,7 @@ export function computeSwingState(
               'action: exactly one of BUY/SELL/HOLD (see DECISION OWNERSHIP).',
               leverageTask,
               'exit_size_pct: always null when flat.',
-              'take_profit_price: REQUIRED price target on BUY/SELL (resting exchange TP); stop_loss_price: the structural invalidation stop on BUY/SELL (null = wide catastrophe default); both null on HOLD.',
+              'take_profit_price: REQUIRED price target on BUY/SELL (resting exchange TP); stop_loss_price: the structural invalidation stop on BUY/SELL (null = wide default); both null on HOLD.',
               restingEntryFieldRule,
               'strategy: on BUY/SELL, name the play you are running (see the strategy list); null on HOLD.',
               'withdraw_resting_entry: true only on a flat HOLD to cancel a standing resting entry you no longer want; else null. Omitting it LEAVES the order resting.',
@@ -1535,7 +1541,7 @@ YOUR JOB (soft judgment — where your reasoning actually matters)
             : ''
     }
 - Exchange-side TP/SL bracket:
-  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. The target's distance is yours (no minimum, no required ratio to the stop); the stop has the one floor listed in HARD CONSTRAINTS. Inside that, a near target with a modest stop and a far target with a wide stop are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold. Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
+  • On ${inPosition ? 'REVERSE — for the NEW opposite-side position —' : 'BUY/SELL'} set BOTH legs — take_profit_price at your structural target, stop_loss_price at the invalidation that voids the setup. ${ENTRY_TP_MIN_R > 0 ? `Both legs have the floors listed in HARD CONSTRAINTS (stop width, and a target at least ${ENTRY_TP_MIN_R}× the stop distance); inside those the distances are yours, and what the trade also has to beat is cost (state.costs.total_cost_bps, round trip).` : `The target's distance is yours (no minimum, no required ratio to the stop); the stop has the one floor listed in HARD CONSTRAINTS. Inside that, a near target with a modest stop and a far target with a wide stop are both whole trades; what they have to beat is cost (state.costs.total_cost_bps, round trip), not a threshold.`} Code only keeps each leg on the correct side of price and off the current print. The bracket rests on the exchange until it fills or a later evaluation amends it. A leg you leave null gets a wide ${EXCHANGE_TP_FALLBACK_ATR_MULT}×ATR default — never the trade you meant, so set both.${
         inPosition
             ? `\n  • On HOLD or partial CLOSE, you MAY amend the standing bracket: output a new take_profit_price and/or stop_loss_price, or null to leave a leg unchanged. state.position.take_profit_price / stop_loss_price show the current resting levels (null = none on that leg). Whether either leg should move as the trade develops, and to where, is the same structural judgment that placed it.`
             : ''
