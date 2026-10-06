@@ -39,11 +39,10 @@ import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/
 import { loadBtcContext } from '../../lib/swing/btcContext';
 import { loadPerplexityContext } from '../../lib/swing/perplexity';
 import { loadFearGreedContext } from '../../lib/swing/fearGreed';
-import { computeNanoContext } from '../../lib/swing/waveGeometry';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 import { buildForexSessionLevelsContext } from '../../lib/swing/sessionLevels';
 import { buildVenueSessionEvents, evaluateSessionDecisionWindow, listSessionDecisionWindows } from '../../lib/swing/sessionEvents';
-import { wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
+import { sessionWindowOwedKey, wakeWatchFiredKey } from '../../lib/swing/wakeWatch';
 
 import { BITGET_MAX_AI_LEVERAGE, DECISION_CADENCE, decisionDayKey, ENTRY_SL_MIN_ATR, ENTRY_TP_MIN_R, HOLD_COOLDOWN_MAX_MINUTES, IN_POSITION_EMERGENCY_MOVE_ATR, scheduledLookServedKey, POSITION_WAKE_ENABLED, REENTRY_COOLDOWN_MIN, RESTING_ENTRY_MAX_AGE_MINUTES, resolveDecisionPolicy, resolveExtensionThresholds, resolveSessionWindowConfig } from '../../lib/swing/decisionConfig';
 import { evaluateSpendableMarginGate, resolveBoundaryDedupeConfig, shouldDedupeBoundaryLook } from '../../lib/swing/flatGates';
@@ -140,7 +139,6 @@ import {
     DEFAULT_NOTIONAL_USDT,
     MACRO_TIMEFRAME,
     MICRO_TIMEFRAME,
-    NANO_TIMEFRAME,
     PRIMARY_TIMEFRAME,
 } from '../../lib/constants';
 
@@ -266,7 +264,11 @@ function isAutomationCronRequest(req: NextApiRequest): boolean {
     return userAgent.includes('vercel-cron');
 }
 
-// Crons fire every 15 minutes (see vercel.json); the :15/:30/:45 firings are
+// Since 2026-10-06 the analyze crons fire only on the hour, inside each venue's
+// decision retry window (vercel.json; docs/neon-compute-cost.md), so a cron
+// tick is never a quarter tick and this branch is dormant. Kept for
+// SWING_DECISION_CADENCE=primary, which needs the 15-minute schedule back.
+// History: crons fired every 15 minutes; the :15/:30/:45 firings were
 // "quarter ticks". FLAT symbols scan for entry windows 4x/hour (cheap: the full
 // gate stack runs before any AI call, plus a no-new-information dedupe below).
 // IN-POSITION quarter ticks are event-driven: the exchange-side TP/SL bracket
@@ -384,6 +386,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Non-null once this request is identified as a swing cron invocation; the
     // finally block below then counts it toward the cycle's warm latch.
     let swingWarmLatchCycleId: number | null = null;
+    // The venue whose crons this invocation belongs to — the latch is counted
+    // per venue because the venues' crons fire at different hours.
+    let swingWarmLatchPlatform: string | null = null;
     // Set once the tick is identified — lets the catch-all below leave a
     // durable tick_log row for a mid-flight crash. Without it a crashed run is
     // invisible (no tick, no decision): that's how the AVAX 2026-07-23 lost
@@ -437,6 +442,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // reconcile a venue-side close, never to take a fresh flat look (see the
         // post-close skip below the upkeep surface).
         const postCloseReconcile = parseBoolParam(body.postCloseReconcile as string | string[] | undefined, false);
+        // Set by the wake-watcher's pending-entry fires (entry_filled,
+        // pending_entry_gone): the tick exists for the thread/resting-entry
+        // reconcile above the gates — the upkeep the 15-minute cron used to do
+        // as a side effect — and ends right after it, flat or in a position,
+        // unless that reconcile surfaced a real event (failed break, position
+        // wake band), which then evaluates as its own fire would.
+        const reconcileOnly = parseBoolParam(body.reconcileOnly as string | string[] | undefined, false);
+        // Either kind of reconcile fire never takes a look, so the gates that
+        // only decide whether a look is worth spending (closed market, open
+        // warmup, portfolio cap, margin) must not stop it: they return BEFORE
+        // the thread reconcile, the thread never changes, and the watcher
+        // re-fires the same event every tick — e.g. a bracket fill seen as
+        // the venue closes for the weekend, re-fired until the reopen with a
+        // Neon wake each time.
+        const reconcileFire = reconcileOnly || postCloseReconcile;
         const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const emitGateDebug = (stage: string, payload: Record<string, unknown>) => {
@@ -470,7 +490,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             instrumentId,
         });
         const automationCron = isAutomationCronRequest(req);
-        // Set by the 1-minute wake-watcher on the analyze calls it fires
+        // Set by the wake-watcher on the analyze calls it fires
         // (wake=1). Those calls carry no Vercel cron headers, so without this
         // marker they'd be indistinguishable from manual operator ticks — and
         // would bypass the swing-cron hard-deactivation kill switch below.
@@ -484,6 +504,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // count would never reach the cron total and the latch warm wouldn't fire.
         if (requestPath === '/api/swing/analyze' && automationCron) {
             swingWarmLatchCycleId = swingWarmCycleId(Date.now());
+            swingWarmLatchPlatform = platform;
         }
         // Quarter ticks (:15/:30/:45, automation crons only) exist to scan FLAT
         // symbols for new entry windows; manual/API calls are never quarter
@@ -676,7 +697,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (platform === 'capital') {
             const tradeability = await fetchCapitalMarketTradeability(symbol);
             capitalMarketInfo = tradeability;
-            if (!tradeability.tradeable) {
+            if (!tradeability.tradeable && !reconcileFire) {
                 emitGateDebug('capital_market_closed', {
                     gate: 'CAPITAL_MARKET_CLOSED',
                     marketStatus: tradeability.status,
@@ -742,7 +763,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
         })();
         const sessionOpenedAtMs = capitalMarketInfo?.session?.openedAtMs ?? null;
-        if (platform === 'capital' && !positionOpen && openWarmupMinutes > 0 && sessionOpenedAtMs !== null) {
+        if (platform === 'capital' && !positionOpen && !reconcileFire && openWarmupMinutes > 0 && sessionOpenedAtMs !== null) {
             const minutesSinceOpen = (Date.now() - sessionOpenedAtMs) / 60_000;
             if (minutesSinceOpen >= 0 && minutesSinceOpen < openWarmupMinutes) {
                 emitGateDebug('open_warmup_gate', {
@@ -813,7 +834,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // and the symbol's own resting-entry thread pass untouched (they
         // manage what is already on). Fails open on a DB miss
         // (lib/swing/portfolioCap.ts).
-        if (!positionOpen && portfolioCapEnabled()) {
+        if (!positionOpen && !reconcileFire && portfolioCapEnabled()) {
             const occupants = await loadPortfolioOccupants();
             const verdict = evaluatePortfolioCapGate({ self: { platform, symbol, category }, occupants });
             if (verdict.blocked) {
@@ -957,7 +978,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // it surface later as a venue rejection (Capital
         // INSUFFICIENT_AVAILABLE_MARGIN / Bitget 40762). Open positions are
         // exempt: HOLD/CLOSE still need to run to manage them. Fails open.
-        if (!positionOpen) {
+        if (!positionOpen && !reconcileFire) {
             const afford =
                 platform === 'capital'
                     ? await evaluateCapitalMinSizeAffordability(symbol).catch(() => null)
@@ -1374,6 +1395,49 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             );
         }
 
+        // Reconcile-only fire (wake-watch entry_filled / pending_entry_gone):
+        // the thread and resting-entry reconcile above IS the work. One exit,
+        // used flat (right after the stale-thread cleanup) and in a position
+        // (after the failed-break / position-wake checks below).
+        const respondReconcileOnly = async () => {
+            emitGateDebug('reconcile_only', {
+                gate: 'RECONCILE_ONLY',
+                positionOpen,
+                threadWasPendingEntry: aiThreadWasPendingEntry,
+                standingEntry: standingEntry !== null,
+            });
+            const decision = {
+                action: 'HOLD',
+                bias: 'NEUTRAL',
+                signal_strength: 'LOW',
+                summary: 'reconcile_only',
+                reason: positionOpen ? 'reconcile_only_in_position' : 'reconcile_only_flat',
+            };
+            await recordTickOutcome({
+                kind: 'skip',
+                stage: 'reconcile_only',
+                reason: decision.reason,
+                metrics: { threadWasPendingEntry: aiThreadWasPendingEntry, standingEntry: standingEntry !== null },
+            });
+            return res.status(200).json({
+                symbol,
+                platform,
+                newsSource,
+                category,
+                instrumentId,
+                timeFrame,
+                dryRun,
+                decisionPolicy,
+                decision,
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'reconcile_only' },
+                usedTape: false,
+                promptSkipped: true,
+            });
+        };
+        if (reconcileOnly && !positionOpen) {
+            return respondReconcileOnly();
+        }
+
         // News is the AI's ONLY consumer — defer fetching it until we know the AI
         // will actually be called (past the signal-strength gate), so flat sub-MEDIUM
         // ticks don't hit the news API. Assigned just before callAI below.
@@ -1501,7 +1565,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // In-position wake band (ENABLE_POSITION_WAKE_BANDS): price at/beyond a
         // band the model set on a previous management look (stored on the AI
-        // thread). Detection runs on EVERY in-position tick — the 1-min
+        // thread). Detection runs on EVERY in-position tick — the
         // watcher's fired call and the regular close-boundary tick both catch
         // it — and lets the tick through the quiet skip below (the whole point
         // is an early look at a sub-emergency move onto the model's own
@@ -1534,6 +1598,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     price: priceNow,
                 });
             }
+        }
+
+        // Reconcile-only fire, in a position: the fill transition ran above;
+        // a failed break or a crossed position band found on the way is a real
+        // event and evaluates as its own fire would.
+        if (reconcileOnly && positionOpen && !failedBreak && !positionWakeFired) {
+            return respondReconcileOnly();
         }
 
         const inPositionOffCadenceTick = primaryCloseCadence ? offBoundaryTick : quarterTick;
@@ -1632,7 +1703,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const sessionWindow = sessionWindowConfig.enabled
             ? evaluateSessionDecisionWindow({ symbol, category, preOpenMin: sessionWindowConfig.preOpenMin, postOpenMin: sessionWindowConfig.postOpenMin, postCloseMin: sessionWindowConfig.postCloseMin })
             : null;
-        const sessionWindowOwedKey = `swing:sessionwindow:owed:${platform}:${String(symbol).toUpperCase()}`;
+        const owedLookKey = sessionWindowOwedKey(platform, symbol);
         let sessionWindowOwedLook = false;
         if (!positionOpen && sessionWindow?.active) {
             const windowEndMs = Number(sessionWindow.endMs);
@@ -1680,12 +1751,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             if (!dryRun) {
                 // The owed post-window look.
                 kvSetJson(
-                    sessionWindowOwedKey,
+                    owedLookKey,
                     { windowEndMs, kind: sessionWindow.kind, event: sessionWindow.event, setAtMs: Date.now() },
                     remainingSec + 6 * 3600,
                 ).catch((err: unknown) => console.warn(`session window owed-look marker failed for ${symbol}:`, err));
                 // A woken tick that lands here would be re-fired by wake-watch
-                // every WAKE_WATCH_FIRED_TTL_SECONDS for the rest of the window
+                // on every tick for the rest of the window
                 // (the band stays armed). Hold the fired marker until the window
                 // ends; the owed look then reads the band like any other tick.
                 if (wakeFireRequest) {
@@ -1743,12 +1814,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 promptSkipped: true,
             });
         }
-        if (!positionOpen && offBoundaryTick && !dryRun && sessionWindow && !sessionWindow.active) {
+        // Who may consume the owed marker: an off-boundary cron tick (the
+        // original release path) or a wake fire. Since the analyze schedule
+        // went daily (2026-10-06) the watcher fires the owed look itself once
+        // the window is over (reason session_window_owed), and a band wake the
+        // window parked IS the deferred look when it re-fires — consuming
+        // there keeps one look per deferral instead of a wake plus an owed
+        // look. A reconcile-only post-close fire never takes it: it skips the
+        // AI below and would eat the look.
+        const owedLookConsumer = offBoundaryTick || (wakeFireRequest && !postCloseReconcile);
+        if (!positionOpen && owedLookConsumer && !dryRun && sessionWindow && !sessionWindow.active) {
             try {
-                const owed = await kvGetJson<{ windowEndMs?: number }>(sessionWindowOwedKey);
+                const owed = await kvGetJson<{ windowEndMs?: number }>(owedLookKey);
                 if (owed && Number(owed.windowEndMs) <= Date.now()) {
                     sessionWindowOwedLook = true;
-                    await kvDel(sessionWindowOwedKey);
+                    await kvDel(owedLookKey);
                     emitGateDebug('session_window_owed_look', { gate: 'SESSION_DECISION_WINDOW', ...owed });
                 }
             } catch (err) {
@@ -2047,7 +2127,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             // Set when the wake confirmed by EXTENSION (≥ wakeBreakConfirmAtr
             // primary-ATRs beyond the level) rather than by holding the window.
             breakExtensionAtr?: number | null;
-            // Minutes since the first watcher minute beyond the band (sustained
+            // Minutes since the first watcher tick beyond the band (sustained
             // bands only — instant bands keep no touch).
             crossedMinutesAgo?: number | null;
             // Minutes a schedule gate (session decision window / open warmup)
@@ -2118,7 +2198,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     if (cooldown.sweeps.length > 0) wakeBandSweeps = cooldown.sweeps;
                     // Sustained band: a raw crossing only WAKES once confirmed
                     // — by TIME (held beyond the band for the model's window;
-                    // wake_touch_* is stamped by the 1-min watcher) or by
+                    // wake_touch_* is stamped by the wake-watcher) or by
                     // EXTENSION (price ≥ wakeBreakConfirmAtr primary-ATRs past
                     // the level: force proves the break before the clock). An
                     // unconfirmed crossing stays a quiet cooldown tick — but
@@ -2515,7 +2595,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // The decision windows ahead, prompt-shaped (market.session_windows_upcoming):
         // gate on, symbol flat, horizon = the longest cooldown the model may ask
         // for. The model sizes cooldown/confirm against these blind spans instead
-        // of the minute-level watcher it is otherwise promised (DE40 2026-09-11).
+        // of the 10-minute watcher it is otherwise promised (DE40 2026-09-11).
         const sessionWindowsUpcoming = (() => {
             if (!venueEvents || positionOpen || !sessionWindowConfig.enabled) return null;
             const nowMs = Date.now();
@@ -3288,27 +3368,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // supersedes or withdraws.)
 
         // Past the gates → the AI will be called. Fetch its remaining inputs
-        // together: news (its only consumer is the prompt), the nano (15m)
-        // candles for wave/entry-timing geometry, and — for non-BTC crypto —
-        // the BTC regime context (measured correlation/beta + BTC state). All
-        // deferred to here so gated ticks never pay for them; each fails open
-        // (prompt just omits the block).
-        const [newsBundleRes, nanoRes, btcContext, promptLessons, perplexityContext, fearGreedContext] = await Promise.all([
+        // together: news (its only consumer is the prompt) and — for non-BTC
+        // crypto — the BTC regime context (measured correlation/beta + BTC
+        // state). All deferred to here so gated ticks never pay for them; each
+        // fails open (prompt just omits the block). The nano (15m) entry-timing
+        // block that used to be fetched here was removed on 2026-10-06 with the
+        // move to daily looks on larger swings.
+        const [newsBundleRes, btcContext, promptLessons, perplexityContext, fearGreedContext] = await Promise.all([
             fetchNewsWithHeadlines(symbol, { platform, source: newsSource, category }),
-            (async () => {
-                try {
-                    const nanoBundle = await fetchMarketBundle(symbol, NANO_TIMEFRAME, {
-                        includeTrades: false,
-                        candleLimit: 110,
-                    });
-                    const nanoCandlesRaw = nanoBundle?.candles;
-                    const nanoCandles: unknown[] = Array.isArray(nanoCandlesRaw) ? nanoCandlesRaw : [];
-                    return { nanoContext: computeNanoContext(nanoCandles), nanoCandles };
-                } catch (err) {
-                    console.warn(`Could not build nano (15m) context for ${symbol}:`, err);
-                    return { nanoContext: null, nanoCandles: [] as unknown[] };
-                }
-            })(),
             // BTC regime context for non-BTC crypto (loadBtcContext itself also
             // no-ops on BTCUSDT and honors SWING_BTC_CONTEXT_ENABLED). Bitget
             // only: the measurements come from Bitget perp candles.
@@ -3335,28 +3402,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             category === 'crypto' ? loadFearGreedContext() : Promise.resolve(null),
         ]);
         newsBundle = newsBundleRes;
-        // Nano (15m) geometry is an ENTRY-TIMING tool: injected into the prompt
-        // only when flat. In-position ticks manage against primary (4H)
-        // structure — feeding 15m wave position there produced intraday exit
-        // narratives ("nano crest") that cut swing winners at +0.36R while the
-        // planned targets sat 3.5R away. The candles are still fetched every AI
-        // tick because event-reaction measurements reuse them below.
-        const { nanoContext: nanoContextRaw, nanoCandles } = nanoRes;
-        const nanoContext = positionOpen ? null : nanoContextRaw;
         // Post-event reaction measurements: only when a high-impact release is in
         // the recent lookback (forexEventContext.recentEvents), quantified from the
-        // nano 15m candles already fetched above — zero extra I/O. Fails open like
-        // nano: null just omits the prompt block.
+        // micro (1H) candles the indicators already hold — zero extra I/O. They
+        // were measured on the nano 15m candles until those were removed
+        // (2026-10-06); hourly bars give the same fields at a coarser grain.
+        // Fails open: null just omits the prompt block.
         const eventReaction = swingEventReactionEnabled()
             ? buildEventReactionContext({
                   recentEvents: forexEventContext?.recentEvents,
-                  candles: nanoCandles,
+                  candles: indicators.rawCandles?.[microTimeFrame] ?? [],
               })
             : null;
         const { system, user, userCompact } = swingState.assemble(
             newsBundle?.sentiment ?? null,
             newsBundle?.headlines ?? [],
-            nanoContext,
             sweptPendingEntry,
             standingEntry,
             eventReaction,
@@ -3434,9 +3494,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             decision.raise_leverage_to = null;
             decision.move_stop_to_be = false;
         }
-        // Nano (15m) bias measured at decision time — persisted on the decision
-        // so the dashboard can render a Nano chip next to the other TF biases.
-        decision.nano_bias = nanoContext?.bias ?? null;
         // Provider message id of this call (gateway gen_..., Claude msg_...) —
         // persisted in ai_decision_json so every decision row maps to its turn
         // in the conversation. The previous id (null on stateless calls) lets
@@ -3465,10 +3522,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const primaryAtrSane = Number.isFinite(tpslAtrRaw) && tpslAtrRaw > 0 ? tpslAtrRaw : null;
         const marketAnchor = Number.isFinite(lastPrice) ? lastPrice : effectivePrice;
 
-        // Last-AI-look reference for the 1-minute wake-watcher: price + primary
+        // Last-AI-look reference for the wake-watcher: price + primary
         // ATR at the moment the model actually saw this market. The watcher
         // compares the live price against it to decide an in-position emergency
-        // look (≥ N ATR move) without fetching candles per minute. Best-effort;
+        // look (≥ N ATR move) without fetching candles per tick. Best-effort;
         // never blocks the decision path.
         if (!dryRun && Number.isFinite(marketAnchor) && (marketAnchor as number) > 0) {
             kvSetJson(
@@ -4325,7 +4382,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 macro: macroTimeFrame,
                 primary: timeFrame,
                 micro: microTimeFrame,
-                ...(nanoContext ? { nano: NANO_TIMEFRAME } : {}),
             },
         });
         // Tick-log row for the AI call keeps swing.tick_log a COMPLETE per-tick
@@ -4529,17 +4585,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         return res.status(500).json({ error: errMessage || String(err) });
     } finally {
-        // Countdown latch: the last swing cron of the 15-minute cycle to finish
-        // rebuilds the dashboard summary blobs, so the warm always runs AFTER
+        // Countdown latch: the last of this venue's swing crons in the cycle to
+        // finish rebuilds the dashboard summary blobs, so the warm always runs AFTER
         // the cycle's final decision landed instead of at a fixed cron offset
         // that races long analyzes. AWAITED on purpose (see recordSwingLastScan
         // above: void'd promises get dropped on serverless); the response is
         // already sent, but the function stays alive until the handler promise
         // settles. Never throws — on failure the summary-warm-fallback cron
         // covers the cycle a few minutes later.
-        if (swingWarmLatchCycleId !== null) {
+        if (swingWarmLatchCycleId !== null && swingWarmLatchPlatform !== null) {
             try {
-                if (await recordSwingAnalyzeFinished(swingWarmLatchCycleId)) {
+                if (await recordSwingAnalyzeFinished(swingWarmLatchCycleId, swingWarmLatchPlatform)) {
                     console.log(`[swing_warm_latch] last finisher of cycle ${swingWarmLatchCycleId}; warming summaries`);
                     await warmAllSwingSummaries();
                     await markSwingWarmDone(swingWarmLatchCycleId);

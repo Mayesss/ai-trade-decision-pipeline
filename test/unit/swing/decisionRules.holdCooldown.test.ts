@@ -203,7 +203,8 @@ test('sanitizeHoldCooldown: sustain minutes survive alongside a valid band, clam
     assert.equal(ok.confirmMinutes, 30);
     assert.deepEqual(ok.notes, []);
     const low = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeConfirmMinutes: 1 });
-    assert.equal(low.confirmMinutes, 5);
+    // Floor = one 10-minute watcher tick (WAKE_CONFIRM_MIN_MINUTES).
+    assert.equal(low.confirmMinutes, 10);
     assert.ok(low.notes.some((n) => n.startsWith('wake_sustain_clamped_')));
     const high = sanitizeHoldCooldown({ ...base, cooldownMinutes: 480, wakeAbove: 105, wakeBelow: null, wakeConfirmMinutes: 240 });
     assert.equal(high.confirmMinutes, 60);

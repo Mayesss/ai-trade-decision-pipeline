@@ -38,14 +38,6 @@ export type WaveGeometry = {
     last_swing_low: SwingPointMeasure | null;
 };
 
-export type NanoContext = WaveGeometry & {
-    bias: 'UP' | 'DOWN' | 'NEUTRAL';
-    // From the last two swing highs + lows: HH_HL (up), LH_LL (down), mixed.
-    structure: 'HH_HL' | 'LH_LL' | 'mixed' | null;
-    // (close − EMA20) / ATR on this timeframe.
-    extension_atr: number;
-};
-
 const round = (x: number, d = 3): number => Number(x.toFixed(d));
 const roundPrice = (x: number): number => Number(x.toPrecision(7));
 
@@ -60,17 +52,6 @@ function normalizeOhlc(raw: unknown): Ohlc[] {
             return { high, low, close };
         })
         .filter((c): c is Ohlc => c !== null);
-}
-
-function emaSeries(values: number[], period: number): number[] {
-    const k = 2 / (period + 1);
-    const out: number[] = [];
-    let prev = values[0] ?? 0;
-    for (let i = 0; i < values.length; i++) {
-        prev = i === 0 ? values[0] : values[i] * k + prev * (1 - k);
-        out.push(prev);
-    }
-    return out;
 }
 
 function atr(candles: Ohlc[], period = 14): number | null {
@@ -203,40 +184,5 @@ export function computeWaveGeometry(rawCandles: unknown, window = 80): WaveGeome
         resistance_trendline: fitTrendline(pivots, 'high', lastIndex, atrValue),
         last_swing_high: swingPoint(pivots, 'high', lastIndex, close, atrValue),
         last_swing_low: swingPoint(pivots, 'low', lastIndex, close, atrValue),
-    };
-}
-
-function classifyStructure(pivots: Pivot[]): NanoContext['structure'] {
-    const highs = pivots.filter((p) => p.kind === 'high').slice(-2);
-    const lows = pivots.filter((p) => p.kind === 'low').slice(-2);
-    if (highs.length < 2 || lows.length < 2) return null;
-    const hh = highs[1].price > highs[0].price;
-    const hl = lows[1].price > lows[0].price;
-    if (hh && hl) return 'HH_HL';
-    if (!hh && !hl) return 'LH_LL';
-    return 'mixed';
-}
-
-// Nano (15m) entry-timing context: the wave geometry plus a cheap bias,
-// structure label and EMA20 extension on the nano timeframe itself.
-export function computeNanoContext(rawCandles: unknown, window = 96): NanoContext | null {
-    const geometry = computeWaveGeometry(rawCandles, window);
-    if (!geometry) return null;
-    const candles = normalizeOhlc(rawCandles).slice(-Math.max(30, window));
-    const closes = candles.map((c) => c.close);
-    const ema20 = emaSeries(closes, 20);
-    const atrValue = atr(candles);
-    if (!atrValue) return null;
-    const last = closes.length - 1;
-    const close = closes[last];
-    const emaNow = ema20[last];
-    const emaSlope = last >= 5 ? emaNow - ema20[last - 5] : 0;
-    const bias: NanoContext['bias'] =
-        close > emaNow && emaSlope > 0 ? 'UP' : close < emaNow && emaSlope < 0 ? 'DOWN' : 'NEUTRAL';
-    return {
-        ...geometry,
-        bias,
-        structure: classifyStructure(findPivots(candles)),
-        extension_atr: round((close - emaNow) / atrValue, 2),
     };
 }

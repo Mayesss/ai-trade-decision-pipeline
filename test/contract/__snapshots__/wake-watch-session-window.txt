@@ -42,7 +42,7 @@ POST https://kv.boundary.test/
     "SETEX",
     "swing:wake-work:snap",
     43200,
-    "{\"v\":0,\"ts\":<NOW_MS>,\"bands\":[],\"triggers\":[{\"side\":\"long\",\"triggerPrice\":77000,\"timeFrame\":\"4H\",\"entryAtMs\":1786479330000,\"platform\":\"bitget\",\"symbol\":\"BTCUSDT\"}],\"threads\":[],\"pendingEntries\":[]}"
+    "{\"v\":0,\"ts\":<NOW_MS>,\"bands\":[],\"triggers\":[],\"threads\":[],\"pendingEntries\":[{\"platform\":\"capital\",\"symbol\":\"US500\"}]}"
   ]
 
 GET https://api-capital.backend-capital.com/api/v1/positions
@@ -84,23 +84,15 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "GET",
-    "swing:wakewatch:ref:bitget:BTCUSDT"
+    "swing:wakewatch:swwithdraw:capital:US500:1786534200000"
   ]
-
-GET https://api.bitget.com/api/v2/mix/market/candles?granularity=4H&limit=5&productType=usdt-futures&symbol=BTCUSDT
-  access-key: test-bitget-key
-  access-passphrase: test-bitget-passphrase
-  access-sign: <SIGN>
-  access-timestamp: <NOW_MS>
-  content-type: application/json
-  locale: en-US
 
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
   [
     "GET",
-    "swing:wakewatch:fired:bitget:BTCUSDT"
+    "swing:wakewatch:fired:capital:US500"
   ]
 
 POST https://kv.boundary.test/
@@ -108,9 +100,9 @@ POST https://kv.boundary.test/
   content-type: application/json
   [
     "SETEX",
-    "swing:wakewatch:fired:bitget:BTCUSDT",
+    "swing:wakewatch:fired:capital:US500",
     300,
-    "{\"ts\":<NOW_MS>,\"reason\":\"failed_break\"}"
+    "{\"ts\":<NOW_MS>,\"reason\":\"session_window_pre_open\"}"
   ]
 
 POST https://kv.boundary.test/
@@ -129,7 +121,31 @@ POST https://kv.boundary.test/
     "swing:ai:health:v1"
   ]
 
-GET https://wake-watch.boundary.test/api/swing/analyze?symbol=BTCUSDT&platform=bitget&decisionPolicy=balanced&wake=1
+GET https://wake-watch.boundary.test/api/swing/analyze?symbol=US500&platform=capital&decisionPolicy=balanced&wake=1
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:wakewatch:swwithdraw:capital:US500:1786534200000",
+    3300,
+    "{\"ts\":<NOW_MS>}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "MGET",
+    "swing:sessionwindow:owed:capital:USDJPY",
+    "swing:sessionwindow:owed:capital:EURUSD",
+    "swing:sessionwindow:owed:capital:DE40",
+    "swing:sessionwindow:owed:capital:US500",
+    "swing:sessionwindow:owed:capital:US100",
+    "swing:sessionwindow:owed:capital:TLT",
+    "swing:sessionwindow:owed:capital:GBPUSD"
+  ]
 
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>

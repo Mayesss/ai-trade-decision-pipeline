@@ -89,26 +89,27 @@ test('an empty universe costs no command at all', async () => {
 });
 
 // scanIsLaterTickThan decides when the dashboard stops showing a decision and
-// starts showing the gate that ran instead. The crons are */15, and a decision
-// row is stamped AFTER its AI call while the next tick's marker lands a second
-// into that tick — so "one tick behind" is ~14-15 min, never a clean 15. The
-// window has to clear that without reaching the ~29 min of two ticks behind.
+// starts showing the gate that ran instead. The crons fire hourly inside each
+// venue's decision window (*/15 until 2026-10-06), and a decision row is
+// stamped AFTER its AI call while the next tick's marker lands a second into
+// that tick — so "one tick behind" is ~59-60 min, never a clean 60. The window
+// has to clear that without reaching the ~119 min of two ticks behind.
 test('a decision one tick behind the scan is still current; two ticks behind is not', async () => {
     const { scanIsLaterTickThan } = await loadLastScan();
     const min = (n: number) => n * 60 * 1000;
     // Same tick (marker stamped at tick start, row written seconds later).
     assert.equal(scanIsLaterTickThan(min(0), 0), false);
     // One tick behind, including a cron that fired late.
-    assert.equal(scanIsLaterTickThan(min(14), 0), false);
-    assert.equal(scanIsLaterTickThan(min(15), 0), false);
-    assert.equal(scanIsLaterTickThan(min(18), 0), false);
+    assert.equal(scanIsLaterTickThan(min(59), 0), false);
+    assert.equal(scanIsLaterTickThan(min(60), 0), false);
+    assert.equal(scanIsLaterTickThan(min(63), 0), false);
     // Past the grace: a whole cycle has passed with no new decision.
-    assert.equal(scanIsLaterTickThan(min(18) + 1, 0), true);
-    assert.equal(scanIsLaterTickThan(min(29), 0), true);
-    // The stale-row case this exists for: hours of gate skips over one row.
+    assert.equal(scanIsLaterTickThan(min(63) + 1, 0), true);
+    assert.equal(scanIsLaterTickThan(min(119), 0), true);
+    // The stale-row case this exists for: a day of gate skips over one row.
     assert.equal(scanIsLaterTickThan(min(960), 0), true);
     // Absolute timestamps, not just deltas from zero.
-    const rowTs = Date.UTC(2026, 8, 16, 22, 31, 22);
-    assert.equal(scanIsLaterTickThan(rowTs + min(14), rowTs), false);
-    assert.equal(scanIsLaterTickThan(rowTs + min(29), rowTs), true);
+    const rowTs = Date.UTC(2026, 8, 16, 0, 1, 22);
+    assert.equal(scanIsLaterTickThan(rowTs + min(59), rowTs), false);
+    assert.equal(scanIsLaterTickThan(rowTs + min(119), rowTs), true);
 });

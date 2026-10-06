@@ -4,7 +4,7 @@
 // Pure verdict + one thin loader. "Occupied" is read off swing.ai_threads: a
 // thread exists exactly while the system has capital committed to a symbol
 // (resting entry or open position), and the wake-watcher reconciles it against
-// the venues every minute, so it is the cheapest honest occupancy list there
+// the venues every tick, so it is the cheapest honest occupancy list there
 // is — one indexed query, no venue calls. Categories come from the cron
 // registry (vercel.json) and fall back to inference from the symbol.
 

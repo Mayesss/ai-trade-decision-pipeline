@@ -1,14 +1,17 @@
 export const config = { runtime: 'nodejs' };
-// Cron drain for delayed post-mortems (vercel.json, every 15 min): close-
-// triggered rows are deliberately NOT run at close time — they mature at
-// exit + SWING_POSTMORTEM_DELAY_MINUTES so the dossier's post-exit tail
-// (what the market did after the close) is fully recorded before the analyst
-// judges premature-close / misplaced-SL. This route claims only mature queued
-// rows and runs them sequentially. It exists separately from
-// /api/swing/postmortem because Vercel crons cannot send the admin header and
-// the main route also serves reports + manual enqueue, which must stay
-// protected; this one is in UNAUTHENTICATED_CRON_ROUTES (lib/admin.ts) and
-// exposes nothing but "process what is due".
+// Drain for delayed post-mortems: close-triggered rows are deliberately NOT
+// run at close time — they mature at exit + SWING_POSTMORTEM_DELAY_MINUTES so
+// the dossier's post-exit tail (what the market did after the close) is fully
+// recorded before the analyst judges premature-close / misplaced-SL. This
+// route claims only mature queued rows and runs them sequentially.
+//
+// RETIRED AS A CRON on 2026-10-06. The analyst has been off by default since
+// 2026-09-17, so the every-15-minutes cron was a tested no-op; it was removed
+// from vercel.json and from UNAUTHENTICATED_CRON_ROUTES (lib/admin.ts), which
+// makes this an ordinary admin route. The route and the queue stay, so
+// SWING_POSTMORTEM_MODE=loss|all still works: call it by hand with the admin
+// secret, or put the cron entry and the allow-list line back
+// (docs/neon-compute-cost.md, "Postmortem drain").
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
@@ -45,7 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // AI provider down for a non-self-healing reason (subscription lapse, bad
-    // key)? Don't burn claims and doomed API attempts every 15 minutes — leave
+    // key)? Don't burn claims and doomed API attempts on every pass — leave
     // the rows queued; they analyze themselves once the flag clears. Transient
     // degradation is NOT gated: the next pass may well succeed.
     const aiHealth = await loadSwingAiHealth();

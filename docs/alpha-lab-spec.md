@@ -544,6 +544,27 @@ rediscover the hard way. Newest last.
   issuing decisions. Also found: the 08:00 UTC look died on a gateway 402 (no
   credit balance) and the 12:00 close was skipped as off-boundary — the daily
   look is now owed until served (§12).
+- **2026-10-06** — Neon cost: cron schedule thinned to the daily cadence
+  (docs/neon-compute-cost.md, "Thinning the schedule"). Analyze fires hourly
+  inside each venue's retry window only (Bitget 00–05 UTC daily, Capital
+  08–13 UTC weekdays), wake-watch every 10 minutes instead of every minute,
+  postmortem-drain cron retired. Trading-visible side effects, all inside the
+  measurement window that started 2026-09-24: wake latency 1 → ≤10 minutes,
+  `cooldown_wake_confirm_minutes` floor 5 → 10, touch-and-reclaims shorter
+  than a tick go unseen, and the session-window owed looks that quarter ticks
+  created after every window (~1.7 AI looks/day, 5 in 10-03→10-06) stop
+  unless a real look was deferred. Whether to move `SWING_R_SAMPLE_SINCE` to
+  the deploy is the owner's call.
+- **2026-10-06** — Nano (15m) entry-timing block removed (owner decision: daily
+  looks, larger swings). No 15m fetch on AI ticks, no `state.geometry.nano`, no
+  nano line in the timeframe ladder or wave-position prose, no `nano_bias` on
+  decisions or Nano chip on the dashboard. Post-event reaction measurements
+  (`market.event_reaction`) now run on the micro 1H candles the indicators
+  already hold (coarser anchor: up to an hour of pre-release drift). The
+  15m candles the dashboard chart warm fetches are unaffected. Owner: the R
+  sample resets here — `R_SAMPLE_SINCE_MS` default moved 2026-09-24 →
+  2026-10-07T00:00Z (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy
+  time).
 
 ---
 

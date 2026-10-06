@@ -1,6 +1,7 @@
-// Contract: the 1-minute wake-watcher (/api/swing/wake-watch). It does no AI
-// work — it reads the armed wake state (cooldown bands, break triggers,
-// in-position threads) from Postgres, compares against live venue prices, and
+// Contract: the wake-watcher (/api/swing/wake-watch, every 10 minutes). It
+// does no AI work — it reads the armed wake state (cooldown bands, break
+// triggers, in-position and pending-entry threads) from Postgres via the KV
+// work-list cache, compares against live venue state, and
 // FIRES the analyze route for crossed events by self-invoking
 // {host}/api/swing/analyze?wake=1 through invokeCronEndpoint. With the
 // base-URL envs scrubbed, that resolves from req.headers.host — so the fire
@@ -53,6 +54,7 @@ const BAND_ROW = {
 interface WakeState {
     cooldowns?: Record<string, unknown>[];
     threads?: Record<string, unknown>[];
+    pendingEntries?: Record<string, unknown>[];
     triggers?: Record<string, unknown>[];
 }
 
@@ -61,6 +63,7 @@ function wakePg(state: WakeState): PgResponder {
         const kind = text.split(' ')[0].toUpperCase();
         if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH'].includes(kind)) return 0; // schema bootstrap
         if (text.includes('FROM swing.ai_cooldowns')) return state.cooldowns ?? [];
+        if (text.includes("FROM swing.ai_threads WHERE status = 'pending_entry'")) return state.pendingEntries ?? [];
         if (text.includes('FROM swing.ai_threads')) return state.threads ?? [];
         if (text.includes('FROM swing.break_triggers')) return state.triggers ?? [];
         if (kind === 'UPDATE' || kind === 'DELETE') return 1; // touch/sweep persistence, trigger cleanup
@@ -229,5 +232,79 @@ test('a 2 ATR move stays below the shared 3-ATR emergency threshold (the watcher
 
     const body = out.body as Record<string, any>;
     expect(body.positionsChecked).toBe(1);
+    expect(body.fired).toEqual([]);
+});
+
+// Pending-entry upkeep (step 5) — what the 15-minute analyze cron used to do on
+// every tick before the schedule went daily.
+
+test('resting entry filled: pending_entry thread + venue position fires a reconcile-only run', async () => {
+    boundary.use(
+        bitgetGet('/api/v2/mix/position/all-position', [{ symbol: 'ETHUSDT', markPrice: '2500', total: '0.4' }]),
+    );
+    installWakeState({ pendingEntries: [{ platform: 'bitget', symbol: 'ETHUSDT' }] });
+
+    const out = await runWakeWatch();
+
+    const body = out.body as Record<string, any>;
+    expect(body.pendingEntriesChecked).toBe(1);
+    expect(body.fired).toEqual([
+        { platform: 'bitget', symbol: 'ETHUSDT', reason: 'entry_filled', invoked: true, error: null },
+    ]);
+    const summary = await conversationSummary();
+    const fire = summary.find((line) => line.includes(`${SELF_HOST}/api/swing/analyze`));
+    expect(fire).toContain('reconcileOnly=1');
+    expect(fire).toContain('wake=1');
+    // A fill is not a look: no order-book read, no cadence-gate flags.
+    expect(fire).not.toContain('enforcePrimaryCloseGate');
+    expect(summary.some((line) => line.includes('orders-pending'))).toBe(false);
+});
+
+test('resting entry vanished from the venue: flat + empty order books fires a reconcile-only run', async () => {
+    boundary.use(
+        bitgetGet('/api/v2/mix/position/all-position', []),
+        bitgetGet('/api/v2/mix/order/orders-pending', { entrustedList: [] }),
+        bitgetGet('/api/v2/mix/order/orders-plan-pending', { entrustedList: [] }),
+    );
+    installWakeState({ pendingEntries: [{ platform: 'bitget', symbol: 'ETHUSDT' }] });
+
+    const out = await runWakeWatch();
+
+    const body = out.body as Record<string, any>;
+    expect(body.fired).toEqual([
+        { platform: 'bitget', symbol: 'ETHUSDT', reason: 'pending_entry_gone', invoked: true, error: null },
+    ]);
+    const summary = await conversationSummary();
+    const fire = summary.find((line) => line.includes(`${SELF_HOST}/api/swing/analyze`));
+    expect(fire).toContain('reconcileOnly=1');
+});
+
+test('resting entry still on the book: nothing fires', async () => {
+    boundary.use(
+        bitgetGet('/api/v2/mix/position/all-position', []),
+        bitgetGet('/api/v2/mix/order/orders-pending', {
+            entrustedList: [
+                {
+                    symbol: 'ETHUSDT',
+                    orderId: '1',
+                    clientOid: 'c1',
+                    side: 'buy',
+                    price: '2400',
+                    size: '0.4',
+                    orderType: 'limit',
+                    tradeSide: 'open',
+                    status: 'live',
+                    cTime: String(FIXED_NOW_MS - 3600_000),
+                },
+            ],
+        }),
+        bitgetGet('/api/v2/mix/order/orders-plan-pending', { entrustedList: [] }),
+    );
+    installWakeState({ pendingEntries: [{ platform: 'bitget', symbol: 'ETHUSDT' }] });
+
+    const out = await runWakeWatch();
+
+    const body = out.body as Record<string, any>;
+    expect(body.pendingEntriesChecked).toBe(1);
     expect(body.fired).toEqual([]);
 });

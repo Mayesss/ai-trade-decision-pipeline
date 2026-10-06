@@ -1,10 +1,10 @@
-// Cache-invalidation counter for the 1-minute wake-watcher's work list.
+// Cache-invalidation counter for the wake-watcher's work list.
 //
 // Leaf module on purpose: lib/swing/pg.ts (the writers) and
 // lib/swing/wakeWorkCache.ts (the reader) both depend on it, and keeping the
 // counter here is what stops those two from importing each other.
 //
-// Why it exists: wake-watch runs every minute and its three work-list SELECTs
+// Why it exists: wake-watch ran every minute and its work-list SELECTs
 // were unconditional, so the Neon compute never went 5 minutes without a query
 // and never scaled to zero — 6.00 CU-hours every single day, essentially all
 // of it idle. The bands themselves are static config between analyze runs (the

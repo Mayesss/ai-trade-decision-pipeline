@@ -32,14 +32,17 @@ SQL neon-postgres
 SQL neon-postgres
   SELECT platform, symbol, wake_above, wake_below FROM swing.ai_threads WHERE status = 'in_position'
 
+SQL neon-postgres
+  SELECT platform, symbol FROM swing.ai_threads WHERE status = 'pending_entry'
+
 POST https://kv.boundary.test/
   authorization: Bearer <TOKEN>
   content-type: application/json
   [
     "SETEX",
     "swing:wake-work:snap",
-    900,
-    "{\"v\":0,\"ts\":<NOW_MS>,\"bands\":[{\"untilMs\":1786532400000,\"wakeAbove\":77000,\"wakeBelow\":null,\"wakeNote\":\"wake on range-high reclaim\",\"setAtMs\":1786527000000,\"confirmMinutes\":null,\"touchSide\":null,\"touchStartedMs\":null,\"touchExtreme\":null,\"atr\":1200,\"sweeps\":[],\"reclaimLookedAtMs\":null,\"gateHeldAtMs\":null,\"platform\":\"bitget\",\"symbol\":\"BTCUSDT\",\"claimedUntilMs\":null}],\"triggers\":[],\"threads\":[]}"
+    43200,
+    "{\"v\":0,\"ts\":<NOW_MS>,\"bands\":[{\"untilMs\":1786532400000,\"wakeAbove\":77000,\"wakeBelow\":null,\"wakeNote\":\"wake on range-high reclaim\",\"setAtMs\":1786527000000,\"confirmMinutes\":null,\"touchSide\":null,\"touchStartedMs\":null,\"touchExtreme\":null,\"atr\":1200,\"sweeps\":[],\"reclaimLookedAtMs\":null,\"gateHeldAtMs\":null,\"platform\":\"bitget\",\"symbol\":\"BTCUSDT\",\"claimedUntilMs\":null}],\"triggers\":[],\"threads\":[],\"pendingEntries\":[]}"
   ]
 
 GET https://api-capital.backend-capital.com/api/v1/positions
@@ -70,7 +73,7 @@ POST https://kv.boundary.test/
   [
     "SETEX",
     "swing:wakewatch:fired:bitget:BTCUSDT",
-    240,
+    300,
     "{\"ts\":<NOW_MS>,\"reason\":\"wake_band_above\"}"
   ]
 
@@ -118,4 +121,13 @@ POST https://kv.boundary.test/
     "swing:sessionsweep:state:capital:US100",
     "swing:sessionsweep:state:capital:TLT",
     "swing:sessionsweep:state:capital:GBPUSD"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "MGET",
+    "swing:wake-work:v",
+    "swing:wake-work:snap"
   ]

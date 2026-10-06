@@ -42,9 +42,12 @@ So health is never inferred from "recent rows exist" — it needs a call that
    (`limit` clamps to 5–30; `async=1` + `jobId` for the queued form.)
 4. **Cron cadence** — `GET /api/dashboard/warm-status`, and
    `GET /api/dashboard/summary` / `timeline` for per-symbol freshness. The
-   schedule in [vercel.json](../../../vercel.json): 26 symbols on `*/15`,
-   `wake-watch` every minute, `postmortem-drain` at `:07/:22/:37/:52`,
-   `summary-warm-fallback` at `:03/:18/:33/:48`, weekly digest Sun 05:30.
+   schedule in [vercel.json](../../../vercel.json) (since 2026-10-06): analyze
+   hourly inside each venue's decision window only — Bitget `00:00–05:00` UTC
+   daily, Capital `08:00–13:00` UTC weekdays — so a symbol going hours without
+   a scan outside those windows is NORMAL; `wake-watch` every 10 minutes at
+   `:05/:15/…`; `summary-warm-fallback` at `:05` after each analyze firing;
+   weekly digest Sun 05:30. No postmortem-drain cron any more.
 5. **Logs** — `npx vercel logs <deployment-url> --scope mayess-projects`. Get the
    current production deployment from `npx vercel ls ai-trade-decision-pipeline
    --scope mayess-projects` (the stable alias above always points at it).

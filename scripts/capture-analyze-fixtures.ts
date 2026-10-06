@@ -250,7 +250,6 @@ async function captureExtras() {
         const market = 'https://api.bitget.com/api/v2/mix/market';
         for (const extra of [
             `${market}/contracts?productType=usdt-futures`,
-            `${market}/candles?symbol=${SYMBOL}&productType=usdt-futures&granularity=15m&limit=110`,
             `${market}/candles?symbol=${SYMBOL}&productType=usdt-futures&granularity=1D&limit=95`,
             `${market}/candles?symbol=BTCUSDT&productType=usdt-futures&granularity=1D&limit=95`,
             `${market}/candles?symbol=BTCUSDT&productType=usdt-futures&granularity=1H&limit=172`,
@@ -263,8 +262,9 @@ async function captureExtras() {
     // rate limiter), so use the lib itself. fetchCapitalCandlesByEpic passes
     // `limit` straight through as `max` (the bundle callers add their +10
     // before calling it), so these pairs ARE the (resolution, max)
-    // combinations the tick issues: HOUR_4/40, MINUTE_15/116, MINUTE_15/120,
-    // HOUR/130, HOUR/200, HOUR_4/200, DAY/200, WEEK/200.
+    // combinations the tick issues: HOUR_4/40, MINUTE_15/116 (dashboard chart
+    // warm), HOUR/130, HOUR/200, HOUR_4/200, DAY/200, WEEK/200. MINUTE_15/120
+    // was the nano entry-timing block, removed 2026-10-06.
     const { fetchCapitalCandlesByEpic, fetchCapitalMarketTradeability, resolveCapitalEpicRuntime } = await import(
         '../lib/capital'
     );
@@ -273,7 +273,6 @@ async function captureExtras() {
     for (const [timeframe, max] of [
         ['4H', 40],
         ['15m', 116],
-        ['15m', 120],
         ['1H', 130],
         ['1H', 200],
         ['4H', 200],

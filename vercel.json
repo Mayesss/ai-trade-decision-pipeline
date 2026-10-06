@@ -5,51 +5,51 @@
   "crons": [
     {
       "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 0-5 * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 0-5 * * *"
     },
     {
       "path": "/api/swing/analyze?symbol=USDJPY&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=DE40&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=US100&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=TLT&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/analyze?symbol=GBPUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 8-13 * * 1-5"
     },
     {
-      "path": "/api/dashboard/summary-warm-fallback",
-      "schedule": "3,18,33,48 * * * *"
+      "path": "/api/dashboard/summary-warm-fallback?venue=bitget",
+      "schedule": "5 0-5 * * *"
+    },
+    {
+      "path": "/api/dashboard/summary-warm-fallback?venue=capital",
+      "schedule": "5 8-13 * * 1-5"
     },
     {
       "path": "/api/swing/wake-watch",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/swing/postmortem-drain",
-      "schedule": "7,22,37,52 * * * *"
+      "schedule": "5,15,25,35,45,55 * * * *"
     },
     {
       "path": "/api/swing/weekly-digest?store=1",

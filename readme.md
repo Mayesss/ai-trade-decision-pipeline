@@ -140,12 +140,13 @@ modify-tpsl-order with transcript replay). Capital: flat-gated,
 in-position-manage (the full capital prompt + marketaux path — capital's
 flat-only gates don't apply in-position), market-closed, and the live PUT
 bracket amendment (whole-bracket replacement). Cross-cutting: event-blackout
-and a production-shaped quarter cron tick (kill switch, last-scan, warm
-latch). `test/contract/postmortem.contract.test.ts` and
+and a production-shaped retry-window cron tick (kill switch, served-look
+marker, last-scan, per-venue warm latch). `test/contract/postmortem.contract.test.ts` and
 `evaluate.contract.test.ts` net the other two AI prompt surfaces, and
-`wake-watch*.contract.test.ts` cover the 1-minute watcher (band/emergency/
-failed-break/close detection and the analyze self-fire, which msw intercepts
-via the request's own host header).
+`wake-watch*.contract.test.ts` cover the 10-minute watcher (band/emergency/
+failed-break/close detection, resting-entry and session-window upkeep, and the
+analyze self-fire, which msw intercepts via the request's own host header).
+`test/unit/cronSchedule.test.ts` pins the `vercel.json` schedule itself.
 
 `npm run test:fixtures:capture -- SYMBOL [capital [category]]` re-records a
 fixture from one live dryRun tick. Bitget needs no credentials (public market
@@ -202,10 +203,10 @@ each: the rate limiter serializes calls against the frozen clock.
 - `DELETE /api/swing/rest-history`
   - Legacy alias: `DELETE /api/rest-history`
   - Clears all decision history.
-- `GET /api/swing/wake-watch` (cron, every minute)
-  - Watches open positions/cooldown wake bands and fires `/api/swing/analyze` for symbols that need attention.
-- `GET /api/swing/postmortem-drain` (cron)
-  - Drains queued post-mortem/win-evaluation analyses.
+- `GET /api/swing/wake-watch` (cron, every 10 minutes at :05/:15/…/:55)
+  - Watches open positions/cooldown wake bands and resting entries, and fires `/api/swing/analyze` for symbols that need attention.
+- `GET /api/swing/postmortem-drain` (admin, manual — no longer a cron since 2026-10-06)
+  - Drains queued post-mortem/win-evaluation analyses when `SWING_POSTMORTEM_MODE` is on.
 - `GET /api/swing/weekly-digest?store=1` (cron, Sunday)
   - Builds and stores the deterministic weekly digest over the `swing.*` tables.
 - `GET /api/dashboard/*`
@@ -220,7 +221,7 @@ each: the rate limiter serializes calls against the frozen clock.
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/swing/wake-watch`, `/api/swing/postmortem-drain`, `/api/swing/weekly-digest`, `/api/dashboard/summary-warm-fallback`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/swing/wake-watch`, `/api/swing/weekly-digest`, `/api/dashboard/summary-warm-fallback`.
 - Removed: all `/api/forex/*` and `/api/scalp/*` routes (deleted with the forex/scalp retirement; they now return 404).
 
 ## Dry-Run Safety
@@ -259,10 +260,9 @@ curl "http://localhost:3000/api/swing/analyze?symbol=QQQUSDT&platform=capital&ne
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel's dashboard or your host of choice.
 - Postgres + KV endpoints must be reachable from the runtime; Bitget/Capital/AI/News calls require outbound network access.
 - Current cron entries (see `vercel.json`):
-  - `/api/swing/analyze?...&dryRun=false` every 15 minutes per symbol (live-trading mode) across the crypto (Bitget) and capital (indices/commodities/forex) universes.
-  - `/api/swing/wake-watch` every minute (position/cooldown wake sweep that fires analyze on demand).
-  - `/api/swing/postmortem-drain` four times per hour.
-  - `/api/dashboard/summary-warm-fallback` four times per hour.
+  - `/api/swing/analyze?...&dryRun=false` hourly inside each venue's daily decision retry window only (live-trading mode): Bitget `0 0-5 * * *`, Capital `0 8-13 * * 1-5`. Move-driven looks come from wake-watch. See `docs/neon-compute-cost.md`.
+  - `/api/swing/wake-watch` every 10 minutes at `:05/:15/…/:55` (position/cooldown wake sweep and resting-entry upkeep that fires analyze on demand).
+  - `/api/dashboard/summary-warm-fallback` five minutes after each analyze firing (one entry per venue).
   - `/api/swing/weekly-digest?store=1` Sunday mornings.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

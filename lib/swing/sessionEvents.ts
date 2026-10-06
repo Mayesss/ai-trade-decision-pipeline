@@ -440,7 +440,7 @@ export function evaluateSessionDecisionWindow(params: {
 // The decision windows AHEAD, for the model's flat plan. A wake band crossing
 // inside a window is not evaluated until the window ends (the analyze gate
 // parks the fire), so cooldown_minutes and cooldown_wake_confirm_minutes have
-// to be sized against these spans, not against the minute-level watcher —
+// to be sized against these spans, not against the 10-minute watcher —
 // DE40 2026-09-11 armed a 10-minute confirm at 04:02 UTC for a level that was
 // unwatchable from 05:00 to 07:30. Contiguous/overlapping windows merge into
 // one span (an open's pre_open + opening_drive; a cross-venue open inside a

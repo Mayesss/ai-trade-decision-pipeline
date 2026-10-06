@@ -112,3 +112,29 @@ test("retrace_pct is null when the reaction is too small to measure", () => {
   assert.equal(out[0].retrace_pct, null);
   assert.equal(out[0].ret_since_release_bp, 0.5);
 });
+
+// Since 2026-10-06 /api/analyze feeds the micro (1H) candles — the 15m nano
+// fetch is gone. On hourly bars a 12:30 release sits INSIDE the 12:00 bar, so
+// the anchor is the 11:00 bar (closes 12:00): half an hour of pre-release
+// drift lands in the measurement, which is the stated cost of the coarser grain.
+test("buildEventReactionContext on hourly bars: bar length inferred, anchor is the last hour closed before release", () => {
+  const H = 60 * 60_000;
+  const start = Date.UTC(2026, 6, 14, 8, 0);
+  const rows = [
+    [start, 100, 100.05, 99.95, 100, 10], // 08:00
+    [start + H, 100, 100.05, 99.95, 100, 10], // 09:00
+    [start + 2 * H, 100, 100.05, 99.95, 100, 10], // 10:00
+    [start + 3 * H, 100, 100.25, 99.95, 100.2, 10], // 11:00 — closes 12:00 at 100.2 (pre-release drift)
+    [start + 4 * H, 100.2, 101.2, 100.1, 100.9, 50], // 12:00 — contains the 12:30 release
+    [start + 5 * H, 100.9, 101, 100.7, 100.8, 30], // 13:00 — forming
+  ];
+  const out = buildEventReactionContext({
+    recentEvents: [compactEvent()],
+    candles: rows,
+    nowMs: RELEASE_MS + 75 * 60_000,
+  });
+  assert.ok(out);
+  assert.equal(out[0].minutes_since_release, 75);
+  // (100.8 / 100.2 − 1) × 1e4 ≈ 59.9bp, anchored on the 11:00 bar, not the 12:00 one.
+  assert.equal(out[0].ret_since_release_bp, 59.9);
+});

@@ -1,12 +1,25 @@
-// Decision logic for the 1-minute wake-watcher (pages/api/swing/wake-watch):
-// pure functions + KV key/type contracts shared with the analyze route. The
-// watcher never calls the AI itself — it only decides WHEN to fire the normal
-// analyze route early, so a crossed wake band or a violent in-position move is
-// acted on within ~a minute instead of waiting for the next 4H bar close.
+// Decision logic for the wake-watcher (pages/api/swing/wake-watch): pure
+// functions + KV key/type contracts shared with the analyze route. The watcher
+// never calls the AI itself — it only decides WHEN to fire the normal analyze
+// route early, so a crossed wake band or a violent in-position move is acted
+// on within one watcher tick instead of waiting for the next scheduled look.
+
+// The watcher's cron period and phase (vercel.json: wake-watch
+// "5,15,25,35,45,55 * * * *"). Was one minute until 2026-10-06; slowed to ten
+// because every watcher tick that misses the KV work-list cache wakes the Neon
+// compute, and the compute bills five idle minutes after every wake
+// (docs/neon-compute-cost.md). The five-minute phase puts the snapshot rebuild
+// that follows an analyze cron firing (always on :00) inside the wake that
+// firing already paid for, instead of ten minutes later on a suspended
+// compute. Everything below that assumes a tick length or phase derives from
+// these constants — change them and vercel.json together
+// (test/unit/cronSchedule.test.ts holds the two in step).
+export const WAKE_WATCH_TICK_MINUTES = 10;
+export const WAKE_WATCH_TICK_OFFSET_MINUTES = 5;
 
 // Last AI look on a symbol: stamped by analyze after every real AI call so the
 // watcher can measure "how far has price moved since the model last saw this
-// market" without fetching candles/indicators every minute.
+// market" without fetching candles/indicators every tick.
 export type WakeWatchRef = {
     price: number;
     atr: number | null;
@@ -16,12 +29,33 @@ export type WakeWatchRef = {
 export const wakeWatchRefKey = (platform: string, symbol: string) =>
     `swing:wakewatch:ref:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
 
-// Fired-marker: set immediately before invoking the analyze route so two
-// consecutive watcher ticks cannot double-fire the same event while the first
-// (slow, AI-bearing) call is still running. TTL outlives any analyze run.
+// Fired-marker: set immediately before invoking the analyze route so one
+// event cannot fire twice while the first (slow, AI-bearing) call is still
+// running — within one watcher run (a band and an emergency on the same
+// symbol) and across an overlapping next run. 300s = the watcher's own
+// maxDuration, so the marker outlives the run that set it; and it stays
+// shorter than one tick, so an event that still stands (a gate refused the
+// look, the run died) is re-fired on the very next tick rather than every
+// other one.
 export const wakeWatchFiredKey = (platform: string, symbol: string) =>
     `swing:wakewatch:fired:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
-export const WAKE_WATCH_FIRED_TTL_SECONDS = 240;
+export const WAKE_WATCH_FIRED_TTL_SECONDS = 300;
+
+// Session decision window bookkeeping shared with the analyze session gate.
+// The OWED marker is written by analyze when the gate parks a flat look
+// ({ windowEndMs, kind, event, setAtMs }; TTL = rest of the window + 6h) and
+// consumed by the look that finally runs.
+export const sessionWindowOwedKey = (platform: string, symbol: string) =>
+    `swing:sessionwindow:owed:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}`;
+// Watcher-side once-per-event budgets, so a look that a later gate refuses
+// (closed market, portfolio cap) is not re-fired — and Neon re-woken — every
+// tick: one withdraw fire per (symbol, window), one owed-look fire per marker.
+export const sessionWindowWithdrawFiredKey = (platform: string, symbol: string, windowStartMs: number) =>
+    `swing:wakewatch:swwithdraw:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}:${windowStartMs}`;
+export const sessionWindowOwedFiredKey = (platform: string, symbol: string, windowEndMs: number) =>
+    `swing:wakewatch:swowed:${String(platform || '').toLowerCase()}:${String(symbol || '').toUpperCase()}:${windowEndMs}`;
+// Outlives the owed marker itself (window remainder + 6h, set at the window).
+export const SESSION_WINDOW_OWED_FIRED_TTL_SECONDS = 7 * 3600;
 
 // ---------------------------------------------------------------------------
 // Wake-plan staleness. A wake note is the model's PLAN for a level ("breakdown
@@ -63,7 +97,7 @@ export function flatWakePlanStale(
 // ---------------------------------------------------------------------------
 // Wake-look timing, split three ways so a DEFERRED look cannot pass a schedule-
 // gate hold off as confirmation strength. touchStartedMs = the first watcher
-// minute beyond the band (null for instant bands, which keep no touch);
+// tick beyond the band (null for instant bands, which keep no touch);
 // gateHeldAtMs = the first fire attempt a schedule gate refused (session
 // decision window / open warmup — swing.ai_cooldowns.wake_gate_held_at_ms;
 // null when the look ran unimpeded). sustained stops accruing at the hold:
@@ -130,7 +164,10 @@ export function wakeBandCrossed(
 // position, where an instant look is right whether the break is real or fake.
 // ---------------------------------------------------------------------------
 
-export const WAKE_CONFIRM_MIN_MINUTES = 5;
+// The floor is one watcher tick: the hold is only ever observed at ticks, so
+// a shorter window could not be honoured (a 5-minute ask fired after 10).
+// Every confirm window rounds UP to the next tick for the same reason.
+export const WAKE_CONFIRM_MIN_MINUTES = WAKE_WATCH_TICK_MINUTES;
 export const WAKE_CONFIRM_MAX_MINUTES = 60;
 
 // Distance-based early confirmation: a stop-run sweep by definition does not
@@ -199,17 +236,17 @@ export function reclaimWakeEligible(params: {
     return nowMs - reclaimedAtMs <= RECLAIM_WAKE_FRESH_MINUTES * 60_000;
 }
 
-// One watcher-minute of a sustained band, as a pure state transition.
+// One watcher tick of a sustained band, as a pure state transition.
 // The caller persists what the step tells it to and nothing else:
 //   fire   — confirmed: either the time window held (`via: 'time'`) or the
 //            CURRENT price extends ≥ wakeBreakConfirmAtr() primary-ATRs beyond
 //            the band (`via: 'extension'` — force proves the break before the
-//            clock does; fires even on the first minute of a touch).
-//   arm    — first minute beyond the band (or beyond the OTHER band after a
+//            clock does; fires even on the first tick of a touch).
+//   arm    — first tick beyond the band (or beyond the OTHER band after a
 //            side flip): start/restart the touch. On a flip the failed old
 //            touch rides along as `sweep`.
 //   extend — touch continues with a new excursion extreme worth persisting.
-//   hold   — touch continues, nothing to write this minute.
+//   hold   — touch continues, nothing to write this tick.
 //   sweep  — price back inside the bands before the window elapsed: record
 //            the failed touch, clear the touch state.
 //   idle   — no cross, no touch.
@@ -240,9 +277,9 @@ export function sustainedWakeStep(params: {
 }): SustainedWakeStep {
     const { price, wakeAbove, wakeBelow, confirmMinutes, touchSide, touchStartedMs, touchExtreme, nowMs, atr } = params;
     const touching = touchSide !== null && Number.isFinite(Number(touchStartedMs)) && Number(touchStartedMs) > 0;
-    // Unusable price = the market is UNOBSERVABLE this minute, not "back
+    // Unusable price = the market is UNOBSERVABLE this tick, not "back
     // inside the bands" — a failed ticker fetch must never record a false
-    // sweep (or false-fail a touch). Hold still and retry next minute.
+    // sweep (or false-fail a touch). Hold still and retry next tick.
     if (!(Number.isFinite(Number(price)) && Number(price) > 0)) {
         return touching ? { kind: 'hold' } : { kind: 'idle' };
     }
@@ -270,7 +307,7 @@ export function sustainedWakeStep(params: {
     }
 
     // Extension confirm — checked BEFORE touch bookkeeping so a violent break
-    // fires on its very first observed minute (no touch state needed). Uses
+    // fires on its very first observed tick (no touch state needed). Uses
     // the CURRENT excursion, not the stored extreme: a spike that already fell
     // back toward the level is sweep-shaped, not force.
     const p = Number(price);
@@ -292,7 +329,7 @@ export function sustainedWakeStep(params: {
     }
 
     if (!touching || touchSide !== crossed) {
-        // First minute beyond this band. If a touch on the OTHER side was
+        // First tick beyond this band. If a touch on the OTHER side was
         // live, price traversed the whole range — that touch failed.
         const sweep = touching && touchSide !== crossed ? sweepOf(touchSide as 'above' | 'below') : null;
         return { kind: 'arm', side: crossed, sweep };
@@ -322,7 +359,7 @@ export function sustainedWakeStep(params: {
 // completed session's high/low and the prior day's high/low — so a sweep
 // fires an immediate AI look even when the AI armed no band there. All state
 // lives in KV (there is no cooldown row to hang it on): analyze stamps a
-// levels ref on every session-category look; the watcher runs a per-minute
+// levels ref on every session-category look; the watcher runs a per-tick
 // touch state machine against it and, on a deep-enough reclaim, writes an
 // event the analyze route consumes as market.session_reclaim. Judgment-gated
 // only, same as phase 1 — a fired look is never a mechanical entry.
@@ -385,7 +422,13 @@ export const SESSION_SWEEP_EVENT_TTL_SECONDS = 15 * 60;
 
 // A touch that HOLDS beyond the level this long is a break, not a sweep —
 // the state is abandoned (breakouts belong to the AI's own band machinery).
+// Three watcher ticks.
 export const SESSION_SWEEP_WINDOW_MINUTES = 30;
+// The in-flight touch state must survive until the tick that ABANDONS it
+// (the first one past the window), which can land up to one tick after the
+// window ends; a second tick of slack covers cron jitter. Shorter, and the
+// key expires first and the stale excursion silently re-arms as a new touch.
+export const SESSION_SWEEP_STATE_TTL_SECONDS = (SESSION_SWEEP_WINDOW_MINUTES + 2 * WAKE_WATCH_TICK_MINUTES) * 60;
 
 export type SessionSweepStep =
     | { kind: 'idle' }
@@ -395,7 +438,7 @@ export type SessionSweepStep =
     | { kind: 'abandon' }
     | { kind: 'reclaim'; event: SessionSweepEvent };
 
-// One watcher-minute against the session levels, as a pure transition —
+// One watcher tick against the session levels, as a pure transition —
 // mirrors sustainedWakeStep's contract (caller persists what the step says).
 export function sessionSweepStep(params: {
     price: number | null;
@@ -529,11 +572,25 @@ export function breakTriggerFailed(
 }
 
 // Watcher throttle: the failed-break condition can only change when a primary
-// bar closes, so candle fetches are limited to the first few minutes after a
-// boundary instead of every minute of the day.
+// bar closes, so candle fetches are limited to a short window after each
+// boundary instead of every tick of the day.
 export function minutesSinceBarBoundary(tfMs: number, nowMs: number): number | null {
     if (!(Number.isFinite(tfMs) && tfMs > 0 && Number.isFinite(nowMs) && nowMs > 0)) return null;
     return (nowMs % tfMs) / 60_000;
+}
+
+// The window is sized in TICKS, not minutes: it must contain the first two
+// ticks after the boundary, so a single failed candle fetch (or a feed still
+// serving the just-closed bar as forming) gets one retry. With the :05 phase
+// those are the +5 and +15 ticks; phase + 1.5 ticks = 20 minutes holds both
+// with five minutes of jitter room and never reaches the +25 one. The old
+// 10-minute window was sized for one-minute ticks; against this schedule it
+// would admit only the +5 tick.
+export const FAILED_BREAK_POST_CLOSE_WINDOW_MIN = WAKE_WATCH_TICK_OFFSET_MINUTES + 1.5 * WAKE_WATCH_TICK_MINUTES;
+
+export function failedBreakCheckDue(tfMs: number, nowMs: number): boolean {
+    const sinceClose = minutesSinceBarBoundary(tfMs, nowMs);
+    return sinceClose !== null && sinceClose <= FAILED_BREAK_POST_CLOSE_WINDOW_MIN;
 }
 
 // The emergency comparison only means "emergency" while the ref is recent: it
@@ -554,7 +611,7 @@ export function wakeRefMaxAgeMinutes(): number {
 // In-position emergency: absolute move (either direction) since the last AI
 // look, in primary-ATR units. Null when the ref is unusable — the watcher then
 // stays quiet and the regular cadence owns the position (fail quiet, not loud:
-// a missing ref must not cause per-minute AI calls). Passing nowMs enables the
+// a missing ref must not cause per-tick AI calls). Passing nowMs enables the
 // staleness guard above; omitting it preserves the raw measurement.
 export function emergencyMoveAtr(
     price: number | null | undefined,

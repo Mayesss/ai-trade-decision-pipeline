@@ -1,6 +1,6 @@
 // Per-symbol "last analyze scan" marker. Quarter-tick scans deliberately do NOT
 // persist decision rows (they'd be pure noise in the history), which left the
-// dashboard unable to show that the 15m cadence is alive between hourly rows.
+// dashboard unable to show that the 15m cadence was alive between hourly rows.
 // This tiny KV marker records "the cron looked at this symbol at T" on EVERY
 // automation tick — including ones that end in an unpersisted skip — so the UI
 // can surface scan freshness without polluting the decision history.
@@ -18,13 +18,14 @@ const TTL_SECONDS = 7 * 24 * 60 * 60;
 const TICK_LOG_KEY_PREFIX = 'swing:scanTicks:v1';
 const TICK_LOG_MAX_ENTRIES = 400;
 
-// One analyze cron cycle (vercel.json runs the symbol crons */15), plus grace
-// for cron slip. A decision row is timestamped AFTER its AI call while the next
+// One analyze cron cycle (vercel.json runs the symbol crons hourly inside each
+// venue's decision window — it was */15 until 2026-10-06), plus grace for
+// cron slip. A decision row is timestamped AFTER its AI call while the next
 // tick's marker lands a second into that tick, so a row from the immediately
-// preceding tick sits ~14-15 min behind the marker and a row from two ticks ago
-// sits ~29 min behind — the grace separates them without retiring reasoning a
-// cycle early when a tick fires late.
-export const TICK_CYCLE_MS = 15 * 60 * 1000;
+// preceding tick sits ~59-60 min behind the marker and a row from two ticks
+// ago sits ~119 min behind — the grace separates them without retiring
+// reasoning a cycle early when a tick fires late.
+export const TICK_CYCLE_MS = 60 * 60 * 1000;
 const TICK_SLIP_GRACE_MS = 3 * 60 * 1000;
 
 /**
@@ -65,9 +66,10 @@ function tickLogKey(platform: string, symbol: string): string {
 // hour per symbol instead of once per write, which is what a tick used to pay
 // twice over. It is observably identical: readers take LRANGE 0..399, so a list
 // that briefly holds 404 entries still hands back the same newest 400, and the
-// TTL is 7 days against a cadence that refreshes it every hour. The rule is the
+// TTL is 7 days against crons that refresh it at least daily. The rule is the
 // tick's own minute-of-hour so it stays deterministic (contract snapshots record
-// every KV command) — the :00 cron firing of each hour does the housekeeping.
+// every KV command) — every :00 cron firing does the housekeeping (since
+// 2026-10-06 that is every cron tick; wake fires between them only push).
 function housekeepingDue(tsMs: number): boolean {
     return new Date(tsMs).getUTCMinutes() < 15;
 }

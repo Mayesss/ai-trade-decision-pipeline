@@ -182,7 +182,7 @@ async function ensureSwingSchema(): Promise<void> {
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'openai'`);
         await db.$executeRaw(sql`ALTER TABLE swing.ai_threads ADD COLUMN IF NOT EXISTS transcript JSONB`);
         // In-position wake bands: AI-declared price levels INSIDE the bracket at
-        // which the 1-min watcher fires an early analyze look ("wake me if we
+        // which the wake-watcher fires an early analyze look ("wake me if we
         // lose 3.42 support") instead of waiting for the next 4H close. Stored
         // on the thread because their lifecycle IS the position's: replaced by
         // every real in-position AI call (null = cleared), gone when the thread
@@ -274,7 +274,7 @@ async function ensureSwingSchema(): Promise<void> {
         // break_triggers: failed-break watch armed at entry on breakout/
         // breakdown-thesis trades. The model declares the trigger level that
         // justified the trade (entry_trigger_price); if a later primary bar
-        // CLOSES back through it, the 1-min watcher fires an early analyze and
+        // CLOSES back through it, the wake-watcher fires an early analyze and
         // the analyze route surfaces market.failed_break so the model decides
         // the exit. One row per open position; consumed when surfaced, cleared
         // when the position closes or a new entry carries no trigger.
@@ -684,13 +684,13 @@ export async function listSwingPendingEntryThreads(): Promise<Array<{ platform: 
 }
 
 // Threads that believe they are managing an open position. The wake-watcher
-// diffs these against the brokers' live open-position lists every minute: an
+// diffs these against the brokers' live open-position lists every tick: an
 // in_position thread whose symbol is flat on the venue means the position was
 // closed venue-side (TP/SL bracket, manual, liquidation) since the last analyze
 // tick — an executed AI CLOSE ends its thread in the same tick, so it never
 // shows up here. Firing analyze for the symbol runs the existing close
 // reconcile (thread end, Capital close persistence, overlay invalidation).
-// Wake bands ride along (usually null) so the watcher's per-minute band check
+// Wake bands ride along (usually null) so the watcher's per-tick band check
 // costs zero extra queries on top of the close-detection list it already loads.
 export async function listSwingInPositionThreads(): Promise<
     Array<{ platform: string; symbol: string; wakeAbove: number | null; wakeBelow: number | null }>
@@ -864,7 +864,7 @@ export type SwingWakeSweep = {
     touchedAtMs: number;
     reclaimedAtMs: number;
     // Max excursion beyond the band while the touch lasted (watcher-sampled,
-    // ~1-min resolution) — how deep the sweep ran before failing.
+    // one-tick resolution) — how deep the sweep ran before failing.
     extreme: number | null;
 };
 
@@ -1060,9 +1060,9 @@ export async function claimSwingReclaimLook(platform: string, symbol: string): P
 }
 
 // Arm (or refresh) the in-flight touch state on a sustained wake band: called
-// by the watcher on the first observed minute beyond the band, and again to
+// by the watcher on the first observed tick beyond the band, and again to
 // push the excursion extreme while the touch lasts. Idempotent — concurrent
-// watcher minutes writing the same touch are harmless.
+// watcher ticks writing the same touch are harmless.
 export async function setSwingWakeTouch(
     platform: string,
     symbol: string,
@@ -1174,7 +1174,7 @@ export async function claimSwingAiCooldown(
 }
 
 // All cooldown rows carrying at least one wake band, across symbols/platforms —
-// the 1-minute wake-watcher's work list. Expired rows are included on purpose:
+// the wake-watcher's work list. Expired rows are included on purpose:
 // the analyze cooldown handler honors a band crossing on an expired-but-present
 // row too, so the watcher mirrors that contract (it only ever FIRES on a
 // crossing, never on bare expiry). Rows under a live claim lease are excluded:
@@ -1314,7 +1314,7 @@ export async function upsertSwingBreakTrigger(params: {
     await bumpWakeWorkVersion();
 }
 
-// The 1-minute watcher's work list. Rows whose position meanwhile closed are
+// The wake-watcher's work list. Rows whose position meanwhile closed are
 // cleaned up by the watcher itself (the bracket can close a position with no
 // analyze tick involved, so entry-side bookkeeping alone can't be trusted).
 export async function listSwingBreakTriggers(): Promise<SwingBreakTriggerRow[]> {

@@ -4,7 +4,6 @@ export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/swing/analyze",
   "/api/swing/wake-watch",
-  "/api/swing/postmortem-drain",
   "/api/swing/weekly-digest",
   "/api/dashboard/summary-warm-fallback",
 ]);

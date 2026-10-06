@@ -1878,7 +1878,7 @@ export async function fetchCapitalMarketTradeability(
   }
 }
 
-// All open positions in one call, reduced to what the 1-minute wake-watcher
+// All open positions in one call, reduced to what the wake-watcher
 // needs: the epic (usable as the pipeline symbol on this venue — the resolver
 // maps an epic-shaped symbol to itself) and a live mid price straight from the
 // positions payload (no extra quote calls). Returns NULL on failure — the
@@ -1943,7 +1943,7 @@ export function capitalMidPriceFromMarketRow(row: unknown): number | null {
 }
 
 // Light current-price read (one markets?epics= call, no candles) — used by the
-// 1-minute wake-watcher to compare price against flat wake bands. Returns the
+// wake-watcher to compare price against flat wake bands. Returns the
 // mid of bid/offer, or null when no usable quote (closed-market quotes are
 // frozen — the caller treats null as "no crossing").
 export async function fetchCapitalMidPrice(symbol: string): Promise<number | null> {

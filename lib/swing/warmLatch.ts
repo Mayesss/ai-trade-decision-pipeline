@@ -1,13 +1,18 @@
 import { kvExpire, kvGetJson, kvIncr, kvSetJson } from '../kv';
 import { getCronSymbolConfigs } from '../symbolRegistry';
 
-// Countdown latch for the dashboard summary warm. All swing analyze crons fire
-// on the same 15-minute schedule (vercel.json); each invocation increments its
-// cycle's counter when it finishes, and the one that brings the count to the
-// number of configured analyze crons rebuilds the summary blobs. That way the
-// warm always runs after the LAST decision of the cycle landed, instead of at a
-// fixed +3min offset that races long-running analyzes. The summary-warm-fallback
+// Countdown latch for the dashboard summary warm. A venue's analyze crons all
+// share one schedule (vercel.json); each invocation increments its venue's
+// counter for the cycle when it finishes, and the one that brings the count to
+// the number of that venue's analyze crons rebuilds the summary blobs. That way
+// the warm always runs after the LAST decision of the cycle landed, instead of
+// at a fixed offset that races long-running analyzes. The summary-warm-fallback
 // cron covers cycles where an analyze crashed and the latch never completed.
+//
+// Counted PER VENUE since 2026-10-06: the venues' crons now fire at different
+// hours (each inside its own decision retry window — Bitget from 00:00 UTC,
+// Capital from 08:00 UTC), so no cycle ever holds all of them and a universe-
+// wide count would never complete.
 const CYCLE_MS = 15 * 60 * 1000;
 // Long enough to outlive any cycle (analyzes run 1-2min, maxDuration 800s),
 // short enough that stale latch keys never collide with a future cycle.
@@ -19,29 +24,31 @@ export function swingWarmCycleId(nowMs: number): number {
   return Math.floor(nowMs / CYCLE_MS);
 }
 
-function latchKey(cycleId: number): string {
-  return `swing:warm:latch:${cycleId}`;
+function latchKey(cycleId: number, platform: string): string {
+  return `swing:warm:latch:${platform}:${cycleId}`;
 }
 
 function doneKey(cycleId: number): string {
   return `swing:warm:done:${cycleId}`;
 }
 
-// Count this invocation toward the cycle's latch. Returns true iff this caller
-// is the last expected finisher — INCR is atomic, so exactly one caller per
-// cycle sees true. The expected count comes from vercel.json via the symbol
-// registry, so adding/removing an analyze cron adjusts the latch automatically.
-export async function recordSwingAnalyzeFinished(cycleId: number): Promise<boolean> {
-  const expected = getCronSymbolConfigs().length;
+// Count this invocation toward its venue's latch for the cycle. Returns true
+// iff this caller is the venue's last expected finisher — INCR is atomic, so
+// exactly one caller per venue-cycle sees true. The expected count comes from
+// vercel.json via the symbol registry, so adding/removing an analyze cron
+// adjusts the latch automatically.
+export async function recordSwingAnalyzeFinished(cycleId: number, platform: string): Promise<boolean> {
+  const venue = String(platform || '').toLowerCase();
+  const expected = getCronSymbolConfigs().filter((config) => config.platform === venue).length;
   if (expected <= 0) return false;
-  const count = await kvIncr(latchKey(cycleId));
-  // The TTL only needs setting once per cycle key, not on all ~25 increments
+  const count = await kvIncr(latchKey(cycleId, venue));
+  // The TTL only needs setting once per cycle key, not on every increment
   // (Upstash bills per command). Stamped on the first increment, and again on
   // the finisher so a failed first EXPIRE cannot leave the key TTL-less: cycle
   // ids never repeat, so at worst a stale latch key lingers instead of
   // colliding with anything.
   if (count === 1 || count === expected) {
-    await kvExpire(latchKey(cycleId), LATCH_TTL_SECONDS).catch(() => undefined);
+    await kvExpire(latchKey(cycleId, venue), LATCH_TTL_SECONDS).catch(() => undefined);
   }
   return count === expected;
 }

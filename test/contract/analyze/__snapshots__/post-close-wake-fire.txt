@@ -14,9 +14,6 @@ GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-fut
   content-type: application/json
   locale: en-US
 
-SQL neon-postgres
-  SELECT platform, symbol, status FROM swing.ai_threads WHERE status IN ('pending_entry', 'in_position')
-
 GET https://api.bitget.com/api/v2/mix/account/accounts?productType=usdt-futures
   access-key: test-bitget-key
   access-passphrase: test-bitget-passphrase
@@ -39,14 +36,6 @@ SQL neon-postgres
       null
     ]
   }
-
-GET https://api.bitget.com/api/v2/mix/account/accounts?productType=usdt-futures
-  access-key: test-bitget-key
-  access-passphrase: test-bitget-passphrase
-  access-sign: <SIGN>
-  access-timestamp: <NOW_MS>
-  content-type: application/json
-  locale: en-US
 
 SQL neon-postgres
   {

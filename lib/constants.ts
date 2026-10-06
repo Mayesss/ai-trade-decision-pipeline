@@ -38,7 +38,6 @@ export const DEFAULT_NOTIONAL_USDT = 100;
 // OR bounce-with-room predicate derived from the decision history. signal_strength
 // is now used only by postprocessDecision's exception thresholds.
 
-export const NANO_TIMEFRAME = '15m';
 export const MICRO_TIMEFRAME = '1H';
 export const PRIMARY_TIMEFRAME = '4H';
 export const MACRO_TIMEFRAME = '1D';

@@ -38,7 +38,7 @@ export type EventReactionMeasurement = {
 
 type Bar = { ts: number; open: number; high: number; low: number; close: number };
 
-const DEFAULT_BAR_MS = 15 * 60_000;
+const DEFAULT_BAR_MS = 60 * 60_000;
 // Below this reaction size the retrace ratio is numerically meaningless.
 const MIN_PUSH_BP = 2;
 
@@ -135,8 +135,11 @@ export function measureEventReaction(params: {
 }
 
 // Entry point for /api/analyze: measurements for every recent event the
-// candles can cover (nano 15m bundle spans ~27h — always covers the 3h
-// lookback). Returns null when there is nothing to report so the prompt
+// candles can cover (the micro 1H candles span days — always cover the 3h
+// lookback). On hourly bars the pre-release anchor is the last hour that
+// closed before the release, so up to an hour of pre-release drift sits
+// inside ret_since_release_bp; the 15m bars used until 2026-10-06 cut that
+// to a quarter hour. Returns null when there is nothing to report so the prompt
 // block stays absent instead of empty.
 export function buildEventReactionContext(params: {
   recentEvents: ForexCompactEvent[] | null | undefined;

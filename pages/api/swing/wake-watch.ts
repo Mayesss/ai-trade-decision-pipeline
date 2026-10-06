@@ -2,9 +2,11 @@
 // (see maybeFire) — detection itself takes seconds, but a fire adds the full
 // analyze runtime (~60-120s of AI latency, capped at 240s per fire).
 export const config = { runtime: 'nodejs', maxDuration: 300 };
-// 1-minute wake-watcher (cron * * * * *): closes the gap between "price crossed
-// a level the AI asked to be woken at" and "the next 15-min tick happens to
-// notice" — worst-case wake latency drops to ~a minute. It does NO AI work:
+// Wake-watcher (cron */10, WAKE_WATCH_TICK_MINUTES): closes the gap between
+// "price crossed a level the AI asked to be woken at" and the next scheduled
+// look, which since 2026-10-06 is up to a day away — worst-case wake latency
+// is one watcher tick. It was a one-minute cron until then; see
+// docs/neon-compute-cost.md for why it is ten. It does NO AI work:
 //
 //   1. Flat wake bands: every swing.ai_cooldowns row carrying a band is
 //      compared against a live price (Bitget public ticker / Capital markets
@@ -18,13 +20,21 @@ export const config = { runtime: 'nodejs', maxDuration: 300 };
 //      SWING_INPOS_EMERGENCY_MOVE_ATR fires the analyze route early. The
 //      exchange-side bracket remains the actual guard — this only gets the
 //      model's eyes on a violent move sooner.
-//   3. Failed-break triggers: shortly after each primary bar close, armed
-//      break-trigger rows are checked against the last closed bar.
+//   3. Failed-break triggers: in the first ticks after each primary bar
+//      close, armed break-trigger rows are checked against the last closed bar.
 //   4. Venue-side closes: in_position AI threads whose symbol is flat on the
 //      venue (TP/SL bracket fill, manual close, liquidation) fire analyze so
-//      the close is reconciled/persisted within ~a minute instead of at the
-//      next 15-min tick. This fire alone carries enforcePrimaryCloseGate: it
-//      wants the reconcile, not a fresh look at a symbol that just went flat.
+//      the close is reconciled/persisted within a tick. This fire carries
+//      enforcePrimaryCloseGate + postCloseReconcile: it wants the reconcile,
+//      not a fresh look at a symbol that just went flat.
+//   5. Resting entries (pending_entry threads) — upkeep the analyze cron did
+//      on every 15-minute tick until the schedule went daily: a fill (venue
+//      shows the position) or a vanished order (venue purge, manual cancel)
+//      fires a reconcile-only analyze run; a Capital entry still resting when
+//      a session decision window opens fires the run whose session gate
+//      withdraws it, so nothing of ours fills into the open.
+//   6. Owed session-window looks: a look the session gate deferred (marker
+//      written by analyze) is fired once its window is over.
 //
 // Firing = invokeCronEndpoint held OPEN until analyze responds (240s cap).
 // The old scalp kick-and-detach (5s abort, "the analyze run completes
@@ -34,22 +44,27 @@ export const config = { runtime: 'nodejs', maxDuration: 300 };
 // behind the claim lease and pushed the real look 15-50 min out (BGBUSDT
 // 2026-07-29). Detection stays fast: fires are collected and awaited together
 // (Promise.all) just before the response, so one slow analyze never delays
-// checking the other symbols. A fired KV marker (TTL 4 min) prevents
-// consecutive watcher ticks from double-firing the same event while that run
-// is in flight; the durable dedupe is the analyze handler itself (it claims
-// the cooldown row with a lease and deletes it only once the decision is
-// recorded / re-stamps the AI-look ref). Claimed rows are excluded from the
-// band work list, so a run that dies mid-AI puts its wake back on the list
-// when the lease expires instead of losing it until the next primary close.
+// checking the other symbols. A fired KV marker (WAKE_WATCH_FIRED_TTL_SECONDS,
+// under one tick) stops one event firing twice while its run is in flight;
+// the durable dedupe is the analyze handler itself (it claims the cooldown
+// row with a lease and deletes it only once the decision is recorded /
+// re-stamps the AI-look ref). Claimed rows are excluded from the band work
+// list, so a run that dies mid-AI puts its wake back on the list when the
+// lease expires instead of losing it until the next scheduled look.
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { IN_POSITION_EMERGENCY_MOVE_ATR, POSITION_WAKE_ENABLED } from '../../../lib/swing/decisionConfig';
+import {
+    IN_POSITION_EMERGENCY_MOVE_ATR,
+    POSITION_WAKE_ENABLED,
+    resolveSessionWindowConfig,
+} from '../../../lib/swing/decisionConfig';
 import { requireAdminAccess } from '../../../lib/admin';
 import { bitgetFetch } from '../../../lib/bitget';
 import {
     fetchCapitalCandlesByEpic,
     fetchCapitalMidPrice,
     fetchCapitalOpenPositionMarkers,
+    listCapitalPendingEntryOrders,
     resolveCapitalEpic,
 } from '../../../lib/capital';
 import { kvDel, kvGetJson, kvMGetJson, kvSetJson } from '../../../lib/kv';
@@ -63,12 +78,13 @@ import {
 import { loadWakeWork } from '../../../lib/swing/wakeWorkCache';
 import { loadSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { loadSwingCronControlState } from '../../../lib/swing/cronControl';
+import { evaluateSessionDecisionWindow } from '../../../lib/swing/sessionEvents';
 import {
     breakTriggerFailed,
     emergencyMoveAtr,
+    failedBreakCheckDue,
     flatWakePlanStale,
     lastClosedBar,
-    minutesSinceBarBoundary,
     reclaimWakeEligible,
     sessionLevelsRefKey,
     sessionSweepEventKey,
@@ -77,7 +93,11 @@ import {
     sessionSweepStep,
     SESSION_SWEEP_EVENT_TTL_SECONDS,
     SESSION_SWEEP_LOOKED_TTL_SECONDS,
-    SESSION_SWEEP_WINDOW_MINUTES,
+    SESSION_SWEEP_STATE_TTL_SECONDS,
+    SESSION_WINDOW_OWED_FIRED_TTL_SECONDS,
+    sessionWindowOwedFiredKey,
+    sessionWindowOwedKey,
+    sessionWindowWithdrawFiredKey,
     sustainedWakeStep,
     timeframeToMs,
     wakeBandCrossed,
@@ -92,15 +112,13 @@ import {
 // Session-sweep detection runs for the venue classes that carry session
 // structure (matches analyze's SESSION_LEVEL_CATEGORIES).
 const SESSION_SWEEP_CATEGORIES = new Set(['forex', 'commodity', 'index']);
-import { getTradeProductType } from '../../../lib/trading';
+import { fetchPendingEntryOrders, getTradeProductType } from '../../../lib/trading';
 
 // Same knob the analyze route uses for its own off-boundary in-position look.
 const EMERGENCY_MOVE_ATR = IN_POSITION_EMERGENCY_MOVE_ATR;
 
-// Failed-break checks only make sense right after a primary bar close (the
-// condition can't change mid-bar), so candle fetches are throttled to this
-// window after each boundary instead of running every minute all day.
-const FAILED_BREAK_POST_CLOSE_WINDOW_MIN = 10;
+// Fires that exist for the reconcile above the analyze gates, not for a look.
+const RECONCILE_ONLY_REASONS = new Set(['entry_filled', 'pending_entry_gone']);
 
 type FiredEntry = {
     platform: string;
@@ -141,23 +159,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const forwardDryRun = ['1', 'true', 'yes', 'on'].includes(dryRunRaw);
 
     const fired: FiredEntry[] = [];
+    // Set when this run wrote to a work-list table itself (sustained-band
+    // touch/sweep, break-trigger cleanup) — every such write bumps the
+    // work-list version, same as the analyze runs this watcher fires.
+    let wroteWorkList = false;
     // Long analyze invocations, started inside maybeFire but awaited together
     // right before the response — the detection loops stay quick while every
     // fired run keeps a connected client until it completes (or the 240s cap).
     const pendingFires: Promise<void>[] = [];
-    const maybeFire = async (platform: string, symbol: string, reason: string) => {
+    // Resolves true when a fire was actually queued — false when another
+    // event already holds this symbol's fired marker or a guard blocked it —
+    // so callers with a once-per-event budget only spend it on a real fire.
+    const maybeFire = async (platform: string, symbol: string, reason: string): Promise<boolean> => {
         const firedKey = wakeWatchFiredKey(platform, symbol);
         try {
             const already = await kvGetJson<{ ts: number }>(firedKey);
-            if (already) return; // an analyze run for this event is (or just was) in flight
+            if (already) return false; // an analyze run for this event is (or just was) in flight
             await kvSetJson(firedKey, { ts: Date.now(), reason }, WAKE_WATCH_FIRED_TTL_SECONDS);
         } catch (err) {
             // KV down → fire anyway: a rare duplicate AI call beats a missed wake.
             console.warn(`[wake-watch] fired-marker failed for ${platform}:${symbol}:`, err);
         }
         // Fire-time guards — checked HERE (after the fired-marker dedupe, so a
-        // blocked event re-checks at most every ~4 min per symbol, and only on
-        // actual fire attempts, never per watcher minute — KV cost ≈ zero):
+        // blocked event re-checks at most once a tick per symbol, and only on
+        // actual fire attempts, never per watcher tick — KV cost ≈ zero):
         // - kill switch: the fired analyze call carries wake=1 and is blocked
         //   server-side too, but not firing at all spares the invocation;
         // - AI health: a billing/config outage doesn't self-heal — every fire
@@ -177,7 +202,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             if (blocked) {
                 fired.push({ platform, symbol, reason, invoked: false, error: `blocked:${blocked}` });
                 console.log(`[wake-watch] suppressed ${platform}:${symbol} (${reason}): ${blocked}`);
-                return;
+                return false;
             }
         } catch (err) {
             console.warn(`[wake-watch] fire guards unreadable for ${platform}:${symbol}; firing anyway:`, err);
@@ -213,6 +238,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     // tolerance window, where the cadence gate alone let a
                     // fresh flat look through one minute after the close.
                     ...(reason === 'position_closed' ? { enforcePrimaryCloseGate: true, postCloseReconcile: true } : {}),
+                    // Pending-entry upkeep (step 5): reconcile, then stop.
+                    ...(RECONCILE_ONLY_REASONS.has(reason) ? { reconcileOnly: true } : {}),
                     ...(forwardDryRun ? { dryRun: true } : {}),
                 },
                 // Held open for the whole analyze run (~60-120s of AI latency):
@@ -230,16 +257,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 );
             }),
         );
+        return true;
     };
 
-    // One KV-cached read of all three work lists instead of three Postgres
-    // round trips per watcher minute — the cron that kept the Neon compute from
+    // One KV-cached read of all the work lists instead of Postgres round
+    // trips per watcher tick — the cron that kept the Neon compute from
     // ever scaling to zero. Falls back to Postgres on any cache miss or KV
     // failure; see lib/swing/wakeWorkCache.ts for the invalidation contract.
     const [wakeWork, bitgetPositionsRaw, capitalMarkers] = await Promise.all([
         loadWakeWork().catch((err) => {
             console.warn('[wake-watch] work list failed:', err);
-            return { bands: [], triggers: [], threads: [], source: 'pg' as const };
+            return { bands: [], triggers: [], threads: [], pendingEntries: [], source: 'pg' as const };
         }),
         bitgetFetch('GET', '/api/v2/mix/position/all-position', {
             productType: getTradeProductType() as string,
@@ -307,10 +335,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             nowMs: Date.now(),
             atr: row.atr,
         });
-        // Persistence is best-effort: a failed write means this minute's state
-        // transition is retried next minute from the re-read row (arm re-arms
-        // one minute later, a lost sweep costs evidence, never a wake).
+        // Persistence is best-effort: a failed write means this tick's state
+        // transition is retried next tick from the re-read row (arm re-arms
+        // one tick later, a lost sweep costs evidence, never a wake).
         try {
+            if (step.kind !== 'fire' && step.kind !== 'hold' && step.kind !== 'idle') wroteWorkList = true;
             if (step.kind === 'fire') {
                 const reason =
                     step.via === 'extension'
@@ -356,11 +385,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
     }
 
-    // 1b) Session-level sweeps (reclaim-wake phase 2): per-minute touch state
+    // 1b) Session-level sweeps (reclaim-wake phase 2): per-tick touch state
     // machine against the last-session / prior-day highs and lows stamped by
     // analyze (sessionLevelsRefKey). A deep-enough touch-and-reclaim writes an
     // event the analyze route consumes as market.session_reclaim and fires the
-    // look. Batched KV reads (two MGETs per minute) keep the round-trip cost
+    // look. Batched KV reads (two MGETs per tick) keep the round-trip cost
     // flat regardless of universe size; prices are fetched only for symbols
     // that actually carry a ref or an in-flight touch.
     let sessionSweepsChecked = 0;
@@ -403,11 +432,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 });
                 try {
                     if (step.kind === 'arm' || step.kind === 'extend') {
-                        await kvSetJson(
-                            sessionSweepStateKey(platform, symbol),
-                            step.state,
-                            (SESSION_SWEEP_WINDOW_MINUTES + 10) * 60,
-                        );
+                        await kvSetJson(sessionSweepStateKey(platform, symbol), step.state, SESSION_SWEEP_STATE_TTL_SECONDS);
                     } else if (step.kind === 'abandon') {
                         await kvDel(sessionSweepStateKey(platform, symbol));
                     } else if (step.kind === 'reclaim') {
@@ -500,7 +525,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // 3) Failed-break triggers (swing.break_triggers, armed at entry on
-    // breakout/breakdown-thesis trades): shortly after each primary bar close,
+    // breakout/breakdown-thesis trades): in the first ticks after each primary
+    // bar close (failedBreakCheckDue — the :00 and :10 ticks),
     // fetch the last CLOSED bar and fire the analyze route if it closed back
     // through the trigger — the analyze run re-detects the condition itself,
     // surfaces market.failed_break to the model and consumes the row. Rows
@@ -509,6 +535,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let breakTriggersChecked = 0;
     for (const row of breakTriggerRows) {
         if (!openBySymbol.has(`${row.platform}:${row.symbol}`)) {
+            wroteWorkList = true;
             await clearSwingBreakTrigger(row.platform, row.symbol).catch((err) =>
                 console.warn(`[wake-watch] break-trigger cleanup failed for ${row.platform}:${row.symbol}:`, err),
             );
@@ -516,8 +543,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         const tfMs = timeframeToMs(row.timeFrame);
         if (!tfMs) continue;
-        const sinceClose = minutesSinceBarBoundary(tfMs, Date.now());
-        if (sinceClose === null || sinceClose > FAILED_BREAK_POST_CLOSE_WINDOW_MIN) continue;
+        if (!failedBreakCheckDue(tfMs, Date.now())) continue;
         breakTriggersChecked++;
         let candles: unknown[] = [];
         try {
@@ -553,8 +579,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // position closed since the last analyze tick — an executed AI CLOSE ends
     // its thread in the same tick, so it never appears here. Fire analyze so
     // its existing close reconcile runs now (thread end, Capital close
-    // persistence, overlay cache invalidation) instead of up to 15 minutes
-    // later. Reconcile-only: the fire carries enforcePrimaryCloseGate so it
+    // persistence, overlay cache invalidation) instead of at the next
+    // scheduled look. Reconcile-only: the fire carries enforcePrimaryCloseGate so it
     // does the upkeep and stops at the 4H-close gate rather than spending an
     // AI call (see maybeFire). The trade-off is that no flat HOLD runs here to
     // arm a fresh wake band — the symbol waits for its next primary close, the
@@ -583,12 +609,152 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         await maybeFire(platform, symbol, 'position_closed');
     }
 
+    // 5) Resting entries. Until 2026-10-06 the 15-minute analyze cron kept
+    // pending_entry threads honest as a side effect of ticking; with analyze
+    // running only inside the daily decision windows, that upkeep lives here.
+    // Each check is venue-only; Postgres is touched only when a fire runs.
+    //   filled  — the venue shows the position: reconcile-only fire, so the
+    //             thread turns in_position and step 4 can see its close;
+    //   window  — a Capital entry still resting as a session decision window
+    //             opens: a normal wake fire, whose analyze session gate
+    //             withdraws it (once per window — the analyze run holds this
+    //             symbol's fired marker to the window's end itself);
+    //   gone    — flat and nothing resting (venue purge, manual cancel):
+    //             reconcile-only fire, which ends the stale thread. Left
+    //             alone it would hold an asset-class slot in the portfolio
+    //             cap and the dashboard's pendingEntry flag until the next
+    //             scheduled look. A failed order read fires nothing.
+    let pendingEntriesChecked = 0;
+    const sessionWindowConfig = resolveSessionWindowConfig();
+    const categoryByKey = new Map(
+        getCronSymbolConfigs().map((c) => [
+            `${String(c.platform || '').toLowerCase()}:${String(c.symbol || '').toUpperCase()}`,
+            c.category ?? null,
+        ]),
+    );
+    for (const row of wakeWork.pendingEntries) {
+        const platform = String(row.platform || '').toLowerCase();
+        const symbol = String(row.symbol || '').toUpperCase();
+        let openKey = `${platform}:${symbol}`;
+        if (platform === 'capital') {
+            if (!capitalFetchOk) continue;
+            try {
+                openKey = `capital:${String(resolveCapitalEpic(symbol).epic || symbol).toUpperCase()}`;
+            } catch {
+                /* unresolvable → raw-symbol key */
+            }
+        } else if (!bitgetFetchOk) {
+            continue;
+        }
+        pendingEntriesChecked++;
+        if (openBySymbol.has(openKey)) {
+            await maybeFire(platform, symbol, 'entry_filled');
+            continue;
+        }
+        if (sessionWindowConfig.enabled) {
+            const window = evaluateSessionDecisionWindow({
+                symbol,
+                category: categoryByKey.get(`${platform}:${symbol}`) ?? null,
+                preOpenMin: sessionWindowConfig.preOpenMin,
+                postOpenMin: sessionWindowConfig.postOpenMin,
+                postCloseMin: sessionWindowConfig.postCloseMin,
+            });
+            if (window?.active && window.startMs !== null && window.endMs !== null) {
+                const budgetKey = sessionWindowWithdrawFiredKey(platform, symbol, window.startMs);
+                const spent = await kvGetJson<{ ts: number }>(budgetKey).catch(() => null);
+                if (!spent && (await maybeFire(platform, symbol, `session_window_${window.kind}`))) {
+                    const remainingSec = Math.max(60, Math.ceil((window.endMs - Date.now()) / 1000));
+                    await kvSetJson(budgetKey, { ts: Date.now() }, remainingSec).catch(() => undefined);
+                }
+                continue;
+            }
+        }
+        let resting: unknown[] | null = null;
+        try {
+            resting =
+                platform === 'capital'
+                    ? await listCapitalPendingEntryOrders(symbol)
+                    : await fetchPendingEntryOrders(symbol, getTradeProductType());
+        } catch (err) {
+            console.warn(`[wake-watch] resting-entry read failed for ${platform}:${symbol}:`, err);
+        }
+        if (Array.isArray(resting) && resting.length === 0) {
+            await maybeFire(platform, symbol, 'pending_entry_gone');
+        }
+    }
+
+    // 6) Owed session-window looks. The analyze session gate parks a flat
+    // look it refuses (a wake fire, the scheduled look, a step-5 withdraw) by
+    // writing an owed marker with the window's end. The 15-minute cron used
+    // to release it on its first tick after the window; now this does, once
+    // per marker. One MGET per tick covers every calendar symbol. Skipped
+    // while another window is active (adjacent pre-open → opening drive: the
+    // analyze gate re-parks the look under the later window) and while the
+    // symbol holds a position (the marker is a flat look).
+    let owedLooksFired = 0;
+    if (sessionWindowConfig.enabled) {
+        try {
+            const owedCfgs = getCronSymbolConfigs().filter((c) => String(c.platform || '').toLowerCase() === 'capital');
+            if (owedCfgs.length) {
+                const markers = await kvMGetJson<{ windowEndMs?: number }>(
+                    owedCfgs.map((c) => sessionWindowOwedKey(c.platform, c.symbol)),
+                );
+                for (let i = 0; i < owedCfgs.length; i++) {
+                    const windowEndMs = Number(markers[i]?.windowEndMs);
+                    if (!(Number.isFinite(windowEndMs) && windowEndMs > 0 && windowEndMs <= Date.now())) continue;
+                    const platform = 'capital';
+                    const symbol = String(owedCfgs[i].symbol || '').toUpperCase();
+                    let epic = symbol;
+                    try {
+                        epic = String(resolveCapitalEpic(symbol).epic || symbol).toUpperCase();
+                    } catch {
+                        /* unresolvable → raw-symbol key */
+                    }
+                    if (!capitalFetchOk || openBySymbol.has(`capital:${epic}`)) continue;
+                    const activeNow = evaluateSessionDecisionWindow({
+                        symbol,
+                        category: owedCfgs[i].category ?? null,
+                        preOpenMin: sessionWindowConfig.preOpenMin,
+                        postOpenMin: sessionWindowConfig.postOpenMin,
+                        postCloseMin: sessionWindowConfig.postCloseMin,
+                    });
+                    if (activeNow?.active) continue;
+                    const budgetKey = sessionWindowOwedFiredKey(platform, symbol, windowEndMs);
+                    const spent = await kvGetJson<{ ts: number }>(budgetKey).catch(() => null);
+                    if (spent) continue;
+                    if (await maybeFire(platform, symbol, 'session_window_owed')) {
+                        owedLooksFired++;
+                        await kvSetJson(budgetKey, { ts: Date.now() }, SESSION_WINDOW_OWED_FIRED_TTL_SECONDS).catch(
+                            () => undefined,
+                        );
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[wake-watch] owed session-window pass failed:', err);
+        }
+    }
+
     // Wait for every fired analyze run to finish before responding: the open
     // request is what keeps the fired run alive on Vercel (invokeCronEndpoint
     // never rejects, so this cannot throw). Concurrent fires overlap; the
     // per-symbol fired marker + cooldown claim lease dedupe the next watcher
-    // minute that starts while these are still in flight.
+    // tick that starts while these are still in flight.
     await Promise.all(pendingFires);
+
+    // Rebuild the work-list snapshot NOW if this run invalidated it (fired
+    // analyze runs and the watcher's own writes bump the version). The compute
+    // is awake from those writes this very minute; left to the next tick, the
+    // rebuild would land ten minutes later on a suspended compute and buy a
+    // cold start of its own. A no-op KV read when nothing actually bumped.
+    let workRefreshed = false;
+    if (wroteWorkList || pendingFires.length > 0) {
+        const refreshed = await loadWakeWork().catch((err) => {
+            console.warn('[wake-watch] post-run work-list refresh failed:', err);
+            return null;
+        });
+        workRefreshed = refreshed?.source === 'pg';
+    }
 
     return res.status(200).json({
         ok: true,
@@ -597,10 +763,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         positionsChecked: positionMarkers.length,
         breakTriggersChecked,
         inPositionThreads: inPositionThreads.length,
-        // 'kv' = this minute cost zero Postgres round trips. Watching this
+        // 'kv' = this tick cost zero Postgres round trips. Watching this
         // field is how you confirm the work-list cache is actually serving.
         workSource: wakeWork.source,
+        // true = this run rebuilt the snapshot after its own fires/writes.
+        workRefreshed,
         closesDetected,
+        pendingEntriesChecked,
+        owedLooksFired,
         emergencyThresholdAtr: EMERGENCY_MOVE_ATR,
         fired,
     });

@@ -439,6 +439,11 @@ export const ONE_POSITION_PER_ASSET_CLASS = !flagOff(process.env.SWING_ONE_PER_A
 // deploy time if the deploy is not on the 16th.
 // Moved 2026-09-16 -> 2026-09-24 (docs/alpha-lab-spec.md §15): amend floor =
 // entry floor and a 1R target floor change the trade geometry itself.
+// Moved 2026-09-24 -> 2026-10-07 (owner, spec §8 2026-10-06): the nano 15m
+// entry-timing block is gone, the watcher went from 1 to 10 minutes and the
+// session-window owed looks stopped — a different look set. Midnight after
+// the deploy day, so no close from the old regime is pooled in; set the env
+// to the exact deploy time to count the hours between.
 export const R_SAMPLE_TARGET = (() => {
     const n = Number(process.env.SWING_R_SAMPLE_TARGET);
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 200;
@@ -447,7 +452,7 @@ export const R_SAMPLE_TARGET = (() => {
 export const R_SAMPLE_SINCE_MS = (() => {
     const raw = String(process.env.SWING_R_SAMPLE_SINCE || '').trim();
     const parsed = raw ? Date.parse(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.parse('2026-09-24T00:00:00Z');
+    return Number.isFinite(parsed) ? parsed : Date.parse('2026-10-07T00:00:00Z');
 })();
 
 // ------------------------------
@@ -565,7 +570,7 @@ export function resolveSessionWindowConfig(): SessionWindowConfig {
 }
 
 // In-position wake bands: the model declares price levels INSIDE its bracket
-// at which the 1-min watcher fires an early management look ("wake me if we
+// at which the wake-watcher fires an early management look ("wake me if we
 // lose 3.42 support") instead of waiting for the next primary bar close.
 // Purely additive — suppresses nothing; replaced by every real in-position AI
 // call (null = cleared). Gates the prompt prose, the eligibility routing in
@@ -574,8 +579,8 @@ export function resolveSessionWindowConfig(): SessionWindowConfig {
 export const POSITION_WAKE_ENABLED = !flagOff(process.env.ENABLE_POSITION_WAKE_BANDS);
 
 // Min band distance from current price in primary-ATR units — the churn guard:
-// a band glued to price would re-fire a full AI call every ~5 min (the
-// watcher's fired-marker TTL). 0.3 -> 1 on 2026-09-16 alongside the 3-ATR
+// a band glued to price would re-fire a full AI call on every watcher tick (the
+// fired-marker TTL is shorter than one). 0.3 -> 1 on 2026-09-16 alongside the 3-ATR
 // entry floor (docs/alpha-lab-spec.md §11): a band inside one bar's noise is
 // the intrabar consultation the wider stop exists to remove. The harness pins 0.3.
 export const POSITION_WAKE_MIN_ATR = (() => {
@@ -774,7 +779,7 @@ export const ENTRY_TP_MIN_R = (() => {
 // structural may have happened", not a check-in. 1.5 -> 3 on 2026-09-16 with the
 // 3-ATR entry stop floor (docs/alpha-lab-spec.md §11), equal to the floor so
 // the look fires around where the stop would anyway. Shared by the analyze
-// route and the 1-minute wake-watcher; until 2026-09-23 each read the env with
+// route and the wake-watcher; until 2026-09-23 each read the env with
 // its own default and the watcher's stayed at 1.5, re-arming on every look it
 // fired. SWING_INPOS_EMERGENCY_MOVE_ATR overrides.
 export const IN_POSITION_EMERGENCY_MOVE_ATR = (() => {

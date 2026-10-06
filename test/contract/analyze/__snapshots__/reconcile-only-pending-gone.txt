@@ -1,0 +1,116 @@
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "GET",
+    "swing:cron:control:v1"
+  ]
+
+GET https://api.bitget.com/api/v2/mix/position/all-position?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/account/accounts?productType=usdt-futures
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.account_snapshots ( platform, symbol, captured_at_ms, leverage, equity, available, margin_used, open_position_json ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8::jsonb );",
+    "values": [
+      "bitget",
+      "ETHUSDT",
+      <NOW_MS>,
+      null,
+      10000,
+      null,
+      null,
+      null
+    ]
+  }
+
+SQL neon-postgres
+  {
+    "text": "SELECT status, last_response_id, turns, provider, transcript, wake_above, wake_below, wake_note, wake_set_at_ms FROM swing.ai_threads WHERE platform = $1 AND symbol = $2",
+    "values": [
+      "bitget",
+      "ETHUSDT"
+    ]
+  }
+
+GET https://api.bitget.com/api/v2/mix/order/orders-pending?productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+GET https://api.bitget.com/api/v2/mix/order/orders-plan-pending?planType=normal_plan&productType=USDT-FUTURES&symbol=ETHUSDT
+  access-key: test-bitget-key
+  access-passphrase: test-bitget-passphrase
+  access-sign: <SIGN>
+  access-timestamp: <NOW_MS>
+  content-type: application/json
+  locale: en-US
+
+SQL neon-postgres
+  {
+    "text": "DELETE FROM swing.ai_threads WHERE platform = $1 AND symbol = $2",
+    "values": [
+      "bitget",
+      "ETHUSDT"
+    ]
+  }
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "INCR",
+    "swing:wake-work:v"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "SETEX",
+    "swing:lastScan:v1:bitget:ETHUSDT",
+    604800,
+    "{\"ts\":<NOW_MS>,\"stage\":\"reconcile_only\",\"reason\":\"reconcile_only_flat\"}"
+  ]
+
+POST https://kv.boundary.test/
+  authorization: Bearer <TOKEN>
+  content-type: application/json
+  [
+    "LPUSH",
+    "swing:scanTicks:v1:bitget:ETHUSDT",
+    "{\"ts\":<NOW_MS>,\"stage\":\"reconcile_only\",\"reason\":\"reconcile_only_flat\"}"
+  ]
+
+SQL neon-postgres
+  {
+    "text": "INSERT INTO swing.tick_log (ts_ms, symbol, platform, kind, stage, reason, cadence, dry_run, gates_json, metrics_json) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb )",
+    "values": [
+      <NOW_MS>,
+      "ETHUSDT",
+      "bitget",
+      "skip",
+      "reconcile_only",
+      "reconcile_only_flat",
+      "manual",
+      false,
+      null,
+      "{\"threadWasPendingEntry\":true,\"standingEntry\":false}"
+    ]
+  }

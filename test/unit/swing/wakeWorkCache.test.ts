@@ -35,6 +35,7 @@ const snap = (over: Record<string, unknown> = {}) => ({
     bands: [],
     triggers: [],
     threads: [],
+    pendingEntries: [],
     ...over,
 });
 
@@ -82,6 +83,22 @@ test('a missing or malformed snapshot never serves', () => {
     assert.equal(wakeWorkSnapshotUsable(null, 7, NOW), false);
     assert.equal(wakeWorkSnapshotUsable({ v: 7, ts: NOW }, 7, NOW), false, 'no lists');
     assert.equal(wakeWorkSnapshotUsable({ v: 7, ts: NOW, bands: [], triggers: [] }, 7, NOW), false);
+});
+
+// Snapshots written before pending entries joined the work list must not
+// serve: the watcher would read "no resting entries" off a list that was
+// never loaded and skip the fill / vanished-order / session-window upkeep.
+test('a snapshot without the pending-entry list (pre-2026-10-06 shape) never serves', () => {
+    const { pendingEntries: _omitted, ...legacy } = snap();
+    assert.equal(wakeWorkSnapshotUsable(legacy, 7, NOW), false);
+});
+
+// The TTL is a backstop for a lost bump AND a floor on Neon wakes: every expiry
+// outside an analyze window is a cold start. Against the 10-minute watcher it
+// must span many ticks — the old 900s would have re-read Postgres on every
+// other tick once analyze stopped refreshing the snapshot every 15 minutes.
+test('TTL spans hours of watcher ticks, not one analyze cycle', () => {
+    assert.ok(WAKE_WORK_SNAPSHOT_TTL_SECONDS >= 3 * 3600, String(WAKE_WORK_SNAPSHOT_TTL_SECONDS));
 });
 
 // A first-ever read sees no version key at all; kvMGetJson yields null -> 0.

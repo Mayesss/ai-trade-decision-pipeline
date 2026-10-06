@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 
-import { computeWaveGeometry, computeNanoContext, findPivots } from '../../../lib/swing/waveGeometry';
+import { computeWaveGeometry, findPivots } from '../../../lib/swing/waveGeometry';
 
 // Synthetic candles in the venues' array shape: [ts, open, high, low, close].
 // Rising channel: +1/bar drift with a 16-bar sine wave (amplitude 6) on top.
@@ -18,7 +18,6 @@ function wave(bars: number, opts: { drift?: number; amp?: number; period?: numbe
 
 test('too-short series returns null', () => {
     assert.equal(computeWaveGeometry(wave(20)), null);
-    assert.equal(computeNanoContext(wave(10)), null);
     assert.equal(computeWaveGeometry(undefined), null);
 });
 
@@ -40,21 +39,6 @@ test('pivots and trendlines exist on a wavy series and slope with the drift', ()
     assert.ok(g!.support_trendline!.slope_atr > 0, 'rising support trendline');
     assert.ok(g!.last_swing_high && g!.last_swing_low, 'swing points present');
     assert.ok(g!.last_swing_high!.bars_ago >= 2 && g!.last_swing_low!.bars_ago >= 2, 'pivots need confirmation bars');
-});
-
-test('nano context: uptrend classifies UP bias and HH_HL structure', () => {
-    const nano = computeNanoContext(wave(96, { drift: 1.2, amp: 4 }));
-    assert.ok(nano);
-    assert.equal(nano!.bias, 'UP');
-    assert.equal(nano!.structure, 'HH_HL');
-    assert.ok(Number.isFinite(nano!.extension_atr));
-});
-
-test('nano context: downtrend classifies DOWN bias and LH_LL structure', () => {
-    const nano = computeNanoContext(wave(96, { drift: -1.2, amp: 4 }));
-    assert.ok(nano);
-    assert.equal(nano!.bias, 'DOWN');
-    assert.equal(nano!.structure, 'LH_LL');
 });
 
 test('findPivots marks fractal highs and lows', () => {

@@ -8,7 +8,7 @@ import React, {
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import { ChartSkeleton, TimelineSkeleton } from "../components/ChartSkeleton";
-import { DROPPED_ENTRY_LABEL, NANO_TIMEFRAME } from "../lib/constants";
+import { DROPPED_ENTRY_LABEL } from "../lib/constants";
 import WeeklyDigestPanel from "../components/WeeklyDigestPanel";
 import {
   Circle,
@@ -1476,13 +1476,16 @@ export default function Home() {
   // and plain watchlist chips (rank 2/3).
   const exposureEntries = orderedSymbolPills.filter((entry) => entry.rank <= 1);
   const watchlistEntries = orderedSymbolPills.filter((entry) => entry.rank >= 2);
-  // Scan health is shown by EXCEPTION only: with the gates loosened nearly
-  // every symbol gets a scan each 15-minute tick, so "was scanned recently"
-  // carries no information — "was NOT scanned" does. A chip flags amber once
-  // its last scan is older than two cadence windows plus slack; the row's
-  // right edge names the freshest scan across all symbols as the liveness
-  // reading.
-  const SCAN_STALE_MS = 35 * 60 * 1000;
+  // Scan health is shown by EXCEPTION only: "was scanned recently" carries no
+  // information — "was NOT scanned" does. Since 2026-10-06 a symbol is
+  // scanned only inside its venue's daily decision window (hourly ticks, six
+  // a day; vercel.json), so the normal gap between scans is ~19h. A chip
+  // flags amber once its last scan is older than a whole day plus slack,
+  // i.e. a day's window passed without one. Known false positive: Capital
+  // chips go amber from the Sunday-evening reopen until Monday's 08:00 UTC
+  // window (the last scan was Friday). The row's right edge names the
+  // freshest scan across all symbols as the liveness reading.
+  const SCAN_STALE_MS = 26 * 60 * 60 * 1000;
   const scanStaleFor = (tab?: EvaluationEntry): boolean =>
     swingSummaryLoadedAtMs !== null &&
     tab?.marketClosed !== true &&
@@ -1958,9 +1961,6 @@ export default function Home() {
     { key: "macro_bias", label: "Macro" },
     { key: "primary_bias", label: "Primary" },
     { key: "micro_bias", label: "Micro" },
-    // Nano (15m) wave/entry-timing bias — measured only on real AI calls, so
-    // skip decisions render it as "—" like any missing bias.
-    { key: "nano_bias", label: "Nano" },
   ] as const;
   const isInitialLoading = loading && !symbols.length;
   // Mirrors the real decision-card BODY (action row, reason lines, bias grid,
@@ -1977,8 +1977,8 @@ export default function Home() {
         <div className="h-3 w-full rounded-full bg-slate-100" />
         <div className="h-3 w-11/12 rounded-full bg-slate-100" />
       </div>
-      <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
-        {Array.from({ length: 5 }).map((_, idx) => (
+      <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
+        {Array.from({ length: 4 }).map((_, idx) => (
           <div
             key={`bias-skeleton-${idx}`}
             className="flex items-center justify-between gap-0.5 rounded-lg border border-slate-100 bg-slate-50 px-1 py-1 sm:gap-0 sm:px-3 sm:py-2"
@@ -2760,7 +2760,7 @@ export default function Home() {
                             {displayDecision.reason}
                           </p>
                         ) : null}
-                        <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
+                        <div className="mt-3 grid grid-cols-4 gap-1.5 sm:gap-2">
                           {biasOrder.map(({ key, label }) => {
                             const raw = displayDecision?.[key];
                             const val =
@@ -2772,7 +2772,7 @@ export default function Home() {
                             const tfLabel =
                               displayBiasTimeframes?.[
                                 key.replace("_bias", "")
-                              ] || (key === "nano_bias" ? NANO_TIMEFRAME : null);
+                              ] || null;
                             const displayLabel = tfLabel
                               ? `${label} (${tfLabel})`
                               : label;
