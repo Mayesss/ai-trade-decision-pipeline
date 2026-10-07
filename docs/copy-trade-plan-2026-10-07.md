@@ -396,10 +396,36 @@ Rules:
       `Copy(K=3)` equals the mean of the three single copies to the cent;
       `Consensus` holds gross near its target (peak 1.17× for 1.0×, band
       drift). No multi-leader returns printed (holdout, registration 000).
-- [ ] **P2 — snapshots.** Pull daily account snapshots (small) for the full
+- [x] **P2 — snapshots.** Pull daily account snapshots (small) for the full
       period, **main dex and `xyz`**. Measure bytes per day. Build the
       point-in-time universe table. Gate: confirm the snapshot timestamp (the
       number in the file name) and use day D−1 for selection on day D.
+      *Done 2026-10-07 — 693 files, 6.48 GiB transferred (exactly as
+      listed), 8 parallel downloads; `p2_snapshots.py`, `p2_checks.py`,
+      `p2_accounts.py`. Findings:*
+      - *Timing — the D−1 rule is replaced by an as-of join on each file's
+        own timestamp* (`<block>_<epoch ms>.parquet`). Most snapshots are
+        taken 00:00–00:12 UTC at the start of their date, but **63 of 384
+        (main) and 17 of 309 (`xyz`) were taken 3–21 h into it**, spread over
+        the whole period. A fixed "file D = start of D" rule would have been
+        look-ahead on those days. 2026-03-24 has two files (both kept; as-of
+        handles it).
+      - *Coverage — snapshots list only accounts holding a position* (no
+        zero-size rows). A trader flat at snapshot time is absent that day, so
+        **the universe comes from fills (P3)**; snapshots supply equity where
+        they exist, and equity between snapshots is the last known value.
+      - *Consistency* — one account value per user per snapshot (checked on
+        three days per dex).
+      - *Equity table* `data/derived/<dex>/snapshot_accounts.parquet`: one row
+        per (snapshot, user) — timestamp, account value, positions, gross and
+        net notional. Main: 27.2 M rows, 703 k users; `xyz`: 8.1 M rows,
+        277 k users. Gross leverage p50 / p90 / p99: main 2.9 / 11.5 / 38.6×,
+        `xyz` 4.7 / 18.3 / 44.9× — normalization (§5.5) is not optional.
+        Account value p10 is $9 (main) / $5 (`xyz`): a minimum-equity
+        cleaning rule is needed.
+      - *Unverified:* whether `xyz` account value is the xyz-dex margin
+        account only (HIP-3 dexes margin separately) — check against the API
+        for a few users before P4 uses it.
 - [ ] **P3 — fills.** Pull pruned fill columns for the discovery period
       only. Holdout dates are **not downloaded** yet. Gates, all before any
       copy return is computed:

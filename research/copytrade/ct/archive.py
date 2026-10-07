@@ -35,6 +35,34 @@ def day_keys(prefix, day):
     return [o['Key'] for o in json.loads(out or '{}').get('Contents', [])]
 
 
+def list_prefix(prefix):
+    """[(key, bytes)] for every object under prefix. LIST calls only (paginated)."""
+    out = _aws('s3api', 'list-objects-v2', '--bucket', BUCKET, '--prefix', prefix,
+               '--query', 'Contents[].[Key, Size]', '--output', 'json')
+    return [(k, int(s)) for k, s in (json.loads(out) or [])]
+
+
+def local_path(key):
+    return DATA / 'archive' / key
+
+
+def download(key, expected_size):
+    """Fetch one whole object to data/archive/<key>; skip if already complete."""
+    global bytes_pulled
+    dest = local_path(key)
+    if dest.exists() and dest.stat().st_size == expected_size:
+        return 0
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix('.part')
+    _aws('s3api', 'get-object', '--bucket', BUCKET, '--key', key, str(tmp))
+    got = tmp.stat().st_size
+    bytes_pulled += got
+    if got != expected_size:
+        raise RuntimeError(f'{key}: got {got} bytes, expected {expected_size}')
+    tmp.replace(dest)
+    return got
+
+
 def size(key):
     return json.loads(_aws('s3api', 'head-object', '--bucket', BUCKET, '--key', key))['ContentLength']
 
