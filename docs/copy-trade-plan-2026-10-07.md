@@ -471,7 +471,25 @@ Rules:
 - [ ] **P4 — pre-register.** Freeze cleaning rules, selection rule, arms,
       poll interval, costs, sizing, hedge method, pass thresholds (C4), and
       the H0 → H1/H2 order. Commit. Nothing below runs before this commit
-      exists.
+      exists. *In progress 2026-10-07: draft
+      `registrations/001-skill-persistence-and-crypto-books.md` awaiting the
+      owner's decisions D1–D8. Inputs were behaviour-only
+      (`p4_features.py`, `p4_describe.py`; `realized_pnl` never read):*
+      - *Features per wallet at each selection date via DuckDB (4.5 min for
+        all 7 windows); cross-checked against a plain-Python reference on 20
+        wallets per dex — identical round trips, median hold, maker share.
+        The cross-check caught a NULL-instead-of-0 bug for wallets with no
+        maker fills (they would have fallen out of the maker filter).*
+      - *Eligible universe under the proposed filters: main 2,248–3,968
+        wallets per window; `xyz` 52 / 212 / 511 (thin early).*
+      - *"Share of trips under 1 h" is redundant with "median hold ≥ 2 h" —
+        dropped.*
+      - *Account value is often stale (snapshots list position holders
+        only): among filtered wallets 59–87% have a value ≤ 7 days old —
+        proposed as a filter.*
+      - *DuckDB note: registering pyarrow tables back into the connection
+        deadlocked (0% CPU) on duckdb 1.5.6 / Python 3.14; intermediate
+        results stay in DuckDB temp tables.*
 - [ ] **P5 — discovery run.** H0 first; H1 and H2 only if H0 passes. All
       arms. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
