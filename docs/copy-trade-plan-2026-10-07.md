@@ -427,8 +427,16 @@ Rules:
         account only (HIP-3 dexes margin separately) — check against the API
         for a few users before P4 uses it.
 - [ ] **P3 — fills.** Pull pruned fill columns for the discovery period
-      only. Holdout dates are **not downloaded** yet. Gates, all before any
-      copy return is computed:
+      only. Holdout dates are **not downloaded** yet. *Downloader ready
+      2026-10-07 (`p3_fills.py`, `archive.download_columns`): footer, then
+      only the wanted column chunks by byte range into a sparse file,
+      rewritten compact. Holdout dates refused in code. Verified on
+      `xyz` 2025-11-15: pruned file identical to the same 14 columns of the
+      full file (118,828 rows) at 43% of the transfer. **Exact plan from
+      footers: 52.67 GiB** (42% of 126.5 GiB; 338 main + 260 `xyz` days).
+      Held until the owner confirms the P2 transfer billed at $0 (free tier
+      applies to requester-pays).* Gates, all before any copy return is
+      computed:
       - file order is execution order within a millisecond (startPosition
         chain test, as in P0);
       - closedPnl self-check on archive fills;
