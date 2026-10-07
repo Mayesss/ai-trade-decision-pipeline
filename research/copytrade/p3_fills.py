@@ -12,6 +12,7 @@ planned total against --cap-gib before the first range request.
 """
 import argparse
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ct import archive
@@ -26,6 +27,20 @@ DEXES = {  # discovery period: archive start -> day before the holdout
 COLUMNS = ['address', 'coin', 'timestamp', 'side', 'size', 'price', 'start_position',
            'realized_pnl', 'trade_id', 'direction', 'twap_id', 'is_liquidation', 'crossed', 'dex']
 GIB = 1 << 30
+
+
+def fetch_day(key, size, attempts=3):
+    """download_columns with retries: a laptop waking from sleep resets
+    connections mid-transfer. A retried day starts over (its partial ranges
+    are re-fetched), so a failure costs at most one day's ~170 MB."""
+    for i in range(attempts):
+        try:
+            return archive.download_columns(key, COLUMNS, size)
+        except Exception as err:  # noqa: BLE001 — any transfer error is retried, then raised
+            if i == attempts - 1:
+                raise
+            print(f'  retry {i + 1} for {day_of(key)}: {str(err)[:120]}')
+            time.sleep(30 * (i + 1))
 
 
 def day_of(key):
@@ -94,11 +109,13 @@ def main():
 
     cap = int(args.cap_gib * GIB)
     whole = sum(s for _, s in plan)
-    if whole * 0.6 > cap:  # pruned is ~40-45% of whole; run --dry-run for the exact figure
+    # Pruned columns measured at 42% of whole files (dry run, 2026-10-07); 45%
+    # leaves a margin. The running total below is the hard stop.
+    if whole * 0.45 > cap:
         sys.exit('refusing: plan likely exceeds the cap — run --dry-run for the exact figure')
     done = finished = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(archive.download_columns, k, COLUMNS, s) for k, s in plan]
+        futures = [pool.submit(fetch_day, k, s) for k, s in plan]
         for fut in as_completed(futures):
             done += fut.result()
             finished += 1

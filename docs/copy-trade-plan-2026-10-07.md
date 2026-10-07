@@ -426,8 +426,33 @@ Rules:
       - *Unverified:* whether `xyz` account value is the xyz-dex margin
         account only (HIP-3 dexes margin separately) — check against the API
         for a few users before P4 uses it.
-- [ ] **P3 — fills.** Pull pruned fill columns for the discovery period
-      only. Holdout dates are **not downloaded** yet. *Downloader ready
+- [x] **P3 — fills.** Pull pruned fill columns for the discovery period
+      only. Holdout dates are **not downloaded** yet. *Pulled 2026-10-07:
+      all 599 discovery days (338 main, 261 `xyz`), ~53 GiB transferred
+      (one connection reset cost one partial day; per-day retries added),
+      43 GiB on disk. Running total this month incl. P2: ~60 GiB. Gates
+      (`p3_checks.py`, 6 sample days per dex for G3–G5):*
+      - *G1 UTC partitions: 338/338 and 261/261 days clean.*
+      - *G2 dex: main files hold only `hyperliquid`, `xyz` files only `xyz`.*
+      - *G3 order: **0 chain breaks in file order** in 5.5 M sampled fills;
+        a (timestamp, trade_id) sort breaks 2.2 M. File order is execution
+        order — never re-sort within a millisecond.*
+      - *G4 realized PnL: exact cash flow vs the archive's `realized_pnl`
+        agrees on 54,867/54,868 (main) and 91,500/91,500 (`xyz`) round
+        trips at a tolerance of 0.1% of position notional. At a 1%-of-PnL
+        tolerance the misses were 17% below $0.01 per coin, 1.2% at
+        $0.01–1, 0.3% above $1, with errors ≤ 0.05% of notional:
+        Hyperliquid's reported PnL uses a rounded entry price. The exact cash
+        flow (what the replay uses) is the accurate one; the self-check in
+        `replay.closed_pnl_check` now uses the same notional-relative rule.*
+      - *G5 archive vs API: 15/15 compared addresses identical (trade ids,
+        price, size, start position); 1 not retained by the API — old fills
+        of active wallets are gone there, which is why the archive is the
+        source.*
+      - *Adapter `ct/archive_fills.py` maps archive rows to the API fill
+        format, so replay, self-checks and features run unchanged.*
+
+      *Original notes:* *Downloader ready
       2026-10-07 (`p3_fills.py`, `archive.download_columns`): footer, then
       only the wanted column chunks by byte range into a sparse file,
       rewritten compact. Holdout dates refused in code. Verified on

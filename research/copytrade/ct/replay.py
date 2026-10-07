@@ -131,7 +131,10 @@ def closed_pnl_check(fills, events, scale, end_ms):
     """Exact replay vs the leader's own closedPnl, per coin that ends flat.
 
     A round trip replayed from fills must equal what Hyperliquid reports the
-    leader realized. Returns (agree, total, mismatches) at 1% tolerance.
+    leader realized. Tolerance is 0.1% of the largest position notional, not a
+    share of the PnL: Hyperliquid's reported PnL uses a rounded entry price,
+    which on sub-cent coins traded in millions of units drifts by up to ~0.05%
+    of notional (P3 gate G4, plan §8). Returns (agree, total, mismatches).
     """
     by = {}
     for e in events:
@@ -143,8 +146,9 @@ def closed_pnl_check(fills, events, scale, end_ms):
         replayed = leader_pnl(evs, scale, end_ms)
         reported = scale * sum(float(f['closedPnl']) for f in fills
                                if f['coin'] == coin and f['time'] >= evs[0]['t'])
+        notional = scale * max(max(abs(e['pos_before']), abs(e['pos_after'])) * e['vwap'] for e in evs)
         total += 1
-        if abs(replayed - reported) <= 0.01 * max(1.0, abs(reported)):
+        if abs(replayed - reported) <= max(0.01, 0.001 * notional):
             agree += 1
         else:
             bad.append((coin, round(replayed, 2), round(reported, 2)))
