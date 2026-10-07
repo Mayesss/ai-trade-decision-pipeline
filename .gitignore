@@ -183,3 +183,9 @@ replay-results/
 .study/*.json
 .study/panel-wide/
 .study/panel-holdout/
+
+# Copy-trade research: raw venue data and caches stay local
+# (docs/copy-trade-plan-2026-10-07.md §4).
+research/copytrade/data/
+research/copytrade/.venv/
+__pycache__/

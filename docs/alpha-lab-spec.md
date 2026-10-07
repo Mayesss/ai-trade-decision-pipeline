@@ -565,6 +565,14 @@ rediscover the hard way. Newest last.
   sample resets here — `R_SAMPLE_SINCE_MS` default moved 2026-09-24 →
   2026-10-08T00:00Z, midnight after the 2026-10-07 deploy
   (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy time).
+- **2026-10-07** — New workstream: copy-trade research,
+  `docs/copy-trade-plan-2026-10-07.md`. Owner intends to retire the AI trade
+  picker (no positive R); switching the live trader off is a separate act
+  (invariant 6). Monitoring is Hyperliquid wallets, tested point-in-time on
+  third-party archive data (Hydromancer, complete from 2025-07-28); execution
+  stays Bitget/Capital. Runs locally — zero Neon/KV load. Proposes two
+  deviations from §3, not yet locked: research ledger in git instead of Neon,
+  and Vercel Blob instead of R2.
 
 ---
 
