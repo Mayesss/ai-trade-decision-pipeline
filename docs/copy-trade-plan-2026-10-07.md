@@ -490,6 +490,22 @@ Rules:
       - *DuckDB note: registering pyarrow tables back into the connection
         deadlocked (0% CPU) on duckdb 1.5.6 / Python 3.14; intermediate
         results stay in DuckDB temp tables.*
+      - *Draft revised: the deciding test is now T3 "H0-copy" — every
+        eligible wallet copied in simulation, score vs the follower's
+        hedged net return (~10k copies, high power); the consensus / top-K
+        books are descriptive here and get pass/fail at the holdout.*
+      - *Old candle stores checked (2026-10-07): the Neon scalp tables were
+        dropped in 2026-08 (a recovery branch may hold them; bulk bars out
+        of Neon are forbidden by spec invariant 2 regardless). Upstash KV
+        still holds orphaned `scalp:candles*` keys: the 30 history keys are
+        **Capital** 1-minute candles (FX crosses, EURUSD, USDJPY, GBPUSD,
+        XAUUSD, BTCUSD CFD), 2025-12-01 → 2026-03-09 — no use for Bitget
+        execution, but the only Capital minute history we have, covering
+        the first `xyz` hold window. Copied read-only (31 KV commands,
+        59 MiB) to `data/kv_capital_1m/` for plan stage T1, since the cost
+        doc slates those keys for deletion. The 749 weekly chunk keys cover
+        62 symbols for only ~4 weeks (2026-05-25 → 06-21) with unreliable
+        source labels — not used.*
 - [ ] **P5 — discovery run.** H0 first; H1 and H2 only if H0 passes. All
       arms. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
