@@ -439,7 +439,7 @@ export const ONE_POSITION_PER_ASSET_CLASS = !flagOff(process.env.SWING_ONE_PER_A
 // deploy time if the deploy is not on the 16th.
 // Moved 2026-09-16 -> 2026-09-24 (docs/alpha-lab-spec.md §15): amend floor =
 // entry floor and a 1R target floor change the trade geometry itself.
-// Moved 2026-09-24 -> 2026-10-07 (owner, spec §8 2026-10-06): the nano 15m
+// Moved 2026-09-24 -> 2026-10-08 (owner, spec §8 2026-10-06): the nano 15m
 // entry-timing block is gone, the watcher went from 1 to 10 minutes and the
 // session-window owed looks stopped — a different look set. Midnight after
 // the deploy day, so no close from the old regime is pooled in; set the env
@@ -452,7 +452,7 @@ export const R_SAMPLE_TARGET = (() => {
 export const R_SAMPLE_SINCE_MS = (() => {
     const raw = String(process.env.SWING_R_SAMPLE_SINCE || '').trim();
     const parsed = raw ? Date.parse(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.parse('2026-10-07T00:00:00Z');
+    return Number.isFinite(parsed) ? parsed : Date.parse('2026-10-08T00:00:00Z');
 })();
 
 // ------------------------------

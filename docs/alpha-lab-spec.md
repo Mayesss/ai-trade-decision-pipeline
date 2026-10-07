@@ -563,8 +563,8 @@ rediscover the hard way. Newest last.
   already hold (coarser anchor: up to an hour of pre-release drift). The
   15m candles the dashboard chart warm fetches are unaffected. Owner: the R
   sample resets here — `R_SAMPLE_SINCE_MS` default moved 2026-09-24 →
-  2026-10-07T00:00Z (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy
-  time).
+  2026-10-08T00:00Z, midnight after the 2026-10-07 deploy
+  (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy time).
 
 ---
 
