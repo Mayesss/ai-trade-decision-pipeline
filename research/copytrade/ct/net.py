@@ -5,6 +5,7 @@ responses that can no longer change are cached: callers put every
 time-dependent input (date, window bounds) into the cache key.
 """
 import hashlib
+import http.client
 import json
 import threading
 import time
@@ -19,7 +20,7 @@ CACHE = DATA / 'cache'
 _RETRYABLE = {429, 500, 502, 503, 504}
 
 
-def _request(url, body=None, timeout=60, retries=5):
+def _request(url, body=None, timeout=60, retries=8):
     data = json.dumps(body).encode() if body is not None else None
     headers = {'Content-Type': 'application/json'} if body is not None else {}
     for attempt in range(retries + 1):
@@ -30,7 +31,10 @@ def _request(url, body=None, timeout=60, retries=5):
         except urllib.error.HTTPError as err:
             if err.code not in _RETRYABLE or attempt == retries:
                 raise
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):
+            # ConnectionError / HTTPException cover "remote end closed connection
+            # without response" (http.client.RemoteDisconnected), which killed
+            # both prefetches on a brief network drop (2026-10-08).
             if attempt == retries:
                 raise
         time.sleep(min(30, 2 ** attempt))
