@@ -6,6 +6,7 @@ time-dependent input (date, window bounds) into the cache key.
 """
 import hashlib
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -79,14 +80,22 @@ class WeightBudget:
 
 
 class RatePacer:
-    """Minimum spacing between requests (Bitget limits requests per second)."""
+    """Minimum spacing between requests (Bitget limits requests per second).
+
+    Thread-safe: each caller reserves the next free slot under a lock, then
+    sleeps outside it, so N threads together never exceed per_second. The
+    limit is per process — never run two Bitget-fetching processes at once.
+    """
 
     def __init__(self, per_second):
         self.gap = 1.0 / per_second
-        self.last = 0.0
+        self.next_slot = 0.0
+        self.lock = threading.Lock()
 
     def wait(self):
-        delta = time.monotonic() - self.last
-        if delta < self.gap:
-            time.sleep(self.gap - delta)
-        self.last = time.monotonic()
+        with self.lock:
+            now = time.monotonic()
+            slot = max(now, self.next_slot)
+            self.next_slot = slot + self.gap
+        if slot > now:
+            time.sleep(slot - now)

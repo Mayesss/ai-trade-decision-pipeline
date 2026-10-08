@@ -494,6 +494,25 @@ Rules:
         eligible wallet copied in simulation, score vs the follower's
         hedged net return (~10k copies, high power); the consensus / top-K
         books are descriptive here and get pass/fail at the holdout.*
+      - *Draft re-centred (owner, 2026-10-08) on the two ideas with a
+        mechanism, renamed `registrations/001-slow-traders-copy-and-crowd-divergence.md`:
+        **A** copy only slow traders (median hold ≥ 24 h) with a 1 h vs 24 h
+        lag mechanism check and a cross-regime score (good in both rising
+        and falling BTC); **B** skilled-vs-crowd positioning from the
+        full-population snapshots. The data spans more than a bear market:
+        Jul 2025 up, Aug–Oct flat at the top, Nov −23%, Dec–Mar grind down,
+        Apr +14%, May–Jun down; the holdout (Jul–Sep 2026) is mostly a rally.
+        BTC 1H history 2019-07 → 2026-10 (63,517 bars, no gaps) labels
+        regimes (`ct/regimes.py`).*
+      - *Prepare phase (owner: prepare, don't launch), 2026-10-08: archive
+        leader loader and as-of equity (`ct/leaders.py`), `LeaderBook` lag,
+        daily + on-trade BTC hedge with holdings beta, scores and statistics
+        (`ct/scores.py`, `ct/stats.py`), B's tilts and costed long/short
+        (`ct/crowd.py`), populations (`p5_population.py`), all checked on
+        synthetic data (`tests/test_prepare.py`). Bugs caught there: the
+        flip split in round trips, a daily-only hedge leaving 30% of a BTC
+        book unhedged. The runner `p5_run.py` refuses to start unless 001 is
+        committed as REGISTERED. Price/funding prefetch running (free).*
       - *Old candle stores checked (2026-10-07): the Neon scalp tables were
         dropped in 2026-08 (a recovery branch may hold them; bulk bars out
         of Neon are forbidden by spec invariant 2 regardless). Upstash KV

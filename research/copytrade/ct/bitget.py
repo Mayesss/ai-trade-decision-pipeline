@@ -19,7 +19,7 @@ PRODUCT = 'USDT-FUTURES'
 MINUTE = 60_000
 BLOCK = 200 * MINUTE  # one history-candles page of 1m bars
 
-_pacer = RatePacer(10)  # documented market limit is 20/s/IP; stay well under
+_pacer = RatePacer(15)  # documented market limit is 20/s/IP; stay under it
 
 
 def _get(path):

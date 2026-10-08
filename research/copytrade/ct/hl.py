@@ -14,7 +14,7 @@ LEADERBOARD = 'https://stats-data.hyperliquid.xyz/Mainnet/leaderboard'
 FILLS_PAGE_MAX = 2000
 FILLS_RETAINED = 10_000  # the API keeps only each wallet's most recent 10k fills
 
-_budget = WeightBudget(800)
+_budget = WeightBudget(1100)
 
 
 def _info(body, weight=20, items_per_weight=None):

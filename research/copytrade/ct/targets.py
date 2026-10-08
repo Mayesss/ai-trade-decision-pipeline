@@ -32,12 +32,18 @@ def hl_px(meta, venue_px):
 
 
 class LeaderBook:
-    """One leader's positions over time, replayed from events (replay.leader_events)."""
+    """One leader's positions over time, replayed from events (replay.leader_events).
 
-    def __init__(self, events, equity_at, typical_leverage):
+    lag_ms: the follower sees the leader as of `lag_ms` ago — positions AND
+    equity. 0 is a normal copy; registration 001 uses 1 h and 24 h (and a
+    decay curve) to test whether an edge survives delay.
+    """
+
+    def __init__(self, events, equity_at, typical_leverage, lag_ms=0):
         self.events = events
         self.equity_at = equity_at
         self.typical_leverage = typical_leverage
+        self.lag_ms = lag_ms
         self.pos = {}
         self._i = 0
         self.meta = {ev['symbol']: {'qty_mult': ev['qty_mult'], 'min_usdt': ev['min_usdt'],
@@ -46,11 +52,12 @@ class LeaderBook:
                      for ev in events}
 
     def change_times(self):
-        return [ev['t_last'] for ev in self.events]
+        """When the follower can first see each change: completion + lag."""
+        return [ev['t_last'] + self.lag_ms for ev in self.events]
 
     def advance(self, t):
-        """Apply every position change completed by t (what a poll at t would see)."""
-        while self._i < len(self.events) and self.events[self._i]['t_last'] <= t:
+        """Apply every position change completed by t - lag (what a poll at t sees)."""
+        while self._i < len(self.events) and self.events[self._i]['t_last'] <= t - self.lag_ms:
             ev = self.events[self._i]
             self.pos[ev['symbol']] = ev['pos_after']
             self._i += 1
@@ -62,9 +69,13 @@ class LeaderBook:
         """{symbol: leader notional / equity / typical leverage}, signed for the venue.
 
         A long in an inverse-quoted HL instrument is a short in the venue's.
+        No known equity (no snapshot yet) or no typical leverage: no target —
+        the follower cannot size the copy, so it holds nothing for this leader.
         """
-        equity = self.equity_at(t)
+        equity = self.equity_at(t - self.lag_ms)
         out = {}
+        if not equity or not self.typical_leverage:
+            return out
         for s in self.symbols():
             px = price(s)
             if px is None:

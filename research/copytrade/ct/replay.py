@@ -13,6 +13,7 @@ import statistics
 from dataclasses import dataclass
 
 from . import bitget as bg  # leader_pnl marks at Bitget prices
+from .venue import HEDGE_SYMBOL
 
 MINUTE = 60_000
 HOUR = 3_600_000
@@ -165,6 +166,7 @@ class Params:
     maintenance_margin: float = 0.01  # of gross notional. PILOT GUESS of Bitget's small-size tiers
     frictionless: bool = False        # no fees, slippage, funding, liquidation, lot or minimum-size rules:
                                       # mechanics checks only
+    hedge: bool = True                # daily BTC hedge on a separate ledger (holdings beta, registration 001)
 
 
 def _round_qty(qty, step):
@@ -216,6 +218,28 @@ def follow(target, p, venue, end_ms):
     daily = []
     liquidated = None
     fee_rate = 0.0 if p.frictionless else venue.taker_fee
+    # Hedge ledger: a BTCUSDT position sized daily to -(sum of holdings x beta),
+    # traded with the same fees and slippage, kept apart from the copy book so
+    # hedged and unhedged results are both reported.
+    hedging = p.hedge and not p.frictionless
+    hg = {'pos': 0.0, 'cash': 0.0, 'fees': 0.0, 'slippage': 0.0, 'trades': 0, 'beta_fallbacks': 0}
+    daily_h = []
+
+    def hedge_to(target, candle):
+        """Move the hedge to `target` BTC at this candle's open, Bitget lot rules."""
+        if candle is None:
+            return
+        qty = _round_qty(target - hg['pos'], 0.0001)
+        if abs(qty) < 1e-12 or (abs(target) > 1e-12 and abs(qty) * candle[1] < 5.0):
+            return
+        slip_px = p.slip_range_frac * (candle[2] - candle[3])
+        px = candle[1] + slip_px if qty > 0 else candle[1] - slip_px
+        fee = abs(qty) * px * fee_rate
+        hg['cash'] -= qty * px + fee
+        hg['fees'] += fee
+        hg['slippage'] += abs(qty) * slip_px
+        hg['pos'] += qty
+        hg['trades'] += 1
 
     def fill(sym, q, px, fee, slip_px, t):
         before = pos.get(sym, 0.0)
@@ -293,9 +317,25 @@ def follow(target, p, venue, end_ms):
                         fill(s, -q, adverse[s], abs(q) * adverse[s] * fee_rate, 0.0, t)
                     liquidated = t
                     daily.append((t, st['cash']))
+                    if hedging:
+                        hedge_to(0.0, venue.candle_minute(HEDGE_SYMBOL, t + MINUTE))
+                        daily_h.append((t, st['cash'] + hg['cash']))
                     break
             if t % DAY == 0:
-                daily.append((t, st['cash'] + sum(q * closes.get(s, last_px[s]) for s, q in held.items())))
+                book = st['cash'] + sum(q * closes.get(s, last_px[s]) for s, q in held.items())
+                daily.append((t, book))
+                if hedging:
+                    btc = venue.candle_hour(HEDGE_SYMBOL, t - HOUR)
+                    if btc:
+                        daily_h.append((t, book + hg['cash'] + hg['pos'] * btc[4]))
+                        exposure = 0.0
+                        for s, q in held.items():
+                            b = venue.beta(s, t)
+                            if b is None:
+                                b = 1.0
+                                hg['beta_fallbacks'] += 1
+                            exposure += q * closes.get(s, last_px[s]) * b
+                        hedge_to(-exposure / btc[4], venue.candle_minute(HEDGE_SYMBOL, t + MINUTE))
             continue
 
         # poll
@@ -330,6 +370,7 @@ def follow(target, p, venue, end_ms):
             f = cap / gross if gross > 0 else 0.0
             targets = {s: q * f for s, q in targets.items()}
             n['leverage_capped_polls'] += 1
+        orders_before = n['orders']
         for s, tgt in targets.items():
             cur = pos.get(s, 0.0)
             if s not in fund_ptr:
@@ -358,6 +399,21 @@ def follow(target, p, venue, end_ms):
             trade(s, qty, candles[s], x)
         gross_now = sum(abs(q) * last_px[s] for s, q in pos.items())
         st['max_gross_leverage'] = max(st['max_gross_leverage'], gross_now / p.capital_usd)
+        # Re-hedge right after a poll that traded, not only at the daily mark:
+        # a daily-only hedge lags every entry and exit by up to a day (measured
+        # on a pure-BTC synthetic book: 70% of the BTC move removed vs ~all).
+        if hedging and n['orders'] > orders_before:
+            btc = venue.candle_minute(HEDGE_SYMBOL, x)
+            if btc:
+                exposure = 0.0
+                for s, q in pos.items():
+                    if abs(q) > EPS:
+                        b = venue.beta(s, x)
+                        if b is None:
+                            b = 1.0
+                            hg['beta_fallbacks'] += 1
+                        exposure += q * (candles[s][1] if s in candles else last_px[s]) * b
+                hedge_to(-exposure / btc[1], btc)
 
     if liquidated is None:
         settle_funding(end_ms)
@@ -374,13 +430,26 @@ def follow(target, p, venue, end_ms):
             forced += 1
     net = st['cash']
     daily.append((end_ms, net))
+    if hedging:
+        hedge_to(0.0, venue.candle_minute(HEDGE_SYMBOL, mark))
+        daily_h.append((end_ms, net + hg['cash']))
 
     peak, max_dd = p.capital_usd, 0.0
     for _, eq in daily:
         peak = max(peak, p.capital_usd + eq)
         max_dd = max(max_dd, (peak - (p.capital_usd + eq)) / peak)
-    day_marks = [eq for t, eq in daily if t % DAY == 0] + [net]
-    rets = [(b - a) / p.capital_usd for a, b in zip([0.0] + day_marks, day_marks)]
+    def daily_stats(series, final):
+        marks = [eq for t, eq in series if t % DAY == 0] + [final]
+        rets = [(b - a) / p.capital_usd for a, b in zip([0.0] + marks, marks)]
+        return {'n': len(rets), 'mean': statistics.fmean(rets),
+                'sd': statistics.stdev(rets) if len(rets) > 1 else None}
+
+    hedged = None
+    if hedging:
+        net_h = net + hg['cash']
+        hedged = {'net_usd': net_h, 'net_return': net_h / p.capital_usd,
+                  'daily': daily_stats(daily_h, net_h),
+                  **{f'hedge_{k}': v for k, v in hg.items() if k not in ('cash', 'pos')}}
     return {
         'net_usd': net,
         'net_return': net / p.capital_usd,
@@ -390,8 +459,8 @@ def follow(target, p, venue, end_ms):
         'liquidated_at': liquidated,
         'closed_by_window_end': forced,
         **n,
-        'daily': {'n': len(rets), 'mean': statistics.fmean(rets),
-                  'sd': statistics.stdev(rets) if len(rets) > 1 else None},
+        'daily': daily_stats(daily, net),
+        'hedged': hedged,
         'r': r_summary(closed),
         'trips': closed,
         'daily_equity': daily,
