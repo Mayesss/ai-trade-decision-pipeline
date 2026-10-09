@@ -546,9 +546,11 @@ Rules:
         doc slates those keys for deletion. The 749 weekly chunk keys cover
         62 symbols for only ~4 weeks (2026-05-25 → 06-21) with unreliable
         source labels — not used.*
-- [ ] **P5 — discovery run.** *Started 2026-10-09 (`p5_run.py`, background,
-      log `data/scratch/p5_run.log`; about a day).* T1, T2, T2b, T3, T4 as
-      registered. Append every run to `results.jsonl`.
+- [ ] **P5 — discovery run.** *First start 2026-10-09 07:21 stopped at
+      07:52: network-bound on funding marks and ATR (amendment 1 in the
+      registration, mechanics only, no outcome written). Restarted after the
+      fix (`p5_run.py`, background, log `data/scratch/p5_run.log`).* T1, T2,
+      T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).

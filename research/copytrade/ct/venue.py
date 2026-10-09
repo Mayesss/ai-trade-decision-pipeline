@@ -29,6 +29,7 @@ class BitgetVenue:
         self.day = day  # cache key for funding history (Bitget serves ~90 days)
         self._funding = {}
         self._beta = {}
+        self._atr = {}
         # {symbol: [(ms, rate)]} replacing Bitget's history — registration 001
         # uses Hyperliquid funding as the proxy before Bitget's ~90-day window.
         self.funding_override = funding_override
@@ -45,8 +46,30 @@ class BitgetVenue:
     def candle_hour(self, symbol, hour_ms):
         return bg.candle_1h(symbol, hour_ms)
 
-    def atr_pct(self, symbol, t_ms):
-        return bg.atr_pct(symbol, t_ms)
+    def atr_pct(self, symbol, t_ms, n=14):
+        """Daily ATR(n) as a fraction of price from UTC-day bars built out of the cached 1H
+        candles closed before t's UTC day. Offline: bg.atr_pct fetched Bitget's 16:00-anchored
+        daily candles per (symbol, day) over the network (amendment 1, 2026-10-09). Cached per
+        (symbol, day); None with fewer than n + 1 complete days."""
+        day = t_ms - t_ms % DAY
+        key = (symbol, day)
+        if key not in self._atr:
+            days = []
+            for d in range(day - (n + 1) * DAY, day, DAY):
+                bars = [bg.candle_1h(symbol, h) for h in range(d, d + DAY, HOUR)]
+                bars = [b for b in bars if b]
+                if len(bars) < 20:
+                    days.append(None)
+                    continue
+                days.append((max(b[2] for b in bars), min(b[3] for b in bars), bars[-1][4]))
+            days = [x for x in days if x]
+            if len(days) < n + 1:
+                self._atr[key] = None
+            else:
+                days = days[-(n + 1):]
+                trs = [max(h - l, abs(h - prev[2]), abs(l - prev[2])) for prev, (h, l, _) in zip(days, days[1:])]
+                self._atr[key] = sum(trs) / len(trs) / days[-1][2]
+        return self._atr[key]
 
     def funding(self, symbol):
         if self.funding_override is not None:

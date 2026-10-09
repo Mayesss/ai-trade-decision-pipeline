@@ -307,7 +307,10 @@ def follow(target, p, venue, end_ms):
             while i < len(series) and series[i][0] <= up_to:
                 ts, rate = series[i]
                 if abs(q) > EPS:
-                    c = venue.candle_minute(sym, ts - ts % MINUTE)
+                    # Marked at the 1H close of the settlement hour (cached offline for every
+                    # symbol); the 1-minute candle at the settlement needed a network fetch
+                    # per held coin-hour (amendment 1, 2026-10-09).
+                    c = venue.candle_hour(sym, ts - ts % HOUR)
                     paid = q * (c[4] if c else last_px[sym]) * rate  # longs pay a positive rate
                     st['cash'] -= paid
                     st['funding_paid'] += paid

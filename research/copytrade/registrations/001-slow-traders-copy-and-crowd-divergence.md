@@ -66,6 +66,23 @@ read for a mechanics fact (§8, revision 4).
      flat; the holdout is one rally. A discovery pass means "persisted inside
      a bear"; a holdout pass adds one regime transition, nothing more.
 
+**Amendment 1 (2026-10-09, mechanics only, before any outcome existed).**
+The first start of `p5_run.py` (07:21) passed the guard and the window-1
+mechanics gate (closedPnl 231/231; costless follower median gap 4.1% over
+17 wallets) and was then found network-bound: two simulator paths read
+prices the prefetch never covered — funding settlement marked each hourly
+payment at the 1-minute candle, and the per-trip ATR fetched Bitget daily
+candles per (symbol, day). At the paced 15 requests/s the run would have
+taken days. Stopped at 07:52 with `results.jsonl` absent; no score or
+outcome was written or read. Changes: funding is marked at the 1H close of
+the settlement hour; the daily ATR(14) is built from the cached 1H candles
+as UTC-day bars (agrees with the old value within ~5% on BTC; it feeds the
+reported ATR-R diagnostic only, never a pass criterion). Checked: a
+56-day synthetic follow with hourly funding opens no network connection
+and all prepare tests pass. The in-memory price-block cache was capped at
+24k blocks the day before (~1.5 GB instead of ~13 GB). Everything else in
+this file is unchanged.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |
