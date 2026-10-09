@@ -579,6 +579,13 @@ Rules:
       zero. T2 FAIL (terciles inverted). Kept: HL's liquidation prints sit
       ~50 bp beyond Bitget's next-minute open — the overshoot lives on the
       venue of the forced fill. Holdout untouched.*
+      *Registration `003-passive-liquidity-into-cascades.md` (REGISTERED
+      and run 2026-10-09; owner lifted the venue rule): T1 fill at the
+      cascade's median print FAIL overall (crash hour) but **majors +22 bp
+      per fill, t 3.3**; T2 triggered order FAIL (fills too early, EV
+      −0.32%); T3 always-on map orders FAIL, −14 bp per fill, t −8 on the
+      control — adverse selection, map adds nothing. Family across
+      001–003: eleven trials. Holdout untouched.*
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).
 - [ ] **P8 — gated: live following.** Only if P6 passes and paper tracking

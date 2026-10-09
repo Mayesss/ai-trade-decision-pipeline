@@ -215,3 +215,56 @@ tick the median fill gives up).
 
 `GROSS_MIN = $5,000,000` and `DENSE_MIN = 0.005` are read by the runner from
 this file.
+
+## 10. Result — 2026-10-09 (run of commit 9e18413, `results.jsonl` line 3)
+
+Three trials, z_crit 2.13. Placebos 0.03 / 0.035 / 0.035 (calibrated).
+Exit 15 min after the fill, taker, 5 bp adverse; slippage 0 / 10 bp moves
+every mean by about ±5 bp and no verdict.
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 fill at the cascade's median print | **FAIL** (criteria 1 and 3) | mean +0.13% per fill, se 0.38%, **t 0.33**; median +0.29%; hit 62%; halves −0.39% / +0.64%. **Majors +0.22%, se 0.07%, t 3.29** (n 463, 216 hour clusters, hit 58%); rest +0.11% (t 0.24, median +0.36%, hit 63%). Shorts liquidated +0.42% (t 2.1), longs +0.06%. Reversal builds with the horizon: +0.75% at 60 min (t 1.75), +1.18% at 240 (t 1.84), medians 0.46–0.48%. **Without the largest hour cluster (2025-10-10 21h): +0.49%, se 0.15%, t 3.22, hit 63%.** |
+| T2 triggered order (2 s, 0.3% beyond the print, 120 s life) | **FAIL** (all four) | 4,460 orders, 1,990 filled (45%); conditional mean **−0.71%**, se 0.94%, t −0.75; median +0.21%; hit 57%; **EV per order −0.32%**. Halves −1.73% / +0.32%. Majors −0.07% (t −0.5; fill rate 29%, EV −0.02%); rest −0.78% (EV −0.37%). Shorts side +0.18% (t 1.35), longs −0.94%. Without the largest cluster +0.26%, t 1.99. Improves with horizon to +0.03% at 240 min. |
+| T3 always-on map order at 2% | **FAIL**, significantly negative | 1,873 orders where the map showed flow, 895 filled (48%); conditional mean **−0.16%, t −2.47**; majors −0.11% (t −3.0); EV per order −0.08%. **Sparse control: 14,356 fills, −0.14%, t −8.1**, hit 44%. Map value: density terciles differ by 0.015% (z 0.6); EV per tercile −0.08% to −0.09% everywhere. By distance 1 / 2 / 3%: EV −0.12 / −0.08 / −0.07%. |
+
+**Reading.** Three different things were measured and they separate
+cleanly.
+
+1. **A resting order filled by any flow at a distance loses.** T3's sparse
+   control is the cleanest number in this workstream: 14,356 fills, −14 bp
+   net per fill at 15 minutes, t −8. That is adverse selection — whoever
+   trades through a level 1–3% away knows something — and the map does not
+   change it (terciles flat). Always-on passive liquidity on Hyperliquid is
+   not the product.
+2. **A fill at the forced print earns, when the cascade does not go on to
+   become a crash.** T1's typical fill is +29 bp with a 62% hit rate, and in
+   majors the mean is +22 bp with t 3.3 across 216 independent hours. The
+   registered test failed because one hour, 2025-10-10 21:00 UTC, filled
+   orders at the median print of cascades that then fell much further; the
+   first half of the period carries it. The overshoot 002 saw cross-venue is
+   confirmed on Hyperliquid's own tape, and it grows for four hours.
+3. **The triggered attempt fills too early.** The trigger fires a median
+   16 s into a cascade that travels a median 1% beyond its first print; an
+   order 0.3% beyond the crossing print is filled near the start of the
+   forced flow, not at its median, and the continuation tail (−1.7% in the
+   first half, the crash hour again) outweighs a +21 bp median. T2's majors
+   fill at 29% and lose 7 bp; T1's majors earn 22 bp. The gap between them
+   is placement depth.
+
+**What this says about the next registration, if there is one.** The edge
+in T1 majors is real but small (22 bp per fill at 15 min, more at longer
+horizons), and it sits in the depth of the cascade, not at its onset. A
+deeper placement — at the depth where the median forced notional prints,
+about 1% beyond the first print — fills fewer cascades and fills them where
+T1 measured the edge; majors first, because their continuation tails are
+smaller (travel median 0.56%, p90 2.7%, against 1.2% and 11% for alts). A
+longer exit (60–240 min) reported here as stronger is also a candidate.
+These are new hypotheses. **The family across registrations 001–003 is now
+eleven trials on one discovery year**; a fourth registration on this data
+must state that count, and the holdout (unread) is where any surviving
+rule is decided.
+
+**Regime caveat.** One bear year with one crash hour that dominates every
+mean. Hour clustering and the largest-cluster-removed block are what kept
+the inference honest.
