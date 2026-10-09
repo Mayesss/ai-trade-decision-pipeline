@@ -1,8 +1,10 @@
 # 002 — Liquidation cascades: does forced flow overshoot, and does the liquidation map say where?
 
-**Status: DRAFT — not registered.** It becomes the registration in the commit
-that changes this line to `REGISTERED <date>` after the owner has approved
-every item in §11. Until then no forward return is computed for any event.
+**Status: REGISTERED 2026-10-09** (owner: "approved", all of D1–D9 as
+proposed in §10). This commit is the registration: thresholds set from
+distributions only, every builder checked on synthetic data, prices for the
+event windows prefetched, no forward return computed for any event before
+it. Any later change is an amendment, allowed only before an outcome exists.
 
 Plan: `docs/copy-trade-plan-2026-10-07.md`. Prior ledger entries: `000`,
 `001` (result in its §12: skill persists on Hyperliquid, but no follower
@@ -82,9 +84,15 @@ BTC's 99th 80 s; runs are one-directional by nature (purity ≥ 0.8 for 98% of
 runs at any G); a run's notional relative to the coin's trailing median
 *daily* total has p90 1.7 and p99 57 — a few cascades make a day.
 **Proposed: G = 60 s, P = 0.8, K = 1.0 (the run liquidates at least a
-typical whole day of the coin), F = $250,000.** That is 2,582 events over
-338 days (7.6 a day) in 133 coins, 13% in BTC/ETH/SOL, median run $0.85 M.
-Robustness grid, reported: K 0.5 / 2.0, F $50 k / $1 M.
+typical whole day of the coin), F = $250,000.** Built by `l2_events.py`
+(event times, sides and sizes only): **2,838 events** over 338 days (8.4 a
+day) in 112 Bitget-listed coins, 463 in BTC/ETH/SOL; 426 use the cross-coin
+fallback median (coins with under 5 days of history); 123 events in coins
+not yet listed on Bitget were dropped. **82% are longs being liquidated**
+(2,329 vs 509) — the discovery year was a bear — so the by-side split in §6
+matters and T1's pooled result is dominated by down-cascades. Robustness
+grid, reported: K 0.5 (3,794 events) / 2.0 (2,169), F $50 k (7,116) / $1 M
+(1,232).
 
 **Direction labels.** Longs liquidated = `Close Long`, `Liquidated Cross
 Long`, `Liquidated Isolated Long` (the price fell); shorts liquidated = the
@@ -195,20 +203,21 @@ Each with a synthetic test, none computing a forward return on real events:
       duplicates; 57% if duplicates are treated as independent), direction
       placebo, planted 0.1% reversal found, tercile split (planted density
       effect z 3.5, null z 0.2) — `tests/test_eventstudy.py`;
-- [ ] `l2_blocks.py` — Bitget 1-minute blocks for every event window
-      (count, fetch; from event times only);
+- [x] `l2_events.py` — events at the grid (`cascades.json`); `l2_blocks.py` —
+      19,571 blocks needed for the event windows, 16,215 already cached,
+      3,356 fetched 2026-10-09 (from event times only).
 - [x] `l3_run.py` — the run, same guard as `p5_run.py` on this file
       (`tests/test_l3_assembly.py`: null fails, planted reversal passes all
       four, planted density effect passes T2, continuation is labelled and
       fails, T2 cannot pass without T1). The guard refuses: not REGISTERED.
 
-## 10. Owner decisions before this becomes REGISTERED
+## 10. Owner decisions — approved 2026-10-09 as proposed
 
-| # | item | proposed |
+| # | item | approved |
 |---|---|---|
 | D1 | G (run gap) | 60 s (§3: 95th-percentile gap 21 s, BTC 99th 80 s) |
 | D2 | P (direction purity) | 0.8 (non-binding guard: 98% of runs) |
-| D3 | K and F (size thresholds) | K = 1.0 × trailing 30-day median daily notional, F = $250 k → 2,582 events; robustness K 0.5 / 2.0, F $50 k / $1 M |
+| D3 | K and F (size thresholds) | K = 1.0 × trailing 30-day median daily notional, F = $250 k → 2,838 events; robustness K 0.5 / 2.0, F $50 k / $1 M |
 | D4 | primary horizon | 60 min |
 | D5 | costs | taker 0.06% + 10% of minute range per side |
 | D6 | clustering | UTC hour primary, day reported |

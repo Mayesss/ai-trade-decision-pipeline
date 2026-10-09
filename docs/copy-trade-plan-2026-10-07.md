@@ -568,6 +568,12 @@ Rules:
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once. *Not
       triggered by 001 (no passing rule); the holdout stays unread.*
+- [ ] **L — liquidation workstream** (2026-10-09, after 001's result): the
+      one strong mechanism in the data is forced flow. Registration
+      `002-liquidation-cascades.md` (REGISTERED 2026-10-09): T1 reversal
+      after a cascade at 60 min on Bitget after costs; T2 the liquidation
+      map's density as a conditioner. Discovery first; the holdout stays
+      sealed for confirmation. Scripts `l1_*`, `l2_*`, `l3_run.py`.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).
 - [ ] **P8 — gated: live following.** Only if P6 passes and paper tracking
