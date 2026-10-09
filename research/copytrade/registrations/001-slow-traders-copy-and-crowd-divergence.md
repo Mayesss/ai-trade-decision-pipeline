@@ -113,6 +113,16 @@ sign or ordering error. The PnL-relative figure stays printed as
 information. The gate sample is the first 25 scored slow wallets in
 address order. `results.jsonl` absent; no outcome written or read.
 
+**Run note (2026-10-09, no change to any rule or code path).** The fourth
+start (08:52) passed the guard and the gate (exact replay 212/212;
+costless-follower gap 0.073% of turnover, PnL-relative 7.7%) and was found
+network-bound during the T2 copies: the follower prices every symbol it
+holds at each poll, and the block prefetch had covered only the symbol
+whose position changed. Stopped at 09:11 during window 1 (200/769 copies);
+`results.jsonl` absent. `p5_blocks.py` now tracks the held set per leader
+(25,194 further blocks, fetched before the fifth start). The simulator is
+unchanged.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |

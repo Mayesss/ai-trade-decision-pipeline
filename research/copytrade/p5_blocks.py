@@ -50,16 +50,22 @@ def needed_blocks():
             for a, fs in fills.items():
                 events, _ = replay.leader_events(fs, table, listed)
                 n_events += len(events)
-                held = set()
+                held, pos = set(), {}
                 for ev in events:
                     held.add(ev['symbol'])
+                    pos[ev['symbol']] = ev['pos_after']
+                    # the follower prices EVERY symbol it holds at each poll (equity, leverage cap,
+                    # band), not only the one that changed — found on the fourth start, 2026-10-09
+                    open_now = [s for s, q in pos.items() if abs(q) > 1e-12] + [ev['symbol']]
                     for poll, lag in pairs:
                         t = -(-(ev['t_last'] + lag) // poll) * poll + MINUTE
                         if t < end_ms:
-                            blocks.add((ev['symbol'], t - t % bg.BLOCK))
-                            blocks.add(('BTCUSDT', t - t % bg.BLOCK))
+                            b = t - t % bg.BLOCK
+                            blocks.add(('BTCUSDT', b))
+                            for s in open_now:
+                                blocks.add((s, b))
                 mark = end_ms - MINUTE
-                for s in held:
+                for s in held | {'BTCUSDT'}:
                     blocks.add((s, mark - mark % bg.BLOCK))
             print(f'  {sel} {key}: {len(fills):,} wallets, {n_events:,} position changes')
     # the static hedge opens at the first poll and re-trues at day marks: BTC blocks at every day mark

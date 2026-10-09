@@ -552,8 +552,10 @@ Rules:
       stopped 08:52: swapping on in-memory fills (amendment 2, streaming).
       Third start 08:46 self-aborted at the mechanics gate (PnL-relative gap
       7.7% on slow traders; amendment 3: gap relative to turnover, 1%).
-      Fourth start after it (`p5_run.py`, background, log
-      `data/scratch/p5_run.log`).* T1, T2,
+      Fourth start 08:52 passed the gate (gap 0.073% of turnover) and was
+      stopped 09:11: prefetch lacked the held symbols' prices at each poll
+      (run note in the registration; no code-path change). Fifth start after
+      that fetch (`p5_run.py`, background, log `data/scratch/p5_run.log`).* T1, T2,
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
