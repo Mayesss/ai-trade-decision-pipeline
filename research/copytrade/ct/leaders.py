@@ -55,6 +55,43 @@ def load_fills(dex, addresses, start, end):
     return out
 
 
+def iter_fills(dex, addresses, start, end, batch=50_000):
+    """Yield (address, [fill dict, API format]) one wallet at a time, execution order within a wallet.
+
+    Same rows as load_fills, streamed ordered by address so that only one
+    wallet's fills are in Python memory at once. Registration 001 amendment
+    2: holding all fills of a window's ~4,500 wallets as dicts pushed the run
+    into 15 GB of swap. Wallets with no fills are not yielded.
+    """
+    files = [str(day_file(dex, d.isoformat())) for d in _days(start, end) if day_file(dex, d.isoformat()).exists()]
+    if not files or not addresses:
+        return
+    c = con()
+    c.execute('CREATE OR REPLACE TEMP TABLE wanted_stream(address VARCHAR)')
+    c.executemany('INSERT INTO wanted_stream VALUES (?)', [(a,) for a in addresses])
+    cur = c.execute(f"""
+        SELECT address, coin, epoch_ms(timestamp) AS t, side, CAST(size AS DOUBLE), CAST(price AS DOUBLE),
+               CAST(start_position AS DOUBLE), CAST(realized_pnl AS DOUBLE), trade_id, direction, crossed
+        FROM read_parquet({files!r}, filename = true, file_row_number = true)
+        WHERE address IN (SELECT address FROM wanted_stream)
+        ORDER BY address, timestamp, filename, file_row_number
+    """)
+    current, fills = None, []
+    while True:
+        rows = cur.fetchmany(batch)
+        if not rows:
+            break
+        for a, coin, t, side, sz, px, sp, pnl, tid, d, crossed in rows:
+            if a != current:
+                if current is not None:
+                    yield current, fills
+                current, fills = a, []
+            fills.append({'coin': coin, 'time': t, 'side': 'B' if side == 'buy' else 'A', 'sz': sz, 'px': px,
+                          'startPosition': sp, 'closedPnl': pnl, 'tid': tid, 'dir': d, 'crossed': crossed})
+    if current is not None:
+        yield current, fills
+
+
 class Equity:
     """As-of account value and gross leverage per address from the snapshot table."""
 

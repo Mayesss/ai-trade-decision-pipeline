@@ -83,6 +83,19 @@ and all prepare tests pass. The in-memory price-block cache was capped at
 24k blocks the day before (~1.5 GB instead of ~13 GB). Everything else in
 this file is unchanged.
 
+**Amendment 2 (2026-10-09, mechanics only, before any outcome existed).**
+The restart after amendment 1 (08:10) passed the guard and then swapped:
+the runner loaded every fill of a window's ~4,500 wallets into Python
+dictionaries at once, including scalpers with thousands of fills a day, and
+the machine reached 15.5 GB of its 16 GB swap with the process at ~10% CPU.
+Stopped at 08:52, `results.jsonl` absent; no score or outcome written or
+read. Change: fills are streamed one wallet at a time from a single DuckDB
+query ordered by address (`leaders.iter_fills`, checked equal to the bulk
+loader on real fills), T1 rows and day-trader copies are computed per
+wallet as it arrives, only the slow set is buffered for the mechanics gate,
+and per-trip records are kept for the primary run only. Scores, outcomes,
+criteria and reporting are unchanged; the synthetic assembly checks pass.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |

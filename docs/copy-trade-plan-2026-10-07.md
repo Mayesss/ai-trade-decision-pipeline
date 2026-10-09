@@ -548,8 +548,10 @@ Rules:
         source labels — not used.*
 - [ ] **P5 — discovery run.** *First start 2026-10-09 07:21 stopped at
       07:52: network-bound on funding marks and ATR (amendment 1 in the
-      registration, mechanics only, no outcome written). Restarted after the
-      fix (`p5_run.py`, background, log `data/scratch/p5_run.log`).* T1, T2,
+      registration, mechanics only, no outcome written). Second start 08:10
+      stopped 08:52: swapping on in-memory fills (amendment 2, streaming).
+      Third start after it (`p5_run.py`, background, log
+      `data/scratch/p5_run.log`).* T1, T2,
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive

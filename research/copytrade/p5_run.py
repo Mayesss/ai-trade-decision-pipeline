@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ct import crowd, crowding, replay, schedule, scores, stats, targets
 from ct import bitget as bg
-from ct.leaders import Equity, average_beta, con, load_fills
+from ct.leaders import Equity, average_beta, con, iter_fills
 from ct.net import CACHE, DATA
 from ct.regimes import Regimes
 from ct.venue import BitgetVenue
@@ -102,13 +102,14 @@ def mechanics_gate(sample, venue, end_ms):
 def outcome(res, venue, sel_ms):
     """Per-copy outcomes (registration §6): alpha, static-hedged, unhedged daily means; trips."""
     if res is None:
-        return {'alpha': 0.0, 'static': 0.0, 'unhedged': 0.0, 'r': None, 'active': False, 'res': None}
+        return {'alpha': 0.0, 'static': 0.0, 'unhedged': 0.0, 'r': None, 'active': False, 'res': None, 'r_trips': []}
     rets = res['daily']['returns']
     bench = replay.benchmark_daily_returns(venue, [t for t, _ in rets], sel_ms)
     a = stats.alpha([r for _, r in rets], [r for _, r in bench])
     return {'alpha': a if a is not None else res['daily']['mean'],
             'static': res['hedged']['daily']['mean'] if res.get('hedged') else res['daily']['mean'],
-            'unhedged': res['daily']['mean'], 'r': res['r'], 'active': res['orders'] > 0, 'res': res}
+            'unhedged': res['daily']['mean'], 'r': res['r'], 'active': res['orders'] > 0, 'res': res,
+            'r_trips': [{'r_atr': t['r_atr'], 'net_usd': t['net_usd'], 'risk_usd': t['risk_usd']} for t in res['trips']]}
 
 
 def ic_rows(wallets, lag, field='alpha', active_only=False):
@@ -117,48 +118,54 @@ def ic_rows(wallets, lag, field='alpha', active_only=False):
     return rows
 
 
-def copy_trial(cfg, pop, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, end_ms, floor, acc, label):
-    """One window of T2 or T2b: scores, copies at every (poll, lag), per-wallet outcomes."""
-    wallets = []
-    for a in pop[f'{cfg["key"]}_{floor}']:
-        trips = scores.round_trips(lb[a])
-        s = scores.cross_regime_score(trips, reg.is_rising, min_trips=floor)
-        bias = scores.long_bias(lb[a])
-        equity_s, _ = eq.at(a, sel_ms)
-        lev = eq.typical_leverage(a, lb_ms, sel_ms)
-        if s is None or bias is None or not equity_s or not lev:
-            continue
-        events, _ = replay.leader_events(hold[a], table, listed)
-        beta_l, beta_days = average_beta(lb[a], eq.equity_fn(a), venue, table, lb_ms, sel_ms)
-        wallets.append({'address': a, 'score': s, 'plain': scores.plain_score(trips), 'bias': bias,
-                        'events': events, 'lev': lev, 'equity': equity_s, 'fills': hold[a],
-                        'static_beta': (beta_l or 0.0) / lev, 'beta_days': beta_days, 'outcome': {}})
-    if label == 'T2':
-        mechanics_gate([(w['fills'], w['events'], w['equity']) for w in wallets[:25]], venue, end_ms)
-    runs = [(cfg['poll'], lag) for lag in cfg['lags']] + cfg['robust_polls']
-    for i, w in enumerate(wallets, 1):
-        book = lambda lag: targets.Copy([targets.LeaderBook(w['events'], eq.equity_fn(w['address']), w['lev'], lag)])
-        for poll, lag in runs:
-            p = replay.Params(poll, hedge_mode='static', static_beta=w['static_beta'], **PARAMS)
-            w['outcome'][(poll, lag)] = outcome(replay.follow(book(lag), p, venue, end_ms), venue, sel_ms)
-        # reported variants at the primary lag: holdings hedge, and the plain score's ranking
-        p_h = replay.Params(cfg['poll'], hedge_mode='holdings', **PARAMS)
-        w['holdings'] = outcome(replay.follow(book(cfg['primary']), p_h, venue, end_ms), venue, sel_ms)['static']
-        if i % 50 == 0:
-            print(f'    {label} copies {i}/{len(wallets)}')
+def score_wallet(cfg, a, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, floor):
+    """Score one wallet for T2 / T2b; None if it has no score, equity or typical leverage."""
+    trips = scores.round_trips(lb)
+    sc = scores.cross_regime_score(trips, reg.is_rising, min_trips=floor)
+    bias = scores.long_bias(lb)
+    equity_s, _ = eq.at(a, sel_ms)
+    lev = eq.typical_leverage(a, lb_ms, sel_ms)
+    if sc is None or bias is None or not equity_s or not lev:
+        return None
+    events, _ = replay.leader_events(hold, table, listed)
+    beta_l, beta_days = average_beta(lb, eq.equity_fn(a), venue, table, lb_ms, sel_ms)
+    return {'address': a, 'score': sc, 'plain': scores.plain_score(trips), 'bias': bias, 'events': events,
+            'lev': lev, 'equity': equity_s, 'fills': hold, 'static_beta': (beta_l or 0.0) / lev,
+            'beta_days': beta_days, 'outcome': {}}
+
+
+def run_copies(cfg, w, eq, venue, end_ms, sel_ms):
+    """All follower runs for one wallet (registration §6 / §6b / §7 / §9 / D15)."""
+    book = lambda lag: targets.Copy([targets.LeaderBook(w['events'], eq.equity_fn(w['address']), w['lev'], lag)])
+    for poll, lag in [(cfg['poll'], lag) for lag in cfg['lags']] + cfg['robust_polls']:
+        p = replay.Params(poll, hedge_mode='static', static_beta=w['static_beta'], **PARAMS)
+        w['outcome'][(poll, lag)] = outcome(replay.follow(book(lag), p, venue, end_ms), venue, sel_ms)
+    p_h = replay.Params(cfg['poll'], hedge_mode='holdings', **PARAMS)
+    w['holdings'] = outcome(replay.follow(book(cfg['primary']), p_h, venue, end_ms), venue, sel_ms)['static']
+    p_paper = replay.Params(cfg['poll'], hedge_mode='static', static_beta=w['static_beta'],
+                            **{**PARAMS, 'capital_usd': PAPER_USD})
+    r = replay.follow(book(cfg['primary']), p_paper, venue, end_ms)
+    w['paper'] = None if r is None else {'static': r['hedged']['daily']['mean'], 'orders': r['orders'],
+                                         'below_min_size': r['below_min_size'], 'below_lot_step': r['below_lot_step']}
+
+
+def slim(w, cfg):
+    """Drop a wallet's fills, simulator results and non-primary trip lists once its outcomes are recorded."""
+    w['fills'] = None
+    prim = (cfg['poll'], cfg['primary'])
+    for key, o in w['outcome'].items():
+        o['res'] = None
+        if key != prim:
+            o['r_trips'] = []
+    return w
+
+
+def finish_copy_window(cfg, wallets, acc, label):
+    """Accumulate one window of T2 / T2b from scored wallets with outcomes; returns (top, bottom) quintiles."""
     prim = (cfg['poll'], cfg['primary'])
     ranked = sorted(wallets, key=lambda w: w['score'])
     k = len(ranked) // 5
     top, bottom = (ranked[-k:], ranked[:k]) if k else ([], [])
-    # paper size (D15) for the top quintile at the primary lag: skipped orders counted
-    for w in top:
-        p = replay.Params(cfg['poll'], hedge_mode='static', static_beta=w['static_beta'],
-                          **{**PARAMS, 'capital_usd': PAPER_USD})
-        book = targets.Copy([targets.LeaderBook(w['events'], eq.equity_fn(w['address']), w['lev'], cfg['primary'])])
-        r = replay.follow(book, p, venue, end_ms)
-        w['paper'] = None if r is None else {'static': r['hedged']['daily']['mean'], 'orders': r['orders'],
-                                             'below_min_size': r['below_min_size'],
-                                             'below_lot_step': r['below_lot_step']}
     a = acc[label]
     a['ics'].append(stats.tercile_ic(ic_rows(wallets, prim)))
     a['ics_active'].append(stats.tercile_ic(ic_rows(wallets, prim, active_only=True)))
@@ -169,16 +176,17 @@ def copy_trial(cfg, pop, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms,
     a['windows'].append([(w['address'], w['score'], w['outcome'][prim]['alpha'], w['bias']) for w in wallets])
     a['decile_means'].append(stats.decile_means(ic_rows(wallets, prim)))
     a['zero_share'].append(stats.zero_share_by_quintile(ic_rows(wallets, prim)))
+    runs = [(cfg['poll'], lag) for lag in cfg['lags']] + cfg['robust_polls']
     for poll, lag in runs:
         a['top'].setdefault(f'{poll}:{lag}', []).extend(w['outcome'][(poll, lag)]['static'] for w in top)
         a['top_alpha'].setdefault(f'{poll}:{lag}', []).extend(w['outcome'][(poll, lag)]['alpha'] for w in top)
         a['top_unhedged'].setdefault(f'{poll}:{lag}', []).extend(w['outcome'][(poll, lag)]['unhedged'] for w in top)
     a['top_holdings'].extend(w['holdings'] for w in top)
     a['top_paper'].extend(w['paper'] for w in top if w.get('paper'))
-    a['top_r'].extend(t for w in top if w['outcome'][prim]['res'] for t in w['outcome'][prim]['res']['trips'])
+    a['top_r'].extend(t for w in top for t in w['outcome'][prim].get('r_trips', []))
     a['top_beta_days'].extend(w['beta_days'] for w in top)
     a['n'].append(len(wallets))
-    return wallets, top, bottom
+    return top, bottom
 
 
 def b_returns():
@@ -382,52 +390,82 @@ def main():
         print(f'\n== window {sel} (regime trip floor {floor})')
         sel_ms, lb_ms, end_ms = schedule.ms(sel), schedule.ms(lb_start), schedule.ms(hold_end)
         pop = json.loads((DATA / f'derived/{DEX}/population_{sel}.json').read_text())
-        t1_set = list(pop['t1_buckets'])
-        copy_set = sorted(set(pop[f'slow_both_regimes_{floor}']) | set(pop[f'day_both_regimes_{floor}']))
-        wallets = sorted(set(t1_set) | set(copy_set))
-        lb = load_fills(DEX, wallets, lb_start, sel)
-        hold = load_fills(DEX, wallets, sel, hold_end)
-        eq = Equity(DEX, copy_set, lb_ms, end_ms)
+        t1_set = set(pop['t1_buckets'])
+        slow_set = set(pop[f'slow_both_regimes_{floor}'])
+        day_set = set(pop[f'day_both_regimes_{floor}']) - slow_set
+        eq = Equity(DEX, sorted(slow_set | day_set), lb_ms, end_ms)
+        split = lambda fills: ([f for f in fills if f['time'] < sel_ms], [f for f in fills if f['time'] >= sel_ms])
 
-        # T1 — H0-leader on the eligible set, by hold-time bucket
-        rows, rows0, by_bucket, with_id = [], [], {}, []
-        for a in t1_set:
-            s = scores.plain_score(scores.round_trips(lb[a]))
-            bias = scores.long_bias(lb[a])
-            if s is None or bias is None:
-                continue
-            ht = scores.round_trips(hold[a])
-            h = scores.plain_score(ht) if len(ht) >= 5 else None
-            rows0.append((s, h if h is not None else 0.0, bias))
-            if h is not None:
-                rows.append((s, h, bias))
-                with_id.append((a, s, h, bias))
-                by_bucket.setdefault(pop['t1_buckets'][a], []).append((s, h, bias))
+        # Pass 1 — stream T1 and slow wallets: T1 rows per wallet, slow wallets buffered (small set).
+        # Amendment 2: one wallet's fills in memory at a time.
+        rows, rows0, by_bucket, with_id, slow = [], [], {}, [], []
+        n_seen = 0
+        for a, fills in iter_fills(DEX, sorted(t1_set | slow_set), lb_start, hold_end):
+            lb, hold = split(fills)
+            n_seen += 1
+            if a in t1_set:
+                sc = scores.plain_score(scores.round_trips(lb))
+                bias = scores.long_bias(lb)
+                if sc is not None and bias is not None:
+                    ht = scores.round_trips(hold)
+                    h = scores.plain_score(ht) if len(ht) >= 5 else None
+                    rows0.append((sc, h if h is not None else 0.0, bias))
+                    if h is not None:
+                        rows.append((sc, h, bias))
+                        with_id.append((a, sc, h, bias))
+                        by_bucket.setdefault(pop['t1_buckets'][a], []).append((sc, h, bias))
+            if a in slow_set:
+                w = score_wallet(T2, a, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, floor)
+                if w is not None:
+                    w['fills_lb'] = lb
+                    slow.append(w)
+            if n_seen % 500 == 0:
+                print(f'    pass 1: {n_seen} wallets streamed')
         acc['T1']['ics'].append(stats.tercile_ic(rows))
         acc['T1']['ics_zero'].append(stats.tercile_ic(rows0))
         acc['T1']['ics_top_half'].append(stats.top_half_ic(rows))
         acc['T1']['decile_means'].append(stats.decile_means(rows))
         acc['T1']['windows'].append(with_id)
-        for b, rs in by_bucket.items():
-            acc['T1']['by_bucket'].setdefault(b, []).append(stats.tercile_ic(rs))
+        for b_, rs in by_bucket.items():
+            acc['T1']['by_bucket'].setdefault(b_, []).append(stats.tercile_ic(rs))
         acc['T1']['n'].append(len(rows))
+        print(f'    T1 rows {len(rows)}; slow scored {len(slow)}')
 
-        # T2 — slow-trader copy; T2b — day-trader copy
-        slow, top, bottom = copy_trial(T2, pop, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, end_ms,
-                                       floor, acc, 'T2')
-        copy_trial(T2B, pop, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, end_ms, floor, acc, 'T2b')
+        # Mechanics gate on the slow sample, then T2 copies
+        mechanics_gate([(w['fills'], w['events'], w['equity']) for w in slow[:25]], venue, end_ms)
+        for i, w in enumerate(slow, 1):
+            run_copies(T2, w, eq, venue, end_ms, sel_ms)
+            if i % 100 == 0:
+                print(f'    T2 copies {i}/{len(slow)}')
+        top, bottom = finish_copy_window(T2, slow, acc, 'T2')
+
+        # Pass 2 — stream day traders: score and copy each wallet as it arrives, keep outcomes only
+        day = []
+        for i, (a, fills) in enumerate(iter_fills(DEX, sorted(day_set), lb_start, hold_end), 1):
+            lb, hold = split(fills)
+            w = score_wallet(T2B, a, lb, hold, eq, table, listed, venue, reg, sel_ms, lb_ms, floor)
+            if w is not None:
+                run_copies(T2B, w, eq, venue, end_ms, sel_ms)
+                w['events'] = None
+                day.append(slim(w, T2B))
+            if i % 200 == 0:
+                print(f'    T2b copies {i}/{len(day_set)}')
+        finish_copy_window(T2B, day, acc, 'T2b')
+        del day
 
         # T3 — skilled vs losers
         crowd_trial([w['address'] for w in top], [w['address'] for w in bottom], sel_ms, end_ms, listed, coin_to_sym,
                     funding, acc)
 
-        # T4 — uncrowded skill (lookback fills for the leaders' opens)
-        for w in slow:
-            w['fills_lb'] = lb[w['address']]
+        # T4 — uncrowded skill (lookback fills of the slow wallets)
         crowding_trial(slow, lb_start, sel, table, venue, acc, sel.isoformat())
+        for w in slow:
+            slim(w, T2)
+            w['fills_lb'] = None
 
         out['windows'].append({'selection': sel.isoformat(), 't1_n': len(rows), 't2_n': len(slow),
-                               'cohort': len(top), 't3_days': acc['T3']['n_days'][-1], 't4_n': acc['T4']['n'][-1]})
+                               't2b_n': acc['T2b']['n'][-1], 'cohort': len(top), 't3_days': acc['T3']['n_days'][-1],
+                               't4_n': acc['T4']['n'][-1]})
 
     out.update(assemble(acc))
     with open(RESULTS, 'a') as f:
