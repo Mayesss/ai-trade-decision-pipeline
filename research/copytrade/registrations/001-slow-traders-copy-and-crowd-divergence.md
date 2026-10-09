@@ -520,3 +520,35 @@ commit then freezes exactly this table.
 | D13 | B crowd | bottom quintile primary; retail < $1k reported |
 | D14 | T2b and T4 | included, counted in the family |
 | D15 | paper account size | $1,000 — the smallest size at which BTC's lot step does not dominate (about $200 a name at one unit of gross over five coins); reported with every skipped order counted |
+
+## 12. Result — 2026-10-09 (run of commit efefc7f, `results.jsonl` line 1)
+
+Five trials, z_crit 2.33, regime trip floor 4. Mechanics gates passed in all
+four windows (exact replay 212/212, 164/164, 129/129, 227/227; costless
+follower 0.03–0.07% of turnover). Everything below is the pre-registered
+reading of the numbers in `results.jsonl`; nothing was tuned after seeing them.
+
+| trial | verdict | what the numbers say |
+|---|---|---|
+| T1 skill persists | **PASS** | IC 0.40–0.44 in every window, Z 40.9 (wallet-clustered 31.6). Top-half Z 24; every hold-time bucket passes. Decile means of the hold score run monotonically from −2.5 (bottom) to +2.7 (top). |
+| T2 slow-trader copy | **NULL** by the §6 reading rule | IC passes (Z 4.4, 4/4 positive — two windows near zero: 0.02, 0.01) but **the top quintile does not earn**: static-hedged −0.041%/day at 1 h lag (se 0.040), median −0.013%/day. Alpha of the top quintile rises with delay (+0.05%/day at 24 h, static-hedged +0.022% ± 0.046) — not distinguishable from zero. Per-trip ATR-R: equal-weighted +0.10, median +0.08, **risk-weighted −0.05** — the trades the leaders sized up lose (the spec's mean/median lesson, again). Loser persistence, as expected in §1. |
+| T2b day-trader copy | **FAIL** (mechanism) | IC passes (Z 7.5); top quintile +0.018%/day at 10 min (se 0.21), **−0.034%/day at 1 h**; paired loss 0.053%/day (se 0.030). The edge decays within the hour: speed, not insight. Population alpha −0.08%/day, unhedged −0.15%/day. |
+| T3 skilled vs losers | **FAIL**, significantly negative | IC −0.015 (NW t −1.1); costed book **−0.148%/day, NW t −3.4**, 164 days, median 103 coins/day, 20 per side, both halves negative. Retail crowd variant −0.083%/day (t −1.9). The top quintile's tilt relative to the bottom's *anti-predicts* 3-day returns in this period. Not a claim in either direction; a sign flip would be a new hypothesis for a new registration. |
+| T4 uncrowded skill | **FAIL** | Low-shadower minus high-shadower −0.065%/day (z −1.2); repeat-share and watchability splits z +1.1 / +1.2. No detectable crowding penalty. Median shadower excess 45 openers per leader open — leaders trade *with* a crowd on common triggers rather than being copied by a persistent set (repeat share median 0.16). Post-trade path of the leaders' opens: +0.02 ATR at 10 min, +0.04 at 1–24 h, **+0.13 at 72 h**, gross — slow money's information, if any, is multi-day drift. |
+
+**Paper size (D15, reported):** at $1,000 the top-quintile follower placed
+38,885 orders and skipped 83,555 below Bitget's minimum notional and 58,789
+below the lot step — most intended orders unplaceable. $1,000 is too small
+to track a multi-coin slow leader; a paper account needs to be larger.
+
+**What this means for the plan.** No copy or positioning trial passed, so
+there is no frozen rule to take to the holdout: **P6 is not triggered and
+the holdout (2026-07-01 →) stays unread** for future registrations. T1 is
+the finished product of this registration: skill measured as the t-stat of
+per-trip returns persists strongly on Hyperliquid, and the ranking predicts
+a follower's alpha, but a costed, hedged follower of the best slow traders
+earns nothing at a one-hour delay, and a follower of the best day traders
+keeps its edge only inside ten minutes. The spec's standing rule held once
+more: rank correlation passed, the costed book did not.
+
+**Regime caveat (§2):** all four hold windows were bear or flat.

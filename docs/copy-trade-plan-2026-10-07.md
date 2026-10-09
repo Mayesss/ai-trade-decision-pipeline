@@ -546,7 +546,12 @@ Rules:
         doc slates those keys for deletion. The 749 weekly chunk keys cover
         62 symbols for only ~4 weeks (2026-05-25 → 06-21) with unreliable
         source labels — not used.*
-- [ ] **P5 — discovery run.** *First start 2026-10-09 07:21 stopped at
+- [x] **P5 — discovery run.** *Done 2026-10-09 13:50 (seventh start,
+      commit efefc7f, `results.jsonl` line 1; registration §12). T1 PASS
+      (skill persists, Z 41); T2 NULL (IC passes, top quintile earns
+      −0.04%/day); T2b FAIL (edge gone within the hour); T3 FAIL (book
+      −0.15%/day, t −3.4); T4 FAIL (no crowding effect). No frozen rule →
+      P6 not triggered, holdout untouched.* *First start 2026-10-09 07:21 stopped at
       07:52: network-bound on funding marks and ATR (amendment 1 in the
       registration, mechanics only, no outcome written). Second start 08:10
       stopped 08:52: swapping on in-memory fills (amendment 2, streaming).
@@ -561,7 +566,8 @@ Rules:
       minutes (run note 3). Seventh start after that fetch (`p5_run.py`,
       background, log `data/scratch/p5_run.log`).* T1, T2,
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
-- [ ] **P6 — holdout.** Registration, then download and read once.
+- [ ] **P6 — holdout.** Registration, then download and read once. *Not
+      triggered by 001 (no passing rule); the holdout stays unread.*
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).
 - [ ] **P8 — gated: live following.** Only if P6 passes and paper tracking
