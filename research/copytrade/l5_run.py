@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from ct import eventstudy as es, passive, tape
+from ct import eventstudy as es, liq, passive, tape, trigger
 from ct.leaders import con
 from ct.net import DATA
 
@@ -30,6 +30,9 @@ EXIT_SLIP = 0.0005                      # D4; 0 and 10 bp reported
 D_PRIMARY = 0.02                        # D2; 1% and 3% reported
 GROSS_MIN = None                        # D3, read from the registration (guard)
 DENSE_MIN = None                        # D4, read from the registration (guard)
+TRIG_FLOOR, TRIG_FRAC = 100_000.0, 0.5  # D10: trailing-60 s liquidations >= max($100k, 0.5 x median day)
+TRIG_WINDOW, TRIG_COOLDOWN = 60_000, 15 * MINUTE
+DELTA, LATENCY, TTL = 0.003, 2_000, 120_000   # D11-D13: 0.3% beyond the crossing print, 2 s, live 120 s
 MAJORS = {'BTC', 'ETH', 'SOL'}
 
 
@@ -129,7 +132,71 @@ def run_t1(events):
     return rows
 
 
-def run_t2(levels):
+def gross_asof():
+    """coin -> sorted [(snapshot_ms, gross)] from the OI proxy, for the GROSS_MIN filter at trigger time."""
+    rows = pq.read_table(DATA / f'derived/{DEX}/oi_by_coin_snapshot.parquet').to_pylist()
+    out = {}
+    for r in rows:
+        out.setdefault(r['coin'], []).append((r['snapshot_ms'], r['gross_notional']))
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def run_t2_triggered():
+    """Event-triggered passive orders (registration 003 revision 2, T2)."""
+    import bisect
+    c = con()
+    liq_path = DATA / f'derived/{DEX}/liquidations.parquet'
+    daily = {}
+    for coin, day, n in c.execute(f"SELECT coin, (t // {DAY}) * {DAY}, SUM(notional) FROM read_parquet('{liq_path}') GROUP BY 1, 2 ORDER BY 1, 2").fetchall():
+        daily.setdefault(coin, []).append((day, n))
+    all_days = sorted((d, n) for v in daily.values() for d, n in v)
+    fallback = liq.trailing_median_fn(all_days)
+    gross = gross_asof()
+    table = {c_: r for c_, r in json.loads((DATA / 'p0/2026-10-07/symbols.json').read_text()).items() if r['status'] == 'ok'}
+    orders = []
+    for coin in sorted(daily):
+        if coin not in table:
+            continue
+        fills = c.execute(f"SELECT t, direction, notional, price FROM read_parquet('{liq_path}') WHERE coin = ? ORDER BY t", [coin]).fetchall()
+        own = liq.trailing_median_fn(daily[coin])
+        thr = lambda t, own=own: (lambda m: max(TRIG_FLOOR, TRIG_FRAC * m) if m else None)(own(t) or fallback(t))
+        g = gross.get(coin, [])
+        for tr in trigger.triggers(fills, thr, TRIG_WINDOW, TRIG_COOLDOWN):
+            i = bisect.bisect_left([x for x, _ in g], tr['t']) - 1
+            if i < 0 or g[i][1] < GROSS_MIN:
+                continue
+            o = trigger.order_for(tr, DELTA, LATENCY)
+            orders.append({'coin': coin, 'side': o['side'], 'level': o['level'], 't_trig': tr['t'], 't_post': o['t_post'],
+                           't_ttl': o['t_post'] + TTL, 'window_notional': tr['window_notional'], 'major': coin in MAJORS,
+                           'key': f"{coin}:{tr['t']}", 'ret': {}, 'ret_slip': {}, 'filled': False, 'fill_t': None})
+    print(f'    T2 triggers posted: {len(orders):,}')
+    by_day = {}
+    for o in orders:
+        by_day.setdefault(o['t_post'] // DAY, []).append(o)
+    for n_day, (day, os_) in enumerate(sorted(by_day.items()), 1):
+        touched = tape.first_touch_windows(DEX, [(o['key'], o['coin'], o['side'], o['level'], o['t_post'], o['t_ttl']) for o in os_])
+        q = []
+        for o in os_:
+            tf = touched.get(o['key'])
+            if tf:
+                o['filled'], o['fill_t'], o['cluster'], o['entry'] = True, tf, tf // HOUR, tf
+                for h, ms in HORIZONS.items():
+                    q.append((f"{o['key']}:{h}", o['coin'], tf + ms))
+            else:
+                o['cluster'], o['entry'] = o['t_post'] // HOUR, o['t_post']
+        prices = tape.prices_at(DEX, q) if q else {}
+        for o in os_:
+            if o['filled']:
+                for h in HORIZONS:
+                    px = prices.get(f"{o['key']}:{h}")
+                    o['ret'][h] = passive.passive_return(o['side'], o['level'], px, EXIT_SLIP)
+                    o['ret_slip'][h] = {sl: passive.passive_return(o['side'], o['level'], px, sl) for sl in (0.0, 0.0005, 0.001)}
+        if n_day % 50 == 0:
+            print(f'    T2 days {n_day}/{len(by_day)}, filled {sum(1 for o in orders if o["filled"]):,}')
+    return orders
+
+
+def run_t3_map(levels):
     """Resting orders at fixed distances, one per (snapshot, coin, side, d), alive until the next
     snapshot (at most 24 h). Returns order rows with fill time, outcome per horizon."""
     snaps = sorted({r['snapshot_ms'] for r in levels})
@@ -183,20 +250,30 @@ def main():
     out['T1'] = summarise_trial(t1_rows)
     out['T1']['by_exit_slip'] = {str(s): es.cluster_t([r['ret_slip'][PRIMARY][s] for r in t1_rows if r['ret_slip'].get(PRIMARY)],
                                                        [r['cluster'] for r in t1_rows if r['ret_slip'].get(PRIMARY)])[0] for s in (0.0, 0.0005, 0.001)}
-    print('T2 — resting orders at map levels')
-    orders = run_t2(levels)
+    print('T2 — event-triggered passive orders')
+    trig_orders = run_t2_triggered()
+    t2_filled = [o for o in trig_orders if o['filled']]
+    out['T2'] = summarise_trial(t2_filled)
+    out['T2']['ev'] = ev_block(trig_orders)
+    out['T2']['ev_by_side'] = {s: ev_block([o for o in trig_orders if o['side'] == s]) for s in ('L', 'S')}
+    out['T2']['ev_majors'] = ev_block([o for o in trig_orders if o['major']])
+    out['T2']['ev_rest'] = ev_block([o for o in trig_orders if not o['major']])
+    out['T2']['by_exit_slip'] = {str(sl): es.cluster_t([o['ret_slip'][PRIMARY][sl] for o in t2_filled if o['ret_slip'].get(PRIMARY)],
+                                                        [o['cluster'] for o in t2_filled if o['ret_slip'].get(PRIMARY)])[0] for sl in (0.0, 0.0005, 0.001)}
+    print('T3 — always-on resting orders at map levels')
+    orders = run_t3_map(levels)
     all2 = [o for o in orders if o['d'] == D_PRIMARY]
-    prim = [o for o in all2 if o['density'] >= DENSE_MIN]          # the strategy: placed only where the map shows flow
+    prim = [o for o in all2 if o['density'] >= DENSE_MIN]          # placed only where the map shows flow
     sparse = [o for o in all2 if o['density'] < 0.0005]
     filled = [o for o in prim if o['filled']]
-    out['T2'] = summarise_trial(filled)
-    out['T2']['ev'] = ev_block(prim)
-    out['T2']['ev_sparse_control'] = ev_block(sparse)
-    out['T2']['ev_by_distance'] = {str(d): ev_block([o for o in orders if o['d'] == d and o['density'] >= DENSE_MIN]) for d in (0.01, 0.02, 0.03)}
-    out['T2']['ev_by_side'] = {s: ev_block([o for o in prim if o['side'] == s]) for s in ('L', 'S')}
-    out['T2']['ev_majors'] = ev_block([o for o in prim if o['major']])
-    out['T2']['conditional_sparse'] = summarise_trial([o for o in sparse if o['filled']], placebo_seeds=20)['primary']
-    # T3 — map value: density terciles within snapshot; conditional return and EV per tercile
+    out['T3'] = summarise_trial(filled)
+    out['T3']['ev'] = ev_block(prim)
+    out['T3']['ev_sparse_control'] = ev_block(sparse)
+    out['T3']['ev_by_distance'] = {str(d): ev_block([o for o in orders if o['d'] == d and o['density'] >= DENSE_MIN]) for d in (0.01, 0.02, 0.03)}
+    out['T3']['ev_by_side'] = {s: ev_block([o for o in prim if o['side'] == s]) for s in ('L', 'S')}
+    out['T3']['ev_majors'] = ev_block([o for o in prim if o['major']])
+    out['T3']['conditional_sparse'] = summarise_trial([o for o in sparse if o['filled']], placebo_seeds=20)['primary']
+    # map value (reported inside T3): density terciles within snapshot; conditional return and EV per tercile
     filled_all = [o for o in all2 if o['filled'] and o['ret'].get(PRIMARY) is not None]
     split = es.tercile_split(filled_all, key=lambda o: o['density'], value=lambda o: o['ret'][PRIMARY],
                              cluster=lambda o: o['cluster'], within=lambda o: o['snapshot_ms']) if filled_all else None
@@ -212,13 +289,10 @@ def main():
             lab[o['key']] = 0 if i < k else 1 if i < 2 * k else 2
     for q in range(3):
         terc[q] = ev_block([o for o in all2 if lab.get(o['key']) == q])
-    out['T3'] = {'split': split, 'ev_by_density_tercile': terc,
-                 'pass': bool(split and split['z'] is not None and split['z'] >= Z_CRIT
-                              and all(m is not None for m in split['means']) and split['means'][2] > split['means'][1] > split['means'][0]
-                              and out['T2']['pass'])}
+    out['T3']['map_value'] = {'split': split, 'ev_by_density_tercile': terc}
     with open(RESULTS, 'a') as f:
         f.write(json.dumps(out, default=str) + '\n')
-    print(json.dumps({k: {kk: vv for kk, vv in out[k].items() if kk in ('primary', 'criteria', 'pass', 'ev', 'split')}
+    print(json.dumps({k: {kk: vv for kk, vv in out[k].items() if kk in ('primary', 'criteria', 'pass', 'ev')}
                       for k in ('T1', 'T2', 'T3')}, indent=1, default=str)[:3000])
 
 

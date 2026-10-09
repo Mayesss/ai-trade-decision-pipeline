@@ -25,23 +25,43 @@ flow within reach, earn once *everything* that reaches it is counted —
 cascades and ordinary declines alike (T2, the strategy); and is the map
 what makes the difference (T3).
 
+**Revision 2 (2026-10-09, before registration; owner asked which
+parametrisation raises the odds).** The always-on map order (first draft's
+T2) leaves an order on the book all day and lets every ordinary decline fill
+it. The overshoot 002 measured lives in the seconds of the forced fill, so
+the order should be on the book *only while liquidations are printing*. The
+within-cascade distributions (`cascades.json`, prints only) support it: a
+qualifying cascade has a median 184 forced prints over 60 s (p25 19 s, p75
+121 s); only 1% of its notional has printed within 2 s and 9% within 10 s,
+so almost all of the forced flow arrives after an order can be live; price
+travels a median 1.0% beyond the first print, reaching 0.2% beyond it in 90%
+of cascades (median 10 s after the first print) and 0.5% in 72% (median
+21 s). A causal trigger — trailing-60 s liquidation notional ≥ max($100 k,
+0.5 × the coin's median day), 15-minute cooldown — fires 4,681 times over
+338 days (13.8 a day), catches 78% of the qualifying cascades, a median 16 s
+after their first print; about half of its firings are inside a qualifying
+cascade, the rest inside smaller forced runs. **T2 is now the triggered
+order; the always-on map order is T3.** No forward return was read.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |
 |---|---|---|
 | T1 | **Passive fill at the forced print**: a resting order filled at a cascade's median liquidation price, closed on the tape 15 min later as a taker, earns net of Hyperliquid fees | upper bound — if this fails, nothing below can work |
-| T2 | **Map-placed resting orders**: a bid (ask) 2% below (above) the price at each daily snapshot, placed only where the cumulative liquidation notional between the price and the level is ≥ DENSE_MIN of the coin's book, alive until the next snapshot, filled by whatever reaches it, closed 15 min after the fill — earns conditional on a fill, with clustered inference | primary, the strategy |
-| T3 | **The map matters**: among all orders at the same distance, the top density tercile earns more per fill than the bottom tercile | secondary |
+| T2 | **Event-triggered passive order**: when the trigger fires, an order is posted 2 s later at 0.3% beyond the crossing print against the forced flow (a bid below for longs being liquidated), lives 120 s, fills at the first tape print at or beyond it, is closed 15 min after the fill as a taker — earns conditional on a fill, with clustered inference | **primary, the strategy** |
+| T3 | **Always-on map order**: a bid (ask) 2% below (above) the price at each daily snapshot, placed only where the cumulative liquidation notional between the price and the level is ≥ DENSE_MIN of the coin's book, alive until the next snapshot, filled by whatever reaches it, closed 15 min after the fill | secondary — the comparison that shows what being there only during forced flow is worth; the density-tercile split is reported inside it |
 
 Three trials. Family-wise one-sided α = 0.05 / 3 = **0.0167 (z ≥ 2.13)**.
 Everything in §6 is reported and decides nothing.
 
 **Written expectations.** T1: likely to pass — it conditions on a cascade
 having happened and prices the fill at the median forced print; it measures
-the overshoot 002 saw cross-venue, not a deployable edge. T2: about 1 in 3.
-A resting order is filled by every seller who reaches it, and most declines
-through a level are not forced; adverse selection is the whole question.
-T3: 1 in 3; depends on T2 having fills on both sides of the density split.
+the overshoot 002 saw cross-venue, not a deployable edge. T2: about 1 in 2
+— the order is exposed only during forced flow, the fill is 0.3% beyond a
+print that already carries part of the overshoot, and the remaining
+question is whether the cascade's continuation (price travels a median 1%
+beyond the first print) is paid back within 15 minutes. T3: about 1 in 5 —
+adverse selection over a whole day.
 
 ## 2. Data and periods
 
@@ -96,9 +116,34 @@ positive in majors and in the rest separately. **Placebo:** direction
 shuffle, |t| ≥ 2.13 in ≤ 5% of 200 seeds. **Reported with it:** the mean
 without the largest hour cluster (the 2025-10-10 lesson), horizons, sides.
 
-## 5. T2 — map-placed resting orders; T3 — the map's value
+## 5. T2 — event-triggered passive orders
 
-**Orders (T2):** one per (snapshot, coin, side) at d = 2% for coins with
+**Trigger (causal):** per coin, when the liquidation notional of the
+trailing 60 s crosses **max($100,000, 0.5 × the coin's trailing 30-day
+median daily liquidation notional)** (cross-coin median as the fallback for
+coins under 5 days of history), with a **15-minute cooldown** per coin.
+Direction: the side carrying the majority of the window's notional. Only
+coins whose gross notional at the latest snapshot is ≥ GROSS_MIN.
+
+**Order:** posted **2 s** after the crossing print (socket latency; 10 s
+reported) at the crossing print's price moved **0.3%** against the forced
+flow (a bid below for longs being liquidated, an ask above for shorts);
+alive **120 s**; **filled** at the first tape print at or beyond the level
+within that life (a trade at or below a bid). Entry as maker (0.015%); exit
+at the tape's last trade **15 min after the fill**, taker (0.045%), 5 bp
+adverse. Unfilled orders return 0 and count in the EV, not in the test.
+
+**Pass (T2), all four on the conditional returns of filled orders,
+clustered by the fill's UTC hour:** (1) mean > 0 with t ≥ 2.13; (2) mean
+and median the same sign; (3) positive in both halves of the period; (4)
+positive in majors and in the rest separately. **Placebo:** direction
+shuffle. **Reported:** fill rate, EV per order and per day, by side, majors
+vs rest, exit slippage 0 / 5 / 10 bp, the largest hour cluster removed,
+horizons 5 / 15 / 60 / 240 min.
+
+## 5b. T3 — always-on map orders (the comparison)
+
+**Orders (T3):** one per (snapshot, coin, side) at d = 2% for coins with
 gross ≥ GROSS_MIN and density ≥ DENSE_MIN. Alive from the snapshot until
 the next snapshot (at most 24 h). **Filled** at the first tape print at or
 beyond the level inside the window (a bid fills when a trade prints at or
@@ -106,15 +151,12 @@ below it). Entry as maker at the level; exit at the tape's last trade 15
 min after the fill, taker, 5 bp adverse. Unfilled orders return 0 and
 count in the EV, not in the conditional test.
 
-**Pass (T2), the same four criteria as T1** on the **conditional** returns
-of filled orders, clustered by the fill's UTC hour. Reported: fill rate,
-**EV per order** (the deployable number), by side, by distance, majors.
-
-**T3:** all orders at d = 2% with gross ≥ GROSS_MIN, no density filter,
-split into density terciles **within snapshot**; the clustered difference
-top − bottom in conditional return ≥ 2.13 with terciles ordered, and T2
-passing. Reported: fill rate and EV per tercile — the map's value is in
-both: who gets filled, and what the fill is worth.
+**Pass (T3), the same four criteria** on the conditional returns of
+filled orders, clustered by the fill's UTC hour. Reported: fill rate, **EV
+per order**, by side, by distance, majors; the sparse control (density <
+0.05%) at the same distance; and the **map's value**: all orders at d = 2%
+split into density terciles within snapshot — conditional return, fill rate
+and EV per tercile.
 
 ## 6. Reported, decides nothing
 
@@ -143,6 +185,9 @@ tick the median fill gives up).
 - [x] `l4_levels.py` — map levels at fixed distances (`map_levels.parquet`)
       and the §3 distributions;
 - [x] `ct/passive.py` — fill price, net return, EV (`tests/test_passive.py`);
+- [x] `ct/trigger.py` — causal trigger and order placement
+      (`tests/test_trigger.py`); `ct/tape.first_touch_windows` checked on one
+      real day: a bid far below never fills, one at the day's low fills;
 - [x] `l5_run.py` — the run with the 001/002 guard
       (`tests/test_l5_assembly.py`: null fails, planted +0.2% passes all
       four, a planted crash hour does not pass and the without-largest-
@@ -161,6 +206,10 @@ tick the median fill gives up).
 | D7 | order life | snapshot to next snapshot, at most 24 h |
 | D8 | clustering | UTC hour of the cascade end (T1) / of the fill (T2, T3) |
 | D9 | family | 3 trials, α 0.0167, z 2.13 |
+| D10 | T2 trigger | trailing-60 s liquidations ≥ max($100 k, 0.5 × median day); 15-min cooldown |
+| D11 | T2 placement | 0.3% beyond the crossing print, against the forced flow |
+| D12 | T2 latency | 2 s (socket); 10 s reported |
+| D13 | T2 order life | 120 s, then cancelled |
 
 `GROSS_MIN = $5,000,000` and `DENSE_MIN = 0.005` are read by the runner from
 this file.
