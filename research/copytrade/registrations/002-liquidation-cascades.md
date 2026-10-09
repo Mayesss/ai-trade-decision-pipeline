@@ -224,3 +224,42 @@ Each with a synthetic test, none computing a forward return on real events:
 | D7 | density band | ±1% of start price, terciles within month |
 | D8 | paper notional | $10,000 nominal; paper size reported |
 | D9 | family | 2 trials, α 0.025, z 1.96 |
+
+## 11. Result — 2026-10-09 (run of commit 7611ace, `results.jsonl` line 2)
+
+Two trials, z_crit 1.96; 2,836 events with an entry price; 977 hour
+clusters. Placebo share 0.045 (calibrated). The pre-registered reading:
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 reversal at 60 min | **FAIL** (criterion 1) | mean +1.87% per event, se 1.81%, **t 1.04** (day-clustered 1.19); median +0.10%; halves +3.65% / +0.10%; majors +0.001% (t 0.02, n 463), rest +2.24% (t 1.05). Three of four criteria passed on sign alone; the one with inference did not. |
+| T2 map density | **FAIL** | terciles ordered the wrong way: dense 0.72%, middle 2.17%, sparse 2.79%; z −1.09. Snapshot age median 16 h. |
+
+**What the numbers are made of (diagnostics, no criterion changed).**
+The mean is one hour of history. Every one of the eight largest returns is
+dated **2025-10-10 21:23 UTC**, the crash in which Bitget alts printed
+wicks (RENDER entry $0.56, exit $2.08 an hour later: +264%; DYDX +229%,
+FLOKI +219%, TIA +199%). Hour clustering treated those 155 events as one
+observation, which is why the t is 1.04 against a mean of 1.9%. **Without
+that hour the 60-minute mean is −0.02% (t −0.10, n 2,681)**; the
+winsorised (±20%) mean is +0.39% with t 0.91; the hit rate is 53.4% with a
+clustered z of 1.65 against 50%. In majors there is nothing at any horizon
+(60 min mean 0.00%, median −0.08%, hit 47%; 24 h −0.8%, continuation in a
+bear). Shorts-liquidated cascades show mild continuation (−0.22%, t −1.3).
+Latency (2G, 5 min) and the robustness grid change nothing. The typical
+path net of costs: −0.17% at 1 min, −0.08% at 5, −0.05% at 15, +0.10% at
+60, +0.08% at 240, −0.09% at 24 h — a bump inside the cost band.
+
+**The one fact worth keeping.** The gap between Hyperliquid's last
+liquidation fill and Bitget's next-minute open has a median of **+58 bp**
+after long-liquidation cascades and **−50 bp** after short ones (majors
+±19 bp). The overshoot is real, but it lives on Hyperliquid in the seconds
+of the forced fill, and half a percent of it is gone before a Bitget order
+can exist. Capturing it means being the liquidity the liquidator hits —
+resting orders on Hyperliquid at the levels the map marks — which is a
+different product, a different venue, and an owner decision against the
+standing rule that execution stays on Bitget / Capital.
+
+**What follows.** No pass, so the holdout stays sealed. The crash hour is
+a reminder for every later test: cluster, and report the mean without the
+largest cluster.

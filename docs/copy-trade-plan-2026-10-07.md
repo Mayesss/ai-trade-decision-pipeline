@@ -574,6 +574,11 @@ Rules:
       after a cascade at 60 min on Bitget after costs; T2 the liquidation
       map's density as a conditioner. Discovery first; the holdout stays
       sealed for confirmation. Scripts `l1_*`, `l2_*`, `l3_run.py`.
+      *Result 2026-10-09 (registration §11): T1 FAIL, t 1.04 — the mean
+      is the 2025-10-10 21:23 crash hour; without it −0.02%/event; majors
+      zero. T2 FAIL (terciles inverted). Kept: HL's liquidation prints sit
+      ~50 bp beyond Bitget's next-minute open — the overshoot lives on the
+      venue of the forced fill. Holdout untouched.*
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).
 - [ ] **P8 — gated: live following.** Only if P6 passes and paper tracking
