@@ -1,9 +1,11 @@
 # 003 — Passive liquidity into forced flow: resting orders on Hyperliquid where the map says liquidations will land
 
-**Status: DRAFT — not registered.** It becomes the registration in the commit
-that changes this line to `REGISTERED <date>` after the owner has approved
-every item in §10. Until then no forward return is computed for any event
-or order.
+**Status: REGISTERED 2026-10-09** (owner: "approved", D1–D13 as proposed
+in §9). This commit is the registration: thresholds from distributions
+only, builders checked on synthetic data, the tape checked on one real day
+for fill mechanics, no forward return computed for any event or order
+before it. Any later change is an amendment, allowed only before an outcome
+exists.
 
 Plan: `docs/copy-trade-plan-2026-10-07.md`. Prior ledger entries: `001`
 (skill persists, no follower earns), `002` (no reversal on Bitget after a
@@ -193,9 +195,9 @@ tick the median fill gives up).
       four, a planted crash hour does not pass and the without-largest-
       cluster block is ~0). Guard refuses: not REGISTERED.
 
-## 9. Owner decisions before this becomes REGISTERED
+## 9. Owner decisions — approved 2026-10-09 as proposed
 
-| # | item | proposed |
+| # | item | approved |
 |---|---|---|
 | D1 | T1 fill price | notional-weighted median of the cascade's liquidation prints |
 | D2 | distance | 2% primary; 1% and 3% reported |
