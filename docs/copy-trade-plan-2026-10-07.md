@@ -550,7 +550,9 @@ Rules:
       07:52: network-bound on funding marks and ATR (amendment 1 in the
       registration, mechanics only, no outcome written). Second start 08:10
       stopped 08:52: swapping on in-memory fills (amendment 2, streaming).
-      Third start after it (`p5_run.py`, background, log
+      Third start 08:46 self-aborted at the mechanics gate (PnL-relative gap
+      7.7% on slow traders; amendment 3: gap relative to turnover, 1%).
+      Fourth start after it (`p5_run.py`, background, log
       `data/scratch/p5_run.log`).* T1, T2,
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.

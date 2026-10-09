@@ -96,6 +96,23 @@ wallet as it arrives, only the slow set is buffered for the mechanics gate,
 and per-trip records are kept for the primary run only. Scores, outcomes,
 criteria and reporting are unchanged; the synthetic assembly checks pass.
 
+**Amendment 3 (2026-10-09, mechanics gate measure, before any outcome
+existed).** The third start (08:46) streamed window 1 in four minutes and
+then stopped itself at the mechanics gate: exact replay 212/212, but the
+costless-follower median gap was 7.7% of the leader's PnL over 22 wallets
+against the 5% limit; the first start had 4.1% over a different 25-wallet
+sample. The measure was wrong for slow traders, not the mechanics: the only
+legitimate difference between a 1-minute frictionless follower and the
+leader's exact result is the Bitget price at the next minute's open versus
+the leader's own fill — a per-trade price difference — and dividing it by
+a slow trader's small PnL per unit traded inflates it. The gate now
+divides the gap by the follower's **turnover** (Σ |quantity| × price) with
+the threshold fixed at **1% of turnover** before any value was seen: an
+order of magnitude above a one-minute price move, an order below any unit,
+sign or ordering error. The PnL-relative figure stays printed as
+information. The gate sample is the first 25 scored slow wallets in
+address order. `results.jsonl` absent; no outcome written or read.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |

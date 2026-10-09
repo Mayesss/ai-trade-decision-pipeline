@@ -78,9 +78,23 @@ def funding_proxy(table):
 
 
 def mechanics_gate(sample, venue, end_ms):
-    """Abort unless replay and follower reproduce the leader on a sample."""
+    """Abort unless replay and follower reproduce the leader on a sample.
+
+    Two checks. (1) Exact replay: the leader's own closedPnl is reproduced on
+    >= 98% of coin histories that end flat. (2) Costless follower identity: a
+    1-minute, bandless, frictionless follower lands near the leader's exact
+    result. Amendment 3 (2026-10-09): the gap is measured relative to the
+    follower's TURNOVER (sum of |quantity| x price), not the leader's PnL.
+    The only legitimate difference between the two is the price at the next
+    minute's Bitget open versus the leader's own fill, i.e. a per-trade price
+    difference, which turnover normalises; dividing by PnL made the gate
+    depend on how little a slow trader earns per unit traded (4.1% and 7.7%
+    on two samples whose exact replay was 100%). Threshold 1% of turnover:
+    an order of magnitude above a one-minute price move, an order below any
+    unit, sign or ordering error. Both measures are printed.
+    """
     agree = total = 0
-    gaps = []
+    gaps, gaps_pnl = [], []
     for fills, events, equity in sample:
         a, t, _ = replay.closed_pnl_check(fills, events, 10_000 / equity, end_ms)
         agree, total = agree + a, total + t
@@ -89,12 +103,15 @@ def mechanics_gate(sample, venue, end_ms):
             book = targets.Copy([targets.LeaderBook(events, lambda _t, e=equity: e, 1.0)])
             res = replay.follow(book, replay.Params(1, 10_000.0, band=0.0, max_leverage=1e9, frictionless=True),
                                 venue, end_ms)
-            if res and abs(base) > 50:
-                gaps.append(abs(res['net_usd'] - base) / abs(base))
+            if res and res['turnover'] > 0:
+                gaps.append(abs(res['net_usd'] - base) / res['turnover'])
+                if abs(base) > 50:
+                    gaps_pnl.append(abs(res['net_usd'] - base) / abs(base))
     ok_pnl = total == 0 or agree / total >= 0.98
-    ok_copy = not gaps or statistics.median(gaps) <= 0.05
+    ok_copy = not gaps or statistics.median(gaps) <= 0.01
     print(f'    mechanics: closedPnl {agree}/{total}, costless follower median gap '
-          f'{statistics.median(gaps) if gaps else 0:.1%} over {len(gaps)} wallets')
+          f'{statistics.median(gaps) if gaps else 0:.3%} of turnover over {len(gaps)} wallets '
+          f'(PnL-relative, informational: {statistics.median(gaps_pnl) if gaps_pnl else 0:.1%} over {len(gaps_pnl)})')
     if not (ok_pnl and ok_copy):
         sys.exit('mechanics gate failed — no statistic computed')
 
