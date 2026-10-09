@@ -50,30 +50,40 @@ def needed_blocks():
             for a, fs in fills.items():
                 events, _ = replay.leader_events(fs, table, listed)
                 n_events += len(events)
-                held, pos = set(), {}
-                for ev in events:
-                    held.add(ev['symbol'])
-                    pos[ev['symbol']] = ev['pos_after']
-                    # the follower prices EVERY symbol it holds at each poll (equity, leverage cap,
-                    # band), not only the one that changed — found on the fourth start, 2026-10-09
-                    open_now = [s for s, q in pos.items() if abs(q) > 1e-12] + [ev['symbol']]
-                    for poll, lag in pairs:
-                        t = -(-(ev['t_last'] + lag) // poll) * poll + MINUTE
-                        if t < end_ms:
-                            b = t - t % bg.BLOCK
-                            blocks.add(('BTCUSDT', b))
-                            for s in open_now:
-                                blocks.add((s, b))
+                # Exactly what replay.follow prices: at each poll (change time + lag, rounded up to
+                # the poll grid, executed the next minute) every symbol the leader holds as of
+                # poll - lag, plus the symbols changed by events that landed in that poll. A
+                # per-event approximation missed neighbours sharing a poll (fifth start, 2026-10-09).
+                held = {ev['symbol'] for ev in events}
+                for poll, lag in pairs:
+                    polls = sorted({-(-(ev['t_last'] + lag) // poll) * poll for ev in events})
+                    pos, i = {}, 0
+                    for pt in polls:
+                        x = pt + MINUTE
+                        if x >= end_ms:
+                            break
+                        touched = set()
+                        while i < len(events) and events[i]['t_last'] <= pt - lag:
+                            pos[events[i]['symbol']] = events[i]['pos_after']
+                            touched.add(events[i]['symbol'])
+                            i += 1
+                        b = x - x % bg.BLOCK
+                        blocks.add(('BTCUSDT', b))
+                        for s in touched | {s for s, q in pos.items() if abs(q) > 1e-12}:
+                            blocks.add((s, b))
                 mark = end_ms - MINUTE
                 for s in held | {'BTCUSDT'}:
                     blocks.add((s, mark - mark % bg.BLOCK))
             print(f'  {sel} {key}: {len(fills):,} wallets, {n_events:,} position changes')
-    # the static hedge opens at the first poll and re-trues at day marks: BTC blocks at every day mark
-    for sel, _, hold_end in schedule.windows(DEX):
-        t = schedule.ms(sel)
-        while t < schedule.ms(hold_end):
-            blocks.add(('BTCUSDT', (t + MINUTE) - (t + MINUTE) % bg.BLOCK))
-            t += 86_400_000
+    # The hedge leg reads BTC at day marks (re-true), at the first poll (open), at the window end and
+    # at a liquidation hour (close) — the last is any hour. Every BTC block over the discovery hold
+    # windows is ~2,400 blocks, so all of them are prefetched (fifth start, 2026-10-09).
+    first = min(schedule.ms(sel) for sel, _, _ in schedule.windows(DEX))
+    last = max(schedule.ms(hold_end) for _, _, hold_end in schedule.windows(DEX))
+    b = first - first % bg.BLOCK
+    while b <= last:
+        blocks.add(('BTCUSDT', b))
+        b += bg.BLOCK
     return blocks
 
 

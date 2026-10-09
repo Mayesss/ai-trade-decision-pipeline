@@ -60,10 +60,11 @@ class _LRU(dict):
 
     Registration 001's run touches ~225k one-minute blocks (~60 KB each in
     Python objects); keeping them all would need ~13 GB. Wallets are replayed
-    one at a time and each touches its own blocks, so a cap of 24k blocks
-    (~1.5 GB) keeps the working set warm and re-reads the rest from disk.
+    one at a time and each touches its own blocks, so a cap of 8k blocks
+    (~0.5 GB) keeps the working set warm and re-reads the rest from disk
+    (24k on the first try; cut after the 2026-10-09 swap thrash).
     """
-    CAP = 24_000
+    CAP = 8_000
 
     def __getitem__(self, key):
         value = super().__getitem__(key)

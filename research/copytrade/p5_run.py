@@ -448,10 +448,17 @@ def main():
         acc['T1']['n'].append(len(rows))
         print(f'    T1 rows {len(rows)}; slow scored {len(slow)}')
 
-        # Mechanics gate on the slow sample, then T2 copies
+        # Mechanics gate on the slow sample, then T2 copies. Memory: hold fills are dropped after
+        # the gate, lookback fills kept only for the top half (T4), results slimmed per wallet.
         mechanics_gate([(w['fills'], w['events'], w['equity']) for w in slow[:25]], venue, end_ms)
+        top_half = {w['address'] for w in sorted(slow, key=lambda w: w['score'])[len(slow) // 2:]}
+        for w in slow:
+            w['fills'] = None
+            if w['address'] not in top_half:
+                w['fills_lb'] = None
         for i, w in enumerate(slow, 1):
             run_copies(T2, w, eq, venue, end_ms, sel_ms)
+            slim(w, T2)
             if i % 100 == 0:
                 print(f'    T2 copies {i}/{len(slow)}')
         top, bottom = finish_copy_window(T2, slow, acc, 'T2')
@@ -477,8 +484,8 @@ def main():
         # T4 — uncrowded skill (lookback fills of the slow wallets)
         crowding_trial(slow, lb_start, sel, table, venue, acc, sel.isoformat())
         for w in slow:
-            slim(w, T2)
             w['fills_lb'] = None
+            w['events'] = None
 
         out['windows'].append({'selection': sel.isoformat(), 't1_n': len(rows), 't2_n': len(slow),
                                't2b_n': acc['T2b']['n'][-1], 'cohort': len(top), 't3_days': acc['T3']['n_days'][-1],

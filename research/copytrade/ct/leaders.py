@@ -21,7 +21,10 @@ def con():
         tmp = DATA / 'duckdb_tmp'
         tmp.mkdir(parents=True, exist_ok=True)
         _con = duckdb.connect()
-        _con.execute(f"SET memory_limit = '9GB'; SET threads = 8; SET temp_directory = '{tmp}'")
+        # 2 GB, not 9: with the Python heap and the price-block cache a 9 GB pool pushed the
+        # 17 GB machine into swap thrash on 2026-10-09 (RSS fell to 264 MB of an 8.7 GB footprint).
+        # DuckDB spills to temp_directory instead.
+        _con.execute(f"SET memory_limit = '2GB'; SET threads = 4; SET temp_directory = '{tmp}'")
     return _con
 
 
@@ -77,11 +80,12 @@ def iter_fills(dex, addresses, start, end, batch=50_000):
         ORDER BY address, timestamp, filename, file_row_number
     """)
     current, fills = None, []
-    while True:
-        rows = cur.fetchmany(batch)
-        if not rows:
-            break
-        for a, coin, t, side, sz, px, sp, pnl, tid, d, crossed in rows:
+    # Arrow record batches stream from DuckDB without materialising the whole sorted result in
+    # memory (fetchmany materialises first).
+    reader = cur.fetch_record_batch(batch)
+    for rb in reader:
+        cols = [rb.column(i).to_pylist() for i in range(rb.num_columns)]
+        for a, coin, t, side, sz, px, sp, pnl, tid, d, crossed in zip(*cols):
             if a != current:
                 if current is not None:
                     yield current, fills

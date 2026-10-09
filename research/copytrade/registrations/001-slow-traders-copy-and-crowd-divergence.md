@@ -123,6 +123,21 @@ whose position changed. Stopped at 09:11 during window 1 (200/769 copies);
 (25,194 further blocks, fetched before the fifth start). The simulator is
 unchanged.
 
+**Run note 2 (2026-10-09, no change to any rule or code path).** The fifth
+start (10:23) passed the guard and the gate (same figures) and ran window 1
+at full speed through T2 and 1,800 of 1,904 day-trader copies, then the
+machine began paging: the process's resident memory fell to 264 MB of an
+8.7 GB footprint with 27 million page faults, CPU under 1%. Causes: a 9 GB
+DuckDB memory allowance beside the Python heap and a 1.5 GB price-block
+cache on a 17 GB machine, and a residual prefetch gap (symbols of
+neighbouring events sharing a poll). Stopped at 10:57, `results.jsonl`
+absent. Changes, all infrastructure: DuckDB limited to 2 GB with 4 threads
+and results streamed as Arrow record batches (checked equal to the bulk
+loader); block cache capped at 8k; each wallet's fills and simulator
+results freed as soon as its outcomes are recorded; the block list now
+simulates the follower's held set at every poll exactly. Scores, outcomes,
+criteria and reporting unchanged.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |
