@@ -557,8 +557,9 @@ Rules:
       (run note in the registration; no code-path change). Fifth start 10:23
       ran window 1 at full speed, then paged (run note 2: DuckDB 2 GB,
       streamed batches, per-wallet memory release, exact held-set prefetch).
-      Sixth start after that (`p5_run.py`, background, log
-      `data/scratch/p5_run.log`).* T1, T2,
+      Sixth start 11:07 stopped in pass 1 to prefetch T4's post-trade-path
+      minutes (run note 3). Seventh start after that fetch (`p5_run.py`,
+      background, log `data/scratch/p5_run.log`).* T1, T2,
       T2b, T3, T4 as registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive

@@ -87,6 +87,26 @@ def needed_blocks():
     return blocks
 
 
+def opens_blocks():
+    """Blocks for T4's post-trade path: the minute after each lookback open of every scored slow
+    wallet, and +10 min (registration §4b). Behaviour only — open times, no returns. The
+    population is the whole slow set, since the top half is known only after scoring."""
+    from ct import crowding
+    table = symtab()
+    blocks = set()
+    for sel, lb_start, _ in schedule.windows(DEX):
+        pop = json.loads((DATA / f'derived/{DEX}/population_{sel}.json').read_text())
+        n = 0
+        for a, fills in load_fills(DEX, pop['slow_both_regimes_4'], lb_start, sel).items():
+            for _, coin, _, t in crowding.leader_opens_from_fills(a, fills, table):
+                sym = table[coin]['symbol']
+                for x in (t - t % MINUTE + MINUTE, t - t % MINUTE + 11 * MINUTE):
+                    blocks.add((sym, x - x % bg.BLOCK))
+                n += 1
+        print(f'  {sel}: {n:,} lookback opens')
+    return blocks
+
+
 def cached(sym, start):
     key = f'{sym}:{start}'
     import hashlib
@@ -97,8 +117,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--count', action='store_true')
     ap.add_argument('--fetch', action='store_true')
+    ap.add_argument('--opens', action='store_true', help="T4 post-trade-path blocks instead of the copy blocks")
     args = ap.parse_args()
-    blocks = sorted(needed_blocks())
+    blocks = sorted(opens_blocks() if args.opens else needed_blocks())
     todo = [b for b in blocks if not cached(*b)]
     print(f'blocks needed {len(blocks):,}; already cached {len(blocks) - len(todo):,}; to fetch {len(todo):,} '
           f'(~{len(todo) / 15 / 3600:.1f} h at 15 req/s)')

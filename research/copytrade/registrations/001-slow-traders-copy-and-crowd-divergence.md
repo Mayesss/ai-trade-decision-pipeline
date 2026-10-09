@@ -138,6 +138,17 @@ results freed as soon as its outcomes are recorded; the block list now
 simulates the follower's held set at every poll exactly. Scores, outcomes,
 criteria and reporting unchanged.
 
+**Run note 3 (2026-10-09, no change to any rule or code path).** The
+blocks the fifth start fetched while it stalled were dated inside window
+1's *lookback*: it had finished the day-trader copies and was in T4, where
+the post-trade path (§4b) reads the minute after each leader open and +10
+min from Bitget — the one read this file said would happen at run time.
+At the throttled rate (4–7 requests/s) that is hours per window. The sixth
+start (11:07) was stopped in pass 1 so those blocks could be prefetched for
+every scored slow wallet's lookback opens (open times only; the top half is
+known only after scoring). Seventh start after that fetch. `results.jsonl`
+absent throughout.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |
