@@ -27,6 +27,11 @@ in its §2 still apply) and the audit that ended the AI decision engine,
   The archive's later months are the second, untouched holdout.
 - Pre-mortem done before any download (§13); the simulator and metrics were
   rebuilt around it.
+- **Goal restated (owner, 2026-10-08):** find leaders whose edge is *not
+  crowded* and replicate them, from home-made analysis of the archive.
+  Capital is no longer a constraint — a **paper account** comes first (P7),
+  so the "$100 real size" question is retired. Registration 001 draft
+  revision 4 carries the consequences; owner decisions D1–D15 open.
 
 **Open — owner decisions:**
 
@@ -468,7 +473,9 @@ Rules:
       - main Hyperliquid dex only (`dex` column), perps only;
       - date partitions are UTC;
       - archive vs API cross-check for a few wallets on discovery dates.
-- [ ] **P4 — pre-register.** Freeze cleaning rules, selection rule, arms,
+- [x] **P4 — pre-register.** *Done 2026-10-09: registration 001 revision 4
+      committed as REGISTERED (all D1–D15 approved 2026-10-08; T2b on all
+      scored day traders; block fetch complete, fees confirmed).* Freeze cleaning rules, selection rule, arms,
       poll interval, costs, sizing, hedge method, pass thresholds (C4), and
       the H0 → H1/H2 order. Commit. Nothing below runs before this commit
       exists. *In progress 2026-10-07: draft
@@ -513,6 +520,20 @@ Rules:
         flip split in round trips, a daily-only hedge leaving 30% of a BTC
         book unhedged. The runner `p5_run.py` refuses to start unless 001 is
         committed as REGISTERED. Price/funding prefetch running (free).*
+      - *Draft revision 4 (2026-10-08), after an independent review of
+        revision 3 — see the registration's revision history for the full
+        list. The two findings that forced it: **(1)** B's crowd was empty —
+        signed notional sums to zero per coin across all accounts (verified
+        on one snapshot, 190/190 markets), so "cohort minus everyone" was
+        the cohort's own tilt; the crowd is now the bottom score quintile.
+        **(2)** the holdings-beta hedge neutralised timing skill (a BTC
+        timer scored zero minus costs); ranking now uses regression alpha
+        and earning uses a static lookback hedge. Also added: loser-
+        persistence reading rules, a paired lag test, crowding features
+        (shadower excess, post-trade path, watchability) with a T4 trial, a
+        day-trader trial T2b at a 10-minute poll, a 1-minute lag/poll point,
+        and the bear-only regime caveat. Five trials, α = 0.01. Nothing
+        computed; prepare-phase items listed in the registration's §10.*
       - *Old candle stores checked (2026-10-07): the Neon scalp tables were
         dropped in 2026-08 (a recovery branch may hold them; bulk bars out
         of Neon are forbidden by spec invariant 2 regardless). Upstash KV
@@ -525,8 +546,9 @@ Rules:
         doc slates those keys for deletion. The 749 weekly chunk keys cover
         62 symbols for only ~4 weeks (2026-05-25 → 06-21) with unreliable
         source labels — not used.*
-- [ ] **P5 — discovery run.** H0 first; H1 and H2 only if H0 passes. All
-      arms. Append every run to `results.jsonl`.
+- [ ] **P5 — discovery run.** *Started 2026-10-09 (`p5_run.py`, background,
+      log `data/scratch/p5_run.log`; about a day).* T1, T2, T2b, T3, T4 as
+      registered. Append every run to `results.jsonl`.
 - [ ] **P6 — holdout.** Registration, then download and read once.
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).

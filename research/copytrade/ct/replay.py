@@ -166,7 +166,12 @@ class Params:
     maintenance_margin: float = 0.01  # of gross notional. PILOT GUESS of Bitget's small-size tiers
     frictionless: bool = False        # no fees, slippage, funding, liquidation, lot or minimum-size rules:
                                       # mechanics checks only
-    hedge: bool = True                # daily BTC hedge on a separate ledger (holdings beta, registration 001)
+    hedge: bool = True                # BTC hedge on a separate ledger (registration 001 §7)
+    hedge_mode: str = 'static'        # 'static': one position sized from the leader's lookback average beta
+                                      #           (static_beta, the FOLLOWER's beta), re-trued daily on the band;
+                                      # 'holdings': -(sum of holdings x beta), rebalanced after every trade —
+                                      #           removes timing skill too; reported variant (revision 4)
+    static_beta: float = 0.0          # follower net beta to hedge in 'static' mode
 
 
 def _round_qty(qty, step):
@@ -222,6 +227,21 @@ def follow(target, p, venue, end_ms):
     # traded with the same fees and slippage, kept apart from the copy book so
     # hedged and unhedged results are both reported.
     hedging = p.hedge and not p.frictionless
+    static = hedging and p.hedge_mode == 'static'
+    if hedging and p.hedge_mode not in ('static', 'holdings'):
+        raise ValueError(f'unknown hedge_mode {p.hedge_mode!r}')
+
+    def static_target(btc_px):
+        """Hedge quantity for the static mode: a constant dollar notional."""
+        return -p.static_beta * p.capital_usd / btc_px
+
+    def retrue_static(candle):
+        """Re-true the static hedge when price drift has moved it off by more than the band."""
+        if candle is None:
+            return
+        tgt = static_target(candle[1])
+        if abs(tgt - hg['pos']) > p.band * abs(tgt) or (abs(tgt) < 1e-12 and abs(hg['pos']) > 1e-12):
+            hedge_to(tgt, candle)
     hg = {'pos': 0.0, 'cash': 0.0, 'fees': 0.0, 'slippage': 0.0, 'trades': 0, 'beta_fallbacks': 0}
     daily_h = []
 
@@ -328,14 +348,17 @@ def follow(target, p, venue, end_ms):
                     btc = venue.candle_hour(HEDGE_SYMBOL, t - HOUR)
                     if btc:
                         daily_h.append((t, book + hg['cash'] + hg['pos'] * btc[4]))
-                        exposure = 0.0
-                        for s, q in held.items():
-                            b = venue.beta(s, t)
-                            if b is None:
-                                b = 1.0
-                                hg['beta_fallbacks'] += 1
-                            exposure += q * closes.get(s, last_px[s]) * b
-                        hedge_to(-exposure / btc[4], venue.candle_minute(HEDGE_SYMBOL, t + MINUTE))
+                        if static:
+                            retrue_static(venue.candle_minute(HEDGE_SYMBOL, t + MINUTE))
+                        else:
+                            exposure = 0.0
+                            for s, q in held.items():
+                                b = venue.beta(s, t)
+                                if b is None:
+                                    b = 1.0
+                                    hg['beta_fallbacks'] += 1
+                                exposure += q * closes.get(s, last_px[s]) * b
+                            hedge_to(-exposure / btc[4], venue.candle_minute(HEDGE_SYMBOL, t + MINUTE))
             continue
 
         # poll
@@ -402,7 +425,11 @@ def follow(target, p, venue, end_ms):
         # Re-hedge right after a poll that traded, not only at the daily mark:
         # a daily-only hedge lags every entry and exit by up to a day (measured
         # on a pure-BTC synthetic book: 70% of the BTC move removed vs ~all).
-        if hedging and n['orders'] > orders_before:
+        if static and hg['trades'] == 0 and abs(p.static_beta) > 1e-12:
+            btc = venue.candle_minute(HEDGE_SYMBOL, x)   # open the static hedge at the first poll
+            if btc:
+                hedge_to(static_target(btc[1]), btc)
+        if hedging and not static and n['orders'] > orders_before:
             btc = venue.candle_minute(HEDGE_SYMBOL, x)
             if btc:
                 exposure = 0.0
@@ -438,16 +465,26 @@ def follow(target, p, venue, end_ms):
     for _, eq in daily:
         peak = max(peak, p.capital_usd + eq)
         max_dd = max(max_dd, (peak - (p.capital_usd + eq)) / peak)
+    def daily_returns(series, final):
+        """[(t, return on capital)] at each UTC day mark and the window end."""
+        marks = [(t, eq) for t, eq in series if t % DAY == 0] + [(end_ms, final)]
+        prev, out = 0.0, []
+        for t, eq in marks:
+            out.append((t, (eq - prev) / p.capital_usd))
+            prev = eq
+        return out
+
     def daily_stats(series, final):
-        marks = [eq for t, eq in series if t % DAY == 0] + [final]
-        rets = [(b - a) / p.capital_usd for a, b in zip([0.0] + marks, marks)]
+        rets = [r for _, r in daily_returns(series, final)]
         return {'n': len(rets), 'mean': statistics.fmean(rets),
-                'sd': statistics.stdev(rets) if len(rets) > 1 else None}
+                'sd': statistics.stdev(rets) if len(rets) > 1 else None,
+                'returns': daily_returns(series, final)}
 
     hedged = None
     if hedging:
         net_h = net + hg['cash']
-        hedged = {'net_usd': net_h, 'net_return': net_h / p.capital_usd,
+        hedged = {'mode': p.hedge_mode, 'static_beta': p.static_beta if static else None,
+                  'net_usd': net_h, 'net_return': net_h / p.capital_usd,
                   'daily': daily_stats(daily_h, net_h),
                   **{f'hedge_{k}': v for k, v in hg.items() if k not in ('cash', 'pos')}}
     return {
@@ -494,3 +531,24 @@ def r_summary(trips):
             'trimmed_mean_10': statistics.fmean(trimmed),
             'risk_weighted': sum(t['net_usd'] for t in with_r) / sum(t['risk_usd'] for t in with_r),
             'no_atr': len(trips) - len(with_r)}
+
+
+def benchmark_daily_returns(venue, times, start_ms, symbol=HEDGE_SYMBOL):
+    """[(t, return)] of `symbol` between consecutive marks in `times` (1H closes before each mark).
+
+    Pairs with a follower's daily returns for the regression-alpha outcome
+    (registration 001 §6). The first return runs from the close before
+    start_ms (the window start, where the follower's capital starts), so both
+    series have one entry per mark covering the same span.
+    """
+    out = []
+    c0 = venue.candle_hour(symbol, start_ms - start_ms % HOUR - HOUR)
+    prev = c0[4] if c0 else None
+    for t in times:
+        c = venue.candle_hour(symbol, t - t % HOUR - HOUR)
+        px = c[4] if c else None
+        if prev is None:
+            prev = px
+        out.append((t, (px / prev - 1) if px and prev else 0.0))
+        prev = px or prev
+    return out

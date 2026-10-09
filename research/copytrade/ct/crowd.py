@@ -1,42 +1,62 @@
-"""Idea B — skilled vs crowd positioning (registration 001 §8).
+"""Idea B — skilled vs losers positioning (registration 001 §8, revision 4).
 
 signal(c) = tilt_cohort(c) - tilt_crowd(c), where tilt_X(c) is group X's net
 signed notional in coin c divided by group X's gross notional across all
 coins — "how much of its book this group puts on c, and which way".
 
-The cohort (top-quintile slow wallets by cross-regime score) only exists after
-registration; before it, `tilts` runs with arbitrary address sets to check
-the mechanics, and `long_short` runs on synthetic data.
+The crowd is a NAMED address set (the bottom score quintile; or retail,
+reported). Revision 3 used "everyone else" as the crowd, and that carried no
+information: in a perp market the signed notional of all accounts sums to
+zero per coin (verified on the 2026-03-02 snapshot, 190/190 markets), so
+"everyone else" is the cohort's negative scaled by a per-day constant and the
+signal's ranking equals the cohort's own tilt. `tilts(..., crowd=None)` keeps
+that form so the identity can be demonstrated (tests), never for a result.
+
+The cohort and crowd only exist after registration; before it, `tilts` runs
+with arbitrary or synthetic address sets to check the mechanics, and
+`long_short` runs on synthetic data.
 """
 import statistics
 
 import duckdb
 
-from .net import DATA
 
+def tilts(snapshot_path, cohort, crowd=None, min_cohort_holders=3):
+    """{coin: signal} for one snapshot file, coins with >= min_cohort_holders cohort holders.
 
-def tilts(snapshot_path, cohort, min_cohort_holders=3):
-    """{coin: signal} for one snapshot file, coins with >= min_cohort_holders cohort holders."""
+    crowd: address set. None means "every account not in the cohort" — the
+    degenerate revision-3 form, kept only for the identity test. A crowd with
+    no position in a coin contributes a tilt of 0 there.
+    """
     con = duckdb.connect()
     con.execute('CREATE TEMP TABLE cohort(address VARCHAR)')
     con.executemany('INSERT INTO cohort VALUES (?)', [(a,) for a in cohort])
+    if crowd is None:
+        crowd_expr = '"user" NOT IN (SELECT address FROM cohort)'
+    else:
+        con.execute('CREATE TEMP TABLE crowd(address VARCHAR)')
+        con.executemany('INSERT INTO crowd VALUES (?)', [(a,) for a in crowd])
+        crowd_expr = '"user" IN (SELECT address FROM crowd)'
     rows = con.execute(f"""
         WITH s AS (
             SELECT market, "user" IN (SELECT address FROM cohort) AS skilled,
+                   {crowd_expr} AS crowd,
                    sign(size) * abs(notional) AS signed, abs(notional) AS gross
             FROM read_parquet('{snapshot_path}')
             WHERE size != 0
-        ), totals AS (
-            SELECT skilled, SUM(gross) AS book FROM s GROUP BY skilled
+        ), books AS (
+            SELECT SUM(gross) FILTER (WHERE skilled) AS cohort_book,
+                   SUM(gross) FILTER (WHERE crowd) AS crowd_book
+            FROM s
         )
         SELECT s.market,
-               SUM(s.signed) FILTER (WHERE s.skilled) / MAX(tc.book) AS tilt_cohort,
-               COALESCE(SUM(s.signed) FILTER (WHERE NOT s.skilled), 0) / MAX(tw.book) AS tilt_crowd,
+               SUM(s.signed) FILTER (WHERE s.skilled) / b.cohort_book AS tilt_cohort,
+               COALESCE(SUM(s.signed) FILTER (WHERE s.crowd), 0) / NULLIF(b.crowd_book, 0) AS tilt_crowd,
                COUNT(*) FILTER (WHERE s.skilled) AS cohort_holders
-        FROM s, (SELECT book FROM totals WHERE skilled) tc, (SELECT book FROM totals WHERE NOT skilled) tw
-        GROUP BY s.market
+        FROM s, books b
+        GROUP BY s.market, b.cohort_book, b.crowd_book
     """).fetchall()
-    return {m: tc - tw for m, tc, tw, n in rows if n >= min_cohort_holders and tc is not None}
+    return {m: tc - (tw or 0.0) for m, tc, tw, n in rows if n >= min_cohort_holders and tc is not None}
 
 
 def quintiles(signal):
@@ -83,6 +103,16 @@ def long_short(days, ret, vol, cost_rate, horizon=3):
         tranches = [t for t in tranches if t['age'] < horizon]
         out.append((key, (gross_ret - cost_today) / horizon))
     return out
+
+
+def breadth(days):
+    """Per-day coin count and names per side — reported (registration §8)."""
+    per_day = [(len(sig), len(quintiles(sig)[0])) for _, sig in days]
+    if not per_day:
+        return {'days': 0}
+    return {'days': len(per_day), 'coins_median': statistics.median(c for c, _ in per_day),
+            'coins_min': min(c for c, _ in per_day), 'per_side_median': statistics.median(k for _, k in per_day),
+            'days_under_5_coins': sum(c < 5 for c, _ in per_day)}
 
 
 def summary(series):

@@ -13,7 +13,7 @@ from ct import crowd, replay, scores, stats, targets
 from ct.net import DATA
 from ct.venue import BitgetVenue
 
-HOUR, DAY = 3_600_000, 86_400_000
+MINUTE, HOUR, DAY = 60_000, 3_600_000, 86_400_000
 
 
 def fill(t, side, sz, px, sp, coin='BTC', crossed=True):
@@ -104,17 +104,68 @@ def test_hedge_and_lag():
     venue = BitgetVenue('2026-10-07', funding_override={})
     equity = lambda t: 100_000.0         # the leader holds 1 BTC on $100k: ~0.9x leverage
     book = lambda lag=0: targets.Copy([targets.LeaderBook(synthetic_leader(start + HOUR, 7 * 24), equity, 1.0, lag)])
-    p = replay.Params(60, 10_000.0)
+    p = replay.Params(60, 10_000.0, hedge_mode='holdings')
     r = replay.follow(book(), p, venue, end)
     unhedged, hedged = r['net_usd'], r['hedged']['net_usd']
-    check('hedge traded', r['hedged']['hedge_trades'] >= 2, f"{r['hedged']['hedge_trades']} hedge trades")
-    check('a pure-BTC book is mostly hedged away',
+    check('holdings hedge traded', r['hedged']['hedge_trades'] >= 2, f"{r['hedged']['hedge_trades']} hedge trades")
+    check('holdings hedge: a pure-BTC book is mostly hedged away',
           abs(hedged) < 0.15 * abs(unhedged) + 30, f'unhedged ${unhedged:,.2f} -> hedged ${hedged:,.2f}')
+    check('daily returns exposed, one per mark', len(r['daily']['returns']) == r['daily']['n'])
     lagged = replay.follow(book(lag=24 * HOUR), p, venue, end)
     first_open = lambda res: min(t['open_t'] for t in res['trips'])
     check('24 h lag opens the copy 24 h later',
           first_open(lagged) - first_open(r) == 24 * HOUR,
           f'{(first_open(lagged) - first_open(r)) / HOUR:.0f} h later')
+
+
+def test_static_hedge_and_alpha():
+    print('static hedge (revision 4): keeps timing, removes average exposure; alpha; average beta')
+    start = 1_767_225_600_000           # 2026-01-01 00:00 UTC
+    end = start + 10 * DAY
+    venue = BitgetVenue('2026-10-07', funding_override={})
+    equity = lambda t: 100_000.0
+    px0 = venue.candle_minute('BTCUSDT', start + 2 * HOUR)[1]
+    w = px0 / 100_000.0                  # the follower's exposure while the leader holds 1 BTC
+    btc_end = venue.candle_minute('BTCUSDT', end - MINUTE)[1]
+    r_win = btc_end / px0 - 1
+    # (a) constant-beta book: long the whole window; static beta = w -> flat
+    const = targets.Copy([targets.LeaderBook(synthetic_leader(start + HOUR, 9 * 24 + 20), equity, 1.0)])
+    r = replay.follow(const, replay.Params(60, 10_000.0, hedge_mode='static', static_beta=w), venue, end)
+    u, h = r['net_usd'], r['hedged']['net_usd']
+    check('static hedge: a constant-beta book is neutralised',
+          abs(h) < 0.15 * abs(u) + 40, f'unhedged ${u:,.2f} -> static-hedged ${h:,.2f} (BTC {r_win:+.1%})')
+    check('static hedge trades once plus re-trues only', 1 <= r['hedged']['hedge_trades'] <= 4,
+          f"{r['hedged']['hedge_trades']} trades")
+    # (b) a timer: long the first 5 days only; average beta over the window = w / 2
+    timer = lambda: targets.Copy([targets.LeaderBook(synthetic_leader(start + HOUR, 5 * 24), equity, 1.0)])
+    rs = replay.follow(timer(), replay.Params(60, 10_000.0, hedge_mode='static', static_beta=w / 2), venue, end)
+    rh = replay.follow(timer(), replay.Params(60, 10_000.0, hedge_mode='holdings'), venue, end)
+    expected = rs['net_usd'] - 0.5 * w * 10_000.0 * r_win
+    check('static hedge on a timer = unhedged minus average beta x window move (timing kept)',
+          abs(rs['hedged']['net_usd'] - expected) < 0.15 * abs(rs['net_usd']) + 40,
+          f"unhedged ${rs['net_usd']:,.2f}, static ${rs['hedged']['net_usd']:,.2f}, expected ${expected:,.2f}")
+    check('holdings hedge on the same timer removes it',
+          abs(rh['hedged']['net_usd']) < 0.15 * abs(rh['net_usd']) + 30,
+          f"holdings-hedged ${rh['hedged']['net_usd']:,.2f}")
+    # alpha (synthetic series)
+    rng = random.Random(5)
+    x = [rng.gauss(0, 0.03) for _ in range(400)]
+    y = [0.001 + 0.8 * a + rng.gauss(0, 0.004) for a in x]
+    a = stats.alpha(y, x)
+    check('alpha recovers the planted intercept', abs(a - 0.001) < 0.0006, f'alpha = {a:.5f}')
+    check('alpha pairs with benchmark returns',
+          len(replay.benchmark_daily_returns(venue, [t for t, _ in rs['daily']['returns']], start))
+          == len(rs['daily']['returns']))
+    # average beta from a synthetic fill path: long 1 BTC on marks 1..5 of 10
+    from ct.leaders import average_beta
+    symtab = {'BTC': {'symbol': 'BTCUSDT', 'qty_mult': 1.0, 'status': 'ok'}}
+    fills = [fill(start + HOUR, 'B', 1.0, px0, 0.0), fill(start + 5 * DAY + HOUR, 'A', 1.0, px0, 1.0)]
+    b, days = average_beta(fills, equity, venue, symtab, start, end)
+    check('average beta = (days held / days) x price / equity', days == 10 and abs(b - 0.5 * w) < 0.05 * w,
+          f'beta {b:.3f} vs {0.5 * w:.3f} over {days} days')
+    b0, _ = average_beta([fill(start + HOUR, 'A', 1.0, px0, 1.0)], equity, venue, symtab, start, end)
+    check('position open at window start is read from startPosition', abs(b0 - 0.1 * w) < 0.05 * w,
+          f'beta {b0:.3f} vs {0.1 * w:.3f}')
 
 
 def test_crowd():
@@ -151,5 +202,6 @@ if __name__ == '__main__':
     test_round_trips()
     test_statistics()
     test_hedge_and_lag()
+    test_static_hedge_and_alpha()
     test_crowd()
     print('all prepare-phase checks passed')

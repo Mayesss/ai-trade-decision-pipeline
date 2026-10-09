@@ -20,8 +20,16 @@ from ct.net import CACHE, DATA
 
 DEX = 'hyperliquid'
 MINUTE, HOUR = 60_000, 3_600_000
-LAGS = [10 * MINUTE, HOUR, 6 * HOUR, 24 * HOUR, 72 * HOUR]   # 1 h primary, 24 h mechanism, rest decay curve
-POLLS = [60 * MINUTE, 10 * MINUTE]                            # 60 primary, 10 robustness
+# Registration 001 revision 4: per population, the (poll, lag) pairs the run uses.
+#   slow (T2): poll 60 at every lag of the decay curve (1 min .. 72 h); robustness polls 10 and 1
+#              at their natural lag.
+#   day (T2b): poll 10 at lags 1 min .. 24 h; robustness poll 1 at 1 min.
+LAGS_SLOW = [MINUTE, 10 * MINUTE, HOUR, 6 * HOUR, 24 * HOUR, 72 * HOUR]
+LAGS_DAY = [MINUTE, 10 * MINUTE, HOUR, 6 * HOUR, 24 * HOUR]
+SPECS = {
+    'slow_both_regimes_4': [(60 * MINUTE, lag) for lag in LAGS_SLOW] + [(10 * MINUTE, 10 * MINUTE), (MINUTE, MINUTE)],
+    'day_both_regimes_4': [(10 * MINUTE, lag) for lag in LAGS_DAY] + [(MINUTE, MINUTE)],
+}
 
 
 def symtab():
@@ -35,25 +43,31 @@ def needed_blocks():
     blocks = set()
     for sel, _, hold_end in schedule.windows(DEX):
         pop = json.loads((DATA / f'derived/{DEX}/population_{sel}.json').read_text())
-        fills = load_fills(DEX, pop['slow_both_regimes'], sel, hold_end)
         end_ms = schedule.ms(hold_end)
-        n_events = 0
-        for a, fs in fills.items():
-            events, _ = replay.leader_events(fs, table, listed)
-            n_events += len(events)
-            held = set()
-            for ev in events:
-                held.add(ev['symbol'])
-                for lag in LAGS:
-                    for poll in POLLS:
+        for key, pairs in SPECS.items():
+            fills = load_fills(DEX, pop[key], sel, hold_end)
+            n_events = 0
+            for a, fs in fills.items():
+                events, _ = replay.leader_events(fs, table, listed)
+                n_events += len(events)
+                held = set()
+                for ev in events:
+                    held.add(ev['symbol'])
+                    for poll, lag in pairs:
                         t = -(-(ev['t_last'] + lag) // poll) * poll + MINUTE
                         if t < end_ms:
                             blocks.add((ev['symbol'], t - t % bg.BLOCK))
                             blocks.add(('BTCUSDT', t - t % bg.BLOCK))
-            mark = end_ms - MINUTE
-            for s in held:
-                blocks.add((s, mark - mark % bg.BLOCK))
-        print(f'  {sel}: {len(fills):,} wallets, {n_events:,} position changes')
+                mark = end_ms - MINUTE
+                for s in held:
+                    blocks.add((s, mark - mark % bg.BLOCK))
+            print(f'  {sel} {key}: {len(fills):,} wallets, {n_events:,} position changes')
+    # the static hedge opens at the first poll and re-trues at day marks: BTC blocks at every day mark
+    for sel, _, hold_end in schedule.windows(DEX):
+        t = schedule.ms(sel)
+        while t < schedule.ms(hold_end):
+            blocks.add(('BTCUSDT', (t + MINUTE) - (t + MINUTE) % bg.BLOCK))
+            t += 86_400_000
     return blocks
 
 

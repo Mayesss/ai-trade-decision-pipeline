@@ -55,7 +55,31 @@ def _block(symbol, block_start):
     return {r[0]: r for r in rows}
 
 
-_blocks = {}
+class _LRU(dict):
+    """In-memory block cache with a size cap.
+
+    Registration 001's run touches ~225k one-minute blocks (~60 KB each in
+    Python objects); keeping them all would need ~13 GB. Wallets are replayed
+    one at a time and each touches its own blocks, so a cap of 24k blocks
+    (~1.5 GB) keeps the working set warm and re-reads the rest from disk.
+    """
+    CAP = 24_000
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        super().__delitem__(key)           # move to the end (most recent)
+        super().__setitem__(key, value)
+        return value
+
+    def __setitem__(self, key, value):
+        if key in self:
+            super().__delitem__(key)
+        super().__setitem__(key, value)
+        while len(self) > self.CAP:
+            super().__delitem__(next(iter(self)))
+
+
+_blocks = _LRU()
 
 
 def candle_at(symbol, minute_ms):

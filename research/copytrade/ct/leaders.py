@@ -96,3 +96,53 @@ class Equity:
         ts, _, levs = self.series.get(address, ([], [], []))
         vals = sorted(l for t, l in zip(ts, levs) if start_ms <= t < end_ms and l is not None and l > 0)
         return vals[len(vals) // 2] if vals else None
+
+
+def average_beta(fills, equity_at, venue, symtab, start_ms, end_ms):
+    """The leader's lookback average net beta to BTC — registration 001 §7 (static hedge).
+
+    Time-average over UTC day marks in [start, end) of
+        sum_c position_c x price_c x beta_c / equity,
+    positions from the fill path (a coin's position before its first fill in
+    the window is that fill's startPosition, so holdings at the window start
+    are known for every coin that trades in it; coins with no fill in the
+    window are unknown and ignored — stated limitation), prices the Bitget
+    1H close before the mark, beta the venue's point-in-time 30-day hourly
+    beta (BTC = 1; no beta -> 1), equity as-of the mark. Flat days count 0.
+    Days without a known equity are skipped. Returns (mean, days used) —
+    (None, 0) if no day had an equity.
+
+    Behaviour and exposure only: no cash flow, no PnL.
+    """
+    import math
+    fills = sorted((f for f in fills if f['coin'] in symtab and symtab[f['coin']]['status'] == 'ok'),
+                   key=lambda f: f['time'])
+    pos = {}
+    for f in fills:                      # holdings at the window start
+        pos.setdefault(f['coin'], float(f['startPosition']))
+    i, vals = 0, []
+    first_mark = start_ms - start_ms % 86_400_000
+    if first_mark < start_ms:
+        first_mark += 86_400_000
+    for mark in range(first_mark, end_ms, 86_400_000):
+        while i < len(fills) and fills[i]['time'] < mark:
+            f = fills[i]
+            pos[f['coin']] = float(f['startPosition']) + (float(f['sz']) if f['side'] == 'B' else -float(f['sz']))
+            i += 1
+        equity = equity_at(mark)
+        if not equity:
+            continue
+        exposure = 0.0
+        for coin, q in pos.items():
+            if abs(q) < 1e-12:
+                continue
+            m = symtab[coin]
+            c = venue.candle_hour(m['symbol'], mark - 3_600_000)
+            if not c:
+                continue
+            b = venue.beta(m['symbol'], mark)
+            exposure += q * c[4] * m['qty_mult'] * (1.0 if b is None else b)
+        v = exposure / equity
+        if math.isfinite(v):
+            vals.append(v)
+    return (sum(vals) / len(vals), len(vals)) if vals else (None, 0)
