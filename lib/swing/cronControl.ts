@@ -54,7 +54,27 @@ function defaultState(): SwingCronControlState {
     };
 }
 
+/**
+ * The experiment-ended switch. When SWING_EXPERIMENT_ENDED_AT is set (an ISO
+ * date), the swing crons are hard-deactivated regardless of the KV control
+ * state: a flushed KV cannot bring the trader back. Set 2026-10-10 when the
+ * owner ended the AI lab experiment (docs/forced-flow-research-horizons-2026-10-10.md).
+ */
+export function experimentEndedAt(): string | null {
+    const raw = String(process.env.SWING_EXPERIMENT_ENDED_AT || '').trim();
+    return raw || null;
+}
+
 export async function loadSwingCronControlState(): Promise<SwingCronControlState> {
+    const ended = experimentEndedAt();
+    if (ended) {
+        return {
+            hardDeactivated: true,
+            reason: `AI lab experiment ended ${ended}; the AI trader is switched off (SWING_EXPERIMENT_ENDED_AT)`,
+            updatedAtMs: null,
+            updatedBy: 'env:SWING_EXPERIMENT_ENDED_AT',
+        };
+    }
     const raw = await kvGetJson<unknown>(SWING_CRON_CONTROL_KEY);
     return normalizeState(raw) || defaultState();
 }

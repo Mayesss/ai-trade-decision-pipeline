@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
+import { experimentEndedAt } from '../../../lib/swing/cronControl';
 import { isSwingWarmDone, markSwingWarmDone, swingWarmCycleId } from '../../../lib/swing/warmLatch';
 import { warmAllSwingSummaries } from './summary';
 
@@ -22,6 +23,11 @@ import { warmAllSwingSummaries } from './summary';
 // secret for a manual warm (pass ?force=1 to bypass the done-flag skip).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!requireAdminAccess(req, res)) return;
+  // Experiment ended: the scheduled warm would wake Neon twice a day for a
+  // trader that is switched off. The dashboard warms on demand when opened.
+  if (experimentEndedAt()) {
+    return res.status(200).json({ ok: true, skipped: 'experiment-ended', endedAt: experimentEndedAt() });
+  }
   const forceParam = Array.isArray(req.query.force) ? req.query.force[0] : req.query.force;
   const force = forceParam === '1' || forceParam === 'true';
   const cycleId = swingWarmCycleId(Date.now());

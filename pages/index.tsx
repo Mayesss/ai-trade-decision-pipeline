@@ -485,6 +485,9 @@ export default function Home() {
     reason: string | null;
     sinceMs: number | null;
   } | null>(null);
+  // Set when SWING_EXPERIMENT_ENDED_AT is configured: the AI lab experiment is
+  // over, crons are hard-deactivated, positions were closed. Not dismissible.
+  const [experimentEndedAt, setExperimentEndedAt] = useState<string | null>(null);
   // "×"-dismissed key of the outage banner (kind + streak start). Keyed, not
   // boolean: a NEW outage (different sinceMs) re-shows the banner even after
   // an earlier one was dismissed. Resets on reload — deliberate for an alert.
@@ -1187,6 +1190,9 @@ export default function Home() {
         });
         if (!res.ok || cancelled) return;
         const json = await res.json();
+        if (typeof json?.experimentEndedAt === "string" && json.experimentEndedAt) {
+          setExperimentEndedAt(json.experimentEndedAt);
+        }
         const health = json?.aiHealth;
         if (health && typeof health === "object") {
           setSwingAiHealth({
@@ -2095,6 +2101,27 @@ export default function Home() {
           </div>
         )}
         <div className="w-full">
+          {/* Experiment-ended banner: the AI trader was switched off by the
+              owner (SWING_EXPERIMENT_ENDED_AT). Stays until the env is removed. */}
+          {experimentEndedAt ? (
+            <div
+              role="status"
+              className="mb-3 flex items-start gap-2.5 rounded-2xl border border-slate-300 bg-slate-100 px-4 py-3 text-slate-800 shadow-sm"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0 flex-1 text-sm">
+                <span className="font-semibold">
+                  AI lab experiment ended on {experimentEndedAt}.
+                </span>{" "}
+                <span>
+                  The AI trader is switched off: scheduled analysis and the
+                  wake-watcher are hard-deactivated and the positions were
+                  closed. This dashboard is a record. The research continues
+                  in the repo under docs/forced-flow-research-horizons.
+                </span>
+              </div>
+            </div>
+          ) : null}
           {/* AI outage banner (top of page, ×-dismissible): billing/config
               failures don't self-heal — decisions, in-position management
               and postmortems are all stopped until a human pays the bill /

@@ -9,6 +9,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../lib/admin';
+import { experimentEndedAt } from '../../../lib/swing/cronControl';
 import { isSwingPgConfigured } from '../../../lib/swing/pg';
 import {
     buildSwingWeeklyDigest,
@@ -24,6 +25,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (!requireAdminAccess(req, res)) return;
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    // Experiment ended: no weekly digest, no Neon wake on Sunday mornings.
+    if (experimentEndedAt()) {
+        return res.status(200).json({ ok: true, skipped: 'experiment-ended', endedAt: experimentEndedAt() });
+    }
     if (!isSwingPgConfigured()) {
         return res.status(200).json({ ok: false, note: 'pg_not_configured' });
     }

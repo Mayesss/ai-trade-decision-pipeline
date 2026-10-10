@@ -566,6 +566,20 @@ rediscover the hard way. Newest last.
   2026-10-08T00:00Z, midnight after the 2026-10-07 deploy
   (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy time).
 
+- **2026-10-10** — **The AI lab experiment is ended by the owner** (invariant
+  6, the separate deliberate act). The copy-trade and forced-flow research
+  (`docs/copy-trade-plan-2026-10-07.md`, registrations 001–004, thirteen
+  trials, no pass) produced the facts in
+  `docs/forced-flow-research-horizons-2026-10-10.md`; the research continues
+  there, outside this trader. Shutdown: KV cron control hard-deactivated
+  (`/api/swing/ops/cron-control`, reason recorded); `SWING_EXPERIMENT_ENDED_AT=2026-10-10`
+  set in production and read by `loadSwingCronControlState` so a flushed KV
+  cannot revive the crons; all cron entries removed from `vercel.json`;
+  Bitget ETHUSDT short closed (order 1492772555675283458); the Capital TLT
+  position could not be closed on a Saturday (market shut, opens Mon 08:00
+  UTC) — close it at the open; the dashboard shows an experiment-ended
+  banner from the env. The R sample that started 2026-10-08 ends here.
+
 ---
 
 ## 9. Horizon expansion — PARKED, notes kept

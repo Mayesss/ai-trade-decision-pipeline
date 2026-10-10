@@ -6,6 +6,7 @@ import { requireAdminAccess } from '../../../lib/admin';
 import { kvMGetJson } from '../../../lib/kv';
 import { SWING_AI_HEALTH_KEY, parseSwingAiHealth } from '../../../lib/swing/aiHealth';
 import { SWING_WARM_LAST_KEY, parseSwingWarmLast } from '../../../lib/swing/warmLatch';
+import { experimentEndedAt } from '../../../lib/swing/cronControl';
 
 // Tiny poll target for open dashboards: reports when the last summary warm
 // (latch or fallback) completed. ONE KV command — clients poll this instead of
@@ -25,8 +26,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const [warmRaw, healthRaw] = await kvMGetJson<unknown>([SWING_WARM_LAST_KEY, SWING_AI_HEALTH_KEY]);
   const last = parseSwingWarmLast(warmRaw);
   const aiHealth = parseSwingAiHealth(healthRaw);
+  // The experiment-ended banner rides along too; it is read from the env, so
+  // it costs no KV command.
   return res.status(200).json({
     ok: true,
+    experimentEndedAt: experimentEndedAt(),
     warmedAtMs: last?.warmedAtMs ?? null,
     cycleId: last?.cycleId ?? null,
     aiHealth: {

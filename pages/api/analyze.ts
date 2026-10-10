@@ -33,7 +33,7 @@ import {
 } from '../../lib/capital';
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 import { resolveSwingCategory } from '../../lib/swing/category';
-import { loadSwingCronControlState } from '../../lib/swing/cronControl';
+import { loadSwingCronControlState, experimentEndedAt } from '../../lib/swing/cronControl';
 import { recordSwingLastScan, stampSwingScanStarted } from '../../lib/swing/lastScan';
 import { buildEventReactionContext, swingEventReactionEnabled } from '../../lib/swing/eventReaction';
 import { loadBtcContext } from '../../lib/swing/btcContext';
@@ -644,7 +644,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const execRes = { placed: false, orderId: null, clientOid: null, reason: 'swing_cron_hard_deactivated' };
                 // Quarter ticks skip persistence: with 15m crons this branch would
                 // otherwise write 4 identical skip rows/hour/symbol while deactivated.
-                if (!quarterTick) {
+                // Once the experiment has ended (SWING_EXPERIMENT_ENDED_AT) nothing is
+                // persisted at all: a skip row per symbol per hour would keep waking
+                // Neon for a trader that is switched off (2026-10-10).
+                if (!quarterTick && !experimentEndedAt()) {
                     await persistPreAiSkip({
                         stage: 'swing_cron_hard_deactivated',
                         decision,
