@@ -95,3 +95,29 @@ def first_touch_windows(dex, orders):
           AND ((lw.side = 'L' AND CAST(f.price AS DOUBLE) <= lw.level) OR (lw.side = 'S' AND CAST(f.price AS DOUBLE) >= lw.level))
         GROUP BY lw.key""").fetchall()
     return {k: t for k, t in rows}
+
+
+def first_touch_details(dex, orders):
+    """Like first_touch_windows but returns {key: (t, price, is_liquidation, direction)} of the
+    FIRST fill at or beyond the level — the counterparty check: was the trade that filled the
+    resting order a forced one?"""
+    if not orders:
+        return {}
+    c = con()
+    c.execute('CREATE OR REPLACE TEMP TABLE lw(key VARCHAR, coin VARCHAR, side VARCHAR, level DOUBLE, t0 BIGINT, t1 BIGINT)')
+    c.executemany('INSERT INTO lw VALUES (?, ?, ?, ?, ?, ?)',
+                  [(str(k), co, s, float(l), int(a), int(b)) for k, co, s, l, a, b in orders])
+    files = _files(dex, min(o[4] for o in orders), max(o[5] for o in orders))
+    if not files:
+        return {}
+    rows = c.execute(f"""
+        WITH hits AS (
+            SELECT lw.key, epoch_ms(f.timestamp) AS t, CAST(f.price AS DOUBLE) AS px, f.is_liquidation AS liq,
+                   f.direction AS d, f.filename AS fn, f.file_row_number AS rn
+            FROM read_parquet({files!r}, filename = true, file_row_number = true) f JOIN lw ON f.coin = lw.coin
+            WHERE epoch_ms(f.timestamp) > lw.t0 AND epoch_ms(f.timestamp) <= lw.t1
+              AND ((lw.side = 'L' AND CAST(f.price AS DOUBLE) <= lw.level) OR (lw.side = 'S' AND CAST(f.price AS DOUBLE) >= lw.level))
+        )
+        SELECT key, arg_min(t, (t, fn, rn)), arg_min(px, (t, fn, rn)), arg_min(liq, (t, fn, rn)), arg_min(d, (t, fn, rn))
+        FROM hits GROUP BY key""").fetchall()
+    return {k: (t, px, bool(liq), d) for k, t, px, liq, d in rows}
