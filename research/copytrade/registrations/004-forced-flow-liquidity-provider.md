@@ -152,3 +152,55 @@ monthly regime label; triggers skipped by the stress switch and by gross.
 | D8 | stress switch | exchange-wide 5-min liquidation notional ≥ $77 M (p99.9); p99 ($15 M) reported |
 | D9 | family | 2 trials here, α 0.025, z 1.96; cumulative 13 stated |
 | D10 | T2 hold | 15 min, both legs |
+
+## 10. Result — 2026-10-10 (run of commit 05c820e, `results.jsonl` line 4)
+
+Two trials, z_crit 1.96; cumulative thirteen across 001–004. Placebos
+0.035 / 0.045 (calibrated). 3,805 triggers, 10,036 rungs posted, 2,138
+filled (21%), 63% of fills forced by the ±1 s rule and held.
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 provider, majors | **FAIL** (all four) | size-weighted mean **−0.02%** per fill, se 0.10%, t −0.24; median +0.03%; hit 52%; halves −0.03% / −0.02%; longs liquidated −0.04%, shorts +0.05%. **EV per unit of posted size −0.003%** (majors), −0.038% (all coins). All coins −0.21% (t −1.0); alts −0.23%. |
+| T2 cross-venue capture, majors | **FAIL**, strongly negative | mean **−0.43%**, se 0.07%, **t −5.9**; hit 18%; both halves negative; all coins −0.47% (t −5.3). Legs: Hyperliquid −0.25%, Bitget −0.19%. |
+
+**Reading.**
+
+1. **Depth at fixed distances does not reproduce the 003 edge.** 003's T1
+   filled at the cascade's notional-weighted median print and earned +22 bp
+   in majors; that price is deep in proportion to the cascade's eventual
+   size, which is unknown when the ladder is posted. Fixed rungs fill early
+   in big cascades and the deeper the rung, the worse: −0.12% at 0.5%,
+   −0.19% at 1.0%, −0.28% at 1.5% (all coins) — filling the 1.5% rung
+   selects the cascades that keep going. The edge measured in 003 is an
+   ex-post construct; the realisable ladder is zero in majors after costs.
+2. **The counterparty check helps but is not the lever.** Majors with the
+   check and the flow-end exit: −0.02%; without it, fixed 15 min: −0.21%.
+   It removes the worst third of fills; it does not create an edge.
+3. **The exit is too early.** A fixed 60-minute exit in majors gives
+   +0.16% (t 1.46, median +0.18%, hit 58%) against −0.02% for flow end +
+   10 min — consistent with 003, where the reversion built for hours. Not
+   significant, and a longer hold is a bigger directional bet.
+4. **The cross-venue gap is not capturable at minute granularity.** 002
+   measured Hyperliquid's *last* print against Bitget's *next-minute* open.
+   Hedging at the rung fill, which happens during the cascade, sells Bitget
+   while Bitget is still falling and holds Hyperliquid while it continues
+   down: both legs lose, t −5.9. Whatever gap exists lives in the seconds
+   around the forced print and needs sub-second hedging that this data
+   cannot model and this stack does not have.
+
+**State of the question.** Four registrations, thirteen trials, one
+discovery year, no pass. What survived every test: forced flow overshoots
+on the venue where it lands, for seconds to minutes; a resting order
+filled by anything else loses; and no placement rule computable in advance
+on this data captured the overshoot after costs. The one untested design
+is a *trailing* ladder that follows the print down while liquidations
+keep printing and fills where the median forced notional actually lands —
+which is what a live market maker does with queue position and counterparty
+identity that the archive does not record. That is a live-data question.
+The holdout stays unread.
+
+**Reproducibility note.** Same-millisecond liquidation prints were not
+ordered deterministically in the per-coin queries; the second start posted
+10,036 rungs against 10,033 on the first. Ordering is pinned in the
+following commit; it changes no result.

@@ -586,6 +586,11 @@ Rules:
       −0.32%); T3 always-on map orders FAIL, −14 bp per fill, t −8 on the
       control — adverse selection, map adds nothing. Family across
       001–003: eleven trials. Holdout untouched.*
+      *Registration `004-forced-flow-liquidity-provider.md` (2026-10-10):
+      ladder + counterparty check + flow-end exit + stress switch, majors:
+      FAIL, −0.02%/fill, EV ≈ 0; cross-venue capture FAIL, −0.43%, t −5.9.
+      Fixed rungs do not reproduce 003's median-print edge (deeper rungs
+      lose more). Cumulative thirteen trials, no pass; holdout unread.*
 - [ ] **P7 — forward + paper.** Re-run the frozen rule on each new archive
       month; in parallel, the paper copier of §14 step 3 (needs C5).
 - [ ] **P8 — gated: live following.** Only if P6 passes and paper tracking
