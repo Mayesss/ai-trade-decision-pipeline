@@ -1,6 +1,6 @@
 # 005 — Post-cascade drift: enter against the forced flow after it has ended, hold two hours (H4)
 
-**Status: DRAFT 2026-10-10** — the owner approved the decision table
+**Status: REGISTERED 2026-10-10** — the owner approved the decision table
 (D1–D16, holdout option A; the D11/D12 gate left to the orchestrator,
 Revision 3). The status line is changed to REGISTERED by the owner. Mechanics are built and checked on
 synthetic data; the event set, filters and entry prices were counted
