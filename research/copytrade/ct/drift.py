@@ -302,12 +302,11 @@ def summarise(rows, placebo_seeds=200, z_hour=Z_HOUR, z_day=Z_DAY):
                         for s in SLIPS} if rows and 'ret_slip' in rows[0] else None}
 
 
-def decide(summary, bar=BAR):
-    """The PROPOSED decision table (registration §9). Returns one of
-    'pull_holdout' / 'record_below_bar' / 'close'."""
-    if not summary['pass']:
-        return 'close'
-    return 'pull_holdout' if summary['primary_hour']['mean'] >= bar else 'record_below_bar'
+def decide(summary):
+    """The registered decision table (registration §9, D11-D13): a discovery pass -> 'pull_holdout'
+    (the owner approves the pull with a byte count first); otherwise 'close'. The H7 bar (BAR) is
+    not a gate here: it is applied in the paper period that a holdout CONFIRM would lead to."""
+    return 'pull_holdout' if summary['pass'] else 'close'
 
 
 def holdout_confirm(rows, z=Z_HOLDOUT):

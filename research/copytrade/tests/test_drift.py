@@ -195,7 +195,7 @@ def main():
           f"t_hour {pos_['primary_hour']['t']:.2f} t_day {pos_['primary_day']['t']:.2f} {pos_['criteria']}")
     check('planted +0.3% decides pull_holdout (>= 25 bp)', drift.decide(pos_) == 'pull_holdout')
     small = drift.summarise(synth_rows(rng, 450, 0.0015, sigma=0.004), placebo_seeds=20)
-    check('planted +0.15% passes but sits below the bar', small['pass'] and drift.decide(small) == 'record_below_bar',
+    check('planted +0.15% passes and decides pull_holdout (no point-estimate gate)', small['pass'] and drift.decide(small) == 'pull_holdout',
           f"mean {small['primary_hour']['mean']:.4f}")
     cr = drift.summarise(synth_rows(rng, 450, 0.0, crash=True), placebo_seeds=20)
     check('one crash hour does not pass and the without-largest-positive-hour block is ~0',

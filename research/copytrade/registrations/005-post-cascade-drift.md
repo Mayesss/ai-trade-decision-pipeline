@@ -1,7 +1,8 @@
 # 005 — Post-cascade drift: enter against the forced flow after it has ended, hold two hours (H4)
 
-**Status: DRAFT 2026-10-10** — not registered. The decision table in §9 is
-PROPOSED and waits for the owner. Mechanics are built and checked on
+**Status: DRAFT 2026-10-10** — the owner approved the decision table
+(D1–D16, holdout option A; the D11/D12 gate left to the orchestrator,
+Revision 3). The status line is changed to REGISTERED by the owner. Mechanics are built and checked on
 synthetic data; the event set, filters and entry prices were counted
 (§3, behaviour only); no exit price and no return after any entry has been
 computed for any real event. The runner (`l7_run.py`) refuses to compute an
@@ -25,6 +26,15 @@ the gross return per hour cluster with costs kept (§5); the stress switch
 reads only buckets complete before the entry; exits use a new
 deterministic tape lookup; disclosures below; D12 and D13 reworded. No
 outcome existed for any version.
+
+**Revision 3 (2026-10-10, after the owner's approval).** Owner chose
+holdout option A (end 2026-10-09). The holdout gate (D11/D12) is the
+discovery pass alone, not "pass and point estimate ≥ 25 bp": under option A
+the point-estimate gate cut the end-to-end chance at a true 25 bp effect
+from about 0.46 (0.81 × 0.57) to 0.29, and a pass already requires an
+estimate of about 18 bp or more (2.33 × SE). The 25 bp bar moves to where
+the data is larger: the forward paper period a holdout CONFIRM leads to.
+`ct/drift.decide` changed accordingly; nothing else did. No outcome existed.
 
 Plan: `docs/copy-trade-plan-2026-10-07.md`; horizon H4 in
 `docs/forced-flow-research-horizons-2026-10-10.md` §4. Prior ledger entries
@@ -228,8 +238,10 @@ blocks of the same entry pattern under the D14 criteria):
 | pre-cascade | 37 bp | 0.90 | 0.87 | 0.65 / 0.87 | 0.57 / 0.76 |
 | unconditional | 0 (no effect) | 0.011 | 0.0005 | 0.05 / 0.05 | ≈ 0.00003 |
 
-End-to-end = P(discovery pass with estimate ≥ 25 bp, the D11 gate) ×
-P(holdout confirm). **At a true effect exactly at the bar, the
+End-to-end = P(discovery pass with estimate ≥ 25 bp, the first draft's D11 gate) ×
+P(holdout confirm). (Under the approved gate — the pass alone, Revision 3 — option A gives
+about 0.81 × 0.57 ≈ 0.46 at a true 25 bp, unconditional volatility; 0.55 × 0.40 ≈ 0.22 at
+pre-cascade volatility.) **At a true effect exactly at the bar, the
 point-estimate gate alone halves the chance of reaching the holdout**
 (about half of passing estimates fall below the true mean). Gaussian
 noise: the real tails are fatter (kurtosis 8–11), so these are upper
@@ -423,7 +435,7 @@ guard; recomputed by the orchestrator at commit):
 
 | file | sha256 |
 |---|---|
-| `ct/drift.py` | `0ae40b235910180aaa740836223aaeb3717ffbb4746899c1bb51998129f47e42` |
+| `ct/drift.py` | `4c15eae52c46b0374eff0f2531ca08d5602faf20fc49bebeaf375d7656601b85` |
 | `l7_run.py` | `786410b77530e0778551939f3849c40d3af1b745b1630a57ca1b58dedd1f0473` |
 | `ct/tape.py` | `ab803d7cf740cd6d25f229d5d7e5e4cc33933f8ed1209ccc10f0981dbd56bf0e` |
 | `ct/eventstudy.py` | `08a780b4d40bad811d5d826d42d29c44d673246048d85cf31ec1be2eaf6018b0` |
@@ -431,7 +443,7 @@ guard; recomputed by the orchestrator at commit):
 | `ct/liq.py` | `d03159c1963097d73536f17c7282c37c159784d418c1b55783e09051226bb292` |
 | `data/derived/hyperliquid/cascades.json` | `b21f2df0d4a87387a1b49f9636cc6a0b94306c4286accef1a976a9e7d6639819` |
 
-## 9. Owner decisions — PROPOSED, not approved
+## 9. Owner decisions — approved 2026-10-10 (D14 option A; D11/D12 per Revision 3)
 
 | # | item | proposed |
 |---|---|---|
@@ -445,10 +457,10 @@ guard; recomputed by the orchestrator at commit):
 | D8 | inference | hour-clustered (entry fill's UTC hour) t ≥ 2.33 and day-clustered t ≥ 1.96; placebo: gross sign flipped per hour cluster, costs kept, 200 seeds (per-day flips reported) |
 | D9 | pass | the six criteria of §5; halves by count; criterion 6 removes the hour with the largest positive summed net return (by-count and by-absolute reported) |
 | D10 | family | one trial here; cumulative fourteen on the discovery year, stated; no reported block becomes a primary on discovery (§6) |
-| D11 | decision — pass and mean net ≥ 25 bp per event | ask the owner to approve the holdout pull (requester-pays, byte count quoted first, D15) and read it **once** under D14 |
-| D12 | decision — pass but mean < 25 bp | **discovery-only pass below the H7 bar: unconfirmed, not evidence of an effect; holdout not spent; H4 closes as a strategy candidate** |
+| D11 | decision — pass (all six criteria) | ask the owner to approve the holdout pull (requester-pays, byte count quoted first, D15) and read it **once** under D14 |
+| D12 | the H7 bar (25 bp net per major event) | not a gate on the holdout (Revision 3); a discovery pass is unconfirmed until the holdout; after a CONFIRM the bar is the pass criterion of the paper-period registration |
 | D13 | decision — fail | **not detected at an MDE of 25 bp (unconditional volatility) / 33 bp (pre-cascade volatility), 80% power; H4 closes as a strategy candidate; H10 dropped** |
-| D14 | holdout read (only after D11) | holdout = 2026-07-01 → a **fixed end date**, chosen now: **A)** 2026-10-09 (≈ 64 positions; P(confirm) at a true 25 bp 0.57, end-to-end 0.29) or **B) 2027-01-15 — recommended** (≈ 126 positions, P(confirm) 0.80, end-to-end 0.42; a discovery pass waits for that date). Cascades rebuilt by `l2_events.py`'s rule **with the trailing 30-day median seeded from the discovery liquidations up to 2026-06-30, so no holdout event qualifies on the fallback median**; same five filters, same trade, majors; read **once**. **CONFIRM if all of:** mean net > 0 with one-sided hour-clustered t ≥ 1.64; median > 0; mean ≥ 0 without the largest-positive hour (`ct/drift.holdout_confirm`). CONFIRM → H4 earns a registered forward **paper** period (no live capital; a new registration). Otherwise → H4 closes |
+| D14 | holdout read (only after D11) | holdout = 2026-07-01 → a **fixed end date**, **chosen: A) 2026-10-09** (≈ 64 positions; P(confirm) at a true 25 bp 0.57, end-to-end 0.29) (not chosen: B) 2027-01-15 (≈ 126 positions, P(confirm) 0.80, end-to-end 0.42; a discovery pass waits for that date)). Cascades rebuilt by `l2_events.py`'s rule **with the trailing 30-day median seeded from the discovery liquidations up to 2026-06-30, so no holdout event qualifies on the fallback median**; same five filters, same trade, majors; read **once**. **CONFIRM if all of:** mean net > 0 with one-sided hour-clustered t ≥ 1.64; median > 0; mean ≥ 0 without the largest-positive hour (`ct/drift.holdout_confirm`). CONFIRM → H4 earns a registered forward **paper** period (no live capital; a new registration). Otherwise → H4 closes |
 | D15 | holdout pull | owner approval with a byte count; estimate ~12 GiB transfer under A, ~23 GiB under B (§3); exact count to be quoted from a LIST + footers before any byte of a holdout day is read |
 | D16 | hedged variant | dropped for the primary; ETH/SOL hedged with BTC reported (β from 30 days of 1H closes before each entry) |
 
