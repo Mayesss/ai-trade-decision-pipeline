@@ -487,3 +487,25 @@ around it at +1 to +60 s. The pull needs the owner's approval on size
 5-minute open-interest drops) is kept as a possible secondary, because its
 labels are noisy. One accident is recorded in `000b`: an OKX probe printed
 100 liquidations dated inside the holdout period.
+
+**2026-10-10 — H11 closed on size, not on the count rule.** The first
+measurement (`research/copytrade/scouts/h11-liquidation-contest.md`) took
+Aave v3 on Arbitrum, the only mid-size market measurable with free,
+keyless endpoints, priced at Aave's own oracle. In September 2026 addresses
+outside the top ten won **12.4% of liquidations by count**, so the
+pre-stated "< 10%: stop" does not fire on count. By USD, with the top ten
+ranked by USD, they won **0.7%**. The count figure is made of dust: the
+median liquidation was $1.60, and the whole market paid **$30 k of gross
+bonus that month** ($13–30 k a month in calm periods). The month that
+mattered, October 2025, paid $1.11 M of gross bonus. In that month
+outsiders won 8.5% of the liquidations over $100 and 1.2% of the USD (about
+$13 k), in a gas war at a median $37 per transaction. The rule was written
+before we knew the count and USD readings would split. On the economics,
+the open share of this contest is a few thousand dollars a month in the
+best case and ~$13 k in a crash month, before bids, swaps and failed
+attempts. That is not a business at any size, so H11 stops. One thing is
+kept as an open question, not a horizon. Since August 2026, 96–99% of
+liquidated USD on this market went through one shared contract ("Atlas
+ETH", unverified), which suggests an auction route. If so, the contest has
+become an auction, and its economics belong to the order-flow-auction
+literature, not to forced flow.
