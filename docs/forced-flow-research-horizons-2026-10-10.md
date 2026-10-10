@@ -526,3 +526,38 @@ earns, H1's live trailing provider. If 006 fails as well, the forced-flow
 programme has no realisable form at our latency, and the next step is to
 say so and choose between an HLP deposit (the measured benchmark) and a
 different source of edge altogether.
+
+**2026-10-10 — H3 (006): the executable cross-venue gap does not exist at
+taker cost, by behaviour alone; 006 stays DRAFT (no outcome read, no trial
+spent) pending the owner.** 006 was built on the local Hyperliquid tape and
+23 GB of free Binance ticks, with a causal trigger, side-aware fills and a
+pinned data manifest. Before any outcome, its behaviour measurements
+answered the question:
+
+- At forced prints, the gap a taker could trade is a median **−8.5 to
+  +0.9 bp**, and a median 0–9 bp at each run's maximum. It reaches the
+  ~37 bp cost-plus-margin threshold in **36 of 1,213** causal trigger runs;
+  after the filters that leaves 10 trades, 6 of them on 2025-10-10. The gap
+  is measured between Hyperliquid's last opposite-side print and Binance's
+  last same-side print, both at or before the forced print.
+- A staleness check shows those quote proxies are fresh: usually from the
+  same block, biased by at most 1–7 bp.
+- The "gap" that 002 saw at the minute boundary and that the forced print
+  shows (median 43 bp at signal) is mostly **Hyperliquid's own book being
+  swept**. The p90 sweep depth beyond the fresh quote is 57–100 bp in
+  longs-liquidated runs.
+- Both gaps have been shrinking since March 2026, as Hyperliquid's lag
+  behind Binance fell from ~1.0 s to ~0.65 s.
+
+Only a resting order is filled at the sweep price, so the remaining form of
+the idea is H1 (the live trailing provider). H7 already measured the best
+existing version of H1. HLP's own market-making fills against forced prints
+in majors earned +22.9 bp gross at 15 minutes, **+7 bp gross without the
+spiral days**, on $20 M a year (`docs/hlp-benchmark-2026-10-10.md` §4). The
+largest provider on the venue, with queue priority, earns less than a third
+of the 25 bp bar before fees. The orchestrator therefore recommends against
+building H1, and proposes closing the forced-flow capture programme as a
+source of home-built edge at our latency and size. What it established
+stands: forced flow overshoots on the venue where it lands, the overshoot
+belongs to whoever is in the book or the backstop at that moment, and
+outside crashes it is a few bp.
