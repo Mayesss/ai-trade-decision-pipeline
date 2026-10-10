@@ -28,6 +28,14 @@ by reading missing horizons as None, which the clustered statistic already
 drops; the synthetic assembly checks pass unchanged. `results.jsonl` has no
 004 line. Restarted.
 
+**Erratum (2026-10-10, from H7, `docs/hlp-benchmark-2026-10-10.md` §2).**
+$2.03 B of the `Liquidated Cross` rows in `liquidations.parquet` are HLP's
+own liquidator positions being auto-deleveraged on 2025-10-10 (counterparty
+row `Auto-Deleveraging`), not users being liquidated. That hour's cascade
+notional and the market-stress series carry about $2 B of HLP's own ADL.
+No verdict changes: the hour is far above every threshold either way, and
+it was already treated as one cluster.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |

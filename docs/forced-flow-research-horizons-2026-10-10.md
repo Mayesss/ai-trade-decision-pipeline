@@ -329,6 +329,28 @@ structure, and capital on each. A separate stack: an always-on process
 Binance's book are the H2 odds. Steer: this is the scale step, not a
 research step; do not start it before H1 or H2 has a pass.
 
+### H11. Permissionless liquidation: the backstop role made public
+
+**Added 2026-10-10 after H7.** HLP's return is the protocol's backstop
+privilege — long the spiral tail that every resting provider is short. On
+lending protocols (Aave, Morpho, Compound, and the lending markets on
+HyperEVM) that role is permissionless: anyone can repay an
+undercollateralised position and take the collateral at a bonus of a few
+percent. It is the only open-market structure with the sign HLP has in the
+hour that decides everything.
+
+**What it needs.** On-chain data (liquidation events, gas, builder
+inclusion) — public and free via archive nodes or indexers; a model of the
+contest (who wins the liquidation, at what gas, how often a plain searcher
+is first); then a live bot on a cheap chain to measure realised capture.
+
+**Expectation.** Effect exists: documented, the bonus is paid. Deployable
+for us: about 1 in 6 — this is a known MEV contest won by searchers with
+builder access and private order flow; the open share goes to whoever is
+fastest, and on the big chains that is not a weekend process. The honest
+first measurement is the share of liquidations on a mid-size chain won by
+non-top-10 addresses over a month. If it is under 10%, stop.
+
 ### H10. The copy-trading residual
 
 **Hypothesis.** The 72-hour drift after skilled slow traders' opens (0.13 ATR
@@ -391,8 +413,12 @@ held for hours" shape.
    live paper (H1) start their own counts.
 3. **Holdout stays sealed** until a rule has passed discovery under this
    protocol. It is read once.
-4. **Measure the benchmark first** (H7). A home-built provider has to beat
-   depositing into the vault that already does this.
+4. **The benchmark is measured** (H7, `docs/hlp-benchmark-2026-10-10.md`):
+   HLP +19% in the archive year, 17 points from two spiral fortnights, ~2–4%
+   a year otherwise, Sharpe 1.4, drawdown −2.5%; its return is the backstop
+   privilege, and it is long the spiral tail a resting provider is short.
+   **The bar for any home-built capture: ≥ 25 bp net per major fill,
+   realisable, with the spiral hour contained to a few percent of capital.**
 5. **Infrastructure for the live horizons** is a separate stack: an
    always-on process with websocket access to the venues, paper execution,
    a log of every print, order and fill with timestamps to the millisecond.
@@ -417,3 +443,4 @@ held for hours" shape.
 | H8 skill as a filter on forced flow | 1 in 4 | conditioner | local data | split cascades by liquidated accounts' skill |
 | H9 multi-venue product | conditional on H1/H2 | 2 in 3 if so | a new stack | not before a pass |
 | H10 copy residuals | 1 in 5 | low | local data | only after H4 |
+| H11 permissionless liquidation (lending protocols) | documented | 1 in 6 | public on-chain data | share of liquidations won by outsiders on a mid-size chain |
