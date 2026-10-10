@@ -19,6 +19,15 @@ dominates every mean; Hyperliquid's forced print sits 19–58 bp beyond
 Bitget at the same moment. **This registration tests the architecture
 those facts imply**, not a new parameter value.
 
+**Run note (2026-10-10, no change to any rule).** The first start (after
+the REGISTERED commit) built 3,805 triggers, filled 2,100+ rungs over 312
+days and crashed in the shared statistics function before any statistic
+was computed, printed or written: `summarise_trial` reads every horizon's
+return and 004's rows carry the primary one only (`KeyError: '5m'`). Fixed
+by reading missing horizons as None, which the clustered statistic already
+drops; the synthetic assembly checks pass unchanged. `results.jsonl` has no
+004 line. Restarted.
+
 ## 1. Trials registered here
 
 | id | hypothesis | role |

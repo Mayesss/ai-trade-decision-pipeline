@@ -59,7 +59,7 @@ def summarise_trial(rows, placebo_seeds=200):
     rows = [r for r in rows if r['ret'].get(PRIMARY) is not None]
 
     def block(rs, h=PRIMARY):
-        v = [r['ret'][h] for r in rs]
+        v = [r['ret'].get(h) for r in rs]          # rows may carry only the primary horizon (004)
         cl = [r['cluster'] for r in rs]
         m, se, t, n, g = es.cluster_t(v, cl)
         vv = [x for x in v if x is not None]
