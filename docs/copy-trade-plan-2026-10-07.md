@@ -10,7 +10,12 @@ in its §2 still apply) and the audit that ended the AI decision engine,
 
 - The AI trade picker never showed positive R. The owner intends to retire it.
   *Switching off the live trader is a separate, deliberate act* (spec §2
-  invariant 6) and is not part of this plan.
+  invariant 6) and is not part of this plan. **Done 2026-10-10** on branch
+  `shutdown-ai-trader` (commit 297db7f; spec §8): KV cron control
+  hard-deactivated, `SWING_EXPERIMENT_ENDED_AT=2026-10-10` set in production,
+  Bitget ETHUSDT closed, Capital TLT to close at Monday's open, dashboard
+  banner. The research continues in
+  `docs/forced-flow-research-horizons-2026-10-10.md`.
 - Replacement idea: copy other traders. Research may use any exchange or free
   public source. **Execution stays on Bitget / Capital only.**
 - Monitoring focuses on **perp DEX wallets (Hyperliquid first)**, not Bitget's
