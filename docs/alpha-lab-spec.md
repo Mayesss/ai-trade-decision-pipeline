@@ -573,6 +573,10 @@ rediscover the hard way. Newest last.
   stays Bitget/Capital. Runs locally — zero Neon/KV load. Proposes two
   deviations from §3, not yet locked: research ledger in git instead of Neon,
   and Vercel Blob instead of R2.
+- **2026-10-10** — H7 benchmark measured (not a trial): `docs/hlp-benchmark-2026-10-10.md`.
+  HLP +19% over the archive year, 17 points of it in two spiral hours, ~2%/yr otherwise; its
+  money is the backstop (long the spiral tail resting providers are short), its MM ≈ 0. Bar for
+  a home-built provider: ≥ 25 bp net per major fill, realisable.
 
 ---
 
