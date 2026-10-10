@@ -577,6 +577,10 @@ rediscover the hard way. Newest last.
   HLP +19% over the archive year, 17 points of it in two spiral hours, ~2%/yr otherwise; its
   money is the backstop (long the spiral tail resting providers are short), its MM ≈ 0. Bar for
   a home-built provider: ≥ 25 bp net per major fill, realisable.
+- **2026-10-10** — Registration 005 (H4, post-cascade drift entered after the flow ends, majors,
+  2 h): FAIL, −10 bp net, t −0.80; fourteen trials on the discovery year, no pass; holdout not
+  spent. H11 (lending liquidations) closed on size; H2 folded into H3 (Binance publishes no
+  USDⓈ-M liquidation history). See the §8 direction log of the forced-flow horizons doc.
 
 ---
 

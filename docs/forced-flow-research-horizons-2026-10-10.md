@@ -509,3 +509,20 @@ liquidated USD on this market went through one shared contract ("Atlas
 ETH", unverified), which suggests an auction route. If so, the contest has
 become an auction, and its economics belong to the order-flow-auction
 literature, not to forced flow.
+
+**2026-10-10 — H4 failed (005, trial 14); H10 dropped; the forced-flow
+reversion line on Hyperliquid's own tape is closed at every placement
+except "be filled during the flow".** Entered a minute after the last
+forced print and held two hours, majors made −10 bp net (t −0.80, median
+−9 bp). Gross of slippage that is about +9 bp, which is no edge at any
+cost level. Horizons 60 / 240 min were no better, and the alts were the
+same. The holdout was not spent. Together with 003 (fill at the median
+print: +22 bp) and 004 (realisable ladder inside the flow: −2 bp), this
+places the overshoot inside the cascade's seconds. Whoever is filled
+during the flow earns it; nobody entering after it does. So the remaining
+question in this programme is a speed-and-venue question: H3 (006, the
+cross-venue gap at one second on Binance ticks, now drafting) and, if it
+earns, H1's live trailing provider. If 006 fails as well, the forced-flow
+programme has no realisable form at our latency, and the next step is to
+say so and choose between an HLP deposit (the measured benchmark) and a
+different source of edge altogether.

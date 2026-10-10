@@ -469,3 +469,54 @@ before registration is a change there and in this file together, and a
 new hash table. The holdout read (D14) needs the holdout cascades and a
 holdout mode in the runner, added by amendment before the pull, with the
 criteria and end date above unchanged.
+
+## 10. Result — 2026-10-10 (run of commit 56c2901, `results.jsonl` line 5)
+
+One trial, hour-clustered z_crit 2.33, day-clustered 1.96. **Cumulative
+across 001–005: fourteen trials on one discovery year, no pass.** Placebos
+(gross sign flipped per hour / per day, costs kept): 0.0 / 0.0 pass share,
+|t| ≥ 2.33 in 1.5% / 2.0% of seeds (calibrated). 212 primary majors
+positions, 161 hour clusters, 114 day clusters, as counted in §3.
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 post-cascade drift, majors, 120 min | **FAIL** (criteria 1, 2, 4, 5, 6; criterion 3 holds only because mean and median are both negative) | mean **−0.10%** net per position, se 0.13%, **t −0.80** (day-clustered −0.73); median −0.09%; hit 45%. Longs liquidated (buy) −0.17% (t −0.94, n 142); shorts liquidated (sell) +0.04% (t 0.41, n 70). Without the largest positive hour −0.15% (t −1.19). |
+
+**Decision (D13):** not detected at an MDE of 25 bp (unconditional
+volatility) / 33 bp (pre-cascade volatility), 80% power. **H4 closes as a
+strategy candidate; H10 is dropped. The holdout is not spent.**
+
+**Diagnostics (reported, decide nothing; no block becomes a primary, §6).**
+
+- **Gross of slippage the drift is about zero.** At 0 bp slippage majors
+  are −0.4 bp net of the 9 bp fees, so roughly +9 bp gross over two hours,
+  t ≈ 0. At 10 bp slippage, −20 bp. There is no cost level at which this
+  would reach the 25 bp bar.
+- **Horizons, majors:** 60 min −12.5 bp (t −1.30, hit 40%); 120 min
+  −10.3 bp; 240 min −17.2 bp (t −1.00, median −2.7 bp). Nothing builds
+  with the horizon once the entry is after the flow.
+- **Per coin:** BTC −8.7 bp (n 57), ETH −16.8 bp (n 87), SOL −3.4 bp
+  (n 68); none distinguishable from zero.
+- **Alts and all coins** (reported): alts −12.9 bp (t −0.56, n 1,105,
+  median −3.0 bp); all coins −12.5 bp (t −0.61). Alts at 60 min +2.1 bp.
+- **Variants, majors:** the inclusive 002 event set −13.1 bp (t −1.22,
+  n 261); the inclusive stress series −13.6 bp (t −0.98, n 190). Neither
+  orchestrator revision changed the reading.
+- **ETH/SOL hedged with BTC:** −47.1 bp (t −7.3, hit 24%) against −10.9 bp
+  unhedged. The BTC leg costs about β (≈ 1.25) × 19 bp ≈ 24 bp. The rest,
+  about −12 bp, is ETH/SOL underperforming BTC over the two hours after
+  their own cascade: a mild relative continuation, not a reversion.
+
+**Reading.** 003 T1 earned +22 bp in majors from a fill *at the median
+forced print*, with the reversion growing to 240 min. Entered one minute
+after the last forced print, the same cascades give nothing. The rebound
+003 measured is the move from the forced print back to where the market
+was trading within the cascade's own minute. It is paid to whoever was
+filled during the flow, and it is gone by the time the flow is visibly
+over. What remains after flow end is a two-hour directional bet with zero
+mean in majors and a slight continuation on the longs-liquidated side in a
+bear year. Combined with 004 (a realisable ladder inside the flow: −2 bp),
+the forced-flow reversion on Hyperliquid has now been tested before,
+during and after the flow, and only the ex-post fill at the median print
+earns. The light is inside the cascade's seconds, where 006 (H3) looks
+next.
