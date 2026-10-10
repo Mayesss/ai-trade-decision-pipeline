@@ -121,3 +121,25 @@ def first_touch_details(dex, orders):
         SELECT key, arg_min(t, (t, fn, rn)), arg_min(px, (t, fn, rn)), arg_min(liq, (t, fn, rn)), arg_min(d, (t, fn, rn))
         FROM hits GROUP BY key""").fetchall()
     return {k: (t, px, bool(liq), d) for k, t, px, liq, d in rows}
+
+
+def prices_at_ordered(dex, queries, lookback_ms=2 * 3_600_000):
+    """Registration 005 only. Like prices_at, but deterministic on same-millisecond prints: the
+    last trade at or before t (within lookback_ms) by (timestamp, filename, file_row_number) —
+    file order is execution order (P3 gate G3). prices_at is left unchanged: 002-004 ran on it.
+    queries: [(key, coin, t_ms)] -> {key: price}."""
+    if not queries:
+        return {}
+    c = con()
+    c.execute('CREATE OR REPLACE TEMP TABLE pqo(key VARCHAR, coin VARCHAR, t BIGINT)')
+    c.executemany('INSERT INTO pqo VALUES (?, ?, ?)', [(str(k), co, int(t)) for k, co, t in queries])
+    t_min, t_max = min(t for _, _, t in queries), max(t for _, _, t in queries)
+    files = _files(dex, t_min - lookback_ms, t_max)
+    if not files:
+        return {}
+    rows = c.execute(f"""
+        SELECT pqo.key, arg_max(CAST(f.price AS DOUBLE), (epoch_ms(f.timestamp), f.filename, f.file_row_number))
+        FROM read_parquet({files!r}, filename = true, file_row_number = true) f JOIN pqo ON f.coin = pqo.coin
+        WHERE epoch_ms(f.timestamp) <= pqo.t AND epoch_ms(f.timestamp) > pqo.t - {int(lookback_ms)}
+        GROUP BY pqo.key""").fetchall()
+    return dict(rows)

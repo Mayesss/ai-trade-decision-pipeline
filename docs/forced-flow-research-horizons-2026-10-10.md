@@ -444,3 +444,46 @@ held for hours" shape.
 | H9 multi-venue product | conditional on H1/H2 | 2 in 3 if so | a new stack | not before a pass |
 | H10 copy residuals | 1 in 5 | low | local data | only after H4 |
 | H11 permissionless liquidation (lending protocols) | documented | 1 in 6 | public on-chain data | share of liquidations won by outsiders on a mid-size chain |
+
+---
+
+## 8. Direction log
+
+One paragraph per change of direction, dated, with the evidence that moved it.
+
+**2026-10-10 — order after H7.** The default order stands: H4 first, as
+registration 005. It is the cheapest test on the list, and it is also the
+most compromised one. 003 T1 and 004 already reported the 60- and 240-minute
+horizons on this year, so the 120-minute hold is chosen with part of the
+answer in view. 005 therefore asks for a stricter z (2.33) than a single
+trial would, and its decision table spends the holdout only if discovery
+clears the H7 bar of 25 bp per event; otherwise the holdout stays sealed.
+Running alongside it, at no data cost and with no outcome computed: two
+feasibility scouts. One checks what Binance's public archive actually holds
+for H2. The question that decides H2's design is whether the historical
+liquidation files exist for this year and are complete or sampled. The other
+checks whether H11's first measurement (the share of lending-protocol
+liquidations won outside the top ten) can be taken from free, keyless
+endpoints. H1 stays parked until H2 or H4 shows a realisable ≥ 25 bp.
+
+**2026-10-10 — H2 cannot be run as designed; it folds into H3.** The scout
+(`research/copytrade/scouts/h2-binance-data.md`; listing re-checked by the
+orchestrator) found that Binance publishes **no USDⓈ-M liquidation
+history**. The `liquidationSnapshot` dataset exists only for coin-margined
+contracts, from 2023-06-25 to 2024-10-14, and it is a recording of the
+throttled stream: at most one liquidation per second per symbol, the
+latest, not the largest. Bybit and OKX publish free tick trades but no
+liquidation history. So no venue other than Hyperliquid gives a median
+forced print, and H2's upper bound cannot be measured anywhere else. What
+the data does allow is H3 without the paid input. The Hyperliquid tape we
+hold locally already has every forced fill to the millisecond, and Binance
+aggTrades are free ticks (23.9 GB for the six symbols over the discovery
+window; 4.6 GB more in the holdout range, not to be pulled). H3's
+requester-pays 1-second candles are therefore unnecessary. The question
+"does the overshoot exist on deep venues, and how fast does it close?"
+becomes one measurement: Hyperliquid's cascade clock, and Binance's ticks
+around it at +1 to +60 s. The pull needs the owner's approval on size
+(free, but over 1 GB). A Binance-only cascade definition (trade bursts plus
+5-minute open-interest drops) is kept as a possible secondary, because its
+labels are noisy. One accident is recorded in `000b`: an OKX probe printed
+100 liquidations dated inside the holdout period.
