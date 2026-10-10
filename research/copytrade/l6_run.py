@@ -77,7 +77,7 @@ def build_triggers():
     for coin in sorted(daily):
         if coin not in table:
             continue
-        fills = c.execute(f"SELECT t, direction, notional, price FROM read_parquet('{LIQ}') WHERE coin = ? ORDER BY t", [coin]).fetchall()
+        fills = c.execute(f"SELECT t, direction, notional, price FROM read_parquet('{LIQ}') WHERE coin = ? ORDER BY t, trade_id", [coin]).fetchall()
         own = liq.trailing_median_fn(daily[coin])
         thr = lambda t, own=own: (lambda m: max(TRIG_FLOOR, TRIG_FRAC * m) if m else None)(own(t) or fallback(t))
         runs = liq.runs(fills, TRIG_WINDOW)

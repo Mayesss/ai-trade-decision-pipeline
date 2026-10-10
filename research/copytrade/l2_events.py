@@ -47,7 +47,7 @@ def main():
             stats['unmapped'] += 1
             continue
         stats['coins'] += 1
-        fills = c.execute(f"SELECT t, direction, notional, price FROM read_parquet('{LIQ}') WHERE coin = ? ORDER BY t",
+        fills = c.execute(f"SELECT t, direction, notional, price FROM read_parquet('{LIQ}') WHERE coin = ? ORDER BY t, trade_id",
                           [coin]).fetchall()
         own = liq.trailing_median_fn(daily_all[coin], days=30)
         used_fallback = set()
