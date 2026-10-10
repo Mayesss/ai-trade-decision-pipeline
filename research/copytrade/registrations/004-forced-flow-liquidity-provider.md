@@ -1,8 +1,10 @@
 # 004 — Forced-flow liquidity provider on Hyperliquid: ladder at depth, hold only forced fills, exit when the flow ends; and the cross-venue capture
 
-**Status: DRAFT — not registered.** It becomes the registration in the commit
-that changes this line to `REGISTERED <date>` after the owner has approved
-every item in §9. Until then no forward return is computed for any order.
+**Status: REGISTERED 2026-10-10** (owner: "approved", D1–D10 as proposed
+in §9). This commit is the registration: architecture from 001–003's
+results, thresholds from behaviour-only distributions, mechanics checked on
+synthetic data, no forward return computed for any order before it. Any
+later change is an amendment, allowed only before an outcome exists.
 
 Plan: `docs/copy-trade-plan-2026-10-07.md`. Prior ledger entries `001`–`003`
 (eleven trials on this discovery year). Owner, 2026-10-09/10: no knob
@@ -127,9 +129,9 @@ One bear year; the holdout decides.
 Everything listed under "Reported" in §4 and §5; by rung; by side; by
 monthly regime label; triggers skipped by the stress switch and by gross.
 
-## 9. Owner decisions before this becomes REGISTERED
+## 9. Owner decisions — approved 2026-10-10 as proposed
 
-| # | item | proposed |
+| # | item | approved |
 |---|---|---|
 | D1 | rungs and sizes | 0.5 / 1.0 / 1.5% beyond the first print, sizes 1 : 2 : 3 |
 | D2 | order life | until 60 s after the run's last liquidation print, at most 300 s; posted 2 s after the trigger |
