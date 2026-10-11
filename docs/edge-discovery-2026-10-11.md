@@ -23,7 +23,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT: review found 1 blocker + 6 major; Revision 1 in progress** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 Revision 1 done; second review running** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -301,6 +301,25 @@ Orchestrator decisions:
   depositors, as recommended to the owner.
 - **Criterion 2:** two versions go to the owner with their power.
 - All minor findings are fixed. Count reads are recorded in `000e`.
+
+**2026-10-11 — 007 Revision 1: fixable design, weak holdout.** All
+first-review findings were addressed. The tests pass (89/89). Eligible
+vault counts per window, full set / outside-depositor set:
+99/79/63/72 and 74/64/50/54. No vault-window is unmeasurable.
+- **Discovery joint power** (outside set, NAV attenuation and the market
+  factor included): 0.55 at IC 0.2 with criterion 2 as D > 0, and 0.36
+  with D/SE ≥ 1.64.
+- **The bear-year null** (score correlated −0.4 with exposure) passes
+  criterion 1 in 30% of runs uncontrolled. Exposure terciles bring it to
+  12%, and the clustered Z to 5%. All five criteria together pass 1% of
+  the time.
+- **The holdout is weak.** Confirm power is 0.18–0.27 at IC 0.2, and end
+  to end 0.13 at IC 0.2 or 0.42 at IC 0.3. As designed, the holdout can
+  confirm only a large effect.
+- **Second review** checks the drafter's random-effects clustered Z (τ²
+  over 4 windows risks being anti-conservative), the behavioural closure,
+  the entry rule, and a holdout extended with forward windows as an owner
+  option.
 
 ## 5. Data inventory
 
