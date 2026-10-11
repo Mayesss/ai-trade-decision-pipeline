@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 Revision 2 done; under independent review**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 review: 1 blocker + 5 major; Revision 3 in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -449,6 +449,30 @@ orchestrator.)
   liquidations is still open. Effect-exists odds rise (2 in 3 → 3 in 4).
   Deployable stays 1 in 3: the compressed 2025–26 regime and capacity
   decide that.
+
+**2026-10-11 — 009 review: F2 dies on its own cost gate, and 009 must run
+before 010.** (`registrations/reviews/009-review.md`)
+- **B1, the overlap.** 010's `data/carry/` holds Binance funding and prices
+  over 009's holdout A, outside 009's guard. Ledgered as `000g`.
+  **Ordering rule:** no 010 outcome on Binance data from 2024-01-01 on until
+  009's holdout A is read or closed. 009 runs first, and neither reads the
+  other's data directory.
+- **M1, drift costs.** Re-sizing drifted holdings adds about 1.8 bp a week,
+  so the 28-day contracts F2 costs about 16.8 bp and fails the 15 bp gate,
+  whose intent was the full cost. **F2 is dropped**, with no more variants:
+  that would be gate-chasing. Four variants are on record, all rejected on
+  behaviour. **The family is F1 alone, z = 1.645.**
+- **M2.** F1's book has about −0.1 beta. A market factor goes into the
+  simulations, and a beta-adjusted net > 0 becomes a condition of the
+  holdout-A pull.
+- **M3.** The holdout-A path is built and guarded now (it needs a pass row
+  plus an owner approval line).
+- **M4.** Two outcome-adjacent statistics are disclosed (`000g`).
+- **M5.** A positive net at 2× slippage becomes a condition of the
+  holdout-A pull.
+- **ICP.** It was wrongly excluded by a metrics gap. F1 needs no metrics.
+- **Checked sound:** point-in-time, the funding sign, delisting exits, the
+  tie fix, the split, and no gate-chasing up to Revision 2.
 
 ## 5. Data inventory
 
