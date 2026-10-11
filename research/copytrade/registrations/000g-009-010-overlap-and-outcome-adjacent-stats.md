@@ -48,3 +48,21 @@ programme-wide:** no registration computes outcomes on Binance data inside
 009's holdout A until 009's holdout A reaches a terminal state (discovery
 fail, conditions unmet, owner decline, or read). 009 and 010 read only
 whitelisted directories of their own.
+
+## Addendum 2 (2026-10-11, 009 Revision 4)
+
+- **A third outcome-adjacent statistic in 009 drafting.** The market-move
+  statistics used in the power simulations are realised equal-weight
+  market returns over the discovery outcome windows, not paired with any
+  signal. From them, the implied beta P&L of F1's book is about +1.5 bp a
+  week. They set no 009 parameter. The beta-adjusted pull condition
+  (D13 a) exists because of this kind of exposure.
+- **The terminal states** that unlock other registrations' outcomes on
+  Binance data dated 2024-01-01 → 2025-07-28 are these 009 rows in
+  `results.jsonl`, checked across the tree and `git log --all`:
+  - a discovery `close`;
+  - a discovery `close_conditions_unmet`;
+  - `holdout_A_declined`;
+  - `holdout_A`.
+
+  010's `ordering_failures` is aligned to these.
