@@ -23,7 +23,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT done; under independent review** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT: review found 1 blocker + 6 major; Revision 1 in progress** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -280,6 +280,27 @@ pays only the maker side, at lending-like returns.**
   rule (favourites ≥ 90¢, ≤ 10-day horizon), discovery 2025-05 →
   2026-06, 2026-07 → sealed. The pull (post-paper period only, size to be
   listed first) goes to the owner with the next decision bundle.
+
+**2026-10-11 — 007 review: not ready. A distribution is not a closure;
+the holdout moves to two clean windows.** The independent review
+(`registrations/reviews/007-review.md`) found one blocker, which the
+orchestrator re-counted from event types and times: 61 of 196 vault
+ledgers show a distribution, 15 show two or more, and 16 took deposits
+after their first. Treating a first distribution as closure would have cut
+returns at a leader-chosen time and leaked lookback NAV into one outcome.
+Orchestrator decisions:
+- **Closure** is defined by behaviour, and distributions are outflows.
+- **No grid point before S, ever.** Vault-windows that cannot be measured
+  are imputed neutrally and counted, and the run stops if they exceed 5%.
+- **Market factor.** It enters the null and power simulations, and
+  criterion 1 is weighted within long-bias terciles, as in 001 T1.
+- **HLP** is compared over the same unscaled interval.
+- **Holdout** is S = 2026-07-06 and 2026-08-31: no overlap with discovery,
+  read after 2026-10-26.
+- **Deposits open at S:** the eligible set requires evidence of outside
+  depositors, as recommended to the owner.
+- **Criterion 2:** two versions go to the owner with their power.
+- All minor findings are fixed. Count reads are recorded in `000e`.
 
 ## 5. Data inventory
 
