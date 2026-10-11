@@ -23,7 +23,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **drafting 007** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT done; under independent review** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -149,10 +149,12 @@ only place the 001 score can be computed, and the pre-archive years cannot
 carry it.** (`research/copytrade/scouts/l1-vaults.md`)
 - **Selectable vaults** (≥ 20 trips in 91 d, equity ≥ $10k): the scout
   counts 158 / 131 / 114 / 121 at the four 001 selection dates with a
-  snapshot ≤ 7 d in the lookback. The orchestrator's recount with 001's own
-  eligibility rule (`equity_age_h ≤ 168` in `features_<S>.parquet`) gives
-  258 at 2025-10-27 and 158 at 2026-04-13. The registration fixes one
-  definition. At ≥ $100k: about 40–80.
+  snapshot ≤ 7 d in the lookback. *(Correction, 2026-10-11: the
+  orchestrator's first recount of 258 / 158 was wrong. `equity_age_h` is
+  negative (snapshot before S), so `≤ 168` filtered nothing. The 007
+  drafter's count with the sign applied, plus 001's maker and
+  fills-per-day caps and the distribution rule, is **92 / 73 / 59 / 68**,
+  171 distinct vaults.)* At ≥ $100k: about 40–50.
 - **Vaults hold for a median of 8–14 h**, so they belong to 001's *day*
   bucket, not its slow one. That makes the light *more* pointed, not less:
   001 T2b found day-trader skill persists (IC Z 7.5) but decays within the
