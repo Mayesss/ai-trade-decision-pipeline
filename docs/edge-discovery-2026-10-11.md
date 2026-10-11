@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 DRAFT done; Revision 1 (turnover) in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 Revision 2 done; under independent review**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **010 DRAFT done; under independent review** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -411,6 +411,20 @@ and half of it is reversal.**
   entry counts.
 - **The HL fetch.** It stalled for 6 h after the machine slept, and was
   killed and resumed with timeouts. 0 holdout rows were received.
+
+**2026-10-11 — 009 Revision 2: F2 in contracts clears the gates
+narrowly.** Verified by the orchestrator in `describe.json`:
+- buffered cost 14.93 bp a week (gate 15);
+- rank autocorrelation 0.516 (gate 0.5);
+- Spearman with minus the past 28-day return 0.20 (the value version had
+  0.53);
+- contracts vs value 0.90.
+
+The variants tried on behaviour data only are all recorded: 7-day value
+(rejected on turnover), 28-day value (reversal-laden, now reported only)
+and 28-day contracts (primary). Power: end to end at weekly IC 0.03 is 0.09
+(F1) / 0.08 (F2), and at IC 0.05 0.52 / 0.48. Under the null, P(pass)
+≤ 0.013. 88 of 88 tests pass. Independent review started.
 
 ## 5. Data inventory
 
