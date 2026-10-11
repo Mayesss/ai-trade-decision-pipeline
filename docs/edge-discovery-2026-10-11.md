@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 second review: 4 cheap majors; Revision 4 in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 DRAFT Revision 4 committed; decision table with the owner**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -501,6 +501,18 @@ before 010.** (`registrations/reviews/009-review.md`)
   registration.
 - **010's ordering lock could deadlock.** It now unlocks on any terminal
   009 state.
+
+**2026-10-11 — 009 ready for the owner.** Revision 4 fixed the second
+review's majors. The orchestrator checked:
+- 127 of 127 tests pass;
+- the reviewer's bypasses are refused as tests;
+- reads are whitelisted.
+
+`000g` is aligned to D17's four terminal states. End-to-end power
+(σ_IC 0.15): 0.025 / 0.09 / 0.52 at weekly IC 0.02 / 0.03 / 0.05. The null
+passes end to end ≤ 0.1%. Odds that 009 yields a confirmed deployable edge:
+about 1 in 10, for the same reason as 007. The test sees only a large
+premium.
 
 ## 5. Data inventory
 
