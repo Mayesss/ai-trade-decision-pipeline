@@ -21,12 +21,12 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L1 | Vault allocation on Hyperliquid (skill persistence, no copy latency) | scout done (§4); archive-year design proposed | 1 in 3 | 1 in 4 | NAV-like; vaults can be leveraged single-regime bets; closure tail |
-| L2 | Funding / basis carry across venues | scout done (§4); **blocked on venue access** | likely (2023–24), compressed since | 1 in 5 | ~1–2%/yr unconditional net in 2025–26, below HLP's lending leg |
-| L3 | Inverted 001 T3 positioning, holdout-only | **held** until the L1 scout reports (holdout allocation) | 1 in 5 | — | rally holdout is a hard test |
-| L4 | Multi-year cross-sectional factors from free Binance data | scout done (§4); discovery pull 1.54 GB awaits owner | 1 in 4 | 1 in 3 if it exists | weekly book |
-| L5a | Funding-settlement effects (price and flow around funding timestamps) | **parked** 2026-10-11 (§4): documented edge ~0.5 bp vs ≥ 9 bp round trip | 1 in 10 | 1 in 10 | cost-bound |
-| L5b | Prediction-market favourite–longshot bias | **closed** 2026-10-11 (§4): no lawful venue for a German resident | — | — | — |
+| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **drafting 007** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L5b | Prediction-market favourite–longshot bias (Kalshi first) | **reopened: scout** | 1 in 2 | 1 in 5 | uncorrelated with crypto; fees at the tails and lock-up |
+| L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
+| L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
 
 **Why L5a could be consistent:** funding is a scheduled, mechanical cash
 flow, and traders act around it every settlement, every day. **Why L5b could
@@ -223,6 +223,31 @@ re-read the core quantiles in `data/scout_l2/analysis.txt`.)
 - **Exposure.** A pre-existing Bitget funding cache, entirely holdout-dated,
   was printed (15 ARB rows); recorded in `000d`. The orchestrator's brief
   had pointed at that cache.
+
+**2026-10-11 — owner: legality is a warning, not a blocker; lights
+re-ranked.** The owner reports that Bitget and Binance work for them, says
+exchanges enforce their own feature bans, and notes they are not a German
+citizen. Jurisdiction is now one warning line per light. A venue's *own*
+geoblock is still a practical fact: Polymarket is close-only for Germany,
+by the venue. Owner approved the L4 discovery pull (1.54 GB). Consequences:
+- **L4 moves to first.** It can be executed on Binance itself (the deepest
+  book, 5 bp taker), so deployability rises. Funding carry joins the family
+  as a factor: it is a documented crypto premium, and it is the
+  single-venue form of L2. Effect 1 in 3, deployable 2 in 5.
+- **L2 reopens as 010.** Every pair of HL, Binance, Bybit and OKX is usable.
+  Discovery is 2023-06 → 2024-12 (wide spreads), holdout 2025-01 →
+  2026-06-30 (the compressed regime, a hard and realistic test), and
+  2026-07 → stays sealed. The scout's unconditional quantiles and sign-flip
+  counts covered all years: this is disclosed, and they set no parameter.
+  Bitget has no date-bounded history, so it is excluded from testing.
+- **L5b reopens on Kalshi.** Bürgi, Deng & Whelan, *Makers and Takers: The
+  Economics of the Kalshi Prediction Market* (CEPR DP20631; 300k+
+  contracts; checked by the orchestrator) document a favourite–longshot
+  bias on Kalshi, larger for takers' prices, and shrinking over time. A
+  scout checks access for a non-US resident, fees, history and capacity.
+  Polymarket is venue-geoblocked for Germany and is kept as research data.
+- **L1 and L3 are unchanged.** Hyperliquid was always treated as usable.
+- **L5a stays parked,** for economics, not legality.
 
 ## 5. Data inventory
 
