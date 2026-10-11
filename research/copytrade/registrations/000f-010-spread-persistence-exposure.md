@@ -48,3 +48,21 @@ no price gap and no cost was computed.
 - Briefs that allow counts must name the forbidden conditionings: no count
   split by position state, or by any future of the signal.
 - `--events` modes print only unconditional counts before the guard.
+
+## Addendum (2026-10-11, 010 Revision 1)
+
+Further reads while drafting 010. All are end-bounded, and 0 rows dated on
+or after 2026-07-01 were received.
+- HL 8h candles for 213 coins to 2026-06-30 (`candleSnapshot`), plus 6
+  bounded probes.
+- HL funding 2025-01 → 2026-06 for the 80 coins whose own HL volume meets
+  the floor.
+- Bybit timestamp and existence metadata on the panel.
+- The two scout name lists, snapshotted into `data/carry/inputs/`.
+- **Printed once before removal:** "edge" counts of 1,118 (discovery) and
+  614 (exposed block). These are qualifying decisions on coins not held,
+  near a span end. They are unconditional on position state, and they set
+  nothing.
+- **Residual trace (drafter's note).** Yearly "opened" counts carry a faint
+  persistence signal through re-entry after exit. Counts only. Accepted
+  and disclosed; nothing is set from them.
