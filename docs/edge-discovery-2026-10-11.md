@@ -23,9 +23,9 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 FAIL → close** (net +16.9 bp/wk, t 0.62); holdout A unread; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 FAIL → close** (T1 −2.4%/yr, t −2.6; T2 +2.96%/yr misses 3% bar); HL-pair lead +5.6%/yr (reported); forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 REGISTERED; run stopped at a variant's gate (wiring fault, primary unseen); amendment awaits owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 FAIL → close** (Z 1.97; top −4.0%/hold, −5 pp vs HLP; market-adjusted Z 0.03); holdout unread | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
-| L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
+| L3 | Inverted 001 T3 positioning, holdout-only | **unblocked** (L1 closed without reading the HL holdout); awaits owner go-ahead to draft 008 | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
 
 **Why L5a could be consistent:** funding is a scheduled, mechanical cash
@@ -619,6 +619,36 @@ able to answer its question.
   on unread data (2026-07-01 → 2026-12-31, the window 010 never read). It
   is a new trial in the L2 family (count 3), and its post-hoc selection is
   stated.
+
+**2026-10-11 — 007 result: FAIL, close. L1 closes; HL year at 15 trials,
+no pass.** (registration, Result §)
+- **Amendment 1, owner-approved.** The gate applies to the primary only.
+  The re-run on commit `6cbd80f` passed every gate: unmeasurable 11/242.
+- **Criterion 1 fails.** Z 1.97, window t 1.21, 2/4 positive.
+- **The top quintile lost money.** It made −4.0% per hold and trailed HLP
+  by 5.0 pp.
+- **Decile means are all negative,** −21% → −4%: loser persistence, as in
+  001.
+- **The market-adjusted IC is Z 0.03.** The raw IC in windows 1–2 was the
+  top vaults' low BTC beta (−0.01 vs 0.10) in a falling market.
+- **Reading.** Depositing removes copy latency, but the persistent part of
+  skill is losing, and the top earns nothing net of the market. Holdout B
+  is never read.
+
+**State of the programme after the first round (2026-10-11).**
+- **Three registrations run, three closes:**
+  - 007 (HL year, trial 15);
+  - 009 (Binance 2021–23, trial 1);
+  - 010 (L2, trials 1–2).
+- **No holdout read anywhere.** The HL holdout is still sealed and is now
+  free for L3.
+- **The leads that remain:**
+  - the HL–CEX carry block (+5.6%/yr reported in 010; 012 drafting, to be
+    decided on unread 2026-07+ data);
+  - the funding-carry cash flow itself (about 19%/yr gross in 009, eaten
+    by price, costs and noise);
+  - Kalshi maker-side longshot (candidate 011);
+  - L3 (holdout-only, about $1 of data).
 
 ## 5. Data inventory
 
