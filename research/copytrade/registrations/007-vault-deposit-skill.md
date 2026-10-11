@@ -649,7 +649,7 @@ values (2026-10-11), recomputed at the REGISTERED commit.
 |---|---|
 | `ct/__init__.py` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `ct/vaults.py` | `8919fbe59d4e9157d50e02189cad01587c93be539c05b6be16e8398db81f40e7` |
-| `r007_run.py` | `69427d000ff6baa95732dc9caf646466092f9f70685045415189c1b706b93573` |
+| `r007_run.py` | `da82228097031098a361a47650a966766a1c57edbc923dcd5071e7b2ce456905` |
 | `ct/scores.py` | `1786a8ccfd2835c4ff058175bc779c168ef2c459bf79e050a5adbdbb0f3122e6` |
 | `ct/stats.py` | `bfcc85f285dc7af28f364e2d77e0fbe04b6c2367724f4b822b7fbf6ff435d472` |
 | `ct/leaders.py` | `378fbf403e8c372c2d2795b5b19c256199a1dc9360b8c6a4da55803f501ed329` |
@@ -725,3 +725,30 @@ depositors 74 / 64 / 50 / 54; full 99 / 79 / 63 / 72). It then exited with:
   criteria. Then one re-run on the same data, which deterministically
   recomputes the same unseen primary. The amendment changes
   `r007_run.py`'s hash; §8 is updated in the amendment commit.
+
+## Amendment 1 (2026-10-11, owner: "1 then 2" — amend 007, after run note 1)
+
+**The change.** The 5% unmeasurable gate applies to the PRIMARY population
+only, as §5 and D16 define it ("the rows are the D2 population").
+- `assemble()` takes `gate=True`. The reported full-population variant is
+  called with `gate=False`: it reports `unmeasurable_gate_pass` and its
+  counts by reason, and never stops the run.
+- Nothing else changes: code path, data, manifest, criteria, seeds and
+  population are as registered.
+- `r007_run.py`'s SHA-256 in §8 moves from `69427d000ff6…` to `da8222809703…`.
+  `ct/vaults.py` and every other hash are unchanged.
+
+**Why this is an amendment, not a re-tuning.** No 007 outcome has been
+seen (run note 1). The primary computed in memory during the first start
+was never printed, logged or written. The re-run recomputes it
+deterministically from the same code and data. The amendment fixes which
+population the stop applies to and changes no number that decides
+anything.
+
+**Tests.**
+- New: a reported variant with 16/242 unmeasurable does not stop and
+  reports its gate failed. `main()` calls the primary with the gate and
+  the variant without it.
+- The existing primary-stop test (16/242 stops) still passes.
+- The stale state check "the real guard refuses today (DRAFT)" fails by
+  design since REGISTERED. It is left as is, pending the owner.

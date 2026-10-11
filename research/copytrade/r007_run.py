@@ -191,15 +191,17 @@ def rows_for(per_window, variant='primary', score='score', control='control', ke
     return out
 
 
-def assemble(per_window, hlp, placebo_seeds=200, n_boot=1000, z_boot=1000, version=VERSION):
+def assemble(per_window, hlp, placebo_seeds=200, n_boot=1000, z_boot=1000, version=VERSION, gate=True):
     """per_window: {S: [{'vault', 'leader', 'score', 'score_xr', 'score_sharpe', 'n_trips', 'long_bias',
     'control', 'equity', 'outside', 'out': {variant: hold_return dict, 'c3': net or None}, 'hold_t',
     'hold_size_weighted'}]}; hlp: {S: HLP return over its in-hold interval}.
-    Returns the result block; raises SystemExit if more than 5% of vault-windows are unmeasurable."""
+    Returns the result block; raises SystemExit if more than 5% of vault-windows are unmeasurable and
+    gate is True (the PRIMARY only, Amendment 1: a reported variant reports its gate, never stops the run)."""
     raw = rows_for(per_window)
     n_total = sum(len(r) for r in raw.values())
     prim, n_unmeas = V.impute_unmeasurable(raw)
-    if not V.unmeasurable_gate(n_unmeas, n_total):
+    gate_ok = V.unmeasurable_gate(n_unmeas, n_total)
+    if gate and not gate_ok:
         raise SystemExit(f'unmeasurable gate: {n_unmeas} of {n_total} vault-windows (> 5%) — no criterion computed')
     res = V.summarise(prim, hlp, placebo_seeds=placebo_seeds, n_boot=n_boot, z_boot=z_boot, version=version)
     reasons = {}
@@ -225,6 +227,7 @@ def assemble(per_window, hlp, placebo_seeds=200, n_boot=1000, z_boot=1000, versi
                               'c3_missing': sum(1 for r in rows if r['out'].get('c3') is None)}
                      for s, rows in per_window.items()}
     res['unmeasurable_total'] = {'n': n_unmeas, 'of': n_total}
+    res['unmeasurable_gate_pass'] = gate_ok
     rep = {}
     flat = [r for rows in prim.values() for r in rows]
     rep['top_half_ic'] = {str(s): stats.top_half_ic([(r['score'], r['net'], r['control']) for r in rows]) for s, rows in prim.items()}
@@ -350,7 +353,7 @@ def main():
         print(f'{sel}: {len(per_window[sel])} vaults ({POPULATION}), {len(rows)} full', flush=True)
     res = assemble(per_window, hlp)
     res['reported']['full_population'] = {k: v for k, v in assemble(per_window_full, hlp, placebo_seeds=0, n_boot=1000,
-                                                                     z_boot=0).items() if k != 'reported'}
+                                                                     z_boot=0, gate=False).items() if k != 'reported'}
     res['reported']['common_spans'] = {str(s): v for s, v in spans.items()}
     betas = btc_betas({a: grids[a] for a in vaults}, btc)
     labels = V.label_top({s: [{'vault': r['vault'], 'score': r['score']} for r in rows if r.get('score') is not None]

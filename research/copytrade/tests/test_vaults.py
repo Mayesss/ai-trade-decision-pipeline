@@ -750,6 +750,12 @@ def assembly_checks():
     except SystemExit:
         stopped = True
     check('16 of 242 unmeasurable (6.6%): the run stops before any criterion', stopped)
+    e = r007_run.assemble(per_window(0.5, 1, unmeas=4), hlp, placebo_seeds=0, n_boot=50, z_boot=50, gate=False)
+    check('Amendment 1: a REPORTED variant with 16 of 242 unmeasurable does not stop the run; it reports its gate as failed',
+          e['unmeasurable_gate_pass'] is False and e['unmeasurable_total'] == {'n': 16, 'of': 242})
+    src = (Path(r007_run.__file__)).read_text()
+    check('Amendment 1: main() calls the primary assemble with the gate on and the full-population variant with gate=False',
+          src.count('assemble(per_window, hlp)') == 1 and src.count('z_boot=0, gate=False)') == 1)
     check('reported blocks present (incl. sqrt(n), trip-count control, >= $100k, winsorised, version b)',
           all(k in a['reported'] for k in ('score_over_sqrt_n', 'control_trip_count', 'equity_ge_100k', 'winsorised_2_5pct',
                                            'criterion2_version_b', 'size_weighting_and_activity', 'top_quintile_capacity',
