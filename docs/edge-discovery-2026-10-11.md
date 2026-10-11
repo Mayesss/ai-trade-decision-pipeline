@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L1 | Vault allocation on Hyperliquid (skill persistence, no copy latency) | scout running | 1 in 3 | 1 in 4 | NAV-like; vaults can be leveraged single-regime bets; closure tail |
+| L1 | Vault allocation on Hyperliquid (skill persistence, no copy latency) | scout done (§4); archive-year design proposed | 1 in 3 | 1 in 4 | NAV-like; vaults can be leveraged single-regime bets; closure tail |
 | L2 | Funding / basis carry across venues | scout running | likely | 1 in 2 | low single digits net, capacity-limited; leg liquidation in a spiral |
 | L3 | Inverted 001 T3 positioning, holdout-only | **held** until the L1 scout reports (holdout allocation) | 1 in 5 | — | rally holdout is a hard test |
 | L4 | Multi-year cross-sectional factors from free Binance data | scout done (§4); discovery pull 1.54 GB awaits owner | 1 in 4 | 1 in 3 if it exists | weekly book |
@@ -144,6 +144,50 @@ start date was re-checked by the orchestrator on the public listing.)
   `data/cache/bg-first-day`; also Hyperliquid), and must cost the trade at
   that venue.
 
+**2026-10-11 — L1 scout: vaults are day traders, the archive year is the
+only place the 001 score can be computed, and the pre-archive years cannot
+carry it.** (`research/copytrade/scouts/l1-vaults.md`)
+- **Selectable vaults** (≥ 20 trips in 91 d, equity ≥ $10k): the scout
+  counts 158 / 131 / 114 / 121 at the four 001 selection dates with a
+  snapshot ≤ 7 d in the lookback. The orchestrator's recount with 001's own
+  eligibility rule (`equity_age_h ≤ 168` in `features_<S>.parquet`) gives
+  258 at 2025-10-27 and 158 at 2026-04-13. The registration fixes one
+  definition. At ≥ $100k: about 40–80.
+- **Vaults hold for a median of 8–14 h**, so they belong to 001's *day*
+  bucket, not its slow one. That makes the light *more* pointed, not less:
+  001 T2b found day-trader skill persists (IC Z 7.5) but decays within the
+  hour for a follower. A depositor has zero lag. Depositing is the one design
+  that keeps the part 001 showed is lost to latency. The size-weighting risk
+  (§3.1) still stands.
+- **Capacity at < 10% of vault equity:** 41–51 vaults per window for $10k,
+  12–17 for $50k, 2–5 for $250k. Deployable size is tens of thousands, not
+  hundreds.
+- **Pre-archive years cannot carry the 001 score.** `allTime` has one point
+  every 7–14 days, and the grid continues after closure. API fills are cut
+  off by retention for active vaults. A pre-archive design could rank only
+  on coarse NAV, which is not the persistent fact, so it is dropped as
+  primary.
+- **NAV is reconstructable in the archive year.** Depositor flows appear on
+  the vault's own ledger (`vaultDeposit`/`vaultWithdraw`, endTime-bounded),
+  and equity is in the snapshots (for vaults with an open position). The
+  `allTime` grid truncated at the cutoff is the cross-check. Closure proxy:
+  the first `vaultDistribution`. The list looks complete: 0 of 1,064
+  leader-created vaults are missing.
+- **Terms (today's docs, "legacy" vaults):** 10% profit share, ≥ 5% leader
+  ownership, 1-day lock-up, withdrawals force up to 20% position closes, no
+  documented caps.
+- **Design consequence.** L1 runs on the archive year: the 001 score from
+  fills over the lookback, and depositor NAV over the hold. It would be
+  **trial 15** on that year. A pass only earns the holdout read. **Holdout
+  allocation (decided here):** L1 and L3 both need the same Hyperliquid
+  holdout pull (fills and snapshots, requester-pays, ~12 GiB). It is pulled
+  once, after the rules that use it are REGISTERED. L3 is holdout-only; L1
+  reads it only on a discovery pass. The holdout family count is stated in
+  both.
+- **Exposure.** The local `snapshot_accounts.parquet` holds holdout-period
+  rows (8.65 M). The scout saw counts only; recorded in `000c`. Every reader
+  filters in the query.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
@@ -153,7 +197,7 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 | asset | where | coverage | notes |
 |---|---|---|---|
 | HL fills, every account | `data/archive`, `data/pruned` | 2025-07-28 → 2026-06-30 | 43 GiB; vault addresses included (001 excluded them by list) |
-| HL daily account values | `data/derived/hyperliquid/snapshot_accounts.parquet` | 286 discovery snapshots | `user, account_value, gross/net_notional`; gives vault equity point-in-time |
+| HL daily account values | `data/derived/hyperliquid/snapshot_accounts.parquet` | 286 discovery snapshots **+ ~98 holdout snapshots (filter `snapshot_ms < 1782864000000`)** | `user, account_value, gross/net_notional`; gives vault equity point-in-time |
 | HL vault list | `data/cache/hl-vaults` | cached 2026-10-08 | holdout fields present: see §3.2 |
 | HL funding | `data/cache/hl-funding` | 2025-10-20 → | |
 | Binance aggTrades + bookDepth, 6 coins | `data/binance` | HL-cascade days only | not contiguous |
@@ -162,7 +206,7 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 
 | scout | file | started | state |
 |---|---|---|---|
-| L1 vaults | `scouts/l1-vaults.md` | 2026-10-11 | running |
+| L1 vaults | `scouts/l1-vaults.md` | 2026-10-11 | done; exposure ledgered as `000c` (counts only) |
 | L2 carry | `scouts/l2-carry.md` | 2026-10-11 | running |
 | L4 Binance multi-year | `scouts/l4-binance-years.md` | 2026-10-11 | done |
 | L5 desk | `scouts/l5-desk.md` | 2026-10-11 | done |
