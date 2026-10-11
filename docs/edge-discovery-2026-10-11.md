@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 Revision 3 done (F1 alone); 3a + re-review next**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 second review: 4 cheap majors; Revision 4 in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -488,6 +488,19 @@ before 010.** (`registrations/reviews/009-review.md`)
 - **Revision 3a.** On the drafter's evidence (a mean-only beta condition
   removes only half of the beta-only false pulls), the holdout-A pull
   condition becomes a beta-adjusted NW t ≥ 1.645. Then the re-review.
+
+**2026-10-11 — 009 second review: no blocker, four cheap fixes.**
+- **The holdout-A guard checked only a label.** It now recomputes the
+  decision from the committed row and requires the owner's approval to
+  come after the row.
+- **Unhashed pull code and listings** are now hashed.
+- **Holdout A decided at 1× cost only.** It now adds the 2×-slippage
+  condition.
+- **Two more local Binance stores lie inside 009's holdouts.** They are
+  disclosed (`000g` addendum), and reads are now whitelisted for every
+  registration.
+- **010's ordering lock could deadlock.** It now unlocks on any terminal
+  009 state.
 
 ## 5. Data inventory
 

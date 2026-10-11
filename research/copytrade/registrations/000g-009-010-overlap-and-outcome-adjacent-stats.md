@@ -32,3 +32,19 @@ B1 and M4).
 - F2 is dropped from 009 (rejected on turnover with drift costs included;
   see 009 Revision 3). The F2 statistics above therefore decide nothing
   further.
+
+## Addendum (2026-10-11, after the second 009 review)
+
+Two more programme-local stores hold Binance data inside 009's holdout
+periods:
+- `data/scout_l2/binance/funding` holds 213 symbols' funding, including
+  seven holdout-A months. The L2 scout printed only aggregate yearly
+  medians and HL-minus-CEX quantiles from it.
+- `data/binance/um` holds six majors' aggTrades on HL-cascade days inside
+  holdout B (006's data).
+
+Neither has been used for any 009 statistic. **The ordering rule is now
+programme-wide:** no registration computes outcomes on Binance data inside
+009's holdout A until 009's holdout A reaches a terminal state (discovery
+fail, conditions unmet, owner decline, or read). 009 and 010 read only
+whitelisted directories of their own.
