@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 review: 1 blocker + 5 major; Revision 3 in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 Revision 3 done (F1 alone); 3a + re-review next**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -473,6 +473,21 @@ before 010.** (`registrations/reviews/009-review.md`)
 - **ICP.** It was wrongly excluded by a metrics gap. F1 needs no metrics.
 - **Checked sound:** point-in-time, the funding sign, delisting exits, the
   tie fix, the split, and no gate-chasing up to Revision 2.
+
+**2026-10-11 — 009 Revision 3: F1 alone.**
+- **Cost.** 13.4 bp a week including drift (7.0%/yr). 20.0 bp at 2×
+  slippage; 13.8 bp with stress tiers.
+- **F2 rejected.** All four variants fail the gate on drift-inclusive
+  cost: 28.7 / 29.1 / 15.07 / 15.44 bp.
+- **Power, with the market factor** (σ_IC 0.15). End to end 0.03 / 0.11 /
+  0.54 at IC 0.02 / 0.03 / 0.05, needing about 59–122 bp a week gross. The
+  null passes 1.2–2.4% (all five criteria), and end to end ≤ 0.1%.
+- **Universe.** 142 coins a week, 15,169 coin-weeks.
+- **Checks.** 110 of 110 tests pass. Every `data/carry` reference in 009 is
+  a refusal guard, checked by the orchestrator.
+- **Revision 3a.** On the drafter's evidence (a mean-only beta condition
+  removes only half of the beta-only false pulls), the holdout-A pull
+  condition becomes a beta-adjusted NW t ≥ 1.645. Then the re-review.
 
 ## 5. Data inventory
 
