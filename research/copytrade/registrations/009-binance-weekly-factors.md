@@ -875,3 +875,47 @@ are unchanged since the draft.
   market-move statistic.
 - No outcome has been computed for this registration. `results.jsonl` has
   no 009 row.
+
+## 12. Result — 2026-10-11 (run of commit 8371981, `results.jsonl` line 7)
+
+One trial (F1), one-sided z 1.645, Newey–West with 4 lags. 107 signal
+weeks, 15,169 scored coin-weeks. A `discovery_started` row was written
+before the run (line 6). Placebo: signal shuffled across coins within the
+week, costs kept, 200 seeds. Pass share 0.0; criterion-1 share 0.065; IC t
+SD 1.03 (calibrated).
+
+| trial | verdict | the numbers |
+|---|---|---|
+| F1 funding carry, buffered quintile book | **FAIL** (criteria 1, 2, 4) | weekly IC mean **+0.012**, NW t **0.91** (SD 0.127); net **+16.9 bp a week**, NW t **0.62**, median +16.7 bp; halves **−18.7 / +51.8 bp**; without the largest positive month (2023-01) +7.4 bp. Criteria 3 and 5 hold. |
+
+**Decision (D12): `close`.** Not detected at the size this test can see.
+Discovery needs about 60–120 bp a week gross to pass at 50–80% power.
+**F1 closes on this data, and holdout A is not read.** The pull conditions
+were also unmet (beta-adjusted +8.7 bp, t 0.31; the 2× slippage net +10.2
+bp), but they were not reached as a gate. This is a terminal state for
+D17: the ordering lock on other registrations' use of Binance data from
+2024-01-01 on is released.
+
+**Diagnostics (reported; they decide nothing).**
+- **The carry leg pays; the price leg does not.**
+  - Gross +30.4 bp a week = funding received **+37.4 bp** + price
+    **−7.0 bp**. Costs are 13.5 bp, with turnover 1.35 a week.
+  - The short (high-funding) leg made +32.9 bp (t 0.32) and the long
+    (low-funding) leg −16.0 bp (t −0.16).
+  - The funding cash flow is mechanical and large, about 19% a year gross
+    on the book. High-funding coins drift up slightly against the short,
+    which takes back a fifth of it.
+- The book's beta is −0.10.
+- Gross t is 1.10, so even before costs the book is not distinguishable
+  from zero at weekly noise of about 27 bp.
+- The second half (2023) carries the mean; the first half (2022, the bear
+  year with Terra and FTX) is negative.
+
+**What this means.** A cross-sectional funding sort on Binance perps
+collected about 19% a year of funding in 2022–23. It lost a fifth of that
+to price and about 7% a year to trading. What remained, about 8.8% a year
+net, cannot be told apart from zero in 107 weeks. Not a rejection of the
+premium; a test that could only see a large one, and did not.
+
+**Family count.** Binance 2021-12 → 2023: 1 trial, no pass. The
+Hyperliquid discovery year is unchanged at 14 (009 did not read it).
