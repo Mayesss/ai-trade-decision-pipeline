@@ -23,7 +23,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 DRAFT done; Revision 1 (turnover) in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 second review: 2 code fixes; Revision 2 in progress** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -356,6 +356,22 @@ owner's choice.** (`registrations/reviews/007-review-r1.md`)
     only if its buffered cost is ≤ 15 bp a week and its rank
     autocorrelation is ≥ 0.5; otherwise the family is F1 alone at z 1.645.
   - Every citation is verified online or dropped.
+
+**2026-10-11 — 007 ready for the owner.** Revision 2 fixed the second
+review's M-a (window-IC t ≥ 3.182) and M-b (exit by in-hold behaviour only;
+a test perturbs all post-hold data across 300 vaults and no outcome
+changes). The orchestrator re-ran the 101 tests and checked the power
+tables against `power_r2.md`.
+- **Discovery joint power,** recommended version (a): 0.10 / 0.51 / 0.86
+  at IC 0.1 / 0.2 / 0.3. The null passes 0.4%, and the bear-tilted null
+  1.7%.
+- **Holdout CONFIRM at IC 0.2:** A 0.26, B 0.43. The rally-tilted null
+  confirms ≤ 0.4%.
+- **End to end at IC 0.2:** A 0.13, B 0.22.
+- **Recommended:** B, (a), outside depositors, and the market-adjusted
+  outcome reported (not required) in discovery.
+- **Overall odds that 007 yields a confirmed deployable edge:** about 1 in
+  10, at a cost of compute plus a few dollars of holdout data.
 
 ## 5. Data inventory
 
