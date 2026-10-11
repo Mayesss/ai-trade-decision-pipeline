@@ -24,7 +24,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **drafting 007** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
-| L5b | Prediction-market favourite–longshot bias (Kalshi first) | **reopened: scout** | 1 in 2 | 1 in 5 | uncorrelated with crypto; fees at the tails and lock-up |
+| L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
 
@@ -248,6 +248,36 @@ by the venue. Owner approved the L4 discovery pull (1.54 GB). Consequences:
   Polymarket is venue-geoblocked for Germany and is kept as research data.
 - **L1 and L3 are unchanged.** Hyperliquid was always treated as usable.
 - **L5a stays parked,** for economics, not legality.
+
+**2026-10-11 — L5b scout: the bias is real on Kalshi but halving, and it
+pays only the maker side, at lending-like returns.**
+(`research/copytrade/scouts/l5b-kalshi.md`; the paper was read in full.)
+- **The evidence.** In Bürgi, Deng & Whelan's sample (2021 → 2025-04;
+  46,282 contracts), favourites at 91–99¢ returned +0.5% per trade for
+  takers (after fees) and +1.8% for makers (who paid no fee then). The bias
+  is strongest in crypto contracts and not significant in politics or
+  entertainment.
+- **It is shrinking.** The slope was 0.048 in 2024 and 0.021 in
+  Jan–Apr 2025.
+- **Cost arithmetic.** At a 3-month lock-up the cash hurdle is about 1% of
+  stake. The taker side fails (−2%/yr excess). The maker side clears it
+  (+3.4%/yr) only if the edge has not halved. At ≤ 10-day horizons the
+  hurdle vanishes, and market size binds instead: the median contract
+  traded $9k in total, and the median trade was $35.
+- **Access.** Kalshi's help pages accept non-US users with ID KYC. Two third
+  parties read Germany as not restricted; sign-up is unverified. Collateral
+  earns no interest outside the US. Polymarket is close-only for Germany
+  (venue geoblock).
+- **Data.** The archive endpoints need no key (one date-bounded probe
+  returned 200). Full history is about 15–20 GB.
+- **Reading.** The attraction is a clean test: the rule is fixed by a
+  published paper, and every contract after 2025-04 is out of its sample
+  and unread by us. The drawback is economics. The best case is about
+  lending plus a few points, on tens of thousands of dollars. It is ranked
+  after the three drafts. Registration 011 would test the paper's maker
+  rule (favourites ≥ 90¢, ≤ 10-day horizon), discovery 2025-05 →
+  2026-06, 2026-07 → sealed. The pull (post-paper period only, size to be
+  listed first) goes to the owner with the next decision bundle.
 
 ## 5. Data inventory
 
