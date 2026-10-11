@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 DRAFT Revision 4 committed; decision table with the owner**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 Revision 1 done; re-review running**; forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
@@ -513,6 +513,26 @@ review's majors. The orchestrator checked:
 passes end to end ≤ 0.1%. Odds that 009 yields a confirmed deployable edge:
 about 1 in 10, for the same reason as 007. The test sees only a large
 premium.
+
+**2026-10-11 — 010 Revision 1: fixed, but the test can only confirm well
+above the bar.**
+- **Fixes.**
+  - Persistence outputs removed; H and θ frozen.
+  - OKX moved to a reported variant: its 82 dead coins have no closes.
+    Binance (365 delisted) and Bybit (384 delisted) are complete.
+  - Liquidation loses the full short margin.
+  - HL 8h candles (2023-06 →, delisted coins included) drive the gap.
+  - Slippage tiered per leg; criterion 1b is a month-clustered t ≥ 2.10.
+  - Holdout mode built and hashed; ordering guard aligned to 009.
+  - 109 of 109 tests pass.
+- **Composition.** The per-leg volume floor makes T1 87% Binance–Bybit
+  (2,135 positions). The HL-vs-CEX hypothesis is mostly a CEX–CEX test
+  now.
+- **Power at a true 3%/yr.** Discovery 0.40 with regime shocks. Fresh
+  holdout A (to 2026-09-30) confirms 0.13–0.18; B (to 2026-12-31)
+  0.21–0.38. Neither confirms near the bar with good odds.
+- **Re-review started.** Ledger reads are recorded in the `000f`
+  addendum.
 
 ## 5. Data inventory
 
