@@ -66,3 +66,9 @@ or after 2026-07-01 were received.
 - **Residual trace (drafter's note).** Yearly "opened" counts carry a faint
   persistence signal through re-entry after exit. Counts only. Accepted
   and disclosed; nothing is set from them.
+
+**Second-review note (N7).** The yearly "opened" counts are a weak
+persistence trace: a synthetic probe confirms a small dependence of the
+opened count on spread persistence through re-entry after exit. They stay,
+disclosed. The counting scripts refuse the fresh holdout panel, so no such
+trace can ever be taken from 2026-07 data before its read.
