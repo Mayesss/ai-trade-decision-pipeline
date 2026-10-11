@@ -373,6 +373,25 @@ tables against `power_r2.md`.
 - **Overall odds that 007 yields a confirmed deployable edge:** about 1 in
   10, at a cost of compute plus a few dollars of holdout data.
 
+**2026-10-11 — 009 Revision 1: F2 survives the turnover gate narrowly,
+and half of it is reversal.**
+- **Buffered costs.** F1 12.7 bp a week; the 28-day F2 (OI value) 14.6 bp
+  (gate 15), with rank autocorrelation 0.524 (gate 0.5).
+- **F2 is half reversal.** Its rank correlates 0.53 with minus the past
+  28-day return, because OI value contains price.
+- **Orchestrator decision.** F2 primary moves to OI in *contracts* under
+  the same gates. Otherwise the value version stays, with a residualised
+  variant reported.
+- **Citations.** F1's sign rests on verified analogues (Koijen et al. 2018;
+  Schmeling, Schrimpf & Todorov 2023) plus mechanism. F2's is mechanism
+  only. Basu & Miffre was removed (the opposite sign).
+- **The economic bar.** About 60–110 bp a week gross for the book
+  criterion at 50–80% power, so discovery detects only a large factor.
+  End to end at weekly IC 0.03: 0.09 for each factor. A fail will read
+  "not detected at that size".
+- **Power-simulation bug.** The tie-unaware Spearman inflated the null; it
+  was fixed and tested, and no real-data IC was affected.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
