@@ -858,3 +858,55 @@ table.
 - **Fetch hygiene.** HL requests now time out at 30 s with bounded retries.
   A hung job after a machine sleep was killed by the orchestrator and
   resumed from cache.
+
+## 12. Result — 2026-10-11 (run of commit 8371981, `results.jsonl` line 9)
+
+Two trials (T1 pooled, primary; T2 core). Week-clustered t ≥ 2.24
+(Bonferroni); month-clustered t ≥ t₁₈(0.975) = 2.10. A `discovery_started`
+row was written first (line 8). Counts before the decision:
+- 2,135 positions;
+- 10 liquidated;
+- 5 raw exit gaps, 0 worst-fill substitutions;
+- 140 funding-hole settlements in 31 positions.
+
+Placebos (direction flipped per month / per week, costs kept): pass share
+0.0, gross |t| share 0.06 / 0.03 (T1) and 0.07 / 0.05 (T2). Calibrated.
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 all pairs (BN–BY 1,847, HL–BN 174, HL–BY 114) | **FAIL**, significantly negative | mean **−11.3 bp** per position (on N), week t **−2.60**, month t **−3.31**; median −10.8 bp; hit 31%; annualised on gross capital **−2.4%/yr**. Fails 1, 1b, 3, 4, 5 |
+| T2 core (BTC/ETH/SOL; 93 positions) | **FAIL** on criterion 5 only | mean **+10.8 bp**, week t **3.24**, month t **2.77**; median +6.7 bp; hit 63%; both halves positive; +8.3 bp without the largest positive month; annualised **+2.96%/yr**, against the **3%/yr** bar |
+
+**Decision (D12): `close`.** Both trials fail. L2 closes as a strategy
+candidate, and the edge is "not demonstrated". The fresh holdout
+(2026-07-01 → 2026-12-31) is not read. T2 passed every statistical
+criterion and missed the pre-registered economic bar by 0.04 points a
+year. Under the rule it is a fail. Economically, it is the lending rate.
+
+**Diagnostics (reported; they decide nothing; the §1 ring-fence holds).**
+- **T1 P&L per position, in bp of notional:** funding **+34.5**, price gap
+  −8.4, **fees −39.1**, margin top-ups −9.5. Over 13–18-day holds the four
+  taker fills cost more than the funding collected.
+- **By pair:**
+
+  | pair | positions | mean per position | t | annualised |
+  |---|---|---|---|---|
+  | HL–BN | 174 | **+27.8 bp** | 3.95 | +6.5%/yr |
+  | HL–BY | 114 | **+19.0 bp** | 2.47 | +4.3%/yr |
+  | BN–BY | 1,847 | **−16.8 bp** | −3.45 | −3.5%/yr |
+
+  The Binance–Bybit spread is too small to pay four taker fills. The HL
+  pairs, which are the light's original premise (HL funding sits above
+  CEX funding), pooled as `hl_pairs` (288 positions), pass every
+  criterion as a reported block: +24.3 bp, week t 3.60, month t 2.85,
+  both halves positive, **+5.6%/yr**.
+- **Why the primary was diluted.** The per-leg $10M floor (review M3,
+  Revision 1) cut most HL alt pairs, so T1 became 87% BN–BY. This was
+  stated before the run (§1, N8).
+- **Discovery is exposed on persistence (`000f`).** The HL-pair block is
+  also selected *after* seeing this result. **It is a lead, not evidence.**
+  Only data nobody has read can test it.
+
+**Family count.** L2: 2 trials, no pass. Programme-wide this session: 009
+(Binance 2021–23: 1 trial) and 010 (L2: 2 trials). The HL discovery year
+is unchanged at 14.
