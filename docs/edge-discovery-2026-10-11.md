@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 Revision 2 done; under independent review**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **010 DRAFT done; under independent review** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 review: 3 blockers; Revision 1 in progress; L2 holdout demoted (000f), forward holdout 2026-07 → for the owner** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
@@ -425,6 +425,30 @@ The variants tried on behaviour data only are all recorded: 7-day value
 and 28-day contracts (primary). Power: end to end at weekly IC 0.03 is 0.09
 (F1) / 0.08 (F2), and at IC 0.05 0.52 / 0.48. Under the null, P(pass)
 ≤ 0.013. 88 of 88 tests pass. Independent review started.
+
+**2026-10-11 — 010 review: three blockers, and the L2 holdout is
+spent.** (`registrations/reviews/010-review.md`; B1 confirmed by the
+orchestrator.)
+- **B1.** The draft's decision funnel split qualifying decisions by "already
+  held". That is a forward persistence statistic of the payoff: about 51% vs
+  1.9% in discovery, 36% vs 0.6% in the L2 holdout. The orchestrator's brief
+  invited it by allowing counts without naming the forbidden conditioning.
+  Ledgered as `000f`. **2025-01 → 2026-06 can no longer decide 010.** It
+  becomes a reported, exposed block. The decisive holdout is unread
+  funding from 2026-07-01, with an end date for the owner to choose (A:
+  2026-09-30, data exists; B: 2026-12-31).
+- **B2.** OKX delisted instruments are missing, so OKX legs are dropped
+  from the primary.
+- **B3.** Liquidation loss was understated by 2–30×; it is now modelled as
+  the whole short-leg margin.
+- **M1–M4.** Criterion 5 stays a 3%/yr point bar, with a month-clustered t
+  at t₁₈ = 2.10. HL candles for 2023–24 are checked for the price gap.
+  Slippage is tiered by volume. The holdout mode is built and hashed now.
+- **Odds.** The exposure tells us the funding leg persists half the time
+  after entry. Whether the carry *nets* after costs, gap moves and
+  liquidations is still open. Effect-exists odds rise (2 in 3 → 3 in 4).
+  Deployable stays 1 in 3: the compressed 2025–26 regime and capacity
+  decide that.
 
 ## 5. Data inventory
 
