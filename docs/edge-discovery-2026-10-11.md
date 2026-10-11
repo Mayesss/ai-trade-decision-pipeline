@@ -21,7 +21,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 DRAFT done; Revision 1 (turnover) in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 second review: 2 code fixes; Revision 2 in progress** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
@@ -338,6 +338,25 @@ owner's choice.** (`registrations/reviews/007-review-r1.md`)
 - **Also.** A hung 010 fetch (a sleep stall, 6 h at 0% CPU) was killed by
   the orchestrator, and the drafter was resumed with timeouts.
 
+**2026-10-11 — 009 drafted: the costs decide, not the IC.**
+- **Pull.** 257 symbols, 131,965 zips, 1.527 GB, 0 checksum failures,
+  nothing on or after 2024-01-08.
+- **Family.** F3 dropped (no citable weekly sign, and it overlapped
+  001 T3), so the family is 2.
+- **Behaviour facts, verified by the orchestrator from `describe.json`.**
+  - F1 (funding carry): weekly rank autocorrelation 0.58, 2.05 turnover a
+    week, **10.6%/yr cost**; 6.6%/yr with a 40% buffer.
+  - F2 (7-day OI growth): autocorrelation **−0.20**, 3.48 turnover a week,
+    **17.8%/yr cost**. The rank reverses week to week.
+- **Power.** The weekly book's standard error of about 25 bp binds. End to
+  end, F1 passes 0.09 at IC 0.03 and 0.51 at IC 0.05.
+- **Orchestrator decisions, before review, from behaviour only.**
+  - The buffer is the primary rebalance rule.
+  - The 7-day F2 is rejected on turnover. A 28-day OI growth replaces it
+    only if its buffered cost is ≤ 15 bp a week and its rank
+    autocorrelation is ≥ 0.5; otherwise the family is F1 alone at z 1.645.
+  - Every citation is verified online or dropped.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
@@ -353,6 +372,9 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 | Bitget funding | `data/cache/bg-funding` | holdout only | **holdout-only data, never read in discovery (`000d`)** |
 | HL / Binance / Bybit / OKX funding, date-bounded | `data/scout_l2/` | 2023 → 2026-06-30 | fetched by the L2 scout |
 | Binance aggTrades + bookDepth, 6 coins | `data/binance` | HL-cascade days only | not contiguous |
+| Binance USDⓈ-M metrics + funding + 1h klines, all USDT perps | `data/binance_years/` (`MANIFEST.tsv`) | 2021-11-01 → 2024-01-01 (discovery of 009) | 257 symbols, 1.527 GB, checksummed |
+| HL / Binance / Bybit / OKX funding, premium, klines for carry | `data/carry/` | 2023 → 2026-06-30 | 010's data; 0 holdout rows dropped |
+| Vault ledgers + truncated `allTime` | `data/vaults/` (`manifest_r1.json`) | → 2026-06-30 | 007's data; values unread |
 
 ## 6. Scouts in flight
 
