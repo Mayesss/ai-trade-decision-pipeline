@@ -21,9 +21,9 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 DRAFT Revision 4 committed; decision table with the owner**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 DRAFT Revision 2a committed; decision table with the owner**; forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 REGISTERED; discovery running**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 REGISTERED** (end 2026-12-31, extension YES); waits on 009 (D17); forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 REGISTERED** (B, (a), outside, reported); run queued after 009 | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -563,6 +563,25 @@ Joint false pass ≤ 0.003. 010 can demonstrate only about 5%/yr or more,
 half the time. Orchestrator's recommendation: 2026-12-31 with the
 extension. Ranked last of the three ready drafts, because it is the least
 able to answer its question.
+
+**2026-10-11 — 007, 009 and 010 REGISTERED (owner, commit `8371981`).**
+- **Owner's choices.**
+  - 007: D14 B, D9 (a), D2 outside depositors, Q4 reported only.
+  - 009: as written, with no ICP fetch.
+  - 010: end 2026-12-31, extension YES.
+- **Guard checks before running.** 007 and 009 pass. 010 refuses on (h)
+  until 009 reaches a terminal state, as designed. 007's manifest copy is
+  committed.
+- **Run order.** 009 first (it gates 010), then 007, sequentially to
+  protect memory.
+- **Open item for the owner.** Two unhashed *state* tests,
+  `test_factors` ("the real 009 registration is refused today (DRAFT)")
+  and `test_vaults` ("the real guard refuses today"), now fail by design.
+  Updating them was blocked by the session's safety classifier as
+  test-removal, so they stay until the owner decides. The runners' guards
+  are unaffected.
+- **Trial counts.** 007 is trial 15 on the HL year. 009 is trial 1 on
+  Binance 2021–23. 010's family (2 trials) is pending.
 
 ## 5. Data inventory
 
