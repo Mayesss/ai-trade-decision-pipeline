@@ -22,8 +22,8 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 FAIL → close** (net +16.9 bp/wk, t 0.62); holdout A unread; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 REGISTERED** (end 2026-12-31, extension YES); unlocked by 009's close; runs after 007; forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 REGISTERED** (B, (a), outside, reported); **discovery running** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 FAIL → close** (T1 −2.4%/yr, t −2.6; T2 +2.96%/yr misses 3% bar); HL-pair lead +5.6%/yr (reported); forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 REGISTERED; run stopped at a variant's gate (wiring fault, primary unseen); amendment awaits owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -597,6 +597,28 @@ able to answer its question.
   noisy book. A test with power needs a lower-noise construction (hedged
   pairs, as in 010) or far more weeks. It is noted as a candidate idea,
   not a registered follow-up.
+
+**2026-10-11 — 007 stopped by a wiring fault; 010 closes, with one lead.**
+- **007.** The 5% unmeasurable gate sits inside `assemble()`, which is
+  called for the primary (242 windows; it passed) and then for the
+  reported full-population variant (313; 16 unmeasurable, which tripped
+  it). The run exited before the row was written. The primary was computed
+  in memory, unseen. Run note 1 is in the registration. **The owner
+  decides: amend (gate on the primary only, re-run once) or close.**
+- **010** (registration §12).
+  - T1 −11.3 bp a position, t −2.6. Fees (39 bp) exceed the funding
+    collected (34.5 bp) over 13–18-day holds; BN–BY is −16.8 bp, t −3.45.
+  - T2 core: +10.8 bp, t 3.2, but 2.96%/yr against the 3% bar. It fails,
+    and it is economically the lending rate.
+  - **Lead:** the HL–CEX pairs (288 positions; the light's original
+    premise) made +24.3 bp, t 3.6, +5.6%/yr, passing every criterion as a
+    *reported* block. It is selected after the result, on discovery
+    exposed by `000f`. Only data nobody has read can test it.
+- **Proposal to the owner: registration 012** — HL–CEX funding carry,
+  010's frozen rule restricted to the HL–BN and HL–BY pairs, decided only
+  on unread data (2026-07-01 → 2026-12-31, the window 010 never read). It
+  is a new trial in the L2 family (count 3), and its post-hoc selection is
+  stated.
 
 ## 5. Data inventory
 
