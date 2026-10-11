@@ -581,6 +581,10 @@ rediscover the hard way. Newest last.
   2 h): FAIL, −10 bp net, t −0.80; fourteen trials on the discovery year, no pass; holdout not
   spent. H11 (lending liquidations) closed on size; H2 folded into H3 (Binance publishes no
   USDⓈ-M liquidation history). See the §8 direction log of the forced-flow horizons doc.
+- **2026-10-11** — Forced-flow capture programme closed (owner). 006 (H3, cross-venue gap at
+  seconds) withdrawn before registration: the executable gap at forced prints is ~0 by
+  behaviour. Fourteen trials on the HL discovery year, no pass, holdout unread. Next programme:
+  `docs/edge-discovery-orchestrator-prompt-2026-10-11.md`.
 
 ---
 

@@ -561,3 +561,47 @@ source of home-built edge at our latency and size. What it established
 stands: forced flow overshoots on the venue where it lands, the overshoot
 belongs to whoever is in the book or the backstop at that moment, and
 outside crashes it is a few bp.
+
+**2026-10-11 — H3 closed (owner); 006 WITHDRAWN before registration; the
+forced-flow capture programme ends here.** The owner closed H3 on the
+behaviour finding above. H1 is not built, for the reason given there.
+Trial count on the discovery year: fourteen, no pass. The holdout is
+unread.
+
+## 9. What the programme leaves behind
+
+**Established, and reusable by whatever comes next:**
+
+1. Trader skill persists on Hyperliquid (rank IC 0.40–0.44 at 91-day
+   lookback / 56-day hold, every window and bucket; the bottom tenth stays
+   negative). It was never monetised, because every follower design paid
+   latency, venue mismatch and costs. **Vaults were excluded from 001 by
+   address list, so a deposit into a skilled trader's vault, which carries
+   no copy latency, has never been tested.**
+2. Forced flow overshoots on its own venue, in its own seconds. The
+   overshoot goes to whoever is in the book or acts as the backstop at that
+   moment (HLP: +7 bp gross ex-spiral on its MM fills; the backstop made
+   the year). It is not capturable by placement, by entering after the
+   flow, or by trading it across venues at one second.
+3. Spirals decide every mean. Market-wide liquidation rate is a clean
+   regime switch: p99.9 = $77 M per 5 minutes.
+4. Positioning of skilled versus losing money anti-predicted 3-day returns
+   in the bear year (001 T3, t −3.4). It was read once, on discovery, as a
+   fail. If it is used at all, the holdout is the only fair test.
+5. Hyperliquid's price lags Binance by 0.6–1.0 s in calm hours (HYPE
+   leads), shortening over the year. Cross-venue gaps are shrinking.
+6. Methodological lessons, each paid for once:
+   - cluster by hour and report without the largest positive cluster;
+   - point-in-time selection: no event set qualified on its own future;
+   - side-aware fills, with no waiting for a favourable print;
+   - the guard hashes code and data;
+   - behaviour-only feasibility before registering (006 saved a trial);
+   - state power before running, and do the holdout arithmetic at the
+     recent rate, not the yearly one.
+
+**Data on hand:** see §3, plus Binance USDⓈ-M aggTrades and bookDepth for
+six coins on Hyperliquid-cascade days (23 GB, discovery window, pinned
+manifest). HL vault list and per-vault caches from H7.
+
+The next research programme starts from
+`docs/edge-discovery-orchestrator-prompt-2026-10-11.md`.

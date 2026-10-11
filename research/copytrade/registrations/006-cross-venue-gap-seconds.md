@@ -1,6 +1,10 @@
 # 006 — Cross-venue capture of the forced-flow gap at second granularity: a taker entering 1 s after a Hyperliquid forced print that sweeps away from Binance (H3)
 
-**Status: DRAFT 2026-10-10.** The decision table (§9) is PROPOSED; nothing is approved. Mechanics are built and checked on synthetic data. The events, filters, gaps at forced prints (contemporaneous), quote-proxy staleness, signals and clock alignment were measured in §3, behaviour only. **No Hyperliquid or Binance price after any signal or forced-print time has been read for any real event.** Only the *times* of the next prints after t + L were read, to measure fill delays.
+**Status: WITHDRAWN 2026-10-11** — closed before registration (owner decision), on the
+behaviour finding in §3: at forced prints the executable cross-venue gap is a median −8.5 to
++0.9 bp and reaches the cost threshold in 36 of 1,213 causal runs. **Not a trial; no outcome
+was read; the family count stays at fourteen.** The runner can never run: this file will not
+say REGISTERED. Text below is the draft as it stood (decision table PROPOSED, never approved). Mechanics are built and checked on synthetic data. The events, filters, gaps at forced prints (contemporaneous), quote-proxy staleness, signals and clock alignment were measured in §3, behaviour only. **No Hyperliquid or Binance price after any signal or forced-print time has been read for any real event.** Only the *times* of the next prints after t + L were read, to measure fill delays.
 
 The runner (`l8_run.py`) refuses to compute an outcome unless all of the following hold:
 - this file says REGISTERED;
