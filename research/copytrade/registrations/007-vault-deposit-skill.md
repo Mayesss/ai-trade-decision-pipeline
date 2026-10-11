@@ -752,3 +752,58 @@ anything.
 - The existing primary-stop test (16/242 stops) still passes.
 - The stale state check "the real guard refuses today (DRAFT)" fails by
   design since REGISTERED. It is left as is, pending the owner.
+
+## Result — 2026-10-11 (run of commit 6cbd80f, Amendment 1; `results.jsonl` line 10)
+
+One trial, z_crit 2.33, window-IC t ≥ 3.182, at least 3 of 4 windows
+positive. Primary: outside-depositor vaults, 74 / 64 / 50 / 54. Gates:
+- identity, netWithdrawnUsd: 1.000 / 1.000;
+- profit share: 0.985;
+- unmeasurable: 11 of 242 (4.5%, all `thin_base_at_entry`), passed;
+- exits: hold end 191, exhausted 32, thin base 6, total loss 2;
+- placebo (scores shuffled within window, 200 seeds): every pass share
+  0.0; |Z| share 0.015.
+
+(The run wrote its row and then raised `KeyError: 'window_leader_z'` in
+the closing console summary. That is cosmetic: the row is complete and the
+summary is reproduced here.)
+
+| criterion | result | verdict |
+|---|---|---|
+| 1. IC within exposure terciles: Fisher Z ≥ 2.33, window-IC t ≥ 3.182, ≥ 3/4 positive | Z **1.97**; window t **1.21**; windows +0.20, +0.34, −0.07, −0.01 (2/4) | **fail** |
+| 2(a). top quintile minus all > 0 | +4.2 pp (D/SE 1.00) | holds |
+| 3. top quintile beats HLP, same interval | **−5.0 pp** (by window +2.9, −4.1, −10.0, −8.8) | **fail** |
+| 4. top mean and median same sign | mean **−3.97%**, median −0.51% per hold | holds (both negative) |
+| 5. criterion 2 without the largest positive vault | +2.4 pp | holds |
+
+**Decision (D13): `close`.** Not detected at the joint power stated in §3.
+**L1 closes on the archive year. Holdout option B is never read.** The
+pre-archive span stays unread for any other design. **Cumulative on the
+HL discovery year: fifteen trials, no pass.**
+
+**Diagnostics (reported; the ring-fence holds).**
+- **The score sorts losers, not winners.**
+  - Pooled decile means of the depositor's hold return run from **−21%
+    (bottom) to −4% (top)**; every decile but one is negative in this bear
+    year.
+  - Skill still persists exactly as in 001: per-trip t IC 0.51–0.57 in
+    windows 1–2.
+  - The depositor's net is ranked less well (0.33–0.37), and the top earns
+    nothing: loser persistence again.
+- **The positive IC was market exposure.**
+  - The market-adjusted outcome gives Z **0.03**, window t −0.02.
+  - Top-quintile vaults held a median BTC beta of −0.01, against 0.10 for
+    all vaults, while BTC fell (holds DOWN or FLAT in windows 1–2).
+  - This is the confound M1 / M-a guarded against, now measured.
+- **Full population (reported):** Z 2.62, 4/4 positive, window t 1.81
+  (< 3.18). The same exposure story applies.
+- **Capacity:** the top quintile could take $10k in 3–5 vaults per window,
+  $50k in 2, and $250k in none.
+- **HLP over the same intervals:** −0.7%, +7.0% (the 2026-01-31 spiral),
+  +0.1%, +0.1%.
+
+**What it means.** Depositing with the best-ranked Hyperliquid vault
+leaders, at zero latency, did not beat HLP, and did not earn, in the
+2025–26 bear year. What 001 found holds for depositors too: skill
+persists in the ranking, mostly as loser persistence. The top's apparent
+edge was low market exposure in a falling market.
