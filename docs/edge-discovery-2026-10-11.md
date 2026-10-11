@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L1 | Vault allocation on Hyperliquid (skill persistence, no copy latency) | scout done (§4); archive-year design proposed | 1 in 3 | 1 in 4 | NAV-like; vaults can be leveraged single-regime bets; closure tail |
-| L2 | Funding / basis carry across venues | scout running | likely | 1 in 2 | low single digits net, capacity-limited; leg liquidation in a spiral |
+| L2 | Funding / basis carry across venues | scout done (§4); **blocked on venue access** | likely (2023–24), compressed since | 1 in 5 | ~1–2%/yr unconditional net in 2025–26, below HLP's lending leg |
 | L3 | Inverted 001 T3 positioning, holdout-only | **held** until the L1 scout reports (holdout allocation) | 1 in 5 | — | rally holdout is a hard test |
 | L4 | Multi-year cross-sectional factors from free Binance data | scout done (§4); discovery pull 1.54 GB awaits owner | 1 in 4 | 1 in 3 if it exists | weekly book |
 | L5a | Funding-settlement effects (price and flow around funding timestamps) | **parked** 2026-10-11 (§4): documented edge ~0.5 bp vs ≥ 9 bp round trip | 1 in 10 | 1 in 10 | cost-bound |
@@ -188,6 +188,42 @@ carry it.** (`research/copytrade/scouts/l1-vaults.md`)
   rows (8.65 M). The scout saw counts only; recorded in `000c`. Every reader
   filters in the query.
 
+**2026-10-11 — L2 scout: the spread exists but has compressed, and the
+lawful pair has no history; venue access becomes the owner's gating
+decision.** (`research/copytrade/scouts/l2-carry.md`; the orchestrator
+re-read the core quantiles in `data/scout_l2/analysis.txt`.)
+- **Data.** Free, date-bounded funding history exists for HL (hourly from
+  2023-06, 220 coins), Binance, Bybit and OKX. About 190–200 coins have
+  overlapping listings in 2025–26.
+- **Costs.** Fees on both legs' round trip are 19–21 bp. Amortised hurdle:
+  about 77% / 11% / 2.6% a year for 1-day / 7-day / 30-day holds. Separate
+  venues mean separate margin: at 2×, a leg is liquidated on a 43–49% move.
+- **The HL-minus-CEX spread, core coins.**
+  - Median +3 to +5% a year in 2024–26.
+  - p10–p90 range narrowed from about −23/+46% (2023) to about −11/+12%
+    (2026-H1).
+  - The spread is beyond the 7-day hurdle in 22–26% of hours in 2025–26,
+    and almost never beyond the 1-day hurdle.
+  - **Unconditionally, short HL / long CEX nets about 1–2% a year in
+    2025–26 at a 30-day hold, below HLP's ~3% lending leg.** Only a
+    conditional entry rule could beat it, and that rule is the trial.
+- **Perp-spot on Binance.** Median funding fell from 9–11% a year (2023–24)
+  to about 1–2% (2026-H1). No hour in 2025–26 cleared the 7-day hurdle.
+  Ethena sUSDe realised 15.7 / 6.2 / 4.0% (2024 / 2025 / 2026-H1).
+- **Access (decisive).** For a German resident, Binance, Bybit, OKX global
+  and **Bitget** (its terms reportedly bar Germany; the owner should check
+  their own account) are research data only. **Hyperliquid is unlicensed in
+  the EU, a grey zone.** OKX Europe X-Perps (MiFID, since 2026-04-15) is
+  the only licensed perp leg, and it has no history before the holdout. A
+  lawful L2 can therefore not be tested on its own venue pair before the
+  holdout.
+- **Not to be used for thresholds.** F3's monthly sign-change counts of the
+  spread (BTC median 8–26 a month) are counts over the level series, but
+  they inform persistence. They may not set any L2 registration parameter.
+- **Exposure.** A pre-existing Bitget funding cache, entirely holdout-dated,
+  was printed (15 ARB rows); recorded in `000d`. The orchestrator's brief
+  had pointed at that cache.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
@@ -199,7 +235,9 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 | HL fills, every account | `data/archive`, `data/pruned` | 2025-07-28 → 2026-06-30 | 43 GiB; vault addresses included (001 excluded them by list) |
 | HL daily account values | `data/derived/hyperliquid/snapshot_accounts.parquet` | 286 discovery snapshots **+ ~98 holdout snapshots (filter `snapshot_ms < 1782864000000`)** | `user, account_value, gross/net_notional`; gives vault equity point-in-time |
 | HL vault list | `data/cache/hl-vaults` | cached 2026-10-08 | holdout fields present: see §3.2 |
-| HL funding | `data/cache/hl-funding` | 2025-10-20 → | |
+| HL funding | `data/cache/hl-funding` | 2025-10-20 → 2026-07-10 | **filter `time < 1782864000000`** |
+| Bitget funding | `data/cache/bg-funding` | holdout only | **holdout-only data, never read in discovery (`000d`)** |
+| HL / Binance / Bybit / OKX funding, date-bounded | `data/scout_l2/` | 2023 → 2026-06-30 | fetched by the L2 scout |
 | Binance aggTrades + bookDepth, 6 coins | `data/binance` | HL-cascade days only | not contiguous |
 
 ## 6. Scouts in flight
@@ -207,6 +245,6 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 | scout | file | started | state |
 |---|---|---|---|
 | L1 vaults | `scouts/l1-vaults.md` | 2026-10-11 | done; exposure ledgered as `000c` (counts only) |
-| L2 carry | `scouts/l2-carry.md` | 2026-10-11 | running |
+| L2 carry | `scouts/l2-carry.md` | 2026-10-11 | done; exposure ledgered as `000d` |
 | L4 Binance multi-year | `scouts/l4-binance-years.md` | 2026-10-11 | done |
 | L5 desk | `scouts/l5-desk.md` | 2026-10-11 | done |
