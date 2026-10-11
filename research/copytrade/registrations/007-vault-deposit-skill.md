@@ -1,6 +1,6 @@
 # 007 — Depositing into top-scored Hyperliquid user vaults (L1)
 
-**Status: DRAFT** — Revision 2, written 2026-10-11 for the owner's decisions.
+**Status: REGISTERED 2026-10-11** (owner, 2026-10-11: "set to registered and proceed with recommendations"). Previously DRAFT — Revision 2, written 2026-10-11 for the owner's decisions.
 
 - **What has been done.** The mechanics are built and checked on synthetic
   data (§8). The eligible sets, data coverage and power were measured from
@@ -659,7 +659,9 @@ values (2026-10-11), recomputed at the REGISTERED commit.
 | `ct/bitget.py` | `024ce24d11a4ec7366b8ea54dd719f30700f235b9f8396543f67b25b0684204d` |
 | `data/vaults/manifest_r1.json` | `95de02701aa0662badf670fe632c9714282d629b937a2ed5e9bb54fc57afb8b5` |
 
-## 9. Owner decisions — PROPOSED
+## 9. Owner decisions — APPROVED 2026-10-11 (owner, 2026-10-11: "set to registered and proceed with recommendations")
+
+**Approved choices:** D14 = **B** (four holdout windows, end 2027-02-15; the holdout amendment sets `HOLDOUT_SELECTIONS = HOLDOUT_B` in `ct/vaults.py` before any holdout read); D9 = **(a)**; D2 = **outside depositors** (`POPULATION = 'outside'`, as coded); Q4 = the market-adjusted outcome **reported only** in discovery. Every other row as written below.
 
 | # | item | proposed |
 |---|---|---|

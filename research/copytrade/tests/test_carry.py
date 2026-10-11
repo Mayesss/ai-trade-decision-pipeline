@@ -593,9 +593,9 @@ def guard_checks():
     real = (Path(r010_run.__file__).parent / 'registrations' / '010-cross-venue-funding-carry.md').read_text()
     end_r, date_r, ext_r, f_r = r010_run.owner_choice(real)
     check('N1, the REAL registration: exactly one "Holdout end (owner):" line and one "Holdout extension (owner):" '
-          'line, both UNSET -> refused (no instruction or quote matches)',
+          'line, set by the owner at REGISTERED (2026-12-31, YES) and parsed as such (no instruction or quote matches)',
           len(r010_run.END_PREFIX.findall(real)) == 1 and len(r010_run.EXT_PREFIX.findall(real)) == 1
-          and end_r is None and ext_r is None and len(f_r) == 2, str(f_r))
+          and end_r == 1_798_761_600_000 and ext_r is True and f_r == [], str(f_r))
     base = 'x\n\nHoldout end (owner): {e}\n\nHoldout extension (owner): {x}\n'
     ok_ = r010_run.owner_choice(base.format(e='2026-12-31', x='NO'))
     check('N1: a chosen offered date and NO -> accepted, end exclusive 2027-01-01', ok_[0] == 1_798_761_600_000 and ok_[2] is False

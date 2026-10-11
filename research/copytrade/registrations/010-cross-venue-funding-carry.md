@@ -1,6 +1,6 @@
 # 010 — Cross-venue perpetual funding carry: short the higher-funding venue, long the lower, conditional entry (L2)
 
-**Status: DRAFT** — Revision 2, for the orchestrator and the owner; the
+**Status: REGISTERED 2026-10-11** (owner, 2026-10-11: "set to registered and proceed with recommendations"). Previously DRAFT — Revision 2, for the orchestrator and the owner; the
 decision table (§9) is PROPOSED and needs the owner's approval, including
 the two owner lines under §9 (holdout end, extension), both UNSET today. Mechanics are built and
 checked on synthetic data (§8). On real data only behaviour was measured
@@ -741,7 +741,9 @@ guard (h). The panel is rebuilt with `.venv/bin/python -I r010_build.py
 --with-hl-hold` from the raw downloads. The holdout panel's hashes are
 written into its `holdout_built` row and checked by the run.
 
-## 9. Owner decisions — PROPOSED
+## 9. Owner decisions — APPROVED 2026-10-11 (owner, 2026-10-11: "set to registered and proceed with recommendations")
+
+**Approved:** D1–D17 as written below; D14 holdout end **2026-12-31** with the **extension YES** (owner lines set below).
 
 | # | item | proposed |
 |---|---|---|
@@ -767,9 +769,9 @@ Owner lines. The owner replaces UNSET with an offered date (2026-09-30 or
 2026-12-31) and with YES or NO before registration. Each line stands
 alone, starts the line, and appears once in this file.
 
-Holdout end (owner): UNSET
+Holdout end (owner): 2026-12-31
 
-Holdout extension (owner): UNSET
+Holdout extension (owner): YES
 
 The runner reads its parameters from `ct/carry.py`; any change to D3–D11
 before registration is a change there and here together, and a new hash

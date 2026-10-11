@@ -1,6 +1,6 @@
 # 009 — Weekly cross-sectional funding carry on Binance USDⓈ-M perpetuals, 2021-12 → 2023 (L4, F1)
 
-**Status: DRAFT** — Revision 3, written 2026-10-11 after the independent
+**Status: REGISTERED 2026-10-11** (owner, 2026-10-11: "set to registered and proceed with recommendations"). Previously DRAFT — Revision 3, written 2026-10-11 after the independent
 review (`registrations/reviews/009-review.md`), for the owner's approval of
 the decision table (§9, every row PROPOSED).
 
@@ -826,7 +826,9 @@ are unchanged since the draft.
 | `data/scout_l4/exchangeinfo/fapi_exchangeInfo.json` | `a7f720f5ece63fe9ab087cbdd9fecc66d18645f113896b81ec171c89636ed39f` |
 | `data/binance_years_holdoutA/plan.csv` | `4595001cb548fb1c3c4d4eca9c075f5ce200456ece7eab5eb397cbe8f7c7aa39` |
 
-## 9. Owner decisions — PROPOSED (nothing here is approved)
+## 9. Owner decisions — APPROVED 2026-10-11 (owner, 2026-10-11: "set to registered and proceed with recommendations")
+
+**Approved:** D1–D17 as written below; §10.1 (ICP's pre-2022-09 funding) **not fetched**, as drafted.
 
 | # | item | PROPOSED |
 |---|---|---|
