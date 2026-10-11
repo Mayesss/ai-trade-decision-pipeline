@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding), executed on Binance | **009 DRAFT done; Revision 1 (turnover) in progress**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **010 DRAFT done; under independent review** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
@@ -391,6 +391,26 @@ and half of it is reversal.**
   "not detected at that size".
 - **Power-simulation bug.** The tie-unaware Spearman inflated the null; it
   was fixed and tested, and no real-data IC was affected.
+
+**2026-10-11 — 010 drafted.**
+- **The rule.** At 00/08/16 UTC, enter when the trailing-24 h annualised
+  spread is at least θ ≈ 12%/yr. Short the high-funding venue, long the
+  low, 1× per leg, taker on all four fills, fixed hold H = 13–18 days.
+  H and θ come from cost arithmetic (C = 21–29 bp; margin m = 6%/yr on
+  notional, which is HLP's lending leg on gross capital), not from data.
+- **Discovery counts.** T1 has 4,867 positions (323 coins, 81 weeks). T2
+  (core coins) has 121.
+- **Power.** The binding criterion is annualised ≥ 3%: power 0.49 at a
+  true 3%, 1.00 at 4%. That is optimistic, given Gaussian noise.
+- **Gap-model error.** 1.3–1.9 bp for core HL pairs; about 7–11 bp for alts,
+  by analogy.
+- **ρ = 0.071** is the cross-coin correlation of spreads, not persistence;
+  checked by the orchestrator.
+- **For the reviewer.** In the L2 holdout window the drafter read levels:
+  spread SDs and quantiles, ρ, HL price-gap levels from 2025–26, and
+  entry counts.
+- **The HL fetch.** It stalled for 6 h after the machine slept, and was
+  killed and resumed with timeouts. 0 holdout rows were received.
 
 ## 5. Data inventory
 
