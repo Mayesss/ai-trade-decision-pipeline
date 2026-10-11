@@ -671,6 +671,24 @@ no pass.** (registration, Result §)
 - **Checked fine.** The HL-pair 2025–26 P&L was never computed, and costs
   and fills are consistent. Revision 2 is in progress.
 
+**2026-10-11 — 012 Revision 2 ready for the owner; 010 erratum.**
+- **The Bybit holes were a backward-paging bug, not delisting.** In 010's
+  own discovery panel, 6 coins have no Bybit prices and 11 start 7–14
+  months late (mostly renamed or delisted coins); checked by the
+  orchestrator. 010's result stands as registered: one run, and the defect
+  can't reverse t −2.6. The reported HL–BY block (part of 012's lead) is
+  weakened. Disclosed as an erratum after 010 §12.
+- **012 fixed every review item.** It pages forward; the Stage-2 path is
+  tested end to end; coverage gates; owner lines frozen at Stage 1; one
+  fetch and one build. 154 of 154 tests pass, and 010's still pass.
+- **Headline α** (Stage 2's own) 0.043–0.052. **Stage-2 power** at 3 /
+  5%/yr: 0.14–0.37 / 0.26–0.75 (2026-H1 entry rate). 012 counts as HL-year
+  trial 16.
+- **D18 for the owner.** It amends the HL-holdout rule: two rules (012,
+  L3) may each read the 2026-07 → 2027-06 calendar once; L3 registers
+  first or waives; the second reader discloses the first's result;
+  family-wise ≤ 2α.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
