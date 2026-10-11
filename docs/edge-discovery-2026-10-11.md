@@ -24,7 +24,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | L1 | Vault allocation on Hyperliquid (skill persistence, no copy latency) | scout running | 1 in 3 | 1 in 4 | NAV-like; vaults can be leveraged single-regime bets; closure tail |
 | L2 | Funding / basis carry across venues | scout running | likely | 1 in 2 | low single digits net, capacity-limited; leg liquidation in a spiral |
 | L3 | Inverted 001 T3 positioning, holdout-only | **held** until the L1 scout reports (holdout allocation) | 1 in 5 | — | rally holdout is a hard test |
-| L4 | Multi-year cross-sectional factors from free Binance data | scout running | 1 in 4 | 1 in 3 if it exists | weekly book |
+| L4 | Multi-year cross-sectional factors from free Binance data | scout done (§4); discovery pull 1.54 GB awaits owner | 1 in 4 | 1 in 3 if it exists | weekly book |
 | L5a | Funding-settlement effects (price and flow around funding timestamps) | **parked** 2026-10-11 (§4): documented edge ~0.5 bp vs ≥ 9 bp round trip | 1 in 10 | 1 in 10 | cost-bound |
 | L5b | Prediction-market favourite–longshot bias | **closed** 2026-10-11 (§4): no lawful venue for a German resident | — | — | — |
 
@@ -108,6 +108,42 @@ states its lawful execution venue (Hyperliquid, Bitget, OKX Europe X-Perps
 under MiFID since 2026-04-15, …). The L2 scout was asked to add this for each
 carry leg.
 
+**2026-10-11 — L4 scout: the data exists, from 2021-12, with the power the
+HL year lacked.** (`research/copytrade/scouts/l4-binance-years.md`; the
+start date was re-checked by the orchestrator on the public listing.)
+- **Coverage.** Binance's 5-minute metrics (open interest, long/short
+  ratios, taker volume ratio) have a cross-section from **2021-12-01**
+  (134 coins), not 2020. Funding and klines go back to 2020-01.
+- **Coins per year with metrics on ≥ 300 days:** 127 / 162 / 237 / 342 in
+  2022–2025, and 502 in 2026-H1.
+- **Survivorship.** Delisted symbols stay in the archive. A symbol's
+  delisting date is its last metrics file of at least 4 KB: this matches
+  exchangeInfo's `deliveryDate` for 117 of 120 delisted symbols, and the
+  other 3 are one day early. A loader must cut each symbol there, because
+  1d klines continue after death.
+- **No free multi-year liquidation record exists on any venue.** Spirals
+  across years have to be proxied from OI drops plus taker imbalance (Bybit
+  REST has 5-minute OI from 2020-08 as a second venue).
+- **Split, fixed now, before any outcome:**
+  - discovery 2021-12-06 → 2023-12-31;
+  - holdout A 2024-01-01 → 2025-07-27;
+  - holdout B 2025-07-28 → 2026-06-30 (the HL year: confirmatory only, and
+    not independent for ideas H5 and H6 that it motivated);
+  - 2026-07 → stays sealed;
+  - a 1-week embargo at each boundary.
+- **Power.** Detectable weekly IC at 80% power is about 0.02 under iid
+  (discovery: 108 weeks, 17,374 coin-weeks), and about 0.03–0.04 under a
+  realistic weekly IC dispersion. The HL year could detect only far larger
+  effects.
+- **Bytes.** The discovery pull (metrics + funding + 1h klines, 258
+  symbols) is **1.54 GB**, and all years 5.86 GB. A Monday-only metrics
+  variant is 0.20 GB.
+- **Venue caveat.** The book cannot trade on Binance from Germany (§4,
+  L5). The registration must restrict the universe point-in-time to coins
+  listed on a lawful venue (Bitget listing dates are cached in
+  `data/cache/bg-first-day`; also Hyperliquid), and must cost the trade at
+  that venue.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
@@ -128,5 +164,5 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 |---|---|---|---|
 | L1 vaults | `scouts/l1-vaults.md` | 2026-10-11 | running |
 | L2 carry | `scouts/l2-carry.md` | 2026-10-11 | running |
-| L4 Binance multi-year | `scouts/l4-binance-years.md` | 2026-10-11 | running |
+| L4 Binance multi-year | `scouts/l4-binance-years.md` | 2026-10-11 | done |
 | L5 desk | `scouts/l5-desk.md` | 2026-10-11 | done |
