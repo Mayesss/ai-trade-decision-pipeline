@@ -25,3 +25,20 @@ were received. No P&L, funding accrual or gap change was computed.
 
 No 012 threshold may be chosen from these counts beyond the entry-rate
 input to power, which the registration states.
+
+## Addendum (2026-10-11, 012 Revision 2)
+
+All bounded before 2026-07-01, and no P&L computed.
+- **Bybit archive listings** (names only) for AI16Z, MKR and PUMP; 3 HEAD
+  sizes; 3 lines of one PUMP file.
+- **MKR kline probes,** which printed 5 bars of OHLC (prices, not
+  outcomes).
+- **A forward-paged re-fetch of Bybit 4h klines,** 209 symbols, 2024-11-01
+  → 2026-06-30. 204 now have prices.
+- **Stage-1 coverage counts with dates,** and FTM's HL row counts with its
+  last non-zero date.
+- **Recounts.** 681 Stage-1 positions (HL–BN 373, HL–BY 308) against 679
+  before; variant 572.
+
+The paging bug these fixed also affected 010's panel. See 010's erratum
+after §12.

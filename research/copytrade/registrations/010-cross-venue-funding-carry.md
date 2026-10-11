@@ -910,3 +910,25 @@ year. Under the rule it is a fail. Economically, it is the lending rate.
 **Family count.** L2: 2 trials, no pass. Programme-wide this session: 009
 (Binance 2021–23: 1 trial) and 010 (L2: 2 trials). The HL discovery year
 is unchanged at 14.
+
+### Erratum (2026-10-11, orchestrator, after the result): Bybit price paging bug
+
+Found while drafting 012. The Bybit kline fetch (`by_kline`) pages backward
+from `end`. Bybit returns only the last `limit` bars before `end`, so coins
+whose trading stopped earlier in the window got no bars or partial bars.
+Effect on 010's discovery panel (checked by the orchestrator on
+`data/carry/panel/`, through 2024-12-31):
+- 384 Bybit coins have funding, and 378 have prices.
+- **6 have no Bybit prices:** OCEAN, FET, AGIX, TOMO, COCOS, STRAX.
+- **11 have prices starting 217–420 days after their funding:** MATIC,
+  RNDR, UNFI, GAL, ANT, KLAY, BLZ, FRONT, LOOM, BOND, FUN.
+- Mostly renamed or delisted in 2023–24. Their Bybit legs failed the
+  name/price check and were not eligible for those spans.
+
+**Status.** 010 has run once, and its registered result stands. A re-run is
+not allowed. The defect excludes some dying or renamed coins from BN–BY
+and HL–BY: a survivorship-type omission of uncertain sign. It cannot plausibly
+reverse T1 (t −2.60 over 2,135 positions) or T2 (BTC/ETH/SOL, unaffected).
+**It weakens the reported HL–BY block (114 positions), which is part of
+012's lead.** 012 pages forward and re-fetched its own data (`000h`
+addendum). `ct/carry.py` is left unchanged so that 010 stays reproducible.
