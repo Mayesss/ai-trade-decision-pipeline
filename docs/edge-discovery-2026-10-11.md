@@ -650,6 +650,27 @@ no pass.** (registration, Result §)
   - Kalshi maker-side longshot (candidate 011);
   - L3 (holdout-only, about $1 of data).
 
+**2026-10-11 — 012 drafted and reviewed: not registrable yet.**
+(`registrations/reviews/012-review.md`)
+- **Revision 1 (orchestrator).** Stage 1 became a sign gate, raising joint
+  power at 3%/yr to 0.16–0.38. D18 drafted: the HL holdout calendar is
+  shared by 012 and L3 only.
+- **Review: one blocker and six majors.**
+  - **B1.** The Stage-2 build would crash, because the listing is never
+    saved.
+  - **M1.** Cached null answers left 5 coins without Bybit prices; 3 are
+    Bybit-delisted (survivorship).
+  - **M2.** No Stage-2 completeness checks.
+  - **M3.** The owner lines are not frozen at Stage 1.
+  - **M4.** The decisive false-confirm rate is Stage 2's own, 0.049–0.064,
+    not the joint rate.
+  - **M5.** 012 is **HL-year trial 16**, and reads into 009's holdout
+    calendar.
+  - **M6.** D18 must explicitly amend the HL-holdout rule and cover all
+    venues.
+- **Checked fine.** The HL-pair 2025–26 P&L was never computed, and costs
+  and fills are consistent. Revision 2 is in progress.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
