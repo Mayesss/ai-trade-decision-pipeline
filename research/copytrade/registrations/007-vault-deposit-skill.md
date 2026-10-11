@@ -693,3 +693,35 @@ values (2026-10-11), recomputed at the REGISTERED commit.
    It would cost some power: the IC 0.2 row "market-adjusted outcome" in
    §3. It is not proposed, because discovery's question is the raw
    depositor return; the holdout requires it.
+
+## Run note 1 (2026-10-11, orchestrator): the run stopped at a variant's gate; no outcome seen
+
+The first start of `r007_run.py` (REGISTERED commit 8371981) passed the
+guard, the data manifest, the identity gate (netWithdrawnUsd: flow-free
+1.000 over 2,221 intervals, flows 1.000 over 2,205) and the profit-share
+gate (0.985 of 6,963 withdrawals). It built the eligible sets (outside
+depositors 74 / 64 / 50 / 54; full 99 / 79 / 63 / 72). It then exited with:
+
+    unmeasurable gate: 16 of 313 vault-windows (> 5%) — no criterion computed
+
+- **Cause: a wiring fault, not a rule.** The 5% gate sits inside
+  `assemble()`, and `main()` calls `assemble()` twice. The first call is
+  the PRIMARY (the D2 outside-depositor population, 242 vault-windows),
+  which returned without stopping. The second is the REPORTED
+  full-population variant (313), which tripped the gate and raised
+  `SystemExit`. §5 defines the rows as "the D2 population", so D10/D16's
+  gate was meant for the primary.
+- **What existed.** The primary's criteria were computed in process memory
+  by the first call. They were never printed, logged or written, and the
+  process exited before the results row. No person or agent has seen any
+  007 outcome. `results.jsonl` holds no 007 row; the log holds only the
+  seven lines above. The unmeasurable reasons for the variant were never
+  computed.
+- **Seen.** The gate count (16/313, variant), the two gate shares, and the
+  set sizes.
+- **Proposed amendment (needs the owner).** The gate applies to the
+  primary only. The full-population variant reports its unmeasurable count
+  and reasons and never stops the run. No other change to code, data or
+  criteria. Then one re-run on the same data, which deterministically
+  recomputes the same unseen primary. The amendment changes
+  `r007_run.py`'s hash; §8 is updated in the amendment commit.
