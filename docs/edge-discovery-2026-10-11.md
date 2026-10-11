@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 DRAFT Revision 4 committed; decision table with the owner**; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 Revision 1 done; re-review running**; forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 second review: 1 blocker + 4 major; Revision 2 (holdout as existence test) in progress**; forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 DRAFT Revision 2 committed; decision table with the owner** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
@@ -533,6 +533,23 @@ above the bar.**
   0.21–0.38. Neither confirms near the bar with good odds.
 - **Re-review started.** Ledger reads are recorded in the `000f`
   addendum.
+
+**2026-10-11 — 010 second review: the holdout redesigned as an existence
+test.** (`registrations/reviews/010-review-r1.md`)
+- **N1 (blocker).** The option parse matched quoted text: choosing B would
+  still run A. Fixed with one anchored date line.
+- **N2.** The fresh-holdout gate is ported from 009's pattern: a recomputed
+  decision, approval after the row, refusal until end + 7 days, a coverage
+  check.
+- **N3.** The ordering guard recomputes 009's decision.
+- **N4.** Positions that fail the exit name check stay in the primary: raw
+  gap, else the worst observed return.
+- **N5.** Joint power at the 3%/yr bar was only 0.05–0.08, because two
+  point bars ran in series. **Orchestrator decision:** the holdout CONFIRM
+  becomes an existence test (mean net > 0, month-clustered t ≥ 1.645). The
+  3%/yr bar becomes the deploy threshold for the paper step. The owner is
+  offered one pre-registered extension to 2027-06-30. A non-confirm reads
+  "not demonstrated".
 
 ## 5. Data inventory
 
