@@ -25,8 +25,8 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | L2 | Funding / basis carry across venues | scout running | likely | 1 in 2 | low single digits net, capacity-limited; leg liquidation in a spiral |
 | L3 | Inverted 001 T3 positioning, holdout-only | **held** until the L1 scout reports (holdout allocation) | 1 in 5 | — | rally holdout is a hard test |
 | L4 | Multi-year cross-sectional factors from free Binance data | scout running | 1 in 4 | 1 in 3 if it exists | weekly book |
-| L5a | Funding-settlement effects (price and flow around funding timestamps) | desk scout running | 1 in 4 | 1 in 3 | high frequency, small per trade, cost-bound |
-| L5b | Prediction-market favourite–longshot bias | desk scout running; legal access is the first gate | 1 in 4 | access-gated | uncorrelated with crypto, if lawful |
+| L5a | Funding-settlement effects (price and flow around funding timestamps) | **parked** 2026-10-11 (§4): documented edge ~0.5 bp vs ≥ 9 bp round trip | 1 in 10 | 1 in 10 | cost-bound |
+| L5b | Prediction-market favourite–longshot bias | **closed** 2026-10-11 (§4): no lawful venue for a German resident | — | — | — |
 
 **Why L5a could be consistent:** funding is a scheduled, mechanical cash
 flow, and traders act around it every settlement, every day. **Why L5b could
@@ -87,6 +87,27 @@ clean tests of a structural premium and of the one strong fact), L4 for
 power, L5 as independent sources, L3 last (post-hoc idea, lowest odds,
 consumes the holdout).
 
+**2026-10-11 — L5b closed; L5a parked; venue access becomes a standing
+question.** The desk scout (`research/copytrade/scouts/l5-desk.md`) found
+no lawful prediction-market venue for a German resident. The GGL (notice of
+5 Sep 2025) classes Polymarket-style event bets as unlicensable, illegal
+betting and treats taking part as illegal (§285 StGB). Betfair Exchange is
+not licensable, and Kalshi contracts on financial underlyings fall under
+BaFin's retail binary-option ban. The orchestrator checked the GGL position
+against independent press reports of the notice. L5b stops on access, not on
+evidence. L5a is parked, not registered. The only out-of-sample clock-time
+predictability on Binance (Kim & Hansen 2026, 2021–2024) is about 0.5 bp a
+boundary, and it is unchanged when the funding quarter-hours are excluded.
+Settlement literature documents volume and spread shapes, not returns. A
+taker round trip costs 9–11 bp. The local behaviour check (counts only) shows
+nothing special at 08/16 UTC. With about 3,300 settlements a coin, a
+costs-clearing effect would be easy to detect, so the literature's silence
+counts against it. **Cross-cutting:** Binance wound down derivatives for
+German users on 2021-07-30, so Binance is research data only. Every light now
+states its lawful execution venue (Hyperliquid, Bitget, OKX Europe X-Perps
+under MiFID since 2026-04-15, …). The L2 scout was asked to add this for each
+carry leg.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
@@ -108,4 +129,4 @@ script; data under `research/copytrade/data/scout_<id>/` (gitignored).
 | L1 vaults | `scouts/l1-vaults.md` | 2026-10-11 | running |
 | L2 carry | `scouts/l2-carry.md` | 2026-10-11 | running |
 | L4 Binance multi-year | `scouts/l4-binance-years.md` | 2026-10-11 | running |
-| L5 desk | `scouts/l5-desk.md` | 2026-10-11 | running |
+| L5 desk | `scouts/l5-desk.md` | 2026-10-11 | done |
