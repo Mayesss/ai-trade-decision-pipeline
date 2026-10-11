@@ -23,7 +23,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 |---|---|---|---|---|---|
 | L4 | Multi-year weekly cross-sectional factors on Binance perps (funding carry, OI crowding, one more), executed on Binance | **drafting 009**; discovery pull approved (1.54 GB) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
 | L2 | Cross-venue funding carry (HL / Binance / Bybit / OKX pairs), conditional entry | **drafting 010** | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
-| L1 | Deposit in top-scored Hyperliquid user vaults | **007 Revision 1 done; second review running** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
+| L1 | Deposit in top-scored Hyperliquid user vaults | **007 second review: 2 code fixes; Revision 2 in progress** | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | drafting 008 after 007 (shares its holdout pull) | 1 in 5 | — | rally holdout is a hard test |
 | L5a | Funding-settlement effects | parked (economics: ~0.5 bp documented vs 9–11 bp costs) | 1 in 10 | 1 in 10 | cost-bound |
@@ -320,6 +320,23 @@ vault counts per window, full set / outside-depositor set:
   over 4 windows risks being anti-conservative), the behavioural closure,
   the entry rule, and a holdout extended with forward windows as an owner
   option.
+
+**2026-10-11 — 007 second review: two fixes, and the holdout becomes the
+owner's choice.** (`registrations/reviews/007-review-r1.md`)
+- **M-a.** The drafter's random-effects clustered Z was a 3-df t-test
+  compared with 2.33. Its null passed up to about 5% at a nominal 1%.
+  Criterion 1 now also requires a t-test on the four window ICs at 3.18.
+  This costs about 0.12 of joint power.
+- **M-b.** Closure depended on activity after the hold. The exit is now
+  decided only by in-hold behaviour, and a capital base under $1k ends the
+  measurement.
+- **M-c.** Under an exposure-tilted null, the two-window holdout in one
+  rally confirmed 3–12% of the time. CONFIRM now uses a market-adjusted
+  outcome with a sign rule and a common 14-day grid entry. Two holdout
+  windows (read after 2026-10-26) versus four (end fixed now at
+  2027-02-15) goes to the owner with power.
+- **Also.** A hung 010 fetch (a sleep stall, 6 h at 0% CPU) was killed by
+  the orchestrator, and the drafter was resumed with timeouts.
 
 ## 5. Data inventory
 
