@@ -234,9 +234,19 @@ token unlocks.**
   holdout claim: amend D18 openly if it is used.
 - **Expectation:** 1 in 5.
 
-**N6. L3 itself** (inverted 001 T3, holdout-only). Its data pull is about
-12 GiB of requester-pays data (about $1). It **needs the owner's yes**,
-because that pull is not free.
+**N6. L3 itself** (inverted 001 T3, holdout-only). **The owner approved
+the requester-pays pull on 2026-10-12.**
+- Source: `s3://hydromancer-reservoir`, via `ct/archive.py`, profile
+  `copytrade`.
+- Estimate: about 12 GiB of HL fills for the holdout (about $1.10).
+- Conditions:
+  - It is fetched only by 008's guarded fetch, after 008 is REGISTERED.
+  - It lists objects and sizes first, with a hard cap of 15 GiB. Above
+    that, ask again.
+  - The holdout snapshots are already on disk (`p2_snapshots.py` pulled
+    them), so pull only what 008 names.
+- Draft 008 early in round 3: its rule is fixed by 001 T3, inverted and
+  unchanged, so it is cheap.
 
 **N7. Your own lights,** including outside crypto (event contracts,
 structural premia in other asset classes). Each must be accessible, carry
