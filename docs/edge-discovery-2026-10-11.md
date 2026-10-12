@@ -22,7 +22,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3% a year.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | L4 | Weekly cross-sectional funding carry (F1) on Binance perps; F2 crowding dropped on turnover | **009 FAIL → close** (net +16.9 bp/wk, t 0.62); holdout A unread; pull done (1.527 GB, checksums 0 fail) | 1 in 3 | 2 in 5 | weekly book, market-neutral; capacity ample at our size |
-| L2 | Cross-venue funding carry (HL / Binance / Bybit pairs; OKX reported), conditional entry | **010 FAIL → close** (T1 −2.4%/yr, t −2.6; T2 +2.96%/yr misses 3% bar); HL-pair lead +5.6%/yr (reported); forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
+| L2 | Cross-venue funding carry — **closed** (010 fail; 012 HL-pair follow-up fail at Stage 1) | **010 FAIL → close** (T1 −2.4%/yr, t −2.6; T2 +2.96%/yr misses 3% bar); HL-pair lead +5.6%/yr (reported); forward holdout 2026-07 → for the owner | 2 in 3 (2023–24); compressed since | 1 in 3 | 2–6%/yr net if it holds; leg-liquidation tail at ≥ 2× |
 | L1 | Deposit in top-scored Hyperliquid user vaults | **007 FAIL → close** (Z 1.97; top −4.0%/hold, −5 pp vs HLP; market-adjusted Z 0.03); holdout unread | 1 in 3 | 1 in 4 | vault NAV; single-regime leverage; capacity tens of $k |
 | L5b | Prediction-market favourite–longshot bias (Kalshi, maker side) | scout done (§4); candidate 011, clean out-of-sample on post-paper data; data pull (≤ 15–20 GB) needs owner | 2 in 5 | 1 in 5 | ~3–8%/yr gross, −1 to +4% over cash: lending-like, tiny capacity, diversifying except crypto contracts |
 | L3 | Inverted 001 T3 positioning, holdout-only | **unblocked** (L1 closed without reading the HL holdout); awaits owner go-ahead to draft 008 | 1 in 5 | — | rally holdout is a hard test |
@@ -708,6 +708,34 @@ risk-adjusted basis. HLP: +19% in the spiral year, 2–4%/yr calm, Sharpe
     (one-leg liquidation in a crash, venue failure, ADL);
   - so roughly HLP-calm-year returns, with a different tail.
 - **Odds 012 confirms:** about 1 in 8.
+
+**2026-10-12 — 012 registered under delegation; Stage 1 FAIL, close.**
+- **The owner's delegation (2026-10-12).** The orchestrator may register
+  and decide as recommended. Risky strategies are allowed when the risk is
+  estimated and below the reward. Free, safe data pulls need no approval.
+  Aim much higher (the owner's "100% a week" is a direction, not a target).
+- **012 Stage 1.** HL pairs, 2025-01 → 2026-06: −25.8 bp per position,
+  t −3.37, −5.7%/yr. Funding +27.8 bp (80% of positions collect). The price
+  gap −38.0 bp (median +2: a jump tail) and fees −34.8 bp. The 2023–24
+  lead did not replicate. The HL holdout calendar is unread; L3 keeps the
+  only claim under D18.
+
+**Session close (2026-10-12).** Registered and run this session:
+- 007 (HL year, trial 15);
+- 009 (Binance 2021–23, trial 1);
+- 010 (L2, trials 1–2);
+- 012 (L2 trial 3; HL year, trial 16).
+
+All five trials closed; no holdout read anywhere. The carry family is
+exhausted at this construction. **Funding is a real cash flow (about
+19–28 bp per position or per week), but price-gap jump tails and taker
+fees take it.** Lights still open:
+- L3 (holdout-only, about $1 requester-pays: needs the owner);
+- L5b Kalshi (small);
+- L5a (parked).
+
+The next programme starts from
+`docs/edge-discovery-next-prompt-2026-10-12.md`.
 
 ## 5. Data inventory
 
