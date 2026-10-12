@@ -27,7 +27,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 | N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **drafted; to review** | 1 in 5 (gross) | 1 in 20 (this book cannot trade: inverted discovery is +7.4 bp/day gross but **+0.1 bp/day net** at 001's 7.3 bp/day taker cost) | a confirm would only earn a cost-reduced follow-up; ≈ +9%/yr, Sharpe ≈ 0.8 at maker-like costs is an untested upper bound |
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
-| N2(b) | Sized short-vol book on Deribit BTC/ETH, with a stress filter (the map itself dropped) | **scout done; 014 drafting** | VRP sign: public; net of costs: 1 in 2; filter increment 1 in 7 | 1 in 5 | +8–15%/yr at ¼–½ Kelly; worst month −18 to −44% |
+| N2(b) | Sized short-vol book on Deribit BTC/ETH (014: weekly ATM straddle, daily delta hedge; T2 idles on a DVOL spike) | **drafted; tail sizing check (`000m`)** | VRP sign public; net of costs 1 in 2 | 1 in 6 | at the adversarial-bound size only +2–5%/yr; the realistic tail decides |
 | N3(i) | New Binance perps (post-listing path, net of funding and squeezes) | **scout done; 013 drafting** | 1 in 2 | 1 in 4 | high per-event moves; $50–250k per event; squeeze tail bounded by isolated margin |
 | N3(ii–iii) | Listing announcements; token unlocks | **parked** (no end-datable announcement API; no free point-in-time unlock calendar; `000i`) | 1 in 2 / 1 in 3 | 1 in 10 / 1 in 8 | — |
 | N7-1 | Crypto trend following (Donchian ensemble, vol-targeted) | desk only; candidate | 1 in 3 | 1 in 5 overall | 10–30%/yr if alive; convex; only 2025-04 → 2026-06 is out of the paper's sample (t ≈ 1.1 at Sharpe 1) |
@@ -363,6 +363,35 @@ reproduces.
   3. After Revision 1, one re-review, then REGISTERED under the mandate if
      no blocker remains.
 
+**2026-10-12 — 014 drafted: power is low and the tail caps the size, so a
+confirm would land at lending-like returns; one bounded computation
+authorised to settle it.** (`registrations/014-short-vol-deribit.md`,
+DRAFT; 121 synthetic checks; pull 248 MB, 0 rows ≥ 2026-07-01.)
+- **Family (Deribit options, new count 2).** T1: a weekly 7-day ATM straddle
+  on BTC and ETH, sold Friday 08:00 UTC, delta-hedged daily on the perp,
+  held to expiry. T2: the same, idle when DVOL ≥ 1.25 × its trailing 7-day
+  minimum (DVOL, not Binance OI: clean, point-in-time, no missing hours).
+  The construction was chosen on synthetic power (H8 and H24 tied; the tie
+  went to the smaller synthetic worst week; disclosed as chosen after seeing
+  both tables).
+- **Costs** about 4.9% of premium in total: break-even at gross VRP ≈ 0.05.
+- **Statistics.** A negatively skewed weekly series makes the plain t
+  over-reject 2–6×; Hall's skew-corrected t with floors restores size
+  (net-zero false pass: discovery 0.009–0.018, holdout 0.038–0.051).
+- **Power at the published VRP prior (0.10 of premium): discovery 0.21–0.24,
+  joint 0.06.** At 0.15: 0.54–0.63 and 0.30–0.39.
+- **Size and tail.** Under an adversarial bound (each event's whole weekly
+  excursion as one gap between hedges), tail-aware Kelly is 0.40–0.55 and
+  the proposed n = 0.10 notional per unit of equity gives a worst week −5.4%
+  and month −6.7%, but **only +2.2–2.5%/yr at VRP 0.10**: HLP-calm territory.
+- **Orchestrator decision.** The bound, not the data, sets the return. The
+  realistic hedged loss in the worst weeks *before* 2021-03-24 lies outside
+  both test calendars and decides sizing, so it is authorised as a bounded
+  computation, ledgered in advance as **`000m`**. If the realistic tail
+  allows a materially larger n, 014 goes to review; if not, 014 is parked as
+  "a confirm cannot beat the lending leg at a tail-respecting size", and no
+  trial is spent.
+
 ## 4. Distance to goal
 
 Unchanged from round 2 at the start of this round: no candidate has a
@@ -387,7 +416,7 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 |---|---|---|---|
 | N1 scout | `scouts/n1-xyz.md` | 2026-10-12 | done; `000j` |
 | N2 scout | `scouts/n2-options.md` | 2026-10-12 | done; `000k` |
-| 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | running |
+| 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | drafted; out-of-calendar tail computation (`000m`) running |
 | N3 scout | `scouts/n3-listings.md` | 2026-10-12 | done; `000i` |
 | N7 + N4 desk | `scouts/n7-desk.md` | 2026-10-12 | done |
 | 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | running |
