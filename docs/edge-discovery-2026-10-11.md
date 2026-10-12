@@ -689,6 +689,26 @@ no pass.** (registration, Result §)
   first or waives; the second reader discloses the first's result;
   family-wise ≤ 2α.
 
+**2026-10-12 — distance to goal (orchestrator's assessment, for the
+owner).** No candidate has a demonstrated edge that beats HLP on a
+risk-adjusted basis. HLP: +19% in the spiral year, 2–4%/yr calm, Sharpe
+1.4; its lending leg is about 3%/yr.
+- **Best statistically supported result:** 010 T2 (BTC/ETH/SOL
+  cross-venue carry). +2.96%/yr on gross capital at 1×; month t 2.77;
+  Sharpe about 2 in-sample (overstated: exposed discovery, 93 positions).
+  Economically the lending rate.
+- **Best point estimate:** 009 F1, +8.8%/yr net (t 0.62). Annual vol about
+  20%, Sharpe about 0.4; indistinguishable from zero.
+- **Best lead:** the HL–CEX pairs, +5.6%/yr on gross capital (Sharpe about
+  2.5). Post-hoc, and weakened by the Bybit erratum. 012 tests it on unread
+  data.
+- **Realistic ceiling on this path:**
+  - structural carry, about 3–6%/yr on gross capital unlevered;
+  - about 6–12%/yr on equity at 2–3× per leg on majors, before the tail
+    (one-leg liquidation in a crash, venue failure, ADL);
+  - so roughly HLP-calm-year returns, with a different tail.
+- **Odds 012 confirms:** about 1 in 8.
+
 ## 5. Data inventory
 
 Everything from the forced-flow programme (its §3 and §9), plus whatever the
