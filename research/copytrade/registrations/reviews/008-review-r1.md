@@ -370,3 +370,47 @@ or `crowd008`. m6, m7 and m8 are procedure and text.
 
 After the fix, a re-check of B1 (`probe_stats.py`, `probe_fix2.py` against the new `design`) and of M1
 (`probe_guard_r1.py mockreal`) is enough. A full third review is not needed.
+
+---
+
+## Revision 2 recheck (2026-10-13)
+
+**Scope.** The fixes mapped in registration §15, checked in code and by re-running this review's probes
+against the revised files. This is not a full third review.
+- The §11 hashes of `ct/crowd008.py` (`8123b34a…`), `r008_run.py` (`bf9e702a…`) and `r008_fetch.py`
+  (`979a7acf…`) match the disk.
+- Tests: **132 of 132 pass**.
+- New probes, all synthetic, in throwaway repos with every hook mocked:
+  - `scratch_review008r1/probe_r2_stats.py`, which calls the **revised** `crowd008.confirm`;
+  - `scratch_review008r1/probe_r2_guard.py`.
+
+  Outputs are in `probe_r2_*.out`.
+- No real data was read. No commit was made in the real repository.
+
+| item | status | evidence |
+|---|---|---|
+| **B1** per-cell alt and reversal loadings | **Fixed** | `design` (l.474) emits a BTC, an alt and a reversal loading per cell. The revised `confirm` matches the independent k-10 fit to 1e-15 (k = 10). At 8,000 draws: N11 0.050 (r1 0.082), N11c 0.047 (0.140), N12 0.049 (0.084), N14 0.048 (0.095), N15 0.046 (0.110). N10 0.047, N13 0.049, base 0.048. Power 0.275 full / 0.134 half. N8 persistence 0.082, unchanged (stated). The reported factor α uses the same design (`per_cell=True` by default). |
+| **M1** hooks on the real tree | **Fixed** | `real_tree_failures(…, hooks)` refuses any `hooks` argument on the real tree. In the stand-in REGISTERED repo, the real root with complete mocks and no override is refused with "(B1) mock network hooks are never used on the real data tree". A throwaway root is refused for both reasons. 0 rows were written and 0 fill days. |
+| m1 shadow scan | **Fixed** | `shadow_modules` flags each of these: `duckdb.py`, `duckdb/__init__.py`, `ct/stats/__init__.py`, `ct/tool/__init__.py`, `pyarrow.pyc`, `duckdb.cpython-314-darwin.so`, `ct/_x.abi3.so`, a git-ignored `ignored_mod.py`, and a modified tracked `ct/stats.py`. Guard (d) refuses. |
+| m2 committed attempts, bytes, clock, ceiling | **Fixed, one end state left open** | A transfer that raises is counted from the committed rows: 14.502 GiB, matching the truth, and `results.jsonl` stays clean. An end row edited down to 0 bytes changes nothing (the maximum over versions is taken). A killed attempt's 3 GiB reservation is counted. Back-dated `at` fields are ignored, because the clock is the commit time. 8 unavailable names complete the fetch; 9 refuse with `unavailable_ceiling`. **Residual (minor):** see the first bullet below this table. |
+| m3 environment | **Fixed** | The fingerprint covers every file of the two packages: duckdb 56, pyarrow 755. It takes 0.1 s and is stable. The recovery clause and `--env-record` are in §11. `--env-record` is ungated, but it only writes an `env_record` row that no check reads, and it reads no data. |
+| m4 survivorship flag | **Fixed** | `survivorship_flag` returns `False` for counts of 1 long against 0 short. It returns `True` for 6 coins ranked with 12 long against 4 short, and for an 11 % crowd share. It is stored, rechecked, and printed before the decision (`run` l.785–788). The persistence-sensitive flag (t in [1.782, 2.18)) is reported. |
+| m5 history-scan flags | **Fixed** | `--text --no-textconv --no-ext-diff` in `result_rows`, and `--no-textconv` on `git show`. With an uncommitted `results.jsonl -diff` attribute, `reset --hard HEAD~2` still leaves (f) refusing. |
+| m6 push | **Procedure** | §10 and §11: the owner pushes after each automatic commit. `reflog expire` + `gc` is a stated limit. |
+| m7 failed commit | **Fixed** | Retried once, then "STOP: … Commit it by hand, AS IT IS …; do not discard". The decision is not printed. (k) and (f) refuse while the row is uncommitted. |
+| m8 text | **Fixed** | The persistence range, D13's wording, the treatment of a missing next-day close, and the instruction to commit everything first. |
+
+**Left open (minor; no blocker or major remains):**
+- **The ceiling's end state is not specified.**
+  - When more than 8 names fail permanently (9 Bitget removals in the probe), every attempt refuses, and
+    the "orchestrator decision" has no mechanism. An amendment would change the registration commit, and
+    the fetch's (f) check then refuses to resume.
+  - This is the B-B2 dead end again, but only above 8 permanent removals (0 of 168 are gone today).
+  - **Text-only fix at registration:** state the end state, e.g. "a ceiling refusal that persists on 3
+    attempts ≥ 24 h apart closes 008 unread: no read, L3 not demonstrated, the calendar stays unread".
+- **Forged persistence clock.** A hand commit with a back-dated `GIT_COMMITTER_DATE` can still forge the
+  clock (probe: two forged rows make a key persistent). That is deliberate forgery, it stays visible in
+  the history, and it is acceptable as stated.
+
+**Verdict: register.** Add the one-sentence ceiling end state to §2/§11 when the status is set to
+REGISTERED. It needs no code change and no re-hash.
