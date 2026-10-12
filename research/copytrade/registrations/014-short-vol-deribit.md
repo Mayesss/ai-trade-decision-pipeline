@@ -1,6 +1,23 @@
 # 014 — A sized short-volatility book on Deribit BTC/ETH options, with a stress filter (N2(b); Deribit options family, T1 + T2)
 
-**Status: DRAFT**
+**Status: DRAFT — PARKED 2026-10-13 (orchestrator, under the owner's delegation). Not registered; no
+outcome was read on either calendar; no trial is spent.**
+
+**Why parked (orchestrator, after `reviews/014-review-a.md` and `014-review-b.md`).** The decision rule
+fixed before the tail computation (`000m`; programme doc §3, 2026-10-12) was: review if the realistic
+tail allows a materially larger size, otherwise park. Review A (M1) showed the larger size does not hold:
+with daily hedging a one-day gap costs nearly the whole move (−46% of notional for a −50% gap on any
+day), the 2020-03 week was mild because the fall spread over five hedges, and one extra single-gap week
+cuts tail-aware Kelly from ~1.7 to ~0.55. A robust quarter-Kelly size is n ≈ 0.10–0.15, where the expected
+return at the published VRP (0.10 of premium) is about +2–3%/yr after the tail charge — below HLP's
+lending leg — and joint power is about 0.06. Both reviews also found the entry premium priced off the
+index rather than the expiry's forward (an error of ~3% of premium, median, up to 16%, the size of the
+edge under test; review A B1, review B M4), plus a holdout gate that could never open in the real layout
+(review B B1) and the integrity faults fixed in 008. **For any later short-vol design:** price off the
+forward recovered from each trade's `price`/`iv`; hedge more often than daily or price the single-gap
+week explicitly; detach the size from the test; add the regime null (review A M2) to the floor
+calibration. The pull and both panels stay on disk and pinned; the 2021-03-24 → 2026-06-30 Deribit
+calendars remain unread by any outcome computation.
 
 **Revision 1 (2026-10-13, orchestrator decision `000m`): the realistic hedged tail.** The registered
 H24 mechanics, unchanged, were run on the 21 out-of-calendar weeks (entries 2019-03-29 → 2021-03-05, all

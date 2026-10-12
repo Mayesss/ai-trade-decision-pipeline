@@ -27,7 +27,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 | N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **drafted; to review** | 1 in 5 (gross) | 1 in 20 (this book cannot trade: inverted discovery is +7.4 bp/day gross but **+0.1 bp/day net** at 001's 7.3 bp/day taker cost) | a confirm would only earn a cost-reduced follow-up; ≈ +9%/yr, Sharpe ≈ 0.8 at maker-like costs is an untested upper bound |
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
-| N2(b) | Sized short-vol book on Deribit BTC/ETH (014: weekly ATM straddle, daily delta hedge; T2 idles on a DVOL spike) | **Revision 1; in review** | VRP sign public; net of costs 1 in 2 | 1 in 6 | n 0.40: +5–6%/yr after tail charge at VRP 0.10, +15–17% at 0.15; realistic worst month −5.6%, adversarial stress −27% |
+| N2(b) | Sized short-vol book on Deribit BTC/ETH (014) | **PARKED after review** (robust size n ≈ 0.10–0.15 → ≈ +2–3%/yr at the published premium; pricing off index not forward); no trial spent | VRP sign public | 1 in 15 | below HLP's lending leg at a robust size |
 | N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **drafted; in review** | 1 in 2 | 1 in 4 | 3% per event, ~127 events/yr: +15%/yr at 4% net per event, +30% at 8% (assumed); worst month −28% plausible |
 | N3(ii–iii) | Listing announcements; token unlocks | **parked** (no end-datable announcement API; no free point-in-time unlock calendar; `000i`) | 1 in 2 / 1 in 3 | 1 in 10 / 1 in 8 | — |
 | N7-1 | Crypto trend following (Donchian ensemble, vol-targeted) | desk only; candidate | 1 in 3 | 1 in 5 overall | 10–30%/yr if alive; convex; only 2025-04 → 2026-06 is out of the paper's sample (t ≈ 1.1 at Sharpe 1) |
@@ -470,6 +470,33 @@ calendar and its 21-week selection re-derives from the underlying alone.
   addendum stating that the change came from review, not from the tail
   numbers.
 
+**2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
+(`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
+timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
+margin algebra, Hall's t; every Revision 1 number matches the code.
+- **B1** (= review B's M4, measured on the out-of-calendar tape): pricing
+  off the index instead of the forward moves entry IV by about ±2 vol points
+  (up to −18/+45 in 2020-03); premium error median 3.0%, max 15.8% — the
+  size of the edge (≈ 5% of premium) and of costs (4.9%).
+- **M1** (decisive): with daily hedges a one-day gap costs nearly the whole
+  move on any day (−46% of notional for a −50% gap); the mild 2020-03 week
+  was a five-hedge trend, not late timing. One extra single-gap week cuts
+  tail-aware Kelly from ~1.7 to ~0.55; two to ~0. Robust quarter Kelly is
+  n ≈ 0.10–0.15.
+- **M2.** If the premium is positive in calm weeks and negative after spikes
+  (T2's own mechanism), the discovery floor's false pass doubles (0.047 vs
+  0.025).
+- **Decision: 014 is parked under the rule fixed before the tail
+  computation** ("review if the realistic tail allows a materially larger
+  n; otherwise park"). The larger n does not survive review. At a robust n
+  the expected return is about +2–3%/yr at the published premium, below
+  HLP's lending leg, with joint power ≈ 0.06. Spending the Deribit calendars
+  on that is not progress toward the goal. The registration carries a
+  PARKED note with the lessons for any later short-vol design (forward
+  pricing, more frequent hedging or an explicit single-gap atom, size
+  detached from the test, the regime null). The pull and both panels stay
+  pinned and unread. N2 closes for this round.
+
 **2026-10-13 — 013 reviews A and B: not ready (1 blocker, 9 majors);
 Revision 1 ordered.** (`reviews/013-review-a.md`, `013-review-b.md`; the
 orchestrator confirmed B-M1 on the dead FTTUSDT contract: 744/744 zero-trade
@@ -554,7 +581,7 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | N1 scout | `scouts/n1-xyz.md` | 2026-10-12 | done; `000j` |
 | N2 scout | `scouts/n2-options.md` | 2026-10-12 | done; `000k` |
 | 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | Revision 1 (realistic tail, n 0.40) |
-| 014 review A (design) | `registrations/reviews/014-review-a.md` | 2026-10-13 | running |
+| 014 review A (design) | `registrations/reviews/014-review-a.md` | 2026-10-13 | done: 1 blocker, 2 majors → **014 parked** |
 | 014 review B (guard/data) | `registrations/reviews/014-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors |
 | N3 scout | `scouts/n3-listings.md` | 2026-10-12 | done; `000i` |
 | N7 + N4 desk | `scouts/n7-desk.md` | 2026-10-12 | done |
