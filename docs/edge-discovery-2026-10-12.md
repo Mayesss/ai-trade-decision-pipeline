@@ -24,7 +24,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | drafting 008 | 1 in 5 | 1 in 8 | inverted discovery ≈ +5 bp/day net on the book (≈ 12%/yr unlevered) if it held — a bear-year fact, rally holdout is a hard test |
+| N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **drafted; to review** | 1 in 5 (gross) | 1 in 20 (this book cannot trade: inverted discovery is +7.4 bp/day gross but **+0.1 bp/day net** at 001's 7.3 bp/day taker cost) | a confirm would only earn a cost-reduced follow-up; ≈ +9%/yr, Sharpe ≈ 0.8 at maker-like costs is an untested upper bound |
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
 | N2(b) | Sized short-vol book on Deribit BTC/ETH, with a stress filter (the map itself dropped) | **scout done; 014 drafting** | VRP sign: public; net of costs: 1 in 2; filter increment 1 in 7 | 1 in 5 | +8–15%/yr at ¼–½ Kelly; worst month −18 to −44% |
@@ -261,6 +261,108 @@ DVOL Spearman −0.46; ≥ $77 M buckets on 29 of 338 days, in 18 of 49 weeks;
      month −18 to −44%. That is above HLP's calm return and far worse in
      drawdown; the owner sees that trade-off in the registration.
 
+**2026-10-12 — 008 drafted; correction: the inverted book does not net.**
+(`registrations/008-inverted-positioning-holdout.md`, DRAFT; 86/86 synthetic
+tests.)
+- **Correction to this document's N6 row (orchestrator's error).** I used
+  001's synthetic "~5 bp/day" cost remark. The book's own code
+  (`ct/crowd.long_short`, checked by the orchestrator) pays 11 bp one way on
+  a gross-1 tranche at entry and exit, a third turning daily: **7.33 bp/day.**
+  001's net −14.75 bp/day is therefore about −7.4 gross; inverted, **+7.4
+  gross and +0.1 bp/day net (≈ +0.6%/yr).** Half of 001's t −3.4 was its own
+  cost.
+- **Design.** The confirm becomes an existence test on the book *before
+  trading costs* (funding kept), BTC-beta-adjusted, week-clustered t ≥
+  t_{G−1}(0.95), median > 0, both halves > 0. The beta adjustment matters:
+  a raw-mean rule would confirm pure beta 15–41% of the time in a known
+  rally. A confirm can lead only to a cost-reduced or paper registration,
+  never to trading this book.
+- **Calendar.** 001's 56-day grid continued: S = 2026-06-08 (lookback all
+  discovery; 30 signal days in July) and S = 2026-08-03 (53 days). End
+  2026-09-28: 83 book days, 13 week clusters. Power at the full inverted
+  magnitude **0.30** (half: 0.14); false confirm 0.044–0.051 under the plain
+  and beta nulls. The later end (2026-11-23) gives 0.44 for ~13.5 GiB and
+  cannot run before 2026-11-30.
+- **Pull.** 33 HL fill days (2026-07-01 → 08-02), 7.91 GiB listed, about
+  3.3 GiB transferred (~$0.30), requester-pays, under the owner's approval
+  and cap. Everything else is on disk.
+- **Family.** First and only reader of the HL holdout calendar under D18;
+  2026-09-28 → 2027-06-30 stays unread. HL discovery year stays at 16.
+- **Orchestrator reading.** 1 in 5 that the gross effect exists; power 0.3
+  even if it does; and deployable only after a further registration.
+  The value is closing fact 6 honestly for about $0.30. **Next: two
+  independent reviews in parallel,** with the before-costs confirm, the
+  beta adjustment and the new restart path as named probes.
+- **Test suite note.** The two state tests the brief named
+  (`test_factors`, `test_vaults`) pass since commit `72124e2`. One stale
+  state test remains: `tests/test_carry012.py` ("status line says DRAFT";
+  012 is REGISTERED). Left for the owner.
+
+**2026-10-12 — 008 review A: not ready (one blocker, four majors); the
+holdout months were already seen by other studies.**
+(`registrations/reviews/008-review-a.md`.) Sound: the book is 001 T3's code
+byte-identical with the sign flipped; the calendar has no look-ahead; power
+reproduces independently (0.311 / 0.154); the 13-week clustered t holds its
+size under fat tails and GARCH-type BTC.
+- **B1.** One pooled BTC beta across two cohorts and three months of very
+  different drift leaks beta error into α: false confirms 0.11–0.25 with no
+  alpha. Fix: a separate BTC slope per calendar month (size back to
+  0.046–0.049, about −0.005 power).
+- **M1.** BTC is the only factor for a dollar-neutral alt book; an
+  alt-minus-BTC trend gives false confirms 0.11–0.18. Fix: add an
+  equal-weight alt-index regressor.
+- **M2.** The economic bar binds almost never (P(bar | confirm) 0.96–0.99)
+  and routes confirms to a paper test of a book §0 calls undeployable. Fix:
+  apply it to the shrunk estimate or the lower bound; every confirm leads to
+  a cost-reduced registration.
+- **M3 (verified by the orchestrator).** Earlier looks at the same months:
+  the 2026-09-14 alpha-lab sweep (83 Bitget perps through 2026-09), and the
+  2026-10-11 inverted-AI study, which found a contrarian payoff in "three
+  particular months", 2026-06-27 → 10-10, one day before this round's brief
+  ranked N6 first. **Ledgered as `000l`.** Orchestrator decision: 008's
+  confirm regression also controls for a point-in-time short-term reversal
+  factor, so a confirm cannot be the reversal already known to have paid.
+- **M4.** The tail figures contradict each other; one scenario carried
+  through (about −8 to −10% a week, −12 to −16% a month).
+- Ten minors, including the symbol table dated 2026-10-07 (coins delisted
+  during the holdout drop out with hindsight) and a byte undercount in the
+  fetch on a failed attempt.
+- **Next.** Revision 1 waits for review B, so that one revision addresses
+  both.
+
+**2026-10-12 — 008 review B: not ready (two blockers, four majors); Revision
+1 ordered.** (`registrations/reviews/008-review-b.md`.) Sound: 86 tests,
+reused modules identical to `efefc7f`, hashes match, every §3 figure
+reproduces.
+- **B1.** The gates check whichever repo is passed in: a throwaway repo
+  with an open gate let the run read the real data tree; a mock-hooks dict
+  missing a key fell back to the real requester-pays hook.
+- **B2.** The Bitget close fetch stops on symbols Bitget has removed
+  (no history served, per the N3 scout), so it could never finish, and the
+  frozen code would need an amendment after a started row.
+- **M1** snapshot set not pinned (adding files moved 83 → 85 signal days);
+  **M2** the 15 GiB cap is not cumulative and failed transfers are not
+  counted; **M3** 008 reads holdout rows of `snapshot_accounts.parquet`,
+  which D18 (a) says no registration reads; **M4** survivorship from the
+  2026-10-07 symbol table now biases toward a confirm.
+- **Orchestrator decisions.**
+  1. **D18 tension resolved openly.** D18 (b) lets L3 read "the series its
+     registration names"; D18 (a)'s "neither is read by any registration"
+     was written for 012. 008 carries an explicit D18 amendment: L3 alone
+     may read the on-disk holdout snapshot rows, through its guard, for the
+     dates it names. Approved by the orchestrator under the owner's
+     2026-10-12 delegation; reported to the owner.
+  2. **Revision 1** addresses every blocker and major of both reviews plus
+     `000l`: α must survive a per-month BTC slope, an equal-weight alt
+     index and a short-term reversal factor; the economic bar on the shrunk
+     estimate; every confirm leads to a cost-reduced registration on the
+     remaining calendar; one coherent tail scenario; guard bound to the real
+     repo; delisted symbols skipped and recorded; pinned snapshot paths;
+     cumulative byte accounting; read-once rows committed immediately and
+     discarded rows detected; package versions frozen.
+  3. After Revision 1, one re-review, then REGISTERED under the mandate if
+     no blocker remains.
+
 ## 4. Distance to goal
 
 Unchanged from round 2 at the start of this round: no candidate has a
@@ -289,4 +391,7 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | N3 scout | `scouts/n3-listings.md` | 2026-10-12 | done; `000i` |
 | N7 + N4 desk | `scouts/n7-desk.md` | 2026-10-12 | done |
 | 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | running |
-| 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | running |
+| 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
+| 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
+| 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
+| 008 Revision 1 | drafter, resumed | 2026-10-12 | running |
