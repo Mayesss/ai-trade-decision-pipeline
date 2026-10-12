@@ -946,3 +946,42 @@ computed on real data.
   cost quantiles); variant 572.
 - **Power** re-simulated with month-aligned windows on the recounted
   positions and the same reused noise levels.
+
+## Result — Stage 1, 2026-10-12 (run of commit 2afb057, `results.jsonl` line 12)
+
+The sign gate on the exposed block 2025-01-15 → 2026-06-30, primary rule
+(choosing among HL pairs). Counts before the decision:
+- 681 positions (HL–BN 373, HL–BY 308);
+- 7 liquidated;
+- 1 raw exit gap;
+- 133 funding-hole settlements in 4 positions;
+- 0 venue-coins with funding but no prices.
+
+| gate | result | verdict |
+|---|---|---|
+| Stage-1 mean net > 0 | mean **−25.8 bp** per position (on N); month t **−3.37** (18 clusters); median −5.7 bp; hit 34%; halves −26.6 / −25.0 bp; annualised on gross capital **−5.7%/yr** | **FAIL** |
+
+**Decision: `close`.** 012 stops at Stage 1. **The 2026-07 → 2027-06
+calendar is never read by 012.** Under D18 that leaves L3 as the only rule
+that may claim it, so D18 (d) needs no ordering any more. L2 family: 3
+trials, no pass. HL discovery year: trial 16, no pass.
+
+**Diagnostics** (reported, per position, in bp of N):
+- **All HL pairs:** funding **+27.8** (t 12.0, hit 80%), price gap
+  **−38.0** (median +2.2: a fat left tail), fees −34.8, plus margin
+  top-ups.
+- **Core coins (87):** funding +13.9, gap +2.2, fees −24.2. Still
+  negative.
+- **Short HL (524):** funding +36.1, but the gap −41.3.
+- **Long HL (157):** funding 0.0.
+- **HL–BN alone:** −25.3 bp, t −2.68.
+- **2× slippage:** worse.
+
+**Reading.** The funding leg pays reliably: 80% of positions collect, about
++28 bp each. It is the price gap that ruins the trade. Most of the time the
+gap closes slightly in our favour (median +2 bp), but when HL funding is
+high, HL's price can run further from the CEX price in jumps, and the mean
+gap loss (−38 bp) exceeds the funding. Add four taker fills and the carry
+is negative in 2025–26. The 2023–24 lead (+5.6%/yr) was regime-specific,
+and did not survive the next 18 months. The filter did its job: it closed
+the lead cheaply, before the unread calendar was spent.
