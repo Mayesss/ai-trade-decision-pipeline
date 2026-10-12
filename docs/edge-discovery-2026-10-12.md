@@ -24,7 +24,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
-| N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **drafted; to review** | 1 in 5 (gross) | 1 in 20 (this book cannot trade: inverted discovery is +7.4 bp/day gross but **+0.1 bp/day net** at 001's 7.3 bp/day taker cost) | a confirm would only earn a cost-reduced follow-up; ≈ +9%/yr, Sharpe ≈ 0.8 at maker-like costs is an untested upper bound |
+| N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **REGISTERED 2026-10-13; fetch and read next** | 1 in 5 (gross) | 1 in 20 (this taker book cannot trade: +7.4 bp/day gross, +0.1 net) | a confirm only earns a cost-reduced follow-up; power 0.28 |
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
 | N2(b) | Sized short-vol book on Deribit BTC/ETH (014) | **PARKED after review** (robust size n ≈ 0.10–0.15 → ≈ +2–3%/yr at the published premium; pricing off index not forward); no trial spent | VRP sign public | 1 in 15 | below HLP's lending leg at a robust size |
@@ -470,6 +470,35 @@ calendar and its 21-week selection re-derives from the underlying alone.
   addendum stating that the change came from review, not from the tail
   numbers.
 
+**2026-10-13 — 008 Revision 2 done; probe-only recheck running.** 132/132
+tests (orchestrator re-ran). Per-cell BTC, alt and reversal loadings (k =
+10 at 2026-09-28): false confirms 0.045–0.053 under N1–N7 and N10–N15;
+persistence N8/N9 0.08–0.12 (stated weakness, reported flag). Power at the
+full inverted magnitude 0.28 (0.26 with AR + fat tails), half 0.13;
+P(confirm and bar) 0.09. Fetch attempts are committed rows; ≤ 8 names may
+become unavailable before the fetch stops; the environment pin hashes every
+duckdb/pyarrow file, with a recovery clause; the runner never pushes.
+**Sequencing:** 008's guard refuses while any `.py` at the top level or in
+`ct/` is untracked or modified, so its fetch and read wait until 013
+Revision 1 is committed.
+
+**2026-10-13 — 008 REGISTERED (orchestrator, under the owner's delegation;
+commit `2bd855a`).** The Revision 2 recheck confirmed every fix with probes
+(N11–N15 back to 0.046–0.050; mock hooks refused on the real tree; the
+shadow scan, committed fetch attempts, environment pin, survivorship flag
+and failed-commit path all work). Decisions at registration:
+- **End 2026-09-28** (power 0.28 at the full inverted magnitude), not
+  2026-11-23 (0.40): ≈ 3.3 GiB instead of ≈ 13.5 GiB against a 15 GiB cap,
+  readable now rather than after 2026-11-30, and it leaves 2026-09-28 →
+  2027-06-30 unread for any follow-up.
+- **D13 (the D18 amendment) approved as written.**
+- **Added at registration (text only):** a ceiling refusal (> 8 names
+  unavailable) persisting over 3 attempts ≥ 24 h apart closes 008 unread.
+- **Guard state (read-only `--check`):** only (d), because 013's drafts
+  are untracked, and (g1), because the fetch has not run. The fetch
+  (requester-pays, ≈ $0.30, owner-approved 2026-10-12) runs once 013
+  Revision 1 is committed; then the one read.
+
 **2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
 (`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
 timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
@@ -594,4 +623,6 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
 | 008 Revision 1 | drafter | 2026-10-12 | done |
 | 008 re-review | `registrations/reviews/008-review-r1.md` | 2026-10-13 | done: register after 1 blocker + 1 major |
-| 008 Revision 2 | drafter, resumed | 2026-10-13 | running |
+| 008 Revision 2 | drafter | 2026-10-13 | done (132/132) |
+| 008 Revision 2 recheck | `reviews/008-review-r1.md` (appendix) | 2026-10-13 | done: register |
+| **008 REGISTERED** | commit `2bd855a` | 2026-10-13 | fetch waits for 013's files to be committed |
