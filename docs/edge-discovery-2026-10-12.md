@@ -27,8 +27,8 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 | N6 / L3 | Inverted 001 T3 positioning, decided on the unread HL holdout only (008) | **drafted; to review** | 1 in 5 (gross) | 1 in 20 (this book cannot trade: inverted discovery is +7.4 bp/day gross but **+0.1 bp/day net** at 001's 7.3 bp/day taker cost) | a confirm would only earn a cost-reduced follow-up; ≈ +9%/yr, Sharpe ≈ 0.8 at maker-like costs is an untested upper bound |
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
-| N2(b) | Sized short-vol book on Deribit BTC/ETH (014: weekly ATM straddle, daily delta hedge; T2 idles on a DVOL spike) | **drafted; tail sizing check (`000m`)** | VRP sign public; net of costs 1 in 2 | 1 in 6 | at the adversarial-bound size only +2–5%/yr; the realistic tail decides |
-| N3(i) | New Binance perps (post-listing path, net of funding and squeezes) | **scout done; 013 drafting** | 1 in 2 | 1 in 4 | high per-event moves; $50–250k per event; squeeze tail bounded by isolated margin |
+| N2(b) | Sized short-vol book on Deribit BTC/ETH (014: weekly ATM straddle, daily delta hedge; T2 idles on a DVOL spike) | **Revision 1; in review** | VRP sign public; net of costs 1 in 2 | 1 in 6 | n 0.40: +5–6%/yr after tail charge at VRP 0.10, +15–17% at 0.15; realistic worst month −5.6%, adversarial stress −27% |
+| N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **drafted; in review** | 1 in 2 | 1 in 4 | 3% per event, ~127 events/yr: +15%/yr at 4% net per event, +30% at 8% (assumed); worst month −28% plausible |
 | N3(ii–iii) | Listing announcements; token unlocks | **parked** (no end-datable announcement API; no free point-in-time unlock calendar; `000i`) | 1 in 2 / 1 in 3 | 1 in 10 / 1 in 8 | — |
 | N7-1 | Crypto trend following (Donchian ensemble, vol-targeted) | desk only; candidate | 1 in 3 | 1 in 5 overall | 10–30%/yr if alive; convex; only 2025-04 → 2026-06 is out of the paper's sample (t ≈ 1.1 at Sharpe 1) |
 | N7-3 | Month-end liquidity cycle, equity index (settlement-lag natural experiment) | desk only; candidate | 1 in 3 | — | 8–15%/yr at 2–3×, tail −45% at 3× |
@@ -392,6 +392,58 @@ DRAFT; 121 synthetic checks; pull 248 MB, 0 rows ≥ 2026-07-01.)
   "a confirm cannot beat the lending leg at a tail-respecting size", and no
   trial is spent.
 
+**2026-10-13 — 013 drafted; two independent reviews launched.**
+(`registrations/013-new-perp-listings.md`, DRAFT; 124 synthetic checks; pull
+20,721 files, 0.73 GB, every file matched Binance's .CHECKSUM.)
+- **Family (2, one-sided 2.5% each; exactly one carried to confirmation).**
+  T1: short every new Binance perp (first archive segment) at first trade +
+  24 h, 1× isolated, no stop, 7-day hold. T2: T1 restricted to events whose
+  day-1 funding summed ≥ 0 (shorts not yet crowded; known at entry).
+- **Sizing and tail.** 3% of capital per event, ≤ 4 entries a week and 15 a
+  month; worst event −3% (the margin), worst week −12% (bound), worst month
+  −28% plausible / −45% bound. About 127 events a year. Assumed, not
+  estimated: +15%/yr at a true 4% net per event, +30%/yr at 8%.
+- **Power** (listing windows twice as volatile, the likely case): joint
+  0.12 / 0.34 / 0.60 at a true 4 / 6 / 8% net per event. The confirmation's
+  own false pass 0.049–0.052; a beta-only world passes the full path
+  0.005–0.021.
+- **Counts** (reported / discovery / confirmation): 255 / 257 / 148
+  events; pre-market 0 / 4 / 22 (excluded, reported); spot-first
+  224 / 61 / 0 — the confirmation calendar is all perp-first.
+- **Calendar lock (D17 b), added here as the drafter asked:** the
+  confirmation calendar's listing windows (2025-07-28 → 2026-06-21, Binance
+  new perps, days 0–9) are reserved for 013's confirmation; no other
+  registration computes outcomes on them until 013 reaches a terminal state.
+- **Read during drafting:** one first-minute OHLC row (ALPHAUSDT
+  2020-11-23, reported block) printed from a header-less file; nothing
+  computed from it. Listed in 013 §13.
+- **Reviews:** A (design, statistics, tail: execution-venue validity, mark
+  vs last-price liquidation, overlapping holds in week clusters, β fixed at
+  1, slippage tiers); B (guard bound to the real repo, point-in-time event
+  rules, delistings mid-hold, checksum code, read whitelist).
+
+**2026-10-13 — 014 Revision 1: the realistic tail is a quarter of the
+bound; size 0.10 → 0.40; 014 goes to review.** (`000m` addendum; the
+orchestrator re-read `tail_results.json`.)
+- **The real stress weeks** (21, chosen by underlying excursion ≥ 25%,
+  2019-03 → 2021-03, outside both calendars), H24 book unchanged: worst
+  −14.1% of notional (2019-10-25: BTC +40% inside the first day), then
+  −12.3% (2021-01-01) and −10.9% (2019-05-10); 2020-03-06 only −5.2%, because
+  the crash came on day 6 when the put was deep and hedged. No liquidation
+  at any size tried. Worst 4-week path in the 2020-03 cluster −11.1%.
+- **Sizing.** Tail-aware Kelly at VRP 0.10 rises to 1.65 (fat world);
+  n = 0.40 = ¼ of it, capped by the adversarial stress (worst week ≤ 25% of
+  equity → n ≤ 0.46).
+- **At n = 0.40:** realistic worst week/month −5.6% of equity; adversarial
+  stress −21.5% / −26.8%. **Expected +5.3–6.3%/yr after the tail charge at
+  VRP 0.10; +15–17% at 0.15; about 0 at 0.05.** Joint power 0.06 / 0.30–0.38
+  at 0.10 / 0.15. False pass at net zero ≤ 0.0015 joint.
+- **Reading.** Above HLP's calm years, with a different (short-vol) tail;
+  the 30–100% zone is out of reach (full Kelly ≈ 37–41%/yr gross with the
+  stress at −89% of equity). The test can only see a premium nearer 0.15
+  than 0.10. It is the programme's one priced, measured-tail premium, so it
+  goes to two independent reviews, as decided in advance.
+
 ## 4. Distance to goal
 
 Unchanged from round 2 at the start of this round: no candidate has a
@@ -416,10 +468,14 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 |---|---|---|---|
 | N1 scout | `scouts/n1-xyz.md` | 2026-10-12 | done; `000j` |
 | N2 scout | `scouts/n2-options.md` | 2026-10-12 | done; `000k` |
-| 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | drafted; out-of-calendar tail computation (`000m`) running |
+| 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | Revision 1 (realistic tail, n 0.40) |
+| 014 review A (design) | `registrations/reviews/014-review-a.md` | 2026-10-13 | running |
+| 014 review B (guard/data) | `registrations/reviews/014-review-b.md` | 2026-10-13 | running |
 | N3 scout | `scouts/n3-listings.md` | 2026-10-12 | done; `000i` |
 | N7 + N4 desk | `scouts/n7-desk.md` | 2026-10-12 | done |
-| 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | running |
+| 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | drafted |
+| 013 review A (design) | `registrations/reviews/013-review-a.md` | 2026-10-13 | running |
+| 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | running |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
