@@ -1,6 +1,6 @@
 # 012 — Hyperliquid–CEX funding carry: 010's frozen rule on the HL–BN and HL–BY pairs, decided on fresh data (L2, trial 3)
 
-**Status: DRAFT**
+**Status: REGISTERED 2026-10-12** (orchestrator, under the owner's delegation: owner, 2026-10-12: "you are allowed to register yourself and take decision as you would recommend as long as they take us nearer towards the goal"). Previously DRAFT
 
 **Revision 2 (2026-10-11, after independent review).** Review:
 `registrations/reviews/012-review.md`. Every fix is in 012's own files; 010's
@@ -811,7 +811,13 @@ recomputed by the orchestrator at commit). The 010 rows equal 010's §8.
 - The Stage-2 panel's hashes are written into its `stage2_built` row and
   checked by the run.
 
-## 9. Owner decisions — PROPOSED
+## 9. Owner decisions — APPROVED 2026-10-12 (orchestrator, under delegation: owner, 2026-10-12: "you are allowed to register yourself and take decision as you would recommend as long as they take us nearer towards the goal")
+
+**Approved:** D1–D17 as written. D15: end 2026-12-31, extension YES
+(confirmed). **D18 (a)–(g) approved.** It amends the HL-holdout rule for
+exactly two rules, 012 and L3. Under (d), the L3 decision (register 008 or
+waive) is due before 012's Stage-2 fetch, which can be no earlier than
+2027-01-07. It is assigned to the next research session.
 
 | # | item | proposed |
 |---|---|---|
