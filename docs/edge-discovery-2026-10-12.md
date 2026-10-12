@@ -410,10 +410,8 @@ DRAFT; 121 synthetic checks; pull 248 MB, 0 rows ≥ 2026-07-01.)
 - **Counts** (reported / discovery / confirmation): 255 / 257 / 148
   events; pre-market 0 / 4 / 22 (excluded, reported); spot-first
   224 / 61 / 0 — the confirmation calendar is all perp-first.
-- **Calendar lock (D17 b), added here as the drafter asked:** the
-  confirmation calendar's listing windows (2025-07-28 → 2026-06-21, Binance
-  new perps, days 0–9) are reserved for 013's confirmation; no other
-  registration computes outcomes on them until 013 reaches a terminal state.
+- **Calendar lock (D17 b):** see the review entry below (with its
+  deadline).
 - **Read during drafting:** one first-minute OHLC row (ALPHAUSDT
   2020-11-23, reported block) printed from a header-less file; nothing
   computed from it. Listed in 013 §13.
@@ -421,6 +419,93 @@ DRAFT; 121 synthetic checks; pull 248 MB, 0 rows ≥ 2026-07-01.)
   vs last-price liquidation, overlapping holds in week clusters, β fixed at
   1, slippage tiers); B (guard bound to the real repo, point-in-time event
   rules, delistings mid-hold, checksum code, read whitelist).
+
+**2026-10-13 — 008 second-round review: register after listed fixes;
+Revision 2 ordered.** (`reviews/008-review-r1.md`.) Every first-round
+blocker and major is fixed in code (the first-round probes were re-run);
+120/120 tests; C1–C3 reproduced to 9e−16; size and power reproduced within
+Monte-Carlo error (N10 0.054, power 0.287 / 0.137).
+- **B1.** The per-month fix covered BTC only: one alt and one reversal
+  loading across cohorts and months still false-confirms 0.08–0.14. Fix:
+  alt and reversal loadings per (window, month) cell too (size back to
+  0.047–0.055; power 0.293 → 0.280).
+- **M1.** `fetch()` accepted a complete mock-hooks dict on the real tree:
+  on a stand-in registered repo it burned the one fetch with synthetic
+  data. Fix: refuse any hooks on the real tree.
+- **Minors** (shadow packages, editable fetch log, interpreter upgrade
+  between fetch and run, survivorship rule never computed, `-diff` hiding
+  rows, failed commits) are all fixed in the same pass because the code
+  freezes at registration. The runner does not push; the owner's push is
+  the durable record, stated as a limitation.
+- **Persistence** (false confirms 0.08–0.12 under month-long persistence)
+  is accepted as a stated weakness. No cheap mitigation exists (a critical
+  value of 2.18 would cut power from 0.29 to 0.19). A *reported*
+  "persistence-sensitive" flag for 1.78 ≤ t < 2.18.
+- **Next.** After Revision 2, the second-round reviewer re-runs its probes
+  only (no third full review), then REGISTERED under the mandate.
+
+**2026-10-13 — 014 review B: not ready (1 blocker, 4 majors).**
+(`reviews/014-review-b.md`.) Sound: the pull (555 files) and both panels
+are intact and pinned, nothing ≥ 2026-07-01 exists, the tail stays out of
+calendar and its 21-week selection re-derives from the underlying alone.
+- **B1.** The holdout gate could never open in the real layout:
+  `HEAD:results.jsonl` resolves from the repo root, not
+  `research/copytrade/` (the tests put the runner at the top level). Must be
+  fixed before registration, since code freezes.
+- **M1–M3.** The same three integrity faults as 008/013 before their
+  revisions: erasable rows, an ungated `Panel`, untracked shadow modules
+  (including a stale `.pyc` loading `SIZE_N = 9.99` under an unchanged
+  source hash).
+- **M4 (pricing).** Entry premiums are inverted against the index, but
+  Deribit marks against the expiry's forward (on 2020-01-03, out of
+  calendar, the 7-day forward sat 0.13% above the index). The error,
+  ±2–9% of premium depending on carry and on which leg traded last, is the
+  size of the net premium under test. Fix: solve the forward per trade.
+- **Process gap (orchestrator).** Revision 0's mechanics were not committed
+  before the authorised tail run (`000m`), so "mechanics unchanged" cannot
+  be checked from git. From now on, drafts are committed before any
+  authorised computation that depends on them.
+- **Decision pending review A.** If the forward fix stands, the tail is
+  recomputed on the same out-of-calendar weeks under `000m`, with the
+  addendum stating that the change came from review, not from the tail
+  numbers.
+
+**2026-10-13 — 013 reviews A and B: not ready (1 blocker, 9 majors);
+Revision 1 ordered.** (`reviews/013-review-a.md`, `013-review-b.md`; the
+orchestrator confirmed B-M1 on the dead FTTUSDT contract: 744/744 zero-trade
+1h rows, one distinct open, in 2024-01, and ledgered B-M5 as `000n`.)
+- **A-B1 (the 008 lesson, missed in the brief).** The confirmation calendar
+  is the 2025–26 bear year with the 2025-10-10 cascade, and the confirm has
+  no market term (criterion 5 fixes β = 1). With the edge gone in
+  confirmation and alts falling 1–2% a week, it falsely confirms 13–24%;
+  with no edge and listing β 1.5–2, discovery passes 25–33%. Fix: decide on
+  α from a pooled regression of each event's net on its own market return,
+  β estimated, t_{G−2}: size 0.064 / 0.025, and confirmation power at a 4%
+  edge (k = 2) rises from 0.29 to 0.85.
+- **A-M1** overlapping 7-day holds inflate the listing-week t (SD 1.17);
+  **A-M2** a 39-week confirmation can miss the squeeze tail entirely
+  (peso problem); **A-M3** the tail table is wrong against the code (worst
+  week −24%, month −57%); **A-M4** the deploy rule differs between text
+  and code.
+- **B-M1** dead contracts write flat zero-trade rows (10–18% of the market
+  index's seasoned members; delistings mid-hold exit at a placeholder);
+  **B-M2** the event set includes migrations, relistings under a new ticker,
+  rebrands and gold tokens; **B-M3** "run once" undone by erasing rows;
+  **B-M4** the read path has no gate; **B-M5** hold-window coverage totals
+  were outcome-adjacent (`000n`).
+- **Decisions.** Revision 1: α-based decision with an estimated β and a
+  dead-contract-free median market index; size calibrated by simulation
+  with the real event times (critical values registered if size drifts
+  > 0.01); tail table corrected and per-event size cut to keep the
+  plausible month inside −30%; a run-time squeeze-tail charge in the deploy
+  bar; one deploy rule; exclusion rule for non-new tokens fixed now;
+  Binance is the paper/deploy venue (Bitget/HL execution would be a new
+  trial); guard, read gate and run-once fixes as in 008.
+- **D17(b) lock, recorded here:** the confirmation calendar's listing
+  windows (Binance new perps listed 2025-07-28 → 2026-06-21, days 0–9) are
+  reserved for 013's confirmation. No other registration computes outcomes
+  on them until 013 reaches a terminal state, or 2027-06-30, whichever
+  comes first.
 
 **2026-10-13 — 014 Revision 1: the realistic tail is a quarter of the
 bound; size 0.10 → 0.40; 014 goes to review.** (`000m` addendum; the
@@ -470,13 +555,16 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | N2 scout | `scouts/n2-options.md` | 2026-10-12 | done; `000k` |
 | 014 drafter | `registrations/014-short-vol-deribit.md` | 2026-10-12 | Revision 1 (realistic tail, n 0.40) |
 | 014 review A (design) | `registrations/reviews/014-review-a.md` | 2026-10-13 | running |
-| 014 review B (guard/data) | `registrations/reviews/014-review-b.md` | 2026-10-13 | running |
+| 014 review B (guard/data) | `registrations/reviews/014-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors |
 | N3 scout | `scouts/n3-listings.md` | 2026-10-12 | done; `000i` |
 | N7 + N4 desk | `scouts/n7-desk.md` | 2026-10-12 | done |
 | 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | drafted |
-| 013 review A (design) | `registrations/reviews/013-review-a.md` | 2026-10-13 | running |
-| 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | running |
+| 013 review A (design) | `registrations/reviews/013-review-a.md` | 2026-10-13 | done: 1 blocker, 4 majors |
+| 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | done: 5 majors; `000n` |
+| 013 Revision 1 | drafter, resumed | 2026-10-13 | running |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
-| 008 Revision 1 | drafter, resumed | 2026-10-12 | running |
+| 008 Revision 1 | drafter | 2026-10-12 | done |
+| 008 re-review | `registrations/reviews/008-review-r1.md` | 2026-10-13 | done: register after 1 blocker + 1 major |
+| 008 Revision 2 | drafter, resumed | 2026-10-13 | running |
