@@ -778,7 +778,9 @@ def assembly_checks():
           ok_h and not ok_f and not det_f['holdout_criteria']['sign'], str(det['holdout_criteria']))
     f, _ = V.guard_failures(ROOT, str(r007_run.REG.relative_to(ROOT)), r007_run.GUARDED_CODE, r007_run.GUARDED_DATA,
                             manifest_rel=r007_run.MANIFEST_REL)
-    check('the real guard refuses today (DRAFT, not committed)', any('not REGISTERED' in x for x in f), f'{len(f)} reasons')
+    check('the real 007 registration is REGISTERED (owner, 2026-10-11) and no hash, manifest or status check refuses it '
+          '(only commit state or an existing result row may)',
+          not any('not REGISTERED' in x or x.startswith(('(e)', '(g)')) for x in f), str(f[:2]))
 
 
 def main():

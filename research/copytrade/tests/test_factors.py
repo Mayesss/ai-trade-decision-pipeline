@@ -474,7 +474,9 @@ def guard_checks():
     check('slippage stress: 0x leaves the taker fee only, 2x doubles the tier slippage (T2: 2 bp -> 4 bp)',
           abs(r0['cost'] - fx.TAKER) < 1e-15 and abs(r2['cost'] - (fx.TAKER + 0.0004)) < 1e-15)
     real, _ = r009_run.guard_failures(r009_run.HERE, str(r009_run.REG.relative_to(r009_run.HERE)))
-    check('the real 009 registration is refused today (DRAFT)', any('not REGISTERED' in x for x in real), str(real[:2]))
+    check('the real 009 registration is REGISTERED (owner, 2026-10-11) and no hash or status check refuses it '
+          '(only commit state or an existing result row may)',
+          not any('not REGISTERED' in x or x.startswith(('(e)', '(g)')) for x in real), str(real[:2]))
 
 
 # ------------------------------------------------------------------ Revision 3 checks

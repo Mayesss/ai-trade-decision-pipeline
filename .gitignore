@@ -189,3 +189,6 @@ replay-results/
 research/copytrade/data/
 research/copytrade/.venv/
 __pycache__/
+
+# Claude Code personal settings
+.claude/settings.local.json
