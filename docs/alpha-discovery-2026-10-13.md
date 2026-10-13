@@ -29,7 +29,7 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 | 008 (L3) | Inverted 001 T3 positioning, HL holdout only | REGISTERED; fetch attempt 3 ≥ 2026-10-14 06:40, attempt 4 ≥ 24 h later, then the read | 1 in 5 (gross) | 1 in 20 (taker book never traded) | a confirm only earns a cost-reduced follow-up |
 | A1 | Be the house: perp-DEX LP pools and protocol vaults (counterparty to persistent losers, fact 1) | **scout done; no trial** — an allocation with a venue-exploit tail (5–10%/yr est.), NAV test unpowered (~9 yr for t 2) | LLP 0.6 | LLP 1 in 6 | HLP-like; owner option: HLP + LLP sleeve ≤ 25% per venue |
 | B1 | US equities/ETFs/rates: scheduled and structural flows, executed on `xyz` perps / CFDs / futures | **scout done; 015 (month-end liquidity cycle, settlement-shifted) to be drafted**; auctions and FOMC weeks held; overnight drift, PEAD, `xyz` carry dead or lending | 1 in 3 | 1 in 5 | ≈ 5%/yr at half effect, 1.2×; 11–25%/yr at full effect, 1.2–2.6× |
-| C1 | Crypto trend following (N7-1) and convex crypto exposures: a test with power | scout running | — | — | — |
+| C1 | Crypto trend following (N7-1) and convex crypto exposures: a test with power | **scout done; 016 (paper rule verbatim, forward-registered to 2027-12-31) to be drafted**; existence power 0.49 at SR 1, decay test 0.76–0.88 | 1 in 3 | 1 in 5 (return), 1 in 15 (risk-adj.) | ≈ +16–18%/yr at 25% vol if alive at half strength; month tail −30 to −40% |
 | D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | **scout done; parked, no trial** — best trial is T2 frozen, P(confirm) ≈ 0.09, ≈ 0–4%/yr at the robust size after the peso charge; calendar stays unread | 1 in 3 | 1 in 20 | below HLP |
 | E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | **scout done; no trial** — all lending-like today; BNB stack ≈ 2.5%/yr hedged at the 2026-H1 pace | 9 in 10 (paid) | 1 in 4 | below HLP calm |
 
@@ -245,6 +245,49 @@ only "fetch first". **Carried forward:** the 015 drafter was told to use
 `<rev>:./<path>` and test both layouts, since its runner lives in
 `research/alpha/`.
 
+**2026-10-13 — C1 scout: crypto trend following cannot be shown "alive at
+half strength" with power this decade, but its decay can be decided by
+2027–28; 016 (verbatim, forward-registered) to be drafted.**
+(`research/alpha/scouts/c1-crypto-trend.md`; the orchestrator verified the
+checksums, that every kline and funding file ends 2026-06, and the power
+table by hand: SR 1 → monthly 0.289 × √33 = 1.66; 6.2 years for 80%.)
+- **The rule, verbatim** (Zarattini, Pagani & Barbon 2025, read in full from
+  the authors' PDF): nine Donchian lookbacks {5…360} on daily closes,
+  midpoint trailing stop, size min(25%/σ90, 200%) per lookback per coin,
+  averaged; universe rebuilt monthly (≥ 365 days listed, median volume
+  ≥ $2 M, top 20, 1/20 each); 10 bp costs, 20% rebalance threshold; spot,
+  no funding. **The 25% is per coin: the book ran at ≈ 9% vol** (SR 1.57,
+  α 10.8%/yr, β 0.08). Sample 2015-01-01 → 2025-03-19; the paper also
+  tested ranks 1–100 over 2020 → 2025-03, so a wider universe is not
+  independent (baskets correlate 0.89–0.97).
+- **Power.** Out-of-paper 2025-04 → 2026-06 alone: 0.28 at SR 1. Pooled
+  with a forward span to 2027-12-31 (33 months): 0.49 at SR 1, 0.79 at SR
+  1.5. **Decay against the paper's 1.57:** 0.76 at 27 months and 0.88 at 39
+  if the truth is SR 0. The decidable question is "has it decayed".
+- **Behaviour.** ≈ 11.6 sub-signal flips per coin-month; turnover ≈ 4.4×
+  capital a year → fees 0.20–0.26%/yr; universe funding +5.4%/yr overall,
+  −2.2%/yr in 2025-01 → 2026-06; HL lists 19–20 of the top 20 since 2023-12.
+  The loader needs a delisting cut (LUNA stays in June 2022's top 20).
+- **Return and tail.** At 25% book vol (2.8× the paper's sizing) and half
+  the paper's Sharpe: ≈ +16–18%/yr over cash; worst week −20 to −35% (the
+  2020-03-12 day was −43% for the equal-weight top 20), worst month −30 to
+  −40%. Kelly at 1-in-3 odds ≈ 16% vol; start at the paper's ≈ 9%.
+- **Convex alternatives rejected:** vol-managed BTC (beta, nobody pays; kept
+  as a factor), long-dated Deribit calls (the VRP costs ≈ 16% of premium per
+  6 months, more than the trend edge per unit), equity-perp ↔ crypto
+  lead-lag (US names take an outside price; latency-bound).
+- **Decision.** Draft **016: crypto trend following, the paper's rule
+  verbatim, long-only primary**, a new family (crypto time-series trend,
+  count 1). Primary: existence of α against BTC, an equal-weight alt basket
+  and a vol-managed basket (β per **calendar** cell, never per trailing-trend
+  cell, which would absorb the trend into β), on 2025-04 → 2027-12-31;
+  the pre-declared decay test against SR 1.57 alongside. Span (a) is a
+  stratum, never the sole decider (designer knowledge; `000t`). The forward
+  span 2026-07-01 → 2027-12-31 is claimed openly (`000l`'s momentum sweep
+  through 2026-09 stated). Why now: registering before the forward data
+  exists is free, it is the only light with a 15–20%/yr path, and a
+  decay verdict is itself worth having. Exposure ledgered as `000t`.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -267,7 +310,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 |---|---|---|---|
 | A1 scout (house side) | `research/alpha/scouts/a1-house-side.md` | 2026-10-13 | done; exposures to ledger `000p` |
 | B1 scout (equities, rates) | `research/alpha/scouts/b1-equities-flows.md` | 2026-10-13 | done; `000s` |
-| C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | running |
+| C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | done; `000t` |
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
