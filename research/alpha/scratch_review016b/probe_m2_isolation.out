@@ -1,0 +1,16 @@
+== (v) checks sys.flags.isolated / no_site?
+   no: (v) never reads sys.flags.isolated or no_site
+== without -I: the CLI runs, and (v) does not object (the PYTHONPATH case is in probe_t_dategate.out (4))
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== the fetcher CLI: r016_fetch.py imports r016_run BEFORE r016_run sets sys.pycache_prefix
+forged /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016/origin/research/alpha/__pycache__/r016_run.cpython-314.pyc
+-- python3 -I r016_fetch.py (the registered command; the forged guard stops before any network):
+FORGED r016_run loaded from __pycache__ (pycache_prefix=/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r016-pyc-3muq1swe): the guard would return []
+-- control: python3 -I r016_run.py --check (a script run as __main__ is compiled from source):
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+-- the (v) check does not list r016_run among the modules it verifies:
+66:LOADED = (('ct16', 'ct16/__init__.py'), ('ct16.rule', 'ct16/rule.py'), ('ct16.stats', 'ct16/stats.py'),
+67-          ('ct16.data', 'ct16/data.py'))
+== under -I, site-packages .pth files still run (probe_t_dategate.out (5)); sys.flags in the forged venv:
+   isolated 1 no_site 0 | modules from site-packages: ['_rb016clock']

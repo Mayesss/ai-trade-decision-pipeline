@@ -1,0 +1,32 @@
+################ --skip-worktree
+== edited, no flags (after the date):
+(b) 016-crypto-trend-verbatim.md differs from the committed version
+(d) guarded code not clean: ['M research/alpha/ct16/stats.py']
+(d) untracked, ignored or modified importable files could shadow an import: ['ct16/stats.py']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== edited + --skip-worktree:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   git status --porcelain: []  ls-files -v: S  S  
+== --check after fetch + approval:
+guard open: registration commit 18598df94c71dfdb75e03fd19221677e90a19333
+== --run:
+  "crit": 99.0,
+  "crit": 0.117,
+outcome: undecided route: not_demonstrated
+   read row: params.cal_h1 = 99.0 | code hash of ct16/stats.py 1cc2be7da75b | committed table says df33f70154df
+################ --assume-unchanged
+== edited, no flags (after the date):
+(b) 016-crypto-trend-verbatim.md differs from the committed version
+(d) guarded code not clean: ['M research/alpha/ct16/stats.py']
+(d) untracked, ignored or modified importable files could shadow an import: ['ct16/stats.py']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== edited + --assume-unchanged:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   git status --porcelain: []  ls-files -v: h  h  
+== --check after fetch + approval:
+guard open: registration commit 40287116ba66b6905f2505e329d03ae1488db236
+== --run:
+  "crit": 99.0,
+  "crit": 0.117,
+outcome: undecided route: not_demonstrated
+   read row: params.cal_h1 = 99.0 | code hash of ct16/stats.py 1cc2be7da75b | committed table says df33f70154df

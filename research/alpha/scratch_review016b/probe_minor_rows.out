@@ -1,0 +1,16 @@
+### a: results.jsonl (shared with 015) ends WITHOUT a newline; 016's append glues its row onto it
+  record(): Refused the read row is not in HEAD:./results.jsonl after the commit — stop
+  HEAD line 1: {"registration": "015-month-end-liquidity-cycle.md", "mode": "result"}{"mode": "read", "registration": "016-crypto-trend-verbatim.
+  016 rows the guard sees (result_rows): []
+  --check (after the date):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### b: log.showRoot=false hides a read row committed as the ROOT of an orphan branch
+  default config:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog or stash) — t
+  log.showRoot=false:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### c: git replace <row commit> <decoy> hides the commit that added a read row (no gc, no reflog expiry)
+  with the row committed:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog or stash) — t
+  after reset + git replace:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)

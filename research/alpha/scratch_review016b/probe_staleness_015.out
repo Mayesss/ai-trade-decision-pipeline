@@ -1,0 +1,23 @@
+== clone at b42c46c (016 DRAFT committed): all checks passed (186)
+== after a REGISTERED commit: all checks passed (186)
+== the real guard in the REGISTERED clone (no data): 
+(e) data/scout_c1/bn_um_klines_1d_monthly/SHA256SUMS does not match its registered SHA-256
+(e) data/r016/static/fapi_exchangeInfo_20261011.json does not match its registered SHA-256
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== 015's revision IN PROGRESS (the real working tree's r015 code copied in, r015_hmm.py deleted; code only):
+    M r015_core.py
+    D r015_hmm.py
+    M r015_power.py
+    M r015_run.py
+   016 shadow_modules: ['r015_core.py', 'r015_power.py', 'r015_run.py']
+(d) untracked, ignored or modified importable files could shadow an import: ['r015_core.py', 'r015_power.py', 'r015_run.py']
+   016 suite with 015 mid-revision: all checks passed (186)
+== a stale __pycache__/r015_hmm.cpython-314.pyc after the deletion (the real tree has none today):
+   r015_core.cpython-314.pyc
+   r015_power.cpython-314.pyc
+   r015_run.cpython-314.opt-1.pyc
+   r015_run.cpython-314.pyc
+   r016_fetch.cpython-314.pyc
+   r016_run.cpython-314.opt-1.pyc
+   r016_run.cpython-314.pyc

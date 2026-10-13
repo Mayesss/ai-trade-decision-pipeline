@@ -1,0 +1,14 @@
+# Reviewer B, 016: a forged wall clock (stored as .txt so it can never be imported from the repository).
+# Installed by the probes ONLY into a throwaway venv's site-packages as _rb016clock.py with a one-line .pth.
+# A .pth file in site-packages is executed at startup even under `python -I` (only -S skips site).
+import datetime as _d
+_REAL = _d.datetime
+class _Fake(_REAL):
+    @classmethod
+    def now(cls, tz=None):
+        t = _REAL(2028, 2, 1, 12, 0, 0, tzinfo=_d.timezone.utc)
+        return t if tz is not None else t.replace(tzinfo=None)
+    @classmethod
+    def utcnow(cls):
+        return _REAL(2028, 2, 1, 12, 0, 0)
+_d.datetime = _Fake

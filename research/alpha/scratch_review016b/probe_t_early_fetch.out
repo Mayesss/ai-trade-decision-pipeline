@@ -1,0 +1,5 @@
+wall clock as the guard sees it: 2028-02-01 | objects served: 528 of 1248
+fetch stopped: coverage refused (no fetched row; re-run later): | ['btc_months: BTCUSDT forward months 3 of ']
+committed 016 rows left behind: ['fetch_started', 'fetch_attempt']
+forward kline files written to the store: 72 | months ['2026-07', '2026-08', '2026-09']
+guard (fetch mode) now: ([], {'commit': '03118c6b37e237d64179c1fe9f67e52a850d3f7d', 'resume': True})

@@ -1,0 +1,8 @@
+today (wall clock): 2026-10-13 | real guard (t) present: True
+call: F.fetch(root=RUN.HERE (the REAL-standin), store=<tmp>, hooks=<mocks>, now=2028-01-10)
+fetched: 1251 files in the manifest after 1 attempt(s)
+  -> returned a fetched row; manifest_files 1251
+REAL-standin HEAD:results.jsonl 016 modes: ['fetch_started', 'fetch_attempt', 'fetched']
+REAL-standin git log -3: de5116c 016: fetched (automatic, r016_fetch.py) | 4f2193d 016: fetch attempt 1 end (automatic) | 09750cf 016: fetch_started (automatic, r016_fetch.py)
+the REAL fetch on 2028-01-10 (guard() arguments, now passed): ['(f) the fetch has completed (a fetched row exists) — it runs once']
+the REAL read on 2028-01-10: ['(g3) the fetch manifest is missing', "(h') no committed line '016 read: APPROVED <date> row <sha256 of the fetched row>'"]

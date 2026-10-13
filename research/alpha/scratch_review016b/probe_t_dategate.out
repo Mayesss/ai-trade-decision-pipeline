@@ -1,0 +1,22 @@
+== baseline: python3 -I r016_run.py --check
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== (1) TZ=Pacific/Kiritimati (UTC+14) and TZ=Etc/GMT-14:
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+== (2) environment variables read by the guarded code (grep os.environ / getenv):
+r016_run.py:94:    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+== (3) git dates: a commit dated 2028 at HEAD (GIT_COMMITTER_DATE) does not move (t):
+   HEAD author 2028-02-01T00:00:00Z committer 2028-02-01T00:00:00Z
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+== (4) PYTHONPATH=<dir with a forged datetime.py>, WITHOUT -I:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   control, same PYTHONPATH WITH -I:
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+== (5) a .pth in the interpreter's site-packages, WITH -I (throwaway venv, same python 3.14.8):
+   isolated 1 no_site 0 now 2028-02-01 12:00:00+00:00
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   fetch-mode guard, exactly guard()'s arguments, same interpreter:
+   []
+   control, -I -S (no site):
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)

@@ -1,0 +1,5 @@
+== stdlib modules first imported AFTER r016_run puts research/alpha on sys.path[0]:
+   ['binascii', 'csv', 'importlib', 'struct', 'zipfile']
+== --check with a COMMITTED research/alpha/csv.py (after the date, forged-clock venv):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   csv used by ct16.data: <clone>/research/alpha/csv.py | marker True | (v) loaded_from_source(): [] | shadow_modules: []

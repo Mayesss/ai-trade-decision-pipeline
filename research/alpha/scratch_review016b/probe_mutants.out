@@ -1,0 +1,11 @@
+panel_gate_removed                 CAUGHT  FAIL  Panel refuses the real data without the gate (before any file is opened)
+panel_gate_HERE_term_removed       VACUOUS all checks passed (186)
+date_gate_removed                  CAUGHT  FAIL  (t) the date gate refuses before 2028-01-08 (UTC)
+fetch_mock_on_real_store_allowed   VACUOUS all checks passed (186)
+fetch_root_check_removed           VACUOUS all checks passed (186)
+panel_a_month_cap_removed          VACUOUS all checks passed (186)
+panel_a_rows_cut_removed           VACUOUS all checks passed (186)
+seam_check_removed                 VACUOUS all checks passed (186)
+fetched_once_removed               CAUGHT  FAIL  (f) the fetch runs once: a fetched row closes it
+checksum_check_removed             CAUGHT  FAIL  a checksum mismatch raises and writes nothing
+persistence_btc_exempt_removed     VACUOUS all checks passed (186)

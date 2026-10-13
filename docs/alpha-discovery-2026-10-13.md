@@ -388,6 +388,35 @@ Reviews: A (β choice, H2, span (a), fidelity to the paper, economics) and B
 (every 015-review-b fault, the date gate, the fetcher, the current-state
 exchangeInfo snapshot as a survivorship risk).
 
+**2026-10-13 — 016 review B: register after fixes (1 blocker, 4 majors);
+the same guard faults as 015, plus one of its own.**
+(`research/alpha/registrations/reviews/016-review-b.md`; probes in
+`research/alpha/scratch_review016b/`, every attack on throwaway stand-ins
+with synthetic data; orchestrator check: no new commit or row in the real
+repository, `research/alpha/results.jsonl` empty.) Sound: the fetcher, the
+pinned pull (19,730 hashes), the point-in-time universe (no survivorship);
+186/186 at DRAFT, at REGISTERED, and with 015's revision in progress; the
+date gate cannot be cheated with real data (no `fetched` row can exist
+before Binance's archive holds BTC through 2027-12-31).
+- **B1** the guard opens in a clone or worktree (the 015 B1 pattern; a
+  stand-in ran fetch → approval → read to an outcome). **M1** `fetch()`
+  with the real root plus test mocks and `now=2028` burns the trial (it
+  commits `fetched` rows). **M2** isolation: no `-I` check; a `.pth` file
+  runs even under `-I`; a forged `__pycache__` guard module; a committed
+  `research/alpha/csv.py` shadows the parser. **M3** index flags hide
+  edits. **M4 (016-specific)** nothing ties the 2028 read to the REGISTERED
+  commit: a committed 2027 revision lowering `CAL_H1` to 1.20 passes.
+- **Decisions.** All accepted; 016 Revision 1 waits for review A. The new
+  faults (`.pth`, committed shadow modules, mocks with the real root in any
+  role, binding the read to the REGISTERED commit) were sent to the 015
+  drafter now, mid-revision. Minor of note: 7 of 11 deliberately broken
+  protections left 016's suite green — the revision must make each test
+  fail when its protection is removed. One accidental network request in a
+  broken-guard test (`GET data.binance.vision/x`, 404, no data).
+- **Programme lesson.** Two guards written in parallel from the same
+  templates had the same holes. After 015 Revision 1, 016 ports 015's
+  revised guard rather than re-deriving it.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -438,5 +467,5 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 Revision 1 | drafter | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | running |
-| 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | running |
+| 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |

@@ -1,0 +1,13 @@
+REGISTERED commit (stand-in): 0c9828d4ebcb
+== --check before the revision (after the date):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== --check after a committed revision of CAL_H1 and the hash table:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== --run:
+  "crit": 1.6991270265334957,
+outcome: alive_as_published route: paper_then_scale
+   read row: registration_commit 9f3e313d3531 (the REGISTERED commit was 0c9828d4ebcb) | cal_h1 1.2
+== what a binding check would see: git diff REGISTERED..HEAD on the guarded code:
+ research/alpha/ct16/stats.py                              | 2 +-
+ research/alpha/registrations/016-crypto-trend-verbatim.md | 4 +++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)

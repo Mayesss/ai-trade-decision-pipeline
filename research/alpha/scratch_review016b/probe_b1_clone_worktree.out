@@ -1,0 +1,31 @@
+### 1. a clone with the origin's data SYMLINKED: the CLI guard
+-- origin --check (plain python3 -I):
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+-- clone  --check (plain python3 -I):
+(t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+-- clone  --check (after the date):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### 2. the whole run in the clone: fetch (mock hooks, synthetic objects; store copied into the symlinked data tree),
+###    approval line, then the runner's own --run
+-- clone --check:
+guard open: registration commit 6bd733895f9adf33bdc9b90dab096dca8ac47b1d
+-- clone --run:
+  "pass": true
+outcome: alive_as_published route: paper_then_scale
+-- clone HEAD:results.jsonl 016 modes: "mode": "fetch_started" "mode": "fetch_attempt" "mode": "fetched" "mode": "read_started" "mode": "read" 
+-- ORIGIN after the clone's run (--check, after the date):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+-- ORIGIN results.jsonl 016 rows: 0
+-- origin can resolve the clone's read commit? fatal: git cat-file: could not get object info
+### 3. a linked worktree (detached) of the ORIGIN, data symlinked
+-- worktree --run:
+outcome: alive_as_published route: paper_then_scale
+-- origin --check while the worktree exists:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog or stash) — the read runs once
+(i) a read_started row exists without a committed, later '016 read restart: APPROVED <date> started-row <sha25
+(g1) the fetch rows are not committed in HEAD:./results.jsonl
+(h') no committed line '016 read: APPROVED <date> row <sha256 of the fetched row>'
+-- origin --check after 'git worktree remove':
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)

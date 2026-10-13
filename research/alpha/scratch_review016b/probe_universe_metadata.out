@@ -1,0 +1,35 @@
+SHA256SUMS sha256 ff50da311181f092 | exchangeInfo sha256 a7f720f5ece63fe9
+lines 19730 symbols 787 unparsed lines 0 | last month overall 2026-06
+symbols with interior missing months in the pinned pull: 0 {}
+symbols whose files end before 2026-06 (dead/delisted kept in the pull): 29
+   LUNAUSDT     ('2021-01', '2022-05', 17)
+   LUNA2USDT    ('2022-09', '2026-06', 46)
+   FTTUSDT      ('2022-04', '2026-06', 51)
+   SRMUSDT      ('2020-09', '2024-05', 45)
+   MATICUSDT    ('2020-10', '2024-09', 48)
+   POLUSDT      ('2024-09', '2026-06', 22)
+   FTMUSDT      ('2020-09', '2026-06', 70)
+   SUSDT        ('2025-01', '2026-06', 18)
+   RNDRUSDT     ('2023-02', '2024-07', 18)
+   RENDERUSDT   ('2024-07', '2026-06', 24)
+   EOSUSDT      ('2020-01', '2025-05', 65)
+   MKRUSDT      ('2020-08', '2026-06', 71)
+   SKYUSDT      ('2025-09', '2026-06', 10)
+   BTCDOMUSDT   ('2021-06', '2026-06', 61)
+   DEFIUSDT     ('2020-08', '2026-06', 71)
+exchangeInfo serverTime 2026-10-09T07:16:04 | symbols 924
+  (contractType, underlyingType) counts: [(('PERPETUAL', 'COIN'), 700), (('TRADIFI_PERPETUAL', 'EQUITY'), 179), (('TRADIFI_PERPETUAL', 'HK_EQUITY'), 15), (('TRADIFI_PERPETUAL', 'COMMODITY'), 8), (('TRADIFI_PERPETUAL', 'KR_EQUITY'), 8), (('TRADIFI_PERPETUAL', 'PREMARKET'), 4), (('PERPETUAL', 'INDEX'), 3), (('CURRENT_QUARTER', 'COIN'), 2), (('TRADIFI_PERPETUAL', 'CN_EQUITY'), 2), (('NEXT_QUARTER', 'COIN'), 2), (('TRADIFI_PERPETUAL', 'FX'), 1)]
+  underlyingSubType values: [('Crypto', 571), ('TradFi', 217), ('DeFi', 155), ('Alpha', 78), ('Infrastructure', 71), ('AI', 70), ('Layer-1', 63), ('Meme', 55), ('USDC', 38), ('Gaming', 33), ('Layer-2', 26), ('PoW', 20)]
+  status counts: [('TRADING', 789), ('SETTLING', 134), ('PENDING_TRADING', 1)]
+  USDT-named symbols marked not (PERPETUAL, COIN): 219
+  ...of which have klines months before 2025-12 (excluded for ALL of their history by the 2026-10 snapshot): 3
+      ('ALLUSDT', 'PERPETUAL', 'INDEX', ['Index', 'Crypto'], '2025-08-06', '2025-08', '2026-06')
+      ('BTCDOMUSDT', 'PERPETUAL', 'INDEX', ['Index', 'Crypto'], '2021-06-17', '2021-06', '2026-06')
+      ('DEFIUSDT', 'PERPETUAL', 'INDEX', ['Index'], '2020-08-28', '2020-08', '2026-06')
+pull symbols absent from the 2026-10-11 snapshot (not excluded; delisted before the snapshot): 31 | e.g. ['1000BTTCUSDT', 'AERGOUSDT', 'AKROUSDT', 'ANCUSDT', 'ANTUSDT', 'AUDIOUSDT']
+   migration MATICUSDT ('2020-10', '2024-09') -> POLUSDT ('2024-09', '2026-06')
+   migration FTMUSDT ('2020-09', '2026-06') -> SUSDT ('2025-01', '2026-06')
+   migration RNDRUSDT ('2023-02', '2024-07') -> RENDERUSDT ('2024-07', '2026-06')
+   migration MKRUSDT ('2020-08', '2026-06') -> SKYUSDT ('2025-09', '2026-06')
+   migration EOSUSDT ('2020-01', '2025-05') -> AUSDT ('2025-05', '2026-06')
+symbols first archived 2024-04 .. 2025-06 and alive at 2026-06 (perp-age rule binds inside span (a)): 220
