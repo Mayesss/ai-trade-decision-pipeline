@@ -27,10 +27,10 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 | id | light | status | effect exists | deployable | vs HLP |
 |---|---|---|---|---|---|
 | 008 (L3) | Inverted 001 T3 positioning, HL holdout only | REGISTERED; fetch attempt 3 ≥ 2026-10-14 06:40, attempt 4 ≥ 24 h later, then the read | 1 in 5 (gross) | 1 in 20 (taker book never traded) | a confirm only earns a cost-reduced follow-up |
-| A1 | Be the house: perp-DEX LP pools and protocol vaults (counterparty to persistent losers, fact 1) | scout running | — | — | — |
+| A1 | Be the house: perp-DEX LP pools and protocol vaults (counterparty to persistent losers, fact 1) | **scout done; no trial** — an allocation with a venue-exploit tail (5–10%/yr est.), NAV test unpowered (~9 yr for t 2) | LLP 0.6 | LLP 1 in 6 | HLP-like; owner option: HLP + LLP sleeve ≤ 25% per venue |
 | B1 | US equities/ETFs/rates: scheduled and structural flows, executed on `xyz` perps / CFDs / futures | scout running | — | — | — |
 | C1 | Crypto trend following (N7-1) and convex crypto exposures: a test with power | scout running | — | — | — |
-| D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | scout running | — | — | — |
+| D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | **scout done; parked, no trial** — best trial is T2 frozen, P(confirm) ≈ 0.09, ≈ 0–4%/yr at the robust size after the peso charge; calendar stays unread | 1 in 3 | 1 in 20 | below HLP |
 | E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | scout running | — | — | — |
 
 ## 2. Family counts and holdouts (carried over)
@@ -98,6 +98,66 @@ at 06:45. The 008 guard refuses on any untracked or modified `.py` at the
 `research/alpha/`, and every scout brief forbids writing under
 `research/copytrade/`.
 
+**2026-10-13 — A1 scout: being the house is an allocation with an exploit
+tail, not a testable alpha; no trial.** (`research/alpha/scouts/a1-house-side.md`;
+the orchestrator re-checked every stored pull: checksums pass, 15 series,
+all end 2026-06-30, 0 rows on or after 2026-07-01; LLP 529 daily rows from
+2025-01-18, GMX GM 1,092 from 2023-07-05, JLP 259 days × 3 series.)
+- **Two kinds of house.** Backstop vaults (HLP, Lighter LLP) are long the
+  spiral tail. GLP-style basket pools (JLP, GMX GM/GLV, Aster ALP, Avantis)
+  carry basket beta; hedged, they earn fees plus traders' net losses but are
+  short traders' winning trends (the opposite skew to HLP).
+- **The tail is the venue, not the market:** in about 16 months, GMX v1 GLP
+  drained (2025-07, ~$40 M), Lighter outage losses (2025-10), Paradex
+  rollback (2026-01), Drift admin-key drain (~$285 M, 2026-04), Ostium OLP
+  −72% (2026-07, post-cutoff, ledgered). Impairment rate estimated (not
+  measured) at 5–10%/yr per venue → ≤ 20–25% of capital per venue.
+- **Power.** A NAV-level LLP-vs-HLP test needs about 9 years for t = 2 on a
+  10%/yr gap (P&L sits in ~2 spiral events a year). Only the calm-carry
+  component (ex-spiral days) is testable, at about t 2.5 on 11 months.
+  Hedged GLP pools are powered only for "fees exceed hedge costs", a
+  lending-plus claim.
+- **gTrade rejected on mechanism:** traders' losses go to a buffer and GNS
+  burns, not to depositors (the loser leg of fact 1 is not ours).
+- **Decision.** A1 spends no trial. What it offers the owner is an
+  *allocation*: an HLP + Lighter LLP "house sleeve", each capped at ~20–25%
+  of capital, with the exploit tail stated, as a better-diversified
+  benchmark-like holding. Expected return is HLP-like (2–4%/yr calm, spiral
+  upside), so it does not move us toward the goal; it is recorded as an
+  owner option, not pursued. Odds LLP beats HLP risk-adjusted: about 1 in 6.
+
+**2026-10-13 — D1 scout: the best listings trial is T2 frozen, and it is
+not worth the calendar; parked, no trial.** (`research/alpha/scouts/d1-listings-squeeze.md`;
+the orchestrator re-read §3 and `data/scout_d1/derived/power_calib.json`,
+checksums pass.)
+- **Mechanism options.** 0.5× margin rejected: on seasoned coins (proxy),
+  after a +90% touch the median 7-day exit is still ×1.6–1.8 and 11% reach
+  ×2.86, so it saves ~0.2 of notional per squeeze while doubling the loss
+  bound. A +50% close-triggered stop is the best construction from
+  mechanism, but its effect on the mean has no sign (Kaminski & Lo); it cuts
+  the plausible worst month from −29.7% to −20.2%, so it is a sizing
+  overlay. Float/FDV has no free point-in-time source; spot-first has no
+  variation (0 of 148 confirmation events); a liquidity filter is
+  contaminated by 013's printed tiers.
+- **Power is set by event count and body noise, not by the tail:** ≈ 58 T2
+  events, α SE 3.7–4.7%, P(pass) 0.07–0.14 at the discovery α (3.4%),
+  ≈ 0.09 averaged over a shrunk posterior. Critical value ≈ 2.2 (to be
+  re-derived).
+- **Return at the robust size** (2.5% per event, ~55 a year): +3 to +7%/yr,
+  about **0–4%/yr after 013's peso charge**. Odds ≈ 1 in 10 to confirm,
+  1 in 20 to reach paper.
+- **Decision: parked under the rule that parked 014** ("a confirm cannot
+  beat HLP at a tail-respecting size → no trial"). The confirmation calendar
+  (Binance new perps listed 2025-07-28 → 2026-06-21) stays unread. If a
+  later light needs listing windows with real upside, the T2 frozen +
+  stop-overlay sketch (§4 of the scout) is ready, and the sealed 2026-H2
+  listings could be claimed openly to add ~15–20 events.
+- **Exposure, ledgered in `000q`:** the scout computed post-entry path
+  quantities (touch rates, exits after a +90% touch, stop and margin rule
+  differences) on **seasoned** coin-weeks of 009's Binance panel
+  (2021-11 → 2024-01; no listing windows). That is a continuation-after-large-move
+  look: any trend or momentum registration on Binance 2021–23 states it.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -118,9 +178,9 @@ Everything in round 2 §5 and round 3 §5 (all under
 
 | worker | deliverable | started | state |
 |---|---|---|---|
-| A1 scout (house side) | `research/alpha/scouts/a1-house-side.md` | 2026-10-13 | running |
+| A1 scout (house side) | `research/alpha/scouts/a1-house-side.md` | 2026-10-13 | done; exposures to ledger `000p` |
 | B1 scout (equities, rates) | `research/alpha/scouts/b1-equities-flows.md` | 2026-10-13 | running |
 | C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | running |
-| D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | running |
+| D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
