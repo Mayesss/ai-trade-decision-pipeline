@@ -28,7 +28,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
 | N2(b) | Sized short-vol book on Deribit BTC/ETH (014) | **PARKED after review** (robust size n ≈ 0.10–0.15 → ≈ +2–3%/yr at the published premium; pricing off index not forward); no trial spent | VRP sign public | 1 in 15 | below HLP's lending leg at a robust size |
-| N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **Revision 1; second-round review** | 1 in 2 | 1 in 4 | 2.5% per event, ~100 events/yr; ≈ 5–11%/yr after the squeeze-tail charge at a 4–6% edge; plausible worst month −30%; joint power 0.77 at 4% |
+| N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **013 FAIL → close** (T1 α +1.2%, t 0.49; T2 α +3.4%, t 1.24); confirmation calendar unread | 1 in 3 | 1 in 6 | T2 lead: +6%/yr book at 2.5% per event in discovery, not significant |
 | N3(ii–iii) | Listing announcements; token unlocks | **parked** (no end-datable announcement API; no free point-in-time unlock calendar; `000i`) | 1 in 2 / 1 in 3 | 1 in 10 / 1 in 8 | — |
 | N7-1 | Crypto trend following (Donchian ensemble, vol-targeted) | desk only; candidate | 1 in 3 | 1 in 5 overall | 10–30%/yr if alive; convex; only 2025-04 → 2026-06 is out of the paper's sample (t ≈ 1.1 at Sharpe 1) |
 | N7-3 | Month-end liquidity cycle, equity index (settlement-lag natural experiment) | desk only; candidate | 1 in 3 | — | 8–15%/yr at 2–3×, tail −45% at 3× |
@@ -654,6 +654,35 @@ attempt the tree must be clean (all `.py` committed).
 - 013 goes first meanwhile: the two recheck minors, then REGISTERED, then
   its discovery run.
 
+**2026-10-13 — 013 REGISTERED and run: discovery FAIL, close.**
+(Registration Result §; `results.jsonl` lines 18–19; commit `a01db5d`.)
+- **T1, every new perp** (239 events, 65 weeks): mean net **+2.10%** per
+  event, **median +9.05%**; **α +1.20%, t 0.49** (crit 2.00). Book at 2.5% per
+  event: +0.5%/yr, max daily drawdown −9.8%.
+- **T2, day-1 funding ≥ 0** (115 events, 43 weeks): mean **+5.37%**, median
+  +9.06%; **α +3.37%, t 1.24** (crit 2.02). Book +6.3%/yr, max daily
+  drawdown −7.9%.
+- **Where the money goes (T1):** price +3.41%, funding −0.87%, slippage
+  −0.32%, fees −0.11%. **17 of 257 events (6.6%) were liquidated at 1×**, each
+  losing its margin. The decline is typical, and the squeeze tail takes most
+  of it.
+- **Reported:** 2020–23 block T1 +1.69% (t 0.79), T2 +3.90% (t 1.83);
+  single-β α T2 +5.68% (t 2.10), but quarter β removes part as market
+  exposure; T2's placebo gross-t SD 1.34, so its raw t overstates; the most
+  liquid tier +13.2% (t 2.68, n 33, post-hoc).
+- **Decision:** `close`; the confirmation calendar (2025-07-28 → 2026-06-21)
+  is never read by 013; the D17(b) lock lifts. Binance listing family: 2
+  trials, no pass.
+- **Orchestrator reading.** The best economic shape of the round: a typical
+  +9% event and a fat squeeze tail. T2 is a *lead*: consistent in two
+  calendars, but not significant after market adjustment, and about +6%/yr
+  at the registered size (an HLP-calm-to-modest return). **Not drafted now.**
+  Spending the unread confirmation calendar on T2 frozen would be cheap
+  (panels built), with odds of a confirm about 1 in 5 and a likely return of
+  3–6%/yr at 2.5% per event. That decision goes to the next session, with
+  the alternative of a listings rule that addresses the squeeze tail by
+  mechanism.
+
 **2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
 (`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
 timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
@@ -742,10 +771,26 @@ orchestrator re-read `tail_results.json`.)
 
 ## 4. Distance to goal
 
-Unchanged from round 2 at the start of this round: no candidate has a
-demonstrated edge that beats HLP on a risk-adjusted basis. Best supported:
-010 T2 (BTC/ETH/SOL cross-venue carry), +2.96%/yr, economically the lending
-rate.
+**After round 3's results so far (2026-10-13):** no candidate has a
+demonstrated edge that beats HLP (+19% in the spiral year, 2–4%/yr calm,
+Sharpe 1.4, max drawdown −2.5%).
+- **Run this round:** 013 (2 trials, no pass). **Parked without a trial:**
+  014. **Pending:** 008 (fetch attempts 3–4, then the one read).
+- **Best point estimate of the round:** 013 T2's discovery book, about
+  +6.3%/yr at 2.5% of capital per event (≈ 60 events a year), max daily
+  drawdown −7.9%; α t 1.24, not significant. Roughly HLP-calm returns with a
+  very different tail (squeezes).
+- **Best statistically supported result overall:** still 010 T2 (BTC/ETH/SOL
+  cross-venue carry), +2.96%/yr: the lending rate.
+- **Where the shape is right but the edge is eaten:** new-listing shorts
+  (median +9% net, mean +2%: a 6.6% liquidation tail), short vol (a premium
+  whose tail caps the size at ≈ 2–3%/yr), funding carry (cash flow eaten by
+  fees and gap tails). The common lesson: **the premium is visible, and the
+  tail or the costs take it at a size we can survive.**
+- **The 30–100%/yr zone** has not been approached by any tested rule; the
+  only paths that plausibly reach it (trend following at high leverage, a
+  listings book at large per-event size) carry 30–50%+ drawdowns and none
+  is supported by our data.
 
 ## 5. Data inventory
 
@@ -774,7 +819,8 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | done: 5 majors; `000n` |
 | 013 Revision 1 | committed `02fbd1d` | 2026-10-13 | done (125/125) |
 | 013 re-review | `reviews/013-review-r1.md` | 2026-10-13 | done: 1 blocker, 4 majors |
-| 013 Revision 2 | committed `323899e` | 2026-10-13 | recheck: **register**; two minors being applied |
+| 013 Revision 2–3 | `323899e`, Rev 3 in `a01db5d` | 2026-10-13 | done |
+| **013 REGISTERED → discovery FAIL, close** | `a01db5d`; results lines 18–19 | 2026-10-13 | terminal |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |

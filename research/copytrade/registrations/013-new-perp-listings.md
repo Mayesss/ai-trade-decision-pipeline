@@ -869,3 +869,42 @@ File keys as in §R. Line numbers are those of this revision.
 |---|---|---|
 | **r2-m1** pool dilution by a calmer 2020–23 block (size 0.049–0.057 in the reviewer's worlds) | π_pool = **max(the rate over all three calendars, the rate over discovery + confirmation)** in the tail-adjusted α and in the deploy rule; the squeeze-month frequency in the deploy charge likewise; the simulator uses the same pool, with a separate reported-block rate (`liq_p_rep`); four dilution worlds appended to `WORLDS`. **Size at CAL_C 2.05: 0.022–0.039** (untailed 0.060–0.104). The calibration's largest 95th percentile is 2.050 (2.01 in the dilution worlds), so **CAL_C stays 2.05** | L:639 `pooled_liquidation_rate`, L:683, L:693 (`deploy_one`), L:1028, L:1035 (`simulate_worlds`); R:661 (`_confirmation_row`), R:720 (`WORLDS`); T:366; §3, §6, §7.2, §9 |
 | **r2-m2** deploy depends on the market path | §6 states that a deploy needs both the market-hedged and the unhedged book to pay. Deploy-given-confirm at a 4% edge is 0.40 flat and 0.61 in a bear calendar (reviewer), with no added false deploys | §6 (line 396) |
+
+## Result — discovery, 2026-10-13 (run of commit a01db5d, `results.jsonl` line 19)
+
+Two trials, family-adjusted one-sided 2.5% each; α from each event's net regressed on its own market
+return with β per calendar quarter, listing-week clusters, critical value t_{G−2}(0.975). A
+`discovery_started` row was written first (line 18). Counts before the decision: 257 events; 4
+pre-market and 14 continuations out of the trials; **17 liquidated (6.6%)**; 0 late or last-trade exits;
+0 missing market or funding.
+
+| trial | verdict | the numbers |
+|---|---|---|
+| T1 every new perp (n 239, 65 weeks) | **FAIL** (criteria 1, 6) | mean net **+2.10%** per event (raw t 0.85), **median +9.05%**; **α +1.20%, t 0.49** (crit 2.00); adjusted median, halves and without-best-week positive; book at 2.5% per event **+0.5%/yr** on capital (156 events taken, max daily drawdown −9.8%) |
+| T2 day-1 funding ≥ 0 (n 115, 43 weeks) | **FAIL** (criterion 1) | mean net **+5.37%** (raw t 1.77), median +9.06%; **α +3.37%, t 1.24** (crit 2.02); criteria 2–6 hold; book **+6.3%/yr** (96 events, max daily drawdown −7.9%) |
+
+**Decision (D10): `close`.** Neither trial is carried. **The confirmation calendar (2025-07-28 →
+2026-06-21) is never read by 013.** 013 is terminal, so the D17(b) lock lifts. Binance listing-window
+family: 2 trials, no pass.
+
+**Diagnostics (reported; they decide nothing).**
+- **Where the money goes (T1, all events):** price **+3.41%**, funding **−0.87%** (shorts pay), slippage
+  −0.32%, fees −0.11%. The typical listing falls (median net +9%); the 6.6% that squeeze to liquidation
+  each cost the whole margin, and they take most of the mean.
+- **Market:** single-β α (reported) T1 +2.18% (t 0.94), T2 +5.68% (t 2.10). Quarter β removes part of
+  T2's gain as market exposure (2025-Q1 β −2.4).
+- **The 2020–23 block** (spot-first era, reported): T1 +1.69% (t 0.79), **T2 +3.90% (t 1.83)**;
+  stressed costs T1 +0.13%. By year 2020 +5.4%, 2021 +2.4%, 2022 +2.7%, 2023 −2.1%.
+- **Placebo** (month-block flips): α-based pass share 0.005 (T1) / 0.02 (T2); T2's gross-t SD is
+  **1.34**, so its raw t overstates.
+- **Strata:** perp-first +2.70% (t 0.88), spot-first +0.20%; lowest slippage tier (the most liquid
+  listings) +13.2% (t 2.68, n 33) — reported, post-hoc; continuations +10.3% (n 14); pre-market −36% (n 4).
+- **Stressed costs:** T1 +0.52% (t 0.21), T2 +4.23% (t 1.35); stressed books T1 −3.4%/yr, T2 +4.5%/yr.
+
+**What it means.** Shorting new Binance perps a day after listing catches a real, typical decline
+(median +9% net per event over 7 days), but at 1× isolated the squeeze tail (6.6% of events liquidated)
+and funding take most of it: +2% per event on average, not distinguishable from zero after market
+adjustment. Restricting to listings whose first-day funding did not charge shorts (T2) is consistently
+better in both calendars (+5.4% and +3.9%), but not significant after the market adjustment, and its
+book would earn about 6%/yr at the registered size. Not a rejection of the decline; a test that could see
+only a large market-adjusted edge, and did not.
