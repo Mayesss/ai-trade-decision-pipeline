@@ -1,6 +1,7 @@
 """Registration 013 — panel build (Revision 1). COVERAGE ONLY: rows are copied, never combined into a price
-change, return, funding sum or P&L. Per-event coverage is limited to PRE-ENTRY facts, [d0, first trade + 25 h)
-(ledger 000n; review B M5); nothing about the hold window is counted, stored or printed.
+change, return, funding sum or P&L. Per-event coverage is limited to PRE-ENTRY facts, [d0, first trade + 24 h)
+(ledger 000n; review B M5; Revision 2: [d0, first trade + 24 h), review r1 m5); nothing about the hold window is
+counted, stored or printed.
 
     .venv/bin/python -I r013_build.py            # every calendar: verify raw files, build panels, MANIFEST, counts
 
@@ -10,8 +11,9 @@ Inputs (all under data/r013/, each raw source verified against its SHA256SUMS be
 Outputs, one directory per calendar (`panel_reported`, `panel_discovery`, `panel_confirmation`), read only through
 the runner's gated `Panel`:
   events.json        per first-segment listing event: id, symbol, d0, calendar, first_trade (first 1m bar with
-                     trades), premarket, spot_first, continuation (ct/listings013.CONTINUATIONS),
-                     funding_months_missing (archive month files absent; a listing fact), pre-entry coverage
+                     trades), premarket, spot_first, continuation (ct/listings013.CONTINUATIONS, checked point in
+                     time against the 1d listing: the build refuses otherwise), funding_months_missing_pre_entry
+                     (archive month files absent for [d0, first trade + 24 h]; a listing fact), pre-entry coverage
   bars_1m.parquet    id, t, o, h, l, c, qv, n   (t in [d0, d0+10 d) and before the calendar's DATA_END)
   funding.parquet    id, calc_time, interval_h (-1 if blank), rate   (same window)
   market_1h.parquet  symbol, t, o, c, n   (discovery / confirmation: every universe symbol inside the span)
@@ -151,15 +153,17 @@ def assemble(events_keys, days, exclude, m1_files, fr_files, h1_files):
         pre = [b_ for b_ in dedup if b_[1] < pre_end]
         need_days = L.pull_days(p['d0'])
         have_days = {d for _k, d, _z in p['m1']}
-        need_months = L.months_between(L.ms(need_days[0]), L.ms(need_days[-1]))
+        # funding months spanned by [d0, first trade + 24 h] only: a pre-entry fact (review r1 m5). Hold-month gaps are
+        # derived inside the gated run from the listing (r013_run.evaluate).
+        pre_months = L.months_between(d0ms, (first_trade if first_trade is not None else d0ms) + L.PRE_ENTRY)
         have_months = {d[:7] for _k, d, _z in p['funding']}
         # PRE-ENTRY coverage only (000n, review B M5): [d0, first trade + 25 h). Nothing about the hold window
         # (rows, zero-trade rows, funding rows, missing minutes, where trading stops) is counted or stored.
         ev = {'id': p['id'], 'symbol': p['symbol'], 'd0': p['d0'],
               'calendar': L.calendar_of(first_trade) if first_trade else 'no_trade',
               'first_trade': first_trade, 'premarket': L.is_premarket(p['d0'], p['index_on_d0']),
-              'spot_first': bool(p['spot_on_prev_day']), 'continuation': L.CONTINUATIONS.get(p['id']),
-              'funding_months_missing': sorted(set(need_months) - have_months),
+              'spot_first': bool(p['spot_on_prev_day']), 'continuation': L.continuation_label(p['id']),
+              'funding_months_missing_pre_entry': sorted(set(pre_months) - have_months),
               'cov_pre_entry': {'daily_files_d0_d1': sum(1 for d in need_days[:2] if d in have_days),
                                 'rows_1m': len(pre), 'rows_zero_trades': sum(1 for b_ in pre if b_[7] == 0),
                                 'first_trade_on_d0': first_trade is not None and L.day_of(first_trade) == p['d0'],
@@ -210,7 +214,7 @@ def assemble(events_keys, days, exclude, m1_files, fr_files, h1_files):
             'pre_entry_rows_1m': sum(x['rows_1m'] for x in cov),
             'pre_entry_zero_trade_rows': sum(x['rows_zero_trades'] for x in cov),
             'events_without_pre_entry_funding_row': sum(1 for x in cov if x['funding_rows'] == 0),
-            'events_with_a_missing_funding_month': sum(1 for e in E if e['funding_months_missing']),
+            'events_with_a_missing_pre_entry_funding_month': sum(1 for e in E if e['funding_months_missing_pre_entry']),
             'market_rows': len(out[c]['market']), 'market_symbols': len(set(out[c]['market'].cols['symbol'])),
         }
     out['_later_segments'] = later
@@ -224,6 +228,8 @@ def main():
     days = json.loads((DATA / 'listing' / 'um_daily_1d_days.json').read_text())
     keys = json.loads((DATA / 'listing' / 'event_keys.json').read_text())
     exclude = L.excluded_symbols(json.loads((DATA / 'inputs' / 'fapi_exchangeInfo.json').read_text()))
+    bad = L.continuation_failures(days)
+    L.refuse_unless(not bad, f'continuation list not point-in-time: {bad}')
     for k in (*m1, *fr, *h1):
         L.refuse_unless(k.endswith('.zip'), f'not a zip: {k}')
     out = assemble(keys, days, exclude, m1, fr, h1)

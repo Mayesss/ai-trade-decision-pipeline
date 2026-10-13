@@ -2,55 +2,66 @@
 
 **Status: DRAFT**
 
-**Revision 1 (2026-10-13), after two independent reviews and the orchestrator's decisions.**
-Reviews: `registrations/reviews/013-review-a.md` (1 blocker, 4 majors) and `reviews/013-review-b.md` (5
-majors). Ledger entry `000n` records the outcome-adjacent coverage totals of the draft. Every finding and
-its fix is listed in §R at the end. The main changes:
+**Revision 2 (2026-10-13), after the second-round review `reviews/013-review-r1.md`** (1 blocker, 4 majors,
+minors) and the orchestrator's binding decisions. Every finding is in §R2 with its file and line.
 
-- **The market-adjusted decision (A-B1, A-M1, B-M1).** Discovery's significance criterion (now
-  criterion 1; the draft's criterion 5) and the confirmation are decided on the **intercept α** of a pooled OLS of each event's net on its own market return over the
-  same hold. β is estimated, the regression is listing-week clustered (CR1), and the critical value is
-  max(t_{G−2}(q), the calibrated value registered now, §3). The market index is a 5%-trimmed equal-weight
-  return of seasoned perps that traded in the 24 h before entry, from last traded prices. **The discovery
-  robustness criteria use the adjusted net (net − β̂·market). The raw net feeds the economic bars only.**
-- **The tail (A-M2, A-M3).**
-  - Rolling-window caps make the bounds exact: c = 2.5%, ≤ 7 entries per 15 days, ≤ 19 per 39 days.
-  - Worst exit week −17.5% (bound); worst exit month −47.5% (bound) and −29.7% (plausible).
-  - A daily mark-to-market drawdown is reported.
-  - A peso-problem tail charge is computed from the pooled calendars.
-- **One deploy rule** (A-M4), at the deployed size. **Binance is the venue**; any other venue is a new
-  trial.
-- **The event set** (B-M2).
-  - Continuations (migrations, relistings under new tickers, rebrands, gold tokens) are out of the trials
-    and reported as a stratum. Discovery 16, confirmation 7, reported 6.
-  - Relistings come from trade counts, not from files (B-M1).
-- **Delistings** (B-M1): zero-trade rows after a listing's last trade are treated as absent.
-- **Run-once integrity and the read gate** (B-M3, B-M4).
-  - Reflog, merge and stash scan; results.jsonl must be clean; the runner commits each row.
-  - A gate token: the real data open only after the real guard has passed.
-  - Refusals instead of asserts; an environment check.
-- **Coverage is pre-entry only** (B-M5, `000n`). The panels were rebuilt from the verified raw files; no
-  new pull.
+- **B1, regime β.** α is now estimated with **β per calendar quarter of the first trade**:
+  net = α + Σ_q β_q·mkt·1[q] + ε, with a common α and CR1 by listing week. This applies in discovery and
+  confirmation and in the adjusted series. The reviewer's regime worlds (β and the market's fall
+  concentrated in a window, aligned with quarters and misaligned) were added to the calibration set, and
+  the critical values were re-derived (§3).
+- **M1, economics on min(raw, adjusted).** Discovery criteria 5–6 and the deploy rule use the smaller of
+  the raw and the market-adjusted net, so they are conservative in bull and bear calendars alike. Both
+  are reported.
+- **M2, tail-adjusted α.** The confirmation tests α_tail = α − max(0, π_pool − π_conf)·(1 + the mean
+  non-liquidated net), the §6 correction moved inside the test. π_pool pools all three calendars.
+- **M3, one continuation rule.** "The token, or its predecessor, had a Binance USDⓈ-M perp before d0",
+  checked point in time against the 1d listing by the build, plus (d) gold tokens.
+  - LUMIA, SYRUP, CFG, ASTER, BEAMX and USTC return to the events.
+  - **Primary events: discovery 239 (65 weeks), confirmation 121 (38), reported 251 (117).**
+- **M4, run-once through the hook.**
+  - After each commit, the run refuses unless the row is in `HEAD:results.jsonl`, checked with the real git.
+  - Mocked hooks, a stubbed guard or a mixed real/synthetic tree are refused on the real files (r008's
+    `real_tree_failures`, ported).
+- **Minors:**
+  - m1: no test goes stale at commit or REGISTERED (checked by a throwaway commit simulation, §10);
+  - m2: `--text --no-textconv --no-ext-diff --no-color` on every history and diff call;
+  - m3: r008's `shadow_modules`, plus a fresh `sys.pycache_prefix` before `ct` is imported (a forged `.pyc`
+    is shown loading without it and not with it);
+  - m4: `exit_late` is capped at 24 h and the windows widened to 16 and 40 days, so the tail bounds are
+    exact for every exit status;
+  - m5: coverage is strictly pre-entry;
+  - m6: ledgered;
+  - m8, m9: the split-β α and the α placebo are reported;
+  - m10: the environment fingerprint hashes every duckdb and pyarrow file; the runner never pushes.
 
-**No outcome has been computed on any real listing window, in any calendar.** That covers price changes,
-returns, drawdowns, funding sums, liquidation counts, P&L and "did it dump" statistics, and it includes
-the reported 2020–23 block.
-- The pull (§2) is done and every file is checksum-verified.
-- The build counts only pre-entry coverage (§2.4).
-- Mechanics, statistics, fetch, build, the read gate and the guard are tested on synthetic data (§10).
-- The draft printed hold-window coverage totals; they are ledgered as `000n` (§13).
+**Revision 1 (2026-10-13)** answered the first reviews (`013-review-a.md`, `013-review-b.md`) and `000n`:
+- the α decision;
+- tail bounds via rolling caps;
+- one deploy rule;
+- Binance as the venue;
+- continuations;
+- dead-row handling;
+- run-once and the read gate;
+- pre-entry coverage.
 
-The runner (`r013_run.py`) refuses to compute anything until all of these hold:
+Its table is §R.
+
+**No outcome has been computed on any real listing window, in any calendar**, the reported 2020–23 block
+included. The pull is done and checksum-verified (§2.3). The build counts only pre-entry coverage
+(§2.4). The draft's hold-window totals are ledgered as `000n`.
+
+The runner refuses to compute anything until all of these hold:
 - this file says REGISTERED, is committed and is unmodified;
-- the code and data match §10's SHA-256 table;
-- 009's terminal state is committed and recomputed (D17);
-- `results.jsonl` is clean and holds no row of any `013-` registration, anywhere in git (reflog
-  included);
-- the environment matches the pins.
+- the code and data match §10;
+- 009's terminal state is recomputed (D17);
+- `results.jsonl` is clean and holds no `013-` row anywhere in git;
+- the environment matches;
+- no importable file shadows a module.
 
-Programme: `docs/edge-discovery-next-prompt-2026-10-12.md` (round 3, light N3). Scout:
-`scouts/n3-listings.md`. Ledger entries read: `000f`, `000g`, `000i`, `000l`, `000n`. Patterns: 009, 012,
-and every review in `registrations/reviews/`.
+Programme: `docs/edge-discovery-next-prompt-2026-10-12.md` (round 3, light N3). Scout: `scouts/n3-listings.md`.
+Ledger entries read: `000f`, `000g`, `000i`, `000l`, `000n`. Reviews: `013-review-a.md`, `013-review-b.md`,
+`013-review-r1.md`.
 
 ## 0. Hypothesis, mechanism, and what has been seen
 
@@ -88,6 +99,8 @@ Binance result** (D1).
 | N3 scout | all calendars | listing-day levels, coverage counts, non-event dispersion | levels at listing |
 | **013 draft (`000n`)** | all three calendars | hold-window coverage totals: funding rows 8,441 / 15,578 / 9,551; zero-trade rows; internal missing minutes | weak aggregate exposure about capped-funding episodes. **No parameter changed because of them** (`000n`) |
 | 013 Revision 1 (§13) | all calendars | pre-entry coverage; continuation and segment names | no outcome |
+| **013 later segments (Revision 1; review r1 m6)** | discovery, confirmation | the later-segment list implies that **AIAUSDT** (confirmation) and **PUMPUSDT** (discovery) traded again at or after d0 + 30 days, i.e. "survived their windows" | negligible; ledgered (§13); nothing decides on it |
+| **Second-round reviewer's public notes** (review r1) | discovery, confirmation | ASTER's TGE and post-TGE rally (2025-09); the TVK → VANRY swap (2023-12); the RBN → AEVO migration (2024-03); pump.fun PUMP's post-launch decline (2025-07); the PumpBTC symbol change | public knowledge, not computed. ASTER's rally is adverse to a short; ASTER returns to the events by the single rule (M3), so the rule removes no adverse event |
 
 Our computations have never touched these windows' outcomes. Every calendar is fresh to the programme's
 code and not fresh to public priors. Only data after 2026-07-01 is unseen by both, and it is sealed.
@@ -96,7 +109,7 @@ code and not fresh to public priors. Only data after 2026-07-01 is unseen by bot
 
 | id | events | rule | mechanism reason |
 |---|---|---|---|
-| **T1** | every first-segment Binance USDⓈ-M USDT perp listing of a **new token**. Out: pre-market perps, continuations (§2.5), later trading segments, censored and excluded symbols. Entered events only | short at the open of the first traded 1m bar at first trade + 24 h, 1× isolated, exit at the first traded bar at entry + 7 d (§4) | the hypothesis |
+| **T1** | every first-segment Binance USDⓈ-M USDT perp listing whose token, and any token it was renamed or swapped from, had **no Binance USDⓈ-M perp before d0**. Out: pre-market perps, continuations (§2.5), later trading segments, censored and excluded symbols. Entered events only | short at the open of the first traded 1m bar at first trade + 24 h, 1× isolated, exit at the first traded bar at entry + 7 d (§4) | the hypothesis |
 | **T2** | T1, restricted to events whose funding settled in (first trade, entry] sums to **≥ 0** | the same trade | Binance funding = premium + clamp(interest − premium, ±0.05%), with a positive interest floor (0.01%/8 h). "Σ ≥ 0" therefore means **the perp did not trade at a material discount to its index over its first day** (A-m1). A sustained discount means hedgers already crowd the short and charge the decline through funding. Known at entry |
 
 - **T2's likely share is large.** Most new perps print the positive default rate unless the premium is
@@ -107,19 +120,20 @@ code and not fresh to public priors. Only data after 2026-07-01 is unseen by bot
   T1 if it passes, else T2 if it passes, else close.
 - **Considered and not registered:**
   - **perp-first only.** Corrected reading (B-M2): the spot-first flag sees only a Binance spot pair on
-    d0−1. It is 0 of 148 in the confirmation calendar, but some of those listings were continuations of
-    seasoned tokens, now excluded (§2.5). The perp-first stratum is reported.
+    d0−1. It is 0 of 148 in the confirmation calendar, but continuations of seasoned tokens and seasoned
+    tokens receiving their first Binance perp are among those 148 (§2.5). The perp-first stratum is
+    reported.
   - +1 h or 00:00 entries; a 14-day hold; pre-market perps as a trial; long-the-listing. Reasons as in
     the draft: the first-day pop, a delay that varies with the time of day, funding and squeeze exposure,
     no supply before TGE, no mechanism.
   - **Ticker reuse as events** (PUMPUSDT 2025-07-10, LITUSDT 2025-12-23). Later trading segments are
     never events (§2.5).
 - **Family counts.** Binance listing windows: 2 trials. The HL year (16) is not touched.
-- **Written expectation (Revision 1).**
+- **Written expectation (Revision 2).**
   - About 1 in 4 that T1 or T2 passes discovery with a positive α.
-  - Given a pass, about 3 in 4 that the α existence test confirms on 119 fresh events: §3, k = 1.5, for
-    an effect large enough to pass discovery.
-  - About **1 in 5 overall**, and less after the deploy bar's tail charge.
+  - Given a pass, about 3 in 4 that the tail-adjusted α existence test confirms on 121 fresh events (§3).
+  - About **1 in 5 overall**, and less after the deploy bar, which now runs on min(raw, adjusted) with the
+    tail charge.
 
 ## 2. Data, calendars, pull and coverage
 
@@ -135,17 +149,17 @@ result** (A-m2): Binance prices, Binance funding stamps, Binance shortability.
 
 ### 2.2 Calendars (fixed; D2)
 
-| role | first trade in | data read strictly before | primary events / listing weeks (Revision 1) |
+| role | first trade in | data read strictly before | primary events / listing weeks (Revision 2) |
 |---|---|---|---|
-| reported block | 2020-01-02 → 2023-12-22 | 2024-01-01 | 249 / 117 |
-| **discovery** | **2024-01-01 → 2025-07-18** | 2025-07-28 | **237 / 65** |
-| **confirmation** | **2025-07-28 → 2026-06-21** | 2026-07-01 | **119 / 37** |
+| reported block | 2020-01-02 → 2023-12-22 | 2024-01-01 | 251 / 117 |
+| **discovery** | **2024-01-01 → 2025-07-18** | 2025-07-28 | **239 / 65** |
+| **confirmation** | **2025-07-28 → 2026-06-21** | 2026-07-01 | **121 / 38** |
 | embargo | 2023-12-23 → 12-31; 2025-07-19 → 07-27; 2026-06-22 → 06-30 | — | 8 listings, never events |
 
 - No hold crosses a boundary (asserted as a refusal, tested), so no truncation is needed.
 - Discovery reads nothing dated on or after 2025-07-28.
 
-### 2.3 The pull (owner-approved, run 2026-10-12; unchanged in Revision 1)
+### 2.3 The pull (owner-approved, run 2026-10-12; unchanged since)
 
 | source | files | bytes | checksums |
 |---|---|---|---|
@@ -158,148 +172,150 @@ result** (A-m2): Binance prices, Binance funding stamps, Binance shortability.
 - **The draft printed one sealed-period count** (B-m3): 900 universe-matching symbol directories against
   787 with a pre-cutoff file. Ledgered (§13).
 
-### 2.4 Coverage (Revision 1: pre-entry only, [d0, first trade + 25 h); `000n`)
+### 2.4 Coverage (pre-entry only, [d0, first trade + 24 h); `000n`; Revision 2)
 
 | count | reported | discovery | confirmation |
 |---|---|---|---|
 | listing events | 255 | 257 | 148 |
 | pre-market | 0 | 4 | 22 |
-| continuations (§2.5) | 6 | 16 | 7 |
-| **primary events / listing weeks** | 249 / 117 | **237 / 65** | **119 / 37** |
+| continuations (§2.5) | 4 | 14 | 5 |
+| **primary events / listing weeks** | **251 / 117** | **239 / 65** | **121 / 38** |
 | spot-first (Binance spot on d0−1) | 224 | 61 | 0 |
 | no bar with trades / first trade not on d0 | 0 / 0 | 0 / 0 | 0 / 0 |
 | events missing the d0 or d0+1 file | 0 | 0 | 0 |
-| pre-entry 1m rows / of which zero-trade | 382,290 / 4,469 | 385,500 / 166 | 222,000 / 37 |
+| pre-entry 1m rows / of which zero-trade | 367,050 / 4,327 | 370,080 / 165 | 213,120 / 37 |
 | events with no pre-entry funding row | 4 | 0 | 0 |
-| events with a missing funding-month file (a listing fact) | 4 | 1 (JUPUSDT@2024-01-31, month 2024-01) | 0 |
+| events with a missing **pre-entry** funding-month file | 4 | 1 (JUPUSDT@2024-01-31) | 0 |
 | market 1h rows / symbols | — | 4,698,652 / 508 | 4,824,747 / 646 |
 
-- **Nothing about the hold window is counted, stored or printed** any more: no funding rows, zero-trade
-  rows, missing minutes or end of trading. `events.json` holds pre-entry fields only (tested).
-- `events.json` is read only through the gated `Panel`. The ungated `schedule.json` holds first-trade
-  times and flags only; it is the simulation's input.
-- The rebuild is from the verified raw files: MANIFEST `d4d51b12…`, byte-identical on a second rebuild.
+- **Revision 2, review r1 m5.**
+  - The coverage window ends at first trade + 24 h, the entry target; it no longer runs to + 25 h.
+  - `events.json` stores only the **pre-entry** missing funding months. Hold-month gaps are derived
+    inside the gated run from the names-only listing (`Panel.funding_months`).
+- Nothing about the hold window is counted, stored or printed.
+- **Rebuild:** MANIFEST `ebf29b7a…`, from the verified raw files, byte-identical on a second rebuild
+  (§10).
 
-### 2.5 Event set: continuations and later trading segments (Revision 1, decision 5; B-M2, B-M1, A-m5)
+### 2.5 Event set: continuations and later trading segments (Revision 2, decision 4; review r1 M3)
 
-**Continuation rule** (fixed now, from mechanism and point-in-time public facts; `L.CONTINUATIONS`). An
-event is out of T1 and T2, and reported as the continuation stratum, when its token is not new at
-listing:
-- **(a)** a ticker change, migration or redenomination of a token that had a Binance USDⓈ-M perp, with
-  the new perp listed within 90 days of the change;
-- **(b)** a relisting under a new ticker of a token whose Binance USDⓈ-M perp was delisted earlier;
-- **(c)** a rebrand or token swap of a token without a Binance perp, completed ≤ 180 days before d0;
-- **(d)** a commodity- or fiat-backed token.
+**One rule** (`L.CONTINUATIONS`; checked point in time by the build, which refuses otherwise). An event is
+a **continuation**, out of T1 and T2 and reported as its own stratum, when either:
+- **(p)** the token, or the token it was renamed, migrated, redenominated or swapped from, **had a Binance
+  USDⓈ-M perp before d0**. The predecessor's first daily file in the 1d listing must precede d0;
+- **(d)** the token is commodity- or fiat-backed.
 
-Each change is announced before the new perp lists, so the category is known at entry. **Mechanism:** none
-of these has a new-token supply overhang or a first-listing pop. Gold tokens carry a macro β the alt index
-does not hedge.
+**Mechanism.**
+- Under (p), first-perp attention is absent and shorting was already possible.
+- Under (d), the token's β is not the alt market's.
+- The draft's rule (c) (rebrands **without** a Binance perp) is **withdrawn**. Such a token is a seasoned
+  token receiving its first Binance perp, which stays in T1 like TON, AERGO, VANRY or AEVO. The 90-day
+  clause of the draft's (a) is dropped as well.
 
-| calendar | names (category) |
+| calendar | continuations (rule; predecessor perp) |
 |---|---|
-| discovery (16) | POL (a, MATIC), RENDER (a, RNDR), G (a, GAL), KAIA (a, KLAY), S (a, FTM), D (a, DAR), HEI (a, LIT), FORM (a, BNX), AWE (a, STPT), A (a, EOS), PUMPBTC (a, PUMPUSDT ticker move **?**), RAYSOL (b, RAY), VIC (b, TOMO), LUMIA (c, ORN), SYRUP (c, MPL), PAXG (d) |
-| confirmation (7) | SKY (a, MKR), FRAX (a, FXS), MANTRA (a, OM), NOM (a, OMNI), CFG (c, migration **?**), ASTER (c, APX **?**), XAUT (d) |
-| reported (6) | 1000BTTC (a), T (a, KEEP+NU), 1000LUNC (b), USTC (b), DODOX (b **?**), BEAMX (c, MC) |
+| discovery (14) | POL (p; MATIC), RENDER (p; RNDR), G (p; GAL), KAIA (p; KLAY), S (p; FTM), D (p; DAR), HEI (p; LIT), FORM (p; BNX), AWE (p; STPT), A (p; EOS), PUMPBTC (p; PUMPUSDT), RAYSOL (p; RAY), VIC (p; TOMO), PAXG (d) |
+| confirmation (5) | SKY (p; MKR), FRAX (p; FXS), MANTRA (p; OM), NOM (p; OMNI), XAUT (d) |
+| reported (4) | 1000BTTC (p; BTT), T (p; KEEP), 1000LUNC (p; LUNA), DODOX (p; DODO) |
 
-- **"?"** marks names where the drafter's knowledge of the public notice or its date is uncertain. A
-  reviewer should verify them against Binance and project announcements dated before d0. A verified
-  correction is a change to this list before registration, never after.
-- **Predecessor perps, from the 1d listing (dates only):**
-  - MATIC to 2024-09-11; RNDR to 2024-07-30; GAL to 2024-07-30; EOS to 2025-05-21; TOMO to 2024-05-28;
-  - KLAY, FTM, MKR, FXS, OM, RAY, LIT, DAR, STPT, BNX and OMNI have files to 2026-06-30. Dead contracts
-    keep writing files (scout L4 §B), so file dates do not date the delisting;
-  - ORN, MPL, INST and APX never had a Binance USDⓈ-M perp.
-- **Not continuations, by the rule:**
-  - seasoned tokens receiving their first Binance perp (for example TON, AERGO, DIA, CHESS, fan tokens),
-    for which mechanism 2 applies. They stay in T1; the spot-first stratum is a partial proxy, reported;
-  - rebrands older than 180 days (VIRTUAL, FLUID).
+- **Returned to the events by the single rule:** LUMIA, SYRUP (discovery); CFG, ASTER (confirmation);
+  BEAMX, USTC (reported).
+- **The renames themselves** (MATIC → POL, …, OMNI → NOM, PumpBTC's PUMPUSDT → PUMPBTCUSDT) are the
+  drafter's public knowledge. **Every predecessor's perp predating d0 is checked mechanically** against
+  the 1d listing (`continuation_failures`; tested on the real listing, names and dates only).
+- The PUMPBTC rename matches the reviewer's recollection of a Binance symbol change and the drafter's 1d
+  facts. The only remaining judgement is whether a symbol pair is the same token. No outcome informs it.
 
-**Later trading segments (relistings, ticker reuse; B-M1, A-m5).**
-- Dead contracts' archive files never stop, so file gaps cannot detect relistings. The draft's "0
-  relistings" was that artefact.
-- A **trading segment** is now a run of hours with trades (1h trade counts) after ≥ 7 days without
-  trades. An event symbol is examined only from its d0 + 30 days on, so nothing about its own window is
-  read.
-- **Later segments are never events.** Segments starting 2024-01-01 → 2026-06-21 (names):
-  - AERGOUSDT@2025-04-16, MAVIAUSDT@2025-03-26, CTKUSDT@2025-04-30, CVXUSDT@2025-07-23 and
-    SLPUSDT@2025-07-23: relistings;
-  - **PUMPUSDT@2025-07-10** (pump.fun's PUMP reusing the ticker) and **LITUSDT@2025-12-23** (Lighter's LIT
-    reusing Litentry's ticker): ticker reuse, i.e. genuine new tokens that the rule excludes;
-  - AIAUSDT@2026-01-20 (a resumption).
-- **The cost is stated:** two new tokens are lost. Including them would need a judgement per segment and
-  new 1m pulls. The mechanical rule was preferred.
-- **PUMPUSDT ticker reuse resolved:** the event PUMPUSDT@2025-04-12 is the first segment, and its window
-  (April) precedes the reuse by about 3 months. The July token is a later segment, not an event.
-  PUMPBTCUSDT@2025-06-13 is a continuation (a).
+**Later trading segments** (relistings and ticker reuse; never events). A segment is a run of traded hours
+after ≥ 7 days without trades, examined from an event symbol's d0 + 30 days on. Starts from 2024-01-01 to
+2026-06-21:
+- AERGO@2025-04-16, MAVIA@2025-03-26, CTK@2025-04-30, CVX@2025-07-23, SLP@2025-07-23: relistings;
+- **PUMP@2025-07-10** and **LIT@2025-12-23**: ticker reuse by new tokens, excluded by rule. The reviewer
+  finds this acceptable: pump.fun's PUMP fell publicly, so dropping it is conservative for the short;
+- AIA@2026-01-20: a resumption.
 
-## 3. Size, power and calibration (synthetic only; `listings013.simulate_worlds`)
+Ledger note (review r1 m6): the list implies that the events AIAUSDT and PUMPUSDT traded at or after d0 +
+30 days (§13).
 
-`r013_run.py --power`: 44 worlds × 1,500 draws. Log: `data/r013/logs/power_r1.txt`; per-draw records in
-`power_r1_records.json`; rates at the registered critical values in `power_r1_registered.json`. Nothing real
-enters except `schedule.json`: the primary events' **real first-trade times**, 237 in discovery and 119 in
-confirmation.
+## 3. Size, power and calibration (synthetic only; `listings013.simulate_worlds`; Revision 2)
 
-**The model (revised after review A's M1 and B1).**
-- Each event enters at first trade + 24 h and exits 7 days later, so **holds overlap as in reality**.
-- **The alt market is a continuous path**: a daily random walk, linear within the day. Its 7-day SD is
-  10.4%, the scout's measured market part of non-event coin-weeks. A ×1.5 stress is included. A **drift**
-  of 0 / 1 / 2% a week down is a bear market the short earns from.
-- Event net = μ − β·mkt + k·8.3%·t₄.₅.
-  - k scales only the idiosyncratic part (listing windows are more volatile than other coins).
-  - **Correction during this revision:** an intermediate run scaled the market by k as well. The tables
-    below use the corrected model.
-- β = 1, 1.5 or 2. Optional squeeze atoms: −1 per event with p = 2%, or every event of a listing week
-  with p = 3%.
-- T2 is 70% of T1.
-- **The registered path is applied end to end:** `trial_stats` (OLS α, CR1, the book with both caps),
-  `discovery_criteria`, `decide_discovery`, `confirm`.
+`r013_run.py --power`: **55 worlds × 1,500 draws**. Logs:
+- `data/r013/logs/power_r2.txt` (rates at the uncalibrated and the registered critical values, and the
+  quantiles);
+- `power_r2_records.json` (per-draw records);
+- `power_r2_registered.json`.
 
-**Calibration (decision 1).**
+The hashed runner reproduces them exactly (§10). The only real input is `schedule.json`: the real
+first-trade times of the primary events (discovery 239, confirmation 121, reported 251, the last for the
+pooled liquidation rate).
 
-| stage | statistic | simulated size at t_{G−2}(q), over the β / drift / market / k null worlds | nominal | decision |
-|---|---|---|---|---|
-| discovery (family-wise, both trials, all criteria) | α t ≥ t_{G−2}(0.975) | **0.008–0.042** | 0.05 | within nominal + 0.01 → **not calibrated** (CAL_D = 0) |
-| confirmation (α existence test) | α t ≥ t_{G−2}(0.95) | **0.040–0.064** (0.064 at k 1, β 1.5, drift 1%) | 0.05 | above nominal + 0.01 → **calibrated: CAL_C = 1.90**, the largest 95th percentile of the α t over every null world and either trial (1.896, at k 1, β 1.5, drift 1%, T2) |
+**The model** (as Revision 1, plus the review r1 worlds).
+- Entries are at first trade + 24 h and exits 7 days later, so holds overlap.
+- The alt market is continuous: 7-day SD 10.4%, with a ×1.5 stress.
+- net = μ − β_i·mkt + k·8.3%·t₄.₅, with k idiosyncratic.
+- **Regime worlds (B1):** events with a first trade in a window carry β_in, and the market falls 2–3% a
+  week inside the window. The windows:
+  - discovery 2024-12-09 → 2025-04-07;
+  - confirmation 2025-10-06 → 2026-02-28 (aligned with quarters);
+  - or 2025-11-15 → 2026-01-15 (misaligned).
+- **Squeeze worlds (M2):** −1 atoms per event (p 1–2%) or per listing week (3%). The reported block's
+  liquidations enter the pooled rate.
+- The registered path end to end:
+  - `trial_stats` (**quarter-β α**, adjusted robustness, min(raw, adjusted) economics, the
+    **tail-adjusted α** at confirmation);
+  - `discovery_criteria`, `decide_discovery`, `confirm`.
+
+**Calibration (decision 1; re-derived).**
+
+| stage | uncalibrated size, over the 27 calibration worlds (null β / drift / market / k, and regime) | nominal | decision |
+|---|---|---|---|
+| discovery (family-wise) | **0.007–0.053** (worst: regime β 2.5 / 1.0, misaligned) | 0.05 | within nominal + 0.01 → **not calibrated** (CAL_D = 0) |
+| confirmation (tail-adjusted α) | **0.043–0.090** (worst: misaligned regime β 2.5 / 1.0) | 0.05 | above → **CAL_C = 2.05**, the largest 95th percentile of the α t over every calibration world and both trials (2.052; regime β 2.5 / 1.0, k 1, T2) |
+
+The Revision 1 value of 1.90 is superseded. The quarter β and the added regime worlds raised the noise
+of the α t.
 
 **Size at the registered critical values.**
 
-| world (true μ = 0 unless stated) | discovery pass | confirmation alone | P(confirm \| carried) | joint |
+| world (μ = 0 unless stated) | discovery | **confirmation alone** | confirmation, untailed α (reported) | P(confirm \| carried) | joint |
+|---|---|---|---|---|---|
+| null: β 1 / 1.5 / 2, drift 0–2%/wk, k 1–2, market ×1–1.5 (20 worlds) | 0.006–0.047 | **0.018–0.037** | 0.018–0.039 | 0.000–0.065 (≤ 70 carries) | ≤ 0.0020 |
+| **regime, aligned** (β 2.5/1.0 or 2.0/1.25; fall 2–3%/wk; k 1–1.5) | 0.027–0.053 | **0.029–0.039** | 0.029–0.039 | 0.000–0.122 (≤ 80 carries) | ≤ 0.0033 |
+| **regime, misaligned** (2025-11-15 → 2026-01-15) | 0.035–0.053 | **0.043** | 0.043–0.045 | 0.019–0.037 | ≤ 0.0020 |
+| **decayed edge** (μ 4% in discovery, 0 in confirmation; β 1–2; confirmation drift 0–2%) | 0.71–0.92 | 0.023–0.038 | 0.025–0.039 | **0.023–0.038** | 0.017–0.033 |
+| **squeeze atoms** p 2% (β 1.5) / p 1% (k 1) / p 2% with a bear drift (β 2) | 0.03–0.07 | **0.021 / 0.023 / 0.017** | 0.079 / 0.091 / 0.066 | 0.03–0.07 | ≤ 0.0020 |
+| squeeze weeks, 3% per week | 0.001 | 0.001 | 0.014 | — | 0.000 |
+
+- **B1 is fixed.** The reviewer's aligned regime worlds gave a false confirm of 0.08–0.15 with a single
+  β. With quarter β they give 0.029–0.039, and the misaligned window 0.043.
+- **M2 is fixed.** Independent squeeze atoms gave an untailed confirmation of 0.066–0.091 at the
+  registered critical value. The tail-adjusted α gives **0.017–0.023**.
+- The joint path (a false discovery, then a false confirmation) stays at ≤ 0.0033 in every null world.
+
+**Power at the registered critical values** (β 1.5, no drift, T2 70% of T1):
+
+| μ per event | k | discovery | confirmation alone | **joint** |
 |---|---|---|---|---|
-| β 1 / 1.5 / 2, drift 0–2%/wk, k 1–2, market ×1–1.5 (20 worlds) | 0.008–0.042 | **0.027–0.043** | 0.000–0.070 (on ≤ 60 carries) | **≤ 0.0027** |
-| **decayed edge**: μ 4% in discovery, 0 in confirmation; β 1 / 1.5 / 2; confirmation drift 0–2%/wk; k 1.5 | 0.72–0.92 | 0.028–0.038 | **0.029–0.041** | 0.021–0.034 |
-| squeeze atoms, p = 2% per event (β 1.5, k 1.5) | 0.041 | **0.079** | 0.097 | 0.004 |
-| squeeze weeks, 3% per week | 0.003 | 0.015 | — | 0.000 |
+| 2% | 1 / **1.5** / 2 | 0.50 / **0.41** / 0.30 | 0.70 / **0.43** / 0.26 | 0.34 / **0.17** / 0.08 |
+| 4% | 1 / **1.5** / 2 | 0.81 / **0.80** / 0.77 | 1.00 / **0.91** / 0.73 | 0.81 / **0.72** / 0.55 |
+| 6% | 1 / **1.5** / 2 | 0.96 / **0.96** / 0.95 | 1.00 / **0.99** / 0.95 | 0.96 / **0.95** / 0.90 |
+| 8% | 1 / **1.5** / 2 | 1.00 / **1.00** / 0.99 | 1.00 / **1.00** / 1.00 | 1.00 / **1.00** / 0.98 |
+| 4%, 1%/wk drift in both calendars | 1.5 | 0.92 | 0.91 | 0.83 |
+| 4%, a regime (β 2.0/1.25, 3%/wk fall) | 1.5 | 0.93 | 0.92 | 0.87 |
+| **4%, squeeze atoms p 2%** | 1.5 | 0.71 | **0.54** (untailed 0.60) | 0.39 |
 
-- **A-B1 is fixed.** The reviewer's decayed-edge world falsely confirmed 0.13–0.24 at drift 1–2%. Here it
-  confirms **0.029–0.041 given a carry**.
-- **Independent squeeze atoms still over-reject (0.079).** A 119-event sample often contains too few
-  liquidations: the peso problem (A-M2). It is handled at the deploy bar, not here. The deploy rule
-  re-weights the confirmation to the **pooled** liquidation rate (§6). In this world μ_tail ≈ 0, which
-  fails the 100 bp bar. So a confirm can happen, but a deployment cannot.
-
-**Power at the registered critical values** (β 1.5, no drift; T2 70% of T1):
-
-| true net per event μ | k | discovery (any) | confirmation alone | **joint** |
-|---|---|---|---|---|
-| 2% | 1 / **1.5** / 2 | 0.49 / **0.42** / 0.32 | 0.81 / **0.47** / 0.32 | 0.39 / **0.19** / 0.10 |
-| 4% | 1 / **1.5** / 2 | 0.81 / **0.81** / 0.76 | 1.00 / **0.96** / 0.77 | 0.80 / **0.77** / 0.57 |
-| 6% | 1 / **1.5** / 2 | 0.96 / **0.96** / 0.95 | 1.00 / **1.00** / 0.98 | 0.96 / **0.96** / 0.92 |
-| 8% | 1 / **1.5** / 2 | 1.00 / **0.99** / 0.99 | 1.00 / **1.00** / 1.00 | 1.00 / **0.99** / 0.99 |
-| 4%, with a 1%/wk alt drift in both calendars | 1.5 | 0.93 | 0.95 | 0.89 |
-
-- The headline is k = 1.5: listing windows half again as volatile as arbitrary coins. The draft's k = 2
-  doubled the market as well; this revision does not.
-- **"α > 0 without the best week" costs 0.000** in every world: the pass rates with and without it are
-  identical to four decimals. Under decision 1 it is therefore **required at confirmation** (§7.2).
-- **Discovery is now the binding stage.** The economic bars (raw mean ≥ 100 bp; book ≥ 3%/yr) and the
-  robustness criteria cap it near 0.8 at μ = 4%.
+- **The power costs of the Revision 2 changes**, at μ 4%, k 1.5, joint power:
+  - quarter β plus CAL 2.05: 0.77 (Revision 1) → **0.72**;
+  - **the tail adjustment costs nothing without liquidations** (untailed and tailed agree to 0.0003), and
+    0.056 with p = 2% atoms (0.60 → 0.54), which is its purpose.
+- **"α > 0 without the best week"** costs **0.000** in every world, at most 0.0006 (squeeze p 2%). That
+  is within ≤ 0.03, so it is required at confirmation.
 - **Not modelled:**
-  - β that varies with the market's state;
+  - β varying within a quarter beyond the regime windows above;
   - intraday market paths;
-  - the index's trimming;
-  - a liquidation jump correlated with the market.
+  - the trimmed index's noise;
+  - squeeze atoms correlated with the market.
 
-  The size statements hold for the modelled worlds only.
+  Statements hold for the modelled worlds only.
 
 ## 4. The trade (fixed; `ct/listings013.py`)
 
@@ -310,9 +326,9 @@ confirmation.
 | first trade | the first 1m bar with trades | — |
 | **entry** | the open of the **first traded** 1m bar in [first trade + 24 h, + 60 min); none → `no_entry`, counted | past the first-day pop; T2's feature has printed |
 | **hold** | **7 days**: exit at the open of the first traded bar in [target + 7 d, + 6 h) | the first half of the documented reversal window, at half the funding and squeeze exposure of 14 d |
-| **exit fallbacks (B-M1, A-m9)** | **zero-trade bars after a listing's last traded bar are absent.** No traded bar in the window but trading later: `exit_late`, at the first traded bar (a halt or data hole). No trade again before the data end: `exit_last_trade`, at the last traded close (a delisting; settlement proxy). All counted before the decision; none dropped | survivorship; Binance archives keep flat dead rows |
+| **exit fallbacks (B-M1, A-m9; Revision 2, r1 m4)** | **zero-trade bars are absent.** No traded bar in the 6 h window but one in [target + 6 h, target + 24 h): `exit_late`, at that bar (a halt or a data hole). **No trade within 24 h after the target:** `exit_last_trade`, at the last traded close before the target (a delisting or a long halt; settlement proxy). All counted before the decision; none dropped. Capping the late exit at 24 h keeps §6's bounds exact | survivorship; Binance archives keep flat dead rows |
 | margin and liquidation | 1× isolated, no stop. Liquidation at the 1m last-price high, MMR 5%; the event returns −1 | conservative against Binance's mark-price rule and a 1–2.5% tier-1 MMR |
-| funding | archived settlements on their own stamps, paid at the price at s. **Funding coverage rule (B-m1, B-m2):** if a month file spanned by (first trade, entry] is missing, T2's feature is undefined: out of T2, counted (JUPUSDT@2024-01-31). If one spanned by the hold is missing, the event keeps its available settlements (`partial_funding`, counted). An event with no funding file at all (4 reported events) has zero funding (`no_funding_rows`, counted) | stated before any outcome |
+| funding | archived settlements on their own stamps, paid at the price at s. **Funding coverage rule (B-m1, B-m2, r1 m5):** if a month file spanned by (first trade, entry] is missing (stored pre-entry by the build), T2's feature is undefined: out of T2, counted (JUPUSDT@2024-01-31). If a hold month's file is missing (derived inside the gated run from the names-only listing), the event keeps its available settlements (`partial_funding`, counted). An event with no funding file at all (4 reported events) has zero funding (`no_funding_rows`, counted) | stated before any outcome |
 | week (cluster) | ISO week of the first trade | — |
 
 ## 5. Costs
@@ -327,13 +343,15 @@ The tiers are assumptions, not measured impact (bookDepth was not pulled; §12).
 
 ## 6. Tail, sizing, Kelly, deploy rule and expected return
 
-**The book** (`take`, `book`; D13, Revision 1).
+**The book** (`take`, `book`; D13, Revision 2).
 - c = **2.5%** of capital per event, 1× isolated.
-- Entries are taken in entry order while the **trailing 15 days hold < 7** book entries and the
-  **trailing 39 days < 19**.
-- P&L is booked at exit. Every exit of an ISO week comes from entries inside a 14.3-day window (entry ≤
-  target + 1 h; exit ≤ target + 7 d + 6 h; liquidations earlier). Every exit of a calendar month comes from
-  a 38.3-day window. So **exits per week ≤ 7 and per month ≤ 19, carried-in positions included**.
+- Entries are taken in entry order while the **trailing 16 days hold < 7** book entries and the
+  **trailing 40 days < 19**.
+- P&L is booked at exit. Every entry is at or after its target, and every exit, **`exit_late` included**,
+  is at most 7 d + 24 h after it (the late exit is capped; review r1 m4). So every exit of an ISO week
+  comes from entries inside a 15-day window, and every exit of a calendar month from a 39-day window.
+  Therefore **exits per week ≤ 7 and per month ≤ 19, for every exit status, carried-in positions
+  included**.
 
 **Tail at the proposed size (corrected against `book()`; A-M3).** The draft's −12% / −45% bounds were
 wrong: they capped entries but booked exits, and ignored carried-in positions.
@@ -346,15 +364,27 @@ wrong: they capped entries but booked exits, and ignored carried-in positions.
 | **worst month, plausible** | **−29.7%** | squeeze month: half of 19 exits liquidated, half −25%: 19 × 0.625 × 2.5% |
 | at the draft's c = 3% and 4/15 calendar caps (for reference) | −24% week, −57% month bound, ≈ −36% plausible (reviewer A, `book()`) | — |
 
-- Tested on an adversarial dense schedule through `book()`: every exit a liquidation, bounds held.
+- Tested on an adversarial dense schedule through `book()`, with exits at 1 h, 3 d, 7 d and **7 d + 24 h**
+  (the late cap) and every exit a liquidation: the bounds held. Review r1 found −32.5% / −50.0% with
+  uncapped late exits under the Revision 1 windows; both are closed by the cap and the 16 / 40-day
+  windows.
 - **Reported at the run:** worst event, week and month, realised drawdown, and the **daily mark-to-market
   drawdown** from each open position's midnight marks (A-M3).
 - Margin turnover from the calendars' first-trade times under the caps (counts only):
-  - discovery: 161 of 237 events, 104 a year → 2.6× capital a year;
-  - confirmation: 83 of 119, 92 a year → 2.3×.
+  - discovery: 156 of 239 events, 101 a year → 2.5× capital a year;
+  - confirmation: 80 of 121, 89 a year → 2.2×.
 
-**The deploy rule: one definition (A-M4, decisions 2–3; `listings013.deploy`).** It is computed in the
-confirmation run, for the **carried trial** only, at the deployed size c\*.
+**The deploy rule: one definition (A-M4, decisions 2–3; `listings013.deploy`; Revision 2, r1 M1).** It is
+computed in the confirmation run, for the **carried trial** only, at the deployed size c\*. **It is
+evaluated twice, on the raw net and on the market-adjusted net** (net − β̂_q·mkt with the confirmation's
+quarter betas; raw where there is no market return):
+- c\* is the smaller of the two;
+- each bar must hold on both, so deploy iff both deploy;
+- pooled worst months and liquidation rates stay raw, because they are the unhedged book's risk;
+- both sides are reported.
+
+This is conservative in a bear calendar, where the raw net carries the market's fall, and in a bull
+calendar, where it carries the rise.
 1. **c\*** = min(2.5%, ¼ Kelly of the **confirmation** book, 2.5% × (−30%) / W). W is the worst exit month
    at 2.5% over the pooled calendars (reported 2020–23, discovery, confirmation), base and stressed
    costs. The confirmation's Kelly is used because the discovery Kelly is selection-inflated.
@@ -381,9 +411,9 @@ minimum tail charge):
 
 | μ per event | 2% | 4% | 6% | 8% | 10% |
 |---|---|---|---|---|---|
-| book, %/yr (2024–25 rate, 2.6×) | 5.2 | 10.4 | 15.6 | 20.8 | 26.0 |
-| book, %/yr (2025–26 rate, 2.3×) | 4.6 | 9.2 | 13.8 | 18.4 | 23.0 |
-| after the minimum tail charge (−4.6%/yr) | ≈ 0 | ≈ 4.6–5.8 | ≈ 9–11 | ≈ 14–16 | ≈ 18–21 |
+| book, %/yr (2024–25 rate, 2.5×) | 5.0 | 10.1 | 15.1 | 20.2 | 25.2 |
+| book, %/yr (2025–26 rate, 2.2×) | 4.4 | 8.9 | 13.3 | 17.8 | 22.2 |
+| after the minimum tail charge (−4.6%/yr) | ≈ 0 | ≈ 4.3–5.5 | ≈ 8.7–10.5 | ≈ 13–16 | ≈ 18–21 |
 
 **Against the goal.** 30%/yr or more needs μ ≥ about 12% net per event at this size. That is an edge
 several times the literature's first-week magnitudes after funding. At the plausible 4–6%, this is a
@@ -395,20 +425,29 @@ larger size, more events, or a second venue (a new trial) to matter.
 
 ### 7.1 Discovery (both trials; recomputed by `recheck_discovery` from the row's per-event records)
 
-**Market adjustment.** Over the events with a market return, fit the pooled OLS net_i = α + β·mkt_i + ε_i
-(β estimated; CR1 by listing week). The adjusted net is adj_i = net_i − β̂·mkt_i, whose mean is α. Per
-decision 1, **significance and robustness are decided on the adjusted series; the raw net enters only the
-economic bars.**
+**Market adjustment (Revision 2, r1 B1).** Over the events with a market return, fit the pooled OLS
+net_i = α + Σ_q β_q·mkt_i·1[quarter(i) = q] + ε_i.
+- **There is one β per calendar quarter of the first trade** and a common α, CR1 by listing week; the df
+  stay G − 2.
+- **Quarter groups (`beta_groups`):** a quarter with fewer than 10 events joins the previous one, and a
+  short first group joins the next.
+- The adjusted net is adj_i = net_i − β̂_q(i)·mkt_i, whose mean is α.
+- **Why quarters:** a single pooled β leaves the residual (β_i − β̂)·mkt_i wherever β and the market's fall
+  are concentrated in one window. That describes the confirmation calendar's 2025-Q4 cascade and the
+  decline into 2026, and the intercept absorbs it (review r1: false confirm 0.08–0.15). Quarter β removes
+  most of it (§3).
+- Significance and robustness are decided on the adjusted series. The economic bars use min(raw,
+  adjusted).
 
 | # | criterion |
 |---|---|
 | 0 | ≥ 20 events and ≥ 10 listing weeks with a market return |
-| **1** | **α > 0 and α's clustered t ≥ max(t_{G−2}(0.975), CAL_D)** (CAL_D: §3) |
+| **1** | **α > 0 and α's clustered t ≥ max(t_{G−2}(0.975), CAL_D = 0: not calibrated, the stage size holds)** (§3) |
 | 2 | median adj > 0 |
 | 3 | mean adj > 0 in both halves of the listing weeks |
 | 4 | α > 0 refitted without the listing week with the largest positive adjusted sum |
-| 5 | economic: **raw** mean net ≥ 100 bp per event (what the unhedged book earns) |
-| 6 | economic: the **raw** book ≥ 3%/yr on capital at c = 2.5% |
+| 5 | economic: **min(raw mean, adjusted mean)** ≥ 100 bp per event. The adjusted mean uses adj for events with a market return and raw otherwise |
+| 6 | economic: **min(raw book, adjusted book)** ≥ 3%/yr on capital at c = 2.5% |
 
 - **The raw t is reported, not a criterion.** In the draft, criterion 1 was a raw t. Under the reviewers'
   β worlds it both over-rejected (drift) and cost power (market variance in the denominator). The draft's
@@ -432,14 +471,23 @@ economic bars.**
 
 ### 7.2 Confirmation (the carried trial; read once, after the approval line)
 
+**The tail-adjusted α (Revision 2, r1 M2):**
+- α_tail = α̂ − max(0, π_pool − π_conf)·(1 + the mean net of the confirmation's non-liquidated events);
+- t_tail = α_tail / se(α̂), with the same SE.
+
+Here π is liquidations per event of the carried trial, and **π_pool pools all three calendars**:
+reported 2020–23, discovery and confirmation. The longest sample is used, as in §6; the reported block's
+spot-first regime is stated as a weakness (§9). This is §6's peso correction moved inside the test. It is
+zero whenever the confirmation already holds at least the pooled share of liquidations.
+
 **CONFIRM iff** all of:
-- α > 0, with **α's clustered t ≥ max(t_{G−2}(0.95), CAL_C = 1.90)**;
-- **α > 0 refitted without the listing week with the largest positive adjusted sum**. Its power cost is
-  0.000 in every simulated world, within the orchestrator's ≤ 0.03 (§3), so it is required. The
-  2025-10-10 cascade week alone cannot carry a confirm;
+- α_tail > 0, with **t_tail ≥ max(t_{G−2}(0.95), CAL_C = 2.05)**;
+- **α_tail > 0 refitted without the listing week with the largest positive adjusted sum** (power cost
+  0.000–0.0006 in every world, within ≤ 0.03, so it is required);
 - ≥ 10 events and ≥ 5 listing weeks.
 
-This is an **existence test on the market-adjusted net**. The raw net is reported.
+This is an **existence test on the tail-adjusted, market-adjusted net**. The raw net and the untailed α
+are reported.
 
 **Deploy (after a CONFIRM only):** §6's rule.
 - Deploy → `confirm_paper`: a registered forward paper period on **Binance**, the carried trial
@@ -449,149 +497,168 @@ This is an **existence test on the market-adjusted net**. The raw net is reporte
 
 ## 8. Reported, decides nothing
 
-- The raw net and its t; components; stressed and Binance-fee variants; α summaries per trial.
+- The raw net and its t; components; stressed and Binance-fee variants.
+- **α summaries per trial:** the quarter-β fit with its betas, **the single-β α**, and **the split-β α**
+  (net = a + β⁺·mkt⁺ + β⁻·mkt⁻; review r1 m8). If listings fall more in market falls than they rise in
+  rises, the linear α absorbs that market-convexity return. The split α shows it next to the decision.
 - By year; spot-first and perp-first; **the pre-market and continuation strata**; by slippage tier.
-- Counts before the decision:
-  - no first trade; no entry (primary and other separately, B-m9);
+- **Counts before the decision:**
+  - no first trade; no entry (primary and other separately);
   - liquidated; `exit_late`; `exit_last_trade`;
   - T2 undefined; partial funding; no funding rows; market missing;
   - pre-market and continuation, counted over all events.
-- Books (base, stressed, per trial) with the daily MTM drawdown.
-- **Placebo:** calendar-**month**-block sign flips (A-M1: week flips destroyed the overlap covariance),
-  200 seeds.
+- Books (base, stressed, per trial; raw and adjusted) with the daily MTM drawdown.
+- **Placebos** (200 seeds each):
+  - calendar-month sign flips of the raw gross;
+  - **calendar-month sign flips of the adjusted series** (the decision's own scale; review r1 m9).
 - The 2020–23 block, with its continuation stratum.
-- Per-event compact records in the row (id, week, entry and exit times, status, net, stressed net, flags,
-  market return): the inputs of the recheck.
+- **At confirmation:**
+  - the untailed α and its t;
+  - the pooled liquidation rate and the pooled counts;
+  - both deploy sides (raw and adjusted).
+- Per-event compact records in the row (id, week, quarter, entry and exit times, status, net, stressed
+  net, flags, market return): the inputs of the recheck.
 
 No reported block may become a primary.
 
 ## 9. Known weaknesses, stated now
 
-- **Public priors and the bear year.** The direction is public. The confirmation calendar is a known
-  falling market; the α test is the answer, but α at an estimated β can still carry residual market
-  timing if new listings' β varies with the market's state. Not modelled.
-- **The continuation list** (§2.5) rests on the drafter's knowledge of public notices. "?" marks three
-  that need a reviewer's check.
+- **Public priors and the bear year.** The direction is public, and the confirmation calendar is a known
+  falling market. The quarter-β α removes regime residuals aligned with quarters. **A regime shorter than
+  a quarter and misaligned with it leaves a small residual bias** (§3's misaligned worlds). Month β would
+  cost about 0.10 power (review r1).
+- **Market convexity.** A downside β above the upside β makes the linear α positive with no listing edge
+  (review r1 m8: "confirm" 0.89 in an extreme case). It is reported, not removed. A pass with a split-β α
+  near zero should be read as a convexity return, not a listing edge.
+- **π_pool includes the 2020–23 spot-first block.** Its liquidation rate may differ from the perp-first
+  regime's. The pooled rate over the longest sample is used by choice, stated now.
+- **Continuations:** the renames are the drafter's public knowledge; the predecessor perps are checked
+  mechanically.
 - **Ticker reuse loses two genuine new tokens** (PUMP 2025-07, LIT 2025-12) by rule.
-- **Seasoned tokens' first perps stay in T1.** Mechanism 1 is weaker for them.
-- **The confirmation calendar is small**: 119 events, 37 weeks.
+- **Seasoned tokens' first perps stay in T1** (TON, AERGO, VANRY, AEVO, LUMIA, ASTER …). Mechanism 1 is
+  weaker for them.
+- **The confirmation calendar is small:** 121 events, 38 weeks.
 - **Costs are modelled.** The tiers are assumptions; the exit is charged one tier worse; the stressed
   variant doubles them.
-- **Liquidation on last-price highs** overstates liquidations: conservative for the decision, pessimistic
-  for the observed tail.
-- **The peso charge** uses a floor of one squeeze month per pooled sample (4.6%/yr at 2.5%). It is a
-  convention, not an estimate.
-- **The CR1 t with overlapping holds** was anti-conservative for the raw mean (A-M1: 0.042 against
-  0.025). The raw t no longer decides anything. The α test's size is simulated with overlapping holds
-  and calibrated where it exceeded nominal + 0.01 (§3). The synthetic market is a daily random walk
-  interpolated within the day; intraday structure and β that varies with the market's state are not
-  modelled.
-- **Funding paid at the 1m open at the settlement minute**, not at the mark price.
+- **Liquidation on last-price highs** overstates liquidations: conservative for the decision,
+  pessimistic for the observed tail.
+- **A late exit beyond 24 h is booked at the last traded close before the target.** A halt longer than a
+  day after the target is therefore priced at the pre-halt price, not at the resumption.
+- **The peso floor** (one squeeze month per pooled sample, 4.6%/yr at 2.5%) is a convention.
+- **The calibration takes the largest 95th percentile over many worlds.** With Monte Carlo noise this
+  over-corrects slightly and costs some power (review r1 m7). It cannot be gamed downward: adding worlds
+  only raises it.
+- Funding is paid at the 1m open at the settlement minute.
 - Access is a warning only.
 
 ## 10. Built before any outcome is computed
 
-- [x] `ct/listings013.py` (new; pure functions): calendars; the event, continuation, pre-market and
-  later-segment rules; `simulate` (traded bars only; dead rows absent; `exit_late`, `exit_last_trade`;
-  daily marks); `slip_tiers`; `ols_alpha` (CR1); `alpha_crit` (calibrated); `take` / `book` (rolling caps;
-  MTM); `deploy` (the one rule); `trial_stats`; `discovery_criteria`; `recheck_discovery` (from per-event
-  records); `confirm`; `placebo` (month blocks); `sim_events` / `simulate_worlds`; `Refused`.
-- [x] `r013_fetch.py`: unchanged except refusals instead of asserts.
-- [x] `r013_build.py`: pre-entry coverage; `market_1h` with `c` and `n`; continuation flags; later
-  segments; `schedule.json`.
-- [x] `r013_run.py`: the guard (status, (a)–(e), (h), (k), (w), (v), (f), (g1)–(i)); the gate token;
-  `Panel`; `evaluate`; `--discovery`, `--confirmation` (with the pooled deploy rule), `--power`; rows
-  committed alone; `*_failed` rows.
-- [x] `tests/test_r013.py`: **125 checks pass** (`.venv/bin/python -m tests.test_r013`), on synthetic data.
-  The real-file section reads the registration, the hashes, column names and `events.json` field names.
-  - **Statistics:** t quantiles; CR1; **OLS α and its CR1 t against a brute-force sandwich**; the trimmed
-    mean; the calibrated critical value.
-  - **The trade:** costs; tiers (exit one worse); funding boundaries, stress and cap; liquidation at the
-    threshold; no entry; first traded bar; **a dead-tailed listing exits at its last traded close as
-    `exit_last_trade`**; a halt; **a data hole gives `exit_late`**; the data end; daily marks; T2's window.
-  - **Events:** calendars and embargo; first files; later trading segments; the continuation list's form;
-    pre-market; month spans.
-  - **The book:** the rolling cap; **the structural week and month bounds on an adversarial dense schedule
-    through `book()`**; the plausible month inside −30%; **the MTM drawdown sees a loss the realised series
-    cannot**; Kelly; squeeze months; **deploy: the pooled liquidation charge on a liquidation-free
-    confirmation; the bar at c\*; c\* scaled to the −30% month**.
-  - **Decisions:** each criterion fails alone; T1 precedence; the recheck recomputes from records, so **a
-    tampered record is caught**; a forged α t; the α existence test and its edges; the deploy decisions.
-  - **Simulation:** events at the given times with overlapping holds and a continuous market; a large edge
-    passes.
-  - **Fetch:** forward paging; truncated page; 404 never "absent"; **cutoff refusals (not asserts)**;
-    mismatch writes nothing.
-  - **Build:** first trade; **pre-entry coverage only, no window totals**; microseconds; `n` and `c`
-    stored; segments from trade counts; embargo; calendar refusal; **end to end: zips → build → `Panel` →
-    `evaluate`, robust index +10% with the dead-row symbol absent**; ordered writer.
-  - **The read gate:**
-    - the real panels refuse without the gate, and with a stubbed guard;
-    - pointing `data_root` at the real directory, or at its parent, refuses;
-    - a discovery gate does not open confirmation;
-    - the per-mode whitelist;
-    - a static scan; **no `assert` remains in the decision path**.
-  - **The full runs end to end:**
-    - started → result, each committed via the hook;
-    - the recheck reproduces the decision;
-    - the strata are separate;
-    - the confirmation is bound to the discovery row, with the deploy block;
-    - **a crash after the started row writes and commits `discovery_failed`**.
-  - **Guard:** DRAFT; (a); (h); (k); (b); (d)+(e); **(f) keyed on the `013-` prefix**; (g1); (g2)+(s)+(k);
-    (h'); open in order; (r); **(i) on a `confirmation_failed` row**; **(g4) alone on tampered records in a
-    clean history**; (h') in the same commit.
-  - **The reviewers' bypasses:**
-    - (1) an uncommitted row; (2) `reset --hard`; (3) `commit --amend`; (4) `stash`;
-    - (5) a nested `git init`; (6) `GIT_DIR`; (7) the anchor;
-    - (8) a shadowed `duckdb.py`; (9) `python -O`; (10) the pins.
-  - **Real files:** DRAFT; no approval line; the real guard refuses; the hash table; no 013 row;
-    schemas; `events.json` pre-entry fields only.
+- [x] `ct/listings013.py` (pure functions).
+  - Rules: calendars; events; `CONTINUATIONS` with `continuation_failures` (point in time); pre-market;
+    later segments.
+  - The trade: `simulate` (traded bars; late exit capped at 24 h; daily marks); `slip_tiers`.
+  - Estimation: `ols_alpha`, **`ols_cols` (general OLS, CR1), `beta_groups`, `alpha_fit` (quarter β)**;
+    `alpha_crit` (CAL_D 0, **CAL_C 2.05**).
+  - The book: `take` / `book` (16 / 40-day caps; MTM).
+  - Decisions: **`deploy` (raw AND adjusted) / `deploy_one`**; `trial_stats` (quarter β, min(raw,
+    adjusted), **tail-adjusted α**, split-β α); `discovery_criteria`; `recheck_discovery` (from records);
+    `confirm` (tail-adjusted).
+  - Placebos: `placebo`, **`placebo_alpha`**.
+  - Simulation: `sim_events` (**regimes**), `simulate_worlds` (pooled liquidations), `world_rates`.
+- [x] `r013_fetch.py`: unchanged since Revision 1.
+- [x] `r013_build.py`: the continuation check (refuses on failure); pre-entry window [d0, first trade +
+  24 h); pre-entry funding months only.
+- [x] `r013_run.py`.
+  - The process starts with **`sys.pycache_prefix` set to a fresh temp directory before `ct` is imported**.
+  - The guard runs status, (a)–(e), (h), (k), (w), (v), (f) and (g1)–(i). **(v) now includes r008's
+    `shadow_modules` and `loaded_from_source`.**
+  - Every history, diff and show call uses **`--text --no-textconv --no-ext-diff --no-color`**.
+  - **`record()`:** append, commit through the hook, then refuse unless the line is in `HEAD:results.jsonl`.
+  - **`real_tree_failures()`:** the real results file and the real data only together, only with the
+    default hook, and only with the real guard.
+  - **`env_fingerprint()`** goes in every started row and is compared at confirmation.
+  - The gated `Panel` (with the names-only funding-month listing); `evaluate`; `--discovery`,
+    `--confirmation` (pooled π, tail-adjusted α, two-sided deploy), `--power`. It never pushes.
+- [x] `tests/test_r013.py`: **145 checks pass**, before and after a (throwaway) commit, at DRAFT and at
+  REGISTERED (below).
+  - **New in Revision 2:**
+    - the general OLS against the one-regressor fit;
+    - the quarter grouping rule;
+    - **a β-regime world in which the single-β α is biased and the quarter-β α is not**;
+    - the late-exit cap (12 h → `exit_late`; 30 h → `exit_last_trade` at the pre-target close);
+    - the adversarial book bounds with late exits;
+    - the continuation rule's form and `continuation_failures`;
+    - **the tail-adjusted α** (zero charge when π_pool ≤ π, the exact charge otherwise, the same SE);
+    - **deploy on min(raw, adjusted)**: a bear calendar whose raw +5% is all β does not deploy;
+    - each criterion fails alone, with criteria 5–6 on min(raw, adjusted);
+    - the α placebo; regime events in the simulator;
+    - **the end-to-end runs commit through the DEFAULT hook in a temp git repo, and every row is verified
+      in HEAD**;
+    - **a mocked no-op hook makes `record()` refuse**;
+    - **a mocked hook, a stubbed guard or a mixed tree on the real files is refused**;
+    - (11) a `-diff` attribute and a textconv driver do not hide an erased row;
+    - (12) `diff.external` cannot blank the (r) diff;
+    - **(13) `shadow_modules`** catches a top-level `email/` package, a sourceless `ipaddress.pyc`, an
+      ignored `quopri.py` and `ct/listings013<EXT_SUFFIX>`;
+    - **(14) a forged `__pycache__` `.pyc` loads under plain Python and not under a fresh
+      `pycache_prefix`**;
+    - (15) the runner loads `ct` from source;
+    - (16) the environment fingerprint;
+    - the real-file checks no longer assert commit state (m1);
+    - every continuation is point in time on the real listing.
+- **Commit-state simulation** (decision 7; `scratchpad/commit_sim.sh`). A `git clone --local` into the
+  scratchpad, with its own `.git`, so the real repository is untouched. 013's current files are copied in
+  and committed, and the suite runs at DRAFT and again after the status line is changed to REGISTERED
+  and committed. Result:
+  - **145 of 145 pass when committed at DRAFT, and 145 of 145 when committed at REGISTERED.**
+  - The real guard, called in the REGISTERED clone with all its checks, returns **no refusal**. No outcome
+    mode was run there; the clone was discarded.
 - **Other suites:** unchanged by 013. The pre-existing stale state test is `test_carry012`'s "status line
-  says DRAFT" (012 is REGISTERED). `test_r014` belongs to a parallel draft.
+  says DRAFT".
 
 **Procedure.**
-1. Two reviews, then REGISTERED (the orchestrator, under the mandate), committed with the code. The
-   untracked `r008_*` and `r014_*` files must be committed or moved first, or (v) refuses: an untracked
-   `*.py` at the top level could shadow an import.
-2. `.venv/bin/python -I r013_run.py --discovery`. The guard runs, then `discovery_started` (committed), T1
-   and T2, and one row (committed); on a crash, `discovery_failed` (committed).
+1. Two reviews, then REGISTERED (the orchestrator), committed with the code. Every top-level `*.py` and
+   `ct/` file must be tracked and unmodified first, or (v) refuses.
+2. `.venv/bin/python -I r013_run.py --discovery`: the guard; `discovery_started` (committed and
+   verified in HEAD); T1 and T2; one row (committed and verified); on a crash, `discovery_failed`.
 3. On `read_confirmation`, recomputed from the row's records: commit `Confirmation: APPROVED <date> row
-   <sha256>` under §11, after the row.
-4. `.venv/bin/python -I r013_run.py --confirmation`. The same pattern applies.
+   <sha256>` after the row.
+4. `.venv/bin/python -I r013_run.py --confirmation`: the same pattern.
+5. The runner never pushes; the owner pushes.
 
-**Rebuild:** `r013_fetch.py list / plan / fetch …`, then `r013_build.py`. A rebuild from the verified raw
-files is byte-identical (MANIFEST `d4d51b12…`, compared with `cmp`).
+**Rebuild:** `r013_build.py` from the verified raw files is byte-identical (MANIFEST `ebf29b7a…`).
 
 **SHA-256 of the code and data the outcome depends on.** `ct/factors.py` and `ct/stats.py` are 009's
-frozen modules, imported read-only for D17's recheck. Their hashes equal those in 009's and 012's rows.
+frozen modules, imported read-only.
 
 | file | sha256 |
 |---|---|
 | `ct/__init__.py` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `ct/listings013.py` | `971f1066605c7f74a98ac1df60a559fef004f12188f7e4f13585a15e85255c39` |
+| `ct/listings013.py` | `10e262816e9d5cee760529b1bd790a3d7a4c597f31308299edc575b6896fbbfa` |
 | `ct/factors.py` | `a1e70b9a5a2c1b58f43d2b08a2eaeac5ce5a3fd45868a659d745a3354bd61197` |
 | `ct/stats.py` | `bfcc85f285dc7af28f364e2d77e0fbe04b6c2367724f4b822b7fbf6ff435d472` |
-| `r013_run.py` | `7329b95389eb75d4f94a2e5574f1c2cb1233a51bec9085134943c2517f653436` |
-| `r013_build.py` | `3a7cbb499eb59198067c5faed2c3baa8e7b29cd002ad8d5b5496f6922a67529f` |
+| `r013_run.py` | `317d75a850e311a911a3dad3ad49b8e3eebe36de7591266ad97135f41fd5dc6e` |
+| `r013_build.py` | `41cb8b70e47b3254fdd665d96f70488975bd710fec6f0f72b4c46b3b40256054` |
 | `r013_fetch.py` | `6de5e028e7786858ef5519431834ce4771c1f924097a071aba0055cbe4c9fc1b` |
-| `data/r013/panel_reported/events.json` | `54235bc3ac945abf17cdb599480a85103bb9472bba9bb2efffc3cc8abf48a4ed` |
+| `data/r013/panel_reported/events.json` | `15688e4b00e8ac2ce51244df80f04af4787cdba1e6c0536ab3313502f36e475c` |
 | `data/r013/panel_reported/symbols.json` | `1dd416ad495ad589b09269b1028cc47ddde166d04b7c7a15a699e61cf1a4ef6a` |
 | `data/r013/panel_reported/bars_1m.parquet` | `683a93a75dd25ef88132a7d314fc31858eb94fe08117f9b6ef2c7ef3603341bc` |
 | `data/r013/panel_reported/funding.parquet` | `801e425392c9f217c62bd35b5bd0b21f1af533b6fad43b9f029ba4201fda0d64` |
-| `data/r013/panel_reported/coverage.json` | `d3c597560b203ccdee1f6242fcc9c6db0c1726f479289e0fc541f124d14df127` |
-| `data/r013/panel_discovery/events.json` | `85eb7bb36ccb4d2da52e15918e932c6215a8f042284debc017fcb5641c5d29ef` |
+| `data/r013/panel_reported/coverage.json` | `a9604405b684268a86c4e1205be6cca408f7a386f3ff81f92ce4074926caba7c` |
+| `data/r013/panel_discovery/events.json` | `45bef2236e9da5963c8e1b3e82a250a70ea47493681ab308770a787371307f06` |
 | `data/r013/panel_discovery/symbols.json` | `1dd416ad495ad589b09269b1028cc47ddde166d04b7c7a15a699e61cf1a4ef6a` |
 | `data/r013/panel_discovery/bars_1m.parquet` | `23b6b47f35e88d45b39d1d002ccc0e66f9d579aa9f5c21d0c5ecc4e8f787b1a5` |
 | `data/r013/panel_discovery/funding.parquet` | `0e664eb57782d51d662790a9acad7ade1465b3c585ea2d0f870f8065c1eb517e` |
 | `data/r013/panel_discovery/market_1h.parquet` | `23ec4f14da13ff29df26ec83cfdb007c4c25452bdd1473d588421836ccf83993` |
-| `data/r013/panel_discovery/coverage.json` | `cb43eaaf33304cc78c3562d76f9e566c09f78c2452038e6b81c79feb699ce4f7` |
-| `data/r013/panel_confirmation/events.json` | `2c2692f341c4e88efc7cfa9f5ca1aebc58e4e429143e099853cc45005f4ccf98` |
+| `data/r013/panel_discovery/coverage.json` | `de9e834a865a3530fcb9648dab05ad0e5e350904b6d2632adccac3f31029fedc` |
+| `data/r013/panel_confirmation/events.json` | `e45045a042f35520578810cd74d599b7c196affb1e7fb4c4ac8e6551adde2545` |
 | `data/r013/panel_confirmation/symbols.json` | `1dd416ad495ad589b09269b1028cc47ddde166d04b7c7a15a699e61cf1a4ef6a` |
 | `data/r013/panel_confirmation/bars_1m.parquet` | `c80601c39fd5cc1286bd610d722b867deab1c56936f9582bb36d161e7964a077` |
 | `data/r013/panel_confirmation/funding.parquet` | `0597f4f1c9c33746fc1d01624405f7129a33a225f1302116f08a354842503b34` |
 | `data/r013/panel_confirmation/market_1h.parquet` | `5f230211f9a38f27222dc597ecca6702f91a48d69e5dcec795906c16f97f44a3` |
-| `data/r013/panel_confirmation/coverage.json` | `168cb0b6ee1d9afd94378c1b220720f9cd8029b26644ab2c3fe71f86adc6de7b` |
-| `data/r013/MANIFEST.json` | `d4d51b12d90d03a7916f6e1bf83b190f1d2fd4e3599acfa8caf284778d5d9d8c` |
-| `data/r013/schedule.json` | `062771c68c37a85b8067d30f637234dd84f83270ee139a524101da20240a1fc8` |
+| `data/r013/panel_confirmation/coverage.json` | `6fd018740d4318d0cd2b7f08a0aa6cf5ffddbc046b44b4fc39699bef096e4af1` |
+| `data/r013/MANIFEST.json` | `ebf29b7a5b482e01871a6d6d95940978a7477c0efb85ec5350fbf1917ce154dd` |
+| `data/r013/schedule.json` | `c9effd7a7ff0e07f635c7ed91fc1b060d7acad6e8c0623881dcf9b773fcefd31` |
 | `data/r013/later_segments.json` | `7cb8db8ca0cbadb88338624385e067b24ca7624ff985785e28ea97e276084154` |
 | `data/r013/listing/um_daily_1d_days.json` | `70e3332b592c6ca35eb21f098510a180b9ab5c279da023caec14221e1a983d71` |
 | `data/r013/listing/event_keys.json` | `1235a50518c8efe8682fac0e1dca2a72cad2ee0f2fd0544cc72e319e922fa044` |
@@ -600,31 +667,33 @@ frozen modules, imported read-only for D17's recheck. Their hashes equal those i
 | `data/r013/raw_funding/SHA256SUMS` | `05094fc4cbf4ff0503faaa84bb7e5cc0fe4e3bbef9d79bf4a701bc48f7a17130` |
 | `data/r013/raw_klines1h/SHA256SUMS` | `4884d513be612e413a9f589ce0dd69e0360d030c559ebf0c27abc91c18ed4a95` |
 
-## 11. Owner decisions — PROPOSED (Revision 1)
+## 11. Owner decisions — PROPOSED (Revision 2)
 
 | # | item | PROPOSED |
 |---|---|---|
 | D1 | venue and data | Binance USDⓈ-M; **the result is a Binance result; paper and deploy on Binance; another venue is a new trial**. The pull of §2.3 |
 | D2 | calendars | as §2.2 |
-| D3 | events | first files of universe symbols; continuations (§2.5 rule and list), pre-market perps and later trading segments out of the trials and reported. No first trade or no entry: counted |
-| D4 | trade | §4, with the dead-row and exit fallbacks |
+| D3 | events | first files of universe symbols; continuations by the **single rule** (the token or its predecessor had a Binance USDⓈ-M perp before d0, checked point in time; or gold-backed; §2.5), pre-market perps and later trading segments out of the trials and reported. No first trade or no entry: counted |
+| D4 | trade | §4, with the dead-row fallbacks and `exit_late` capped at 24 h |
 | D5 | margin and tail | 1× isolated, no stop, last-price-high liquidation at MMR 5% |
 | D6 | funding | archived; the coverage rule of §4 |
 | D7 | costs | §5 (exit one tier worse) |
 | D8 | trials | T1, T2; family 2; one carried |
-| D9 | discovery | §7.1: criterion 1 on α at max(t_{G−2}(0.975), CAL_D = 0: not calibrated, the stage size holds); criteria 2–4 on the adjusted net; 5–6 economic on the raw net |
+| D9 | discovery | §7.1: α with **quarter-specific β**; criterion 1 on α at max(t_{G−2}(0.975), CAL_D = 0: not calibrated, the stage size holds); criteria 2–4 on the adjusted net; criteria 5–6 on **min(raw, adjusted)** |
 | D10 | discovery decision | carry T1 > T2 > close. Close, or `discovery_failed`, is terminal |
-| D11 | confirmation | after `Confirmation: APPROVED <date> row <sha256>` committed after the row. **CONFIRM iff α > 0, α t ≥ max(t_{G−2}(0.95), CAL_C = 1.90), and α > 0 without the best listing week**, ≥ 10 events, ≥ 5 weeks. Read once; `confirmation_failed` is terminal |
-| D12 | deploy | §6's rule (one definition, carried trial, at c\*, with the pooled peso charges); paper on Binance |
-| D13 | sizing | c 2.5%; ≤ 7 entries per 15 days, ≤ 19 per 39 days. Tail: event −2.5%, week −17.5% (bound), month −47.5% (bound) / −29.7% (plausible) |
+| D11 | confirmation | after `Confirmation: APPROVED <date> row <sha256>` committed after the row. **CONFIRM iff the tail-adjusted α (quarter β; π_pool over all three calendars) > 0, its t ≥ max(t_{G−2}(0.95), CAL_C = 2.05), and it is > 0 without the best listing week**, ≥ 10 events, ≥ 5 weeks. Read once; `confirmation_failed` is terminal |
+| D12 | deploy | §6's rule (one definition, carried trial, at c\*, with the pooled peso charges), **evaluated on raw and on adjusted net; deploy only if both deploy, at the smaller c\***; paper on Binance |
+| D13 | sizing | c 2.5%; ≤ 7 entries per 16 days, ≤ 19 per 40 days. Tail, exact for every exit status: event −2.5%, week −17.5% (bound), month −47.5% (bound) / −29.7% (plausible) |
 | D14 | reported | §8 |
-| D15 | placebo | month-block flips, 200 seeds |
+| D15 | placebo | month-block flips of the raw gross and of the adjusted series, 200 seeds each; reported |
 | D16 | family | Binance listing windows: 2 trials |
 | D17 | ordering and lock | (a) discovery only after 009's recomputed terminal state. (b) **No other registration or scout computes outcomes on Binance listing windows (days 0–9 after a perp's first trade) of the confirmation calendar until 013 reaches a terminal state, or until 2027-06-30, whichever comes first.** The terminal states are: a discovery `close`; a `discovery_failed` row; a `confirmation` or `confirmation_failed` row; an owner line `Confirmation: DECLINED <date>`; or a committed `*_started` row with no result row 7 days later (a hard crash). The orchestrator puts the lock in the programme document. (c) 013 reads only `data/r013/` |
 
 ## 12. Open questions
 
-1. **Verify the "?" continuations** (PUMPBTC, CFG, ASTER, DODOX) against announcements dated before d0.
+1. **The renames behind the continuation list** (§2.5) are public knowledge; the predecessor perps are
+   checked mechanically. PUMPBTC's rename and DODOX's identity with DODO are the two a reviewer may
+   want to confirm against announcements dated before d0.
 2. **The peso floor** (one squeeze month per pooled sample) is a convention. The orchestrator may prefer
    one a year: 18%/yr at 2.5%, which would make deployment nearly impossible.
 3. **Slippage** remains unmeasured; a bookDepth pull (about 3 GB) would measure it without outcomes.
@@ -654,6 +723,22 @@ All end-bounded before 2026-07-01, or names-only listings filtered in memory. No
   8,441 / 15,578 / 9,551; zero-trade rows 42,236 / 3,068 / 303; internal missing minutes 1 / 660, 0, 1 /
   1,440). They are outcome-adjacent aggregate exposure about capped-funding episodes. Per `000n`, no 013
   parameter changed because of them.
+
+**Revision 2 reads (2026-10-13):**
+- `reviews/013-review-r1.md`, and the guard half of `r008_run.py` (to port `shadow_modules`,
+  `real_tree_failures` and `env_fingerprint`; read only, nothing of 008 touched).
+- **The rebuild** printed the pre-entry counts of §2.4 (window [d0, first trade + 24 h)). The build checked
+  every continuation's predecessor first-file date against the 1d listing (names and dates only; all
+  pass), and printed the same 8 later-segment names.
+- **Book capacity** under the 16 / 40-day caps, from first-trade times: 156 / 80 / 219 events taken.
+- **Synthetic simulations** (§3); the only real input is `schedule.json`.
+- **Tests:** the real-file checks read the registration, the hashes, the parquet column names, the
+  `events.json` field names, and the 1d listing's first-file dates (the continuation check).
+- **Ledger note (review r1 m6):** the later-segment list implies that the events **AIAUSDT** (confirmation)
+  and **PUMPUSDT** (discovery) traded at or after d0 + 30 days. That is aggregate survival knowledge of two
+  events; nothing decides on it.
+- Public knowledge cited by the reviewer, not computed: ASTER's 2025-09 TGE rally, TVK → VANRY, RBN →
+  AEVO, pump.fun PUMP's post-launch decline, and the PumpBTC symbol change.
 
 **Revision 1 reads (2026-10-13):**
 - `reviews/013-review-a.md`, `reviews/013-review-b.md`, `000n`.
@@ -719,3 +804,27 @@ T = `tests/test_r013.py`. Line numbers are those of this revision.
 | Orch. 10 | D17(b) | §11 |
 | Orch. 11 | as A-m6 | §0 |
 | Orch. 12 | as B-m1, B-m2, A-m3, A-m1, B-m11, B-m10, B-m8 | above |
+
+## R2. Revision 2: every second-round finding and its fix (`reviews/013-review-r1.md`)
+
+File keys as in §R. Line numbers are those of this revision.
+
+| finding | change | where |
+|---|---|---|
+| **B1** β varying with the regime (false confirm 0.08–0.15) | α with **one β per calendar quarter of the first trade** (common α, CR1 by listing week, df G − 2); groups of < 10 events merged; the same model for discovery, robustness (adj) and confirmation; regime worlds (aligned, misaligned; discovery and confirmation windows) added to the calibration set; critical values re-derived: CAL_D 0, **CAL_C 2.05**. Aligned regimes now 0.029–0.039, misaligned 0.043 | L:484 `ols_cols`, L:523 `beta_groups`, L:541 `alpha_fit`, L:718 `trial_stats`, L:116; R:690 `_regime`, R:695 `WORLDS`; L:940 `sim_events` (regime); §3, §7 |
+| **M1** economics and deploy on raw net | discovery criteria 5–6 on **min(raw, adjusted)**; `deploy` evaluated on raw AND adjusted, c\* the smaller, deploy iff both; both reported | L:769, L:718, L:694 `deploy`, L:642 `deploy_one`; R:650; §6, §7 |
+| **M2** squeeze atoms over-reject the confirmation (0.077–0.105) | **tail-adjusted α** inside the confirmation: α − max(0, π_pool − π)·(1 + mean non-liquidated net), same SE; π_pool over all three calendars (stated). Squeeze worlds now 0.017–0.023; no cost without liquidations | L:718, L:848 `confirm`; R:650; L:997 (pooled liquidations); §3, §7.2 |
+| **M3** continuation rule (c) ad hoc | **one rule**: the token or its predecessor had a Binance USDⓈ-M perp before d0 (checked point in time; the build refuses otherwise), plus (d) gold. LUMIA, SYRUP, CFG, ASTER, BEAMX, USTC return. **Discovery 239, confirmation 121, reported 251** | L:138, L:160; B:231; §2.5 |
+| **M4** a mocked hook reopens run-once | `record()` refuses unless the line is in `HEAD:results.jsonl` (real git); `real_tree_failures()` refuses a non-default hook, a stubbed guard, or a mixed real/synthetic tree | R:387, R:373, R:360; T:683 |
+| m1 stale test | the real-file checks accept DRAFT or REGISTERED and assert no commit state; verified by a throwaway commit simulation | T:947; §10 |
+| m2 textconv / ext-diff | `--text --no-textconv --no-ext-diff --no-color` on every history, diff and show call | R:104 and the guard; T:896 (11)–(12) |
+| m3 shadowing, forged `.pyc` | r008's `shadow_modules`; a fresh `sys.pycache_prefix` before `ct` is imported; `loaded_from_source` | R:43, R:191, R:219; T (13)–(15) |
+| m4 `exit_late` breaks the bounds | the late exit is capped at target + 24 h (then the pre-target last traded close); windows 16 / 40 days; bounds exact for every status (adversarial test) | L:74, L:300, L:91; §6 |
+| m5 coverage residues | pre-entry funding months only; window ends at first trade + 24 h; hold-month gaps derived inside the gate | L:67; B:156; R:424, R:458 |
+| m6 later-segment leak (AIA, PUMP) | ledgered | §13 |
+| m7 calibration conservative but incomplete | regime worlds added; the rule (largest 95th percentile) kept; over-correction stated | §3, §9 |
+| m8 split-β α | reported in `trial_stats` and the α summaries | L:718; §8 |
+| m9 placebo on the raw net | the α placebo (month flips of the adjusted series) reported | L:892; §8 |
+| m10 environment parity; push | `env_fingerprint` hashes every duckdb and pyarrow file, stored in the started rows and compared at confirmation; the runner never pushes | R:171, R:306, R:360 |
+| m11 ticker reuse | accepted as is (conservative for the short) | §2.5 |
+| Orch. 1–7 | as B1, M1, M2, M3, M4, the minors, and the commit-state simulation | above; §10 |

@@ -64,13 +64,14 @@ DATA_END = {'reported': ms('2024-01-01'), 'discovery': ms('2025-07-28'), 'confir
 EMBARGO = ((ms('2023-12-23'), ms('2024-01-01')), (ms('2025-07-19'), ms('2025-07-28')),
            (ms('2026-06-22'), CUTOFF))
 PULL_DAYS = 10                                  # daily 1m files d0 .. d0+9 per event (entry + hold + 6 h margin)
-PRE_ENTRY = 25 * HOUR                           # build coverage is limited to [d0, first trade + 25 h) (000n)
+PRE_ENTRY = 24 * HOUR                           # build coverage is limited to [d0, first trade + 24 h) (000n; r1 m5)
 
 # ------------------------------------------------------------------ the trade (fixed; §4, D3-D9)
 ENTRY_DELAY = 24 * HOUR
 ENTRY_WINDOW = 60 * MIN                         # entry bar: first TRADED bar with t in [t_in, t_in + 60 min)
 HOLD = 7 * DAY
 EXIT_WINDOW = 6 * HOUR                          # exit bar: first traded bar in [t_x, t_x + 6 h)
+LATE_WINDOW = 24 * HOUR                         # exit_late: first traded bar in [t_x + 6 h, t_x + 24 h); later -> last trade
 FEE_DECISION = 0.0006                           # taker per fill (conservative; Binance base is 5 bp)
 FEE_BINANCE = 0.0005                            # Binance base-tier taker (reported)
 # slippage per fill by the AVERAGE HOURLY quote volume of the 24 h before the entry target (known at entry);
@@ -81,13 +82,14 @@ MMR = 0.05
 FUNDING_CAP = 0.02
 STRESS = {'slip_mult': 2.0, 'pay_mult': 2.0, 'receive_mult': 0.5}
 
-# ------------------------------------------------------------------ book (fixed; §6, D13; Revision 1)
-# Rolling-window caps make the tail bounds exact: every exit of an ISO week comes from entries inside a 14.3-day
-# window, every exit of a calendar month from entries inside a 38.3-day window (entry <= target + 1 h; exit <=
-# target + 7 d + 6 h; liquidations earlier). So exits per week <= WEEK_MAX and per month <= MONTH_MAX.
+# ------------------------------------------------------------------ book (fixed; §6, D13; Revision 2)
+# Rolling-window caps make the tail bounds exact for EVERY exit status: entry >= the entry target t_in and every exit
+# <= t_in + 7 d + 24 h (exit_late is capped at 24 h after the exit target; Revision 2, review r1 m4), so every exit of
+# an ISO week comes from entries inside a 15-day window and every exit of a calendar month from a 39-day window.
+# Trailing windows of 16 and 40 days therefore bound exits per week by WEEK_MAX and per month by MONTH_MAX.
 C_EVENT = 0.025                                 # capital per event (1x isolated: margin = notional)
-WEEK_WINDOW, WEEK_MAX = 15 * DAY, 7             # <= 7 entries in any trailing 15 days
-MONTH_WINDOW, MONTH_MAX = 39 * DAY, 19          # <= 19 entries in any trailing 39 days
+WEEK_WINDOW, WEEK_MAX = 16 * DAY, 7             # <= 7 entries in any trailing 16 days
+MONTH_WINDOW, MONTH_MAX = 40 * DAY, 19          # <= 19 entries in any trailing 40 days
 SQUEEZE_MIX = 0.625                             # plausible squeeze month: half the exits liquidated, half -25 %
 MONTH_LOSS_LIMIT = -0.30                        # the mandate's worst-month line
 PLAUSIBLE_MONTH = -SQUEEZE_MIX * MONTH_MAX * C_EVENT          # -0.297
@@ -99,16 +101,19 @@ TRIALS = ('T1', 'T2')
 FAMILY = len(TRIALS)
 Q_DISCOVERY = 1 - 0.05 / FAMILY                 # one-sided 2.5 % per trial (Bonferroni over the family of 2)
 Q_CONFIRM = 0.95
-# Calibrated critical values for the alpha t (Revision 1, decision 1; §3). `r013_run.py --power`: the real first-trade
-# times, overlapping 7-day holds, a continuous alt market (7-day SD 10.4 %, x1.5 stress), beta 1 / 1.5 / 2, alt drift
-# 0 / 1 / 2 %/week, idiosyncratic k 1 / 2, t_4.5 tails; 1,500 draws per world.
-#   DISCOVERY STAGE, t_{G-2}(0.975) per trial: family-wise size 0.008-0.042 (nominal 0.05): within nominal + 0.01 -> no
-#     calibration (CAL 0).
-#   CONFIRMATION, t_{G-2}(0.95): size 0.040-0.064 (nominal 0.05): above nominal + 0.01 in one world -> calibrated to the
-#     largest 95th percentile of the alpha t over every null world and either trial: 1.90 (k 1, beta 1.5, drift 1 %, T2).
+# Calibrated critical values for the alpha t (Revision 2; §3). `r013_run.py --power`, 1,500 draws per world: the real
+# first-trade times, overlapping 7-day holds, a continuous alt market (7-day SD 10.4 %, x1.5 stress), beta 1 / 1.5 / 2,
+# alt drift 0 / 1 / 2 %/week, idiosyncratic k 1 / 2, t_4.5 tails, AND the review r1 regime worlds (beta 2.5/1.0 or
+# 2.0/1.25 with a 2-3 %/week fall concentrated in 2024-12-09..2025-04-07 and 2025-10-06..2026-02-28, or misaligned
+# 2025-11-15..2026-01-15); alpha with quarter-specific betas; the confirmation alpha tail-adjusted.
+#   DISCOVERY STAGE, t_{G-2}(0.975) per trial: family-wise size 0.007-0.053 (nominal 0.05) -> within nominal + 0.01:
+#     not calibrated (CAL 0).
+#   CONFIRMATION, t_{G-2}(0.95): size 0.043-0.090 -> above nominal + 0.01 (misaligned regime) -> calibrated to the
+#     largest 95th percentile of the tail-adjusted alpha t over every calibration world and either trial: 2.052 (regime
+#     b2.5/1.0, k 1, T2) -> 2.05.
 # The test uses max(t_{G-2}(q), CAL).
 CAL_ALPHA_DISCOVERY = 0.0
-CAL_ALPHA_CONFIRM = 1.90
+CAL_ALPHA_CONFIRM = 2.05
 MIN_EVENTS, MIN_WEEKS = 20, 10
 MIN_EVENTS_CONF, MIN_WEEKS_CONF = 10, 5
 ECON_MEAN = 0.01                                # mean RAW net per event >= 100 bp (economic bar)
@@ -121,34 +126,47 @@ UNIV = re.compile(r'^[A-Z0-9]+USDT$')
 NOT_COIN = {'BTCDOMUSDT', 'DEFIUSDT', 'BLUEBIRDUSDT', 'FOOTBALLUSDT', 'USDCUSDT'}   # index composites, stablecoin
 SEG_GAP_DAYS = 7
 
-# ------------------------------------------------------------------ continuations (Revision 1, decision 5)
-# Rule (fixed now, from mechanism and point-in-time public facts; names only): an event is a CONTINUATION, out of
-# T1/T2 and reported as its own stratum, when its token is not new at listing:
-#   (a) a ticker change / migration / redenomination of a token that had a Binance USDⓈ-M perp, the new perp
-#       listed within 90 days of the change;
-#   (b) a relisting, under a new ticker, of a token whose Binance USDⓈ-M perp was delisted earlier;
-#   (c) a rebrand or token swap of a token without a Binance perp, completed <= 180 days before d0;
-#   (d) a commodity- or fiat-backed token.
-# Every change is announced before the new perp lists, so the category is known at entry. Names from the
-# drafter's knowledge of public announcements; '?' marks the ones a reviewer should verify (§2.5).
+# ------------------------------------------------------------------ continuations (Revision 2, decision 4)
+# ONE rule (fixed now; mechanism and point-in-time facts; names only): an event is a CONTINUATION, out of T1/T2 and
+# reported as its own stratum, when
+#   (p) the token, or the token it was renamed, migrated, redenominated or swapped from, had a Binance USDⓈ-M perp
+#       BEFORE d0 (no first-perp attention, shorting already possible; checked against the 1d listing by the build:
+#       the predecessor's first daily file must precede d0, else the build refuses), or
+#   (d) the token is commodity- or fiat-backed (its beta is not the alt market's).
+# The draft's rule (c) (rebrands without a Binance perp) is withdrawn: such a token is a seasoned token receiving its
+# first Binance perp, which stays in T1 like TON or AERGO (review r1 M3). id -> (rule, predecessor symbol or None).
 CONTINUATIONS = {
-    # discovery
-    'POLUSDT@2024-09-13': 'a MATIC->POL', 'RENDERUSDT@2024-07-26': 'a RNDR->RENDER', 'GUSDT@2024-08-15': 'a GAL->G',
-    'KAIAUSDT@2024-12-04': 'a KLAY->KAIA', 'SUSDT@2025-01-16': 'a FTM->S', 'DUSDT@2025-01-09': 'a DAR->D',
-    'HEIUSDT@2025-02-13': 'a LIT->HEI', 'FORMUSDT@2025-03-19': 'a BNX->FORM', 'AWEUSDT@2025-05-21': 'a STPT->AWE',
-    'AUSDT@2025-05-28': 'a EOS->A', 'PUMPBTCUSDT@2025-06-13': 'a PUMPUSDT->PUMPBTC ?',
-    'RAYSOLUSDT@2024-12-10': 'b RAY relisted', 'VICUSDT@2025-03-12': 'b TOMO relisted as VIC',
-    'LUMIAUSDT@2024-12-18': 'c ORN->LUMIA', 'SYRUPUSDT@2025-05-07': 'c MPL->SYRUP',
-    'PAXGUSDT@2025-03-27': 'd gold-backed',
-    # confirmation
-    'SKYUSDT@2025-09-09': 'a MKR->SKY', 'FRAXUSDT@2026-01-15': 'a FXS->FRAX', 'MANTRAUSDT@2026-03-04': 'a OM->MANTRA',
-    'NOMUSDT@2025-10-01': 'a OMNI->NOM', 'CFGUSDT@2026-03-16': 'c CFG migration ?', 'ASTERUSDT@2025-09-19': 'c APX->ASTER ?',
-    'XAUTUSDT@2026-03-26': 'd gold-backed',
-    # reported block (reported stratum only)
-    '1000BTTCUSDT@2022-01-26': 'a BTT redenomination', 'TUSDT@2023-02-01': 'a KEEP+NU->T',
-    '1000LUNCUSDT@2022-09-09': 'b LUNA (classic) relisted', 'USTCUSDT@2023-11-27': 'b UST (classic) listed',
-    'DODOXUSDT@2023-08-08': 'b DODO relisted ?', 'BEAMXUSDT@2023-11-17': 'c MC->BEAM',
+    # discovery (14)
+    'POLUSDT@2024-09-13': ('p', 'MATICUSDT'), 'RENDERUSDT@2024-07-26': ('p', 'RNDRUSDT'), 'GUSDT@2024-08-15': ('p', 'GALUSDT'),
+    'KAIAUSDT@2024-12-04': ('p', 'KLAYUSDT'), 'SUSDT@2025-01-16': ('p', 'FTMUSDT'), 'DUSDT@2025-01-09': ('p', 'DARUSDT'),
+    'HEIUSDT@2025-02-13': ('p', 'LITUSDT'), 'FORMUSDT@2025-03-19': ('p', 'BNXUSDT'), 'AWEUSDT@2025-05-21': ('p', 'STPTUSDT'),
+    'AUSDT@2025-05-28': ('p', 'EOSUSDT'), 'PUMPBTCUSDT@2025-06-13': ('p', 'PUMPUSDT'), 'RAYSOLUSDT@2024-12-10': ('p', 'RAYUSDT'),
+    'VICUSDT@2025-03-12': ('p', 'TOMOUSDT'), 'PAXGUSDT@2025-03-27': ('d', None),
+    # confirmation (5)
+    'SKYUSDT@2025-09-09': ('p', 'MKRUSDT'), 'FRAXUSDT@2026-01-15': ('p', 'FXSUSDT'), 'MANTRAUSDT@2026-03-04': ('p', 'OMUSDT'),
+    'NOMUSDT@2025-10-01': ('p', 'OMNIUSDT'), 'XAUTUSDT@2026-03-26': ('d', None),
+    # reported block (4; reported stratum only)
+    '1000BTTCUSDT@2022-01-26': ('p', 'BTTUSDT'), 'TUSDT@2023-02-01': ('p', 'KEEPUSDT'),
+    '1000LUNCUSDT@2022-09-09': ('p', 'LUNAUSDT'), 'DODOXUSDT@2023-08-08': ('p', 'DODOUSDT'),
 }
+
+
+def continuation_label(eid):
+    """'p <predecessor>' / 'd' / None (JSON-friendly)."""
+    c = CONTINUATIONS.get(eid)
+    return None if c is None else (c[0] if c[1] is None else f'{c[0]} {c[1]}')
+
+
+def continuation_failures(days_by_symbol):
+    """Point-in-time check of every (p) continuation: its predecessor's first daily file precedes d0."""
+    out = []
+    for eid, (rule, pred) in CONTINUATIONS.items():
+        d0 = eid.split('@')[1]
+        if rule == 'p' and not (pred in days_by_symbol and min(days_by_symbol[pred]) < d0):
+            out.append(f'{eid}: predecessor {pred} has no Binance USDⓈ-M daily file before {d0}')
+        if rule not in ('p', 'd'):
+            out.append(f'{eid}: unknown rule {rule}')
+    return out
 
 
 # ------------------------------------------------------------------ events (no market value is used)
@@ -254,9 +272,10 @@ def simulate(ev, bars, funding, end, fee=FEE_DECISION, slip_mult=1.0, pay_mult=1
     funding: [(calc_time_ms, interval_h, rate)] sorted. Returns a dict; status in
       no_entry          no TRADED bar within 60 min of first trade + 24 h (counted, no return)
       exit              exit at the first traded bar in [t_x, t_x + 6 h)
-      exit_late         no traded bar in that window, but trading resumes later (a halt or a data hole)
-      exit_last_trade   trading never resumes before the data end: exit at the LAST TRADED close (delisting;
-                        zero-trade rows after the last traded bar are treated as absent, review B M1)
+      exit_late         no traded bar in that window, but one in [t_x + 6 h, t_x + 24 h) (a halt or a data hole)
+      exit_last_trade   no traded bar within 24 h after the target: exit at the LAST TRADED close before the target
+                        (a delisting or a long halt; zero-trade rows are absent, review B M1). Capping the late exit
+                        at 24 h keeps the book's tail bounds exact (review r1 m4)
       liquidated        -1 (the whole isolated margin)
     Settlement s counts iff entry bar t < floor_min(s) <= exit time, paid at the price at s: rate * P_s / P_in.
     Liquidation at the first held bar whose last-price high H gives (1 - fee) + F + (P_e - H)/P_in <= MMR * H/P_in.
@@ -273,13 +292,13 @@ def simulate(ev, bars, funding, end, fee=FEE_DECISION, slip_mult=1.0, pay_mult=1
     xb = next((b for b in traded if t_x <= b[0] < min(t_x + EXIT_WINDOW, end)), None)
     status = 'exit'
     if xb is None:
-        xb = next((b for b in traded if t_x + EXIT_WINDOW <= b[0] < end), None)
+        xb = next((b for b in traded if t_x + EXIT_WINDOW <= b[0] < min(t_x + LATE_WINDOW, end)), None)
         status = 'exit_late'
     if xb is not None:
         held = [b for b in traded if eb[0] <= b[0] < xb[0]]
         p_x, exit_t = xb[1], xb[0]
-    else:
-        held = [b for b in traded if b[0] >= eb[0]]
+    else:                                      # no trade within 24 h after the target: the last traded close before it
+        held = [b for b in traded if eb[0] <= b[0] < t_x]
         p_x, exit_t, status = held[-1][4], held[-1][0] + MIN, 'exit_last_trade'
     opens = {b[0]: b[1] for b in traded}
     tts = [b[0] for b in traded]
@@ -444,6 +463,93 @@ def ols_alpha(y, x, clusters):
     return out
 
 
+def _inv(m):
+    """Inverse of a small square matrix (Gauss-Jordan, partial pivoting); None if singular."""
+    n = len(m)
+    a = [list(r) + [1.0 if i == j else 0.0 for j in range(n)] for i, r in enumerate(m)]
+    for c in range(n):
+        piv = max(range(c, n), key=lambda r: abs(a[r][c]))
+        if abs(a[piv][c]) < 1e-14:
+            return None
+        a[c], a[piv] = a[piv], a[c]
+        f = a[c][c]
+        a[c] = [v / f for v in a[c]]
+        for r in range(n):
+            if r != c and a[r][c] != 0.0:
+                g = a[r][c]
+                a[r] = [x - g * y for x, y in zip(a[r], a[c])]
+    return [r[n:] for r in a]
+
+
+def ols_cols(y, cols, clusters):
+    """Pooled OLS y = alpha + sum_k b_k * cols[k] + e, CR1 cluster-robust (G/(G-1) * (n-1)/(n-K)). Returns
+    {'alpha', 'b' (list), 'se', 't', 'G', 'n', 'K'}; alpha/t None when the design is singular."""
+    n, K = len(y), 1 + len(cols)
+    out = {'alpha': None, 'b': None, 'se': None, 't': None, 'G': len(set(clusters)), 'n': n, 'K': K}
+    if n <= K:
+        return out
+    X = [[1.0] + [c[i] for c in cols] for i in range(n)]
+    xtx = [[sum(X[i][a] * X[i][b] for i in range(n)) for b in range(K)] for a in range(K)]
+    inv = _inv(xtx)
+    if inv is None:
+        return out
+    xty = [sum(X[i][a] * y[i] for i in range(n)) for a in range(K)]
+    beta = [sum(inv[a][b] * xty[b] for b in range(K)) for a in range(K)]
+    g = {}
+    for i in range(n):
+        e = y[i] - sum(beta[k] * X[i][k] for k in range(K))
+        u = g.setdefault(clusters[i], [0.0] * K)
+        for k in range(K):
+            u[k] += X[i][k] * e
+    G = len(g)
+    out.update(alpha=beta[0], b=beta[1:], G=G)
+    if G < 2:
+        return out
+    w = [sum(inv[0][k] * u[k] for k in range(K)) for u in g.values()]      # row 0 of inv * u_g
+    v00 = sum(x * x for x in w) * G / (G - 1) * (n - 1) / (n - K)
+    if v00 > 0:
+        out.update(se=math.sqrt(v00), t=beta[0] / math.sqrt(v00))
+    return out
+
+
+MIN_Q_EVENTS = 10                               # a beta group needs >= 10 events with a market return
+
+
+def quarter_of(t):
+    d = day_of(t)
+    return f'{d[:4]}-Q{(int(d[5:7]) - 1) // 3 + 1}'
+
+
+def beta_groups(quarters):
+    """Calendar quarters of first trade -> beta group (Revision 2, B1). In calendar order, a quarter with fewer than
+    MIN_Q_EVENTS events joins the previous group; a short first group joins the next."""
+    counts = {}
+    for q in quarters:
+        counts[q] = counts.get(q, 0) + 1
+    groups = []
+    for q in sorted(counts):
+        if groups and counts[q] < MIN_Q_EVENTS:
+            groups[-1].append(q)
+        else:
+            groups.append([q])
+    if len(groups) > 1 and sum(counts[q] for q in groups[0]) < MIN_Q_EVENTS:
+        groups[1] = groups[0] + groups[1]
+        groups = groups[1:]
+    return {q: i for i, grp in enumerate(groups) for q in grp}
+
+
+def alpha_fit(rows):
+    """net = alpha + sum_g beta_g * mkt * 1[group g] + e over the rows with a market return; groups = calendar
+    quarters of first trade (merged by `beta_groups`). Returns (fit, {quarter: beta})."""
+    qs = [r['quarter'] for r in rows]
+    gmap = beta_groups(qs)
+    ng = len(set(gmap.values()))
+    cols = [[r['mkt'] if gmap[r['quarter']] == j else 0.0 for r in rows] for j in range(ng)]
+    fit = ols_cols([r['net'] for r in rows], cols, [r['week'] for r in rows])
+    betas = {q: (fit['b'][j] if fit['b'] else 0.0) for q, j in gmap.items()}
+    return fit, betas
+
+
 def alpha_crit(G, q):
     cal = CAL_ALPHA_DISCOVERY if q == Q_DISCOVERY else CAL_ALPHA_CONFIRM
     return max(t_crit(G - 2, q), cal) if G >= 3 else None
@@ -533,8 +639,8 @@ def squeeze_months(monthly, c=C_EVENT):
     return sorted(m for m, v in monthly.items() if v <= -line)
 
 
-def deploy(conf_rows, conf_stress_rows, pooled, span_conf):
-    """THE deploy rule (Revision 1, decision 3; one definition, for the carried trial, at the deployed size).
+def deploy_one(conf_rows, conf_stress_rows, pooled, span_conf):
+    """One side (raw or adjusted) of THE deploy rule `deploy` (one definition, carried trial, deployed size).
     conf_rows / conf_stress_rows: the carried trial's confirmation events (base / stressed costs).
     pooled: {calendar: (rows, stress_rows, span_years)} for reported, discovery and confirmation, carried rule.
       c*  = min(C_EVENT, quarter Kelly of the CONFIRMATION book, C_EVENT * (-0.30) / W) where W is the worst exit
@@ -585,36 +691,84 @@ def deploy(conf_rows, conf_stress_rows, pooled, span_conf):
             'deploy': all(bars.values())}
 
 
+def deploy(conf_rows, conf_stress_rows, pooled, span_conf, betas):
+    """THE deploy rule (Revision 2, M1): `deploy_one` on the raw confirmation rows AND on the market-adjusted ones
+    (net - beta_q * mkt with the confirmation's quarter betas; raw where no market return); pooled worst months
+    and liquidation rates stay raw (the unhedged book's risk). Conservative in both bull and bear calendars:
+    c* = the smaller, the bars must hold for both, deploy iff both deploy. Both are reported."""
+    def adjust(rows):
+        return [dict(r, net=(r['net'] - betas.get(_quarter(r), 0.0) * r['mkt']) if r.get('mkt') is not None else r['net'])
+                for r in rows]
+    raw = deploy_one(conf_rows, conf_stress_rows, pooled, span_conf)
+    adj_pool = dict(pooled)
+    adj_pool['confirmation'] = (adjust(pooled['confirmation'][0]), adjust(pooled['confirmation'][1]), pooled['confirmation'][2])
+    adj = deploy_one(adjust(conf_rows), adjust(conf_stress_rows), adj_pool, span_conf)
+    return {'raw': raw, 'adjusted': adj, 'c_star': min(raw['c_star'], adj['c_star']),
+            'mu_tail': min(x for x in (raw['mu_tail'], adj['mu_tail']) if x is not None) if raw['mu_tail'] is not None else None,
+            'annual_charged': min(raw['annual_charged'], adj['annual_charged'])
+            if raw['annual_charged'] is not None and adj['annual_charged'] is not None else None,
+            'deploy': raw['deploy'] and adj['deploy']}
+
+
 # ------------------------------------------------------------------ criteria and decisions
-def trial_stats(rows, span_years, q):
-    """rows: events of one trial (dicts with 'net', 'week', 'entry_t', 'exit_t', 'id', 'mkt' (market return over the
-    hold, or None)). Every number the criteria use, computed from the per-event records.
-    Market-adjusted series (Revision 1): alpha and beta from the pooled OLS net = alpha + beta * mkt over the events
-    with a market return; adj_i = net_i - beta * mkt_i (mean(adj) = alpha). The robustness criteria use adj; the raw
-    net feeds the economic bars and is reported."""
+def _quarter(r):
+    return r.get('quarter') or quarter_of(r['entry_t'] - ENTRY_DELAY)
+
+
+def trial_stats(rows, span_years, q, pool=None):
+    """Every number the criteria use, from the per-event records (dicts with 'net', 'week', 'entry_t', 'exit_t', 'id',
+    'mkt' (market return over the hold, or None), 'quarter', 'liquidated').
+    Revision 2:
+      * alpha from net = alpha + sum_q beta_q * mkt * 1[q] (beta per calendar quarter of first trade; B1); adj_i =
+        net_i - beta_q(i) * mkt_i; robustness on adj.
+      * economic numbers are min(raw, adjusted) (M1): adjusted net = adj for events with a market return, raw net
+        otherwise; mean and book computed for both, the smaller kept.
+      * pool (confirmation only; M2): the pooled liquidation rate; alpha_tail = alpha - max(0, pool - pi) * (1 +
+        mean net of the trial's non-liquidated events), t_tail = alpha_tail / se(alpha); the same charge on the
+        best-week refit.
+      * reported: the split-beta alpha (net = a + b+ mkt+ + b- mkt-; m8)."""
+    rows = [dict(r, quarter=_quarter(r)) for r in rows]
     v = [r['net'] for r in rows]
     cl = [r['week'] for r in rows]
     m, t, G = clustered_t(v, cl)
     adj_rows = [r for r in rows if r.get('mkt') is not None]
-    a = ols_alpha([r['net'] for r in adj_rows], [r['mkt'] for r in adj_rows], [r['week'] for r in adj_rows])
-    b = a['beta'] if a['beta'] is not None else 0.0
-    adj = [r['net'] - b * r['mkt'] for r in adj_rows]
+    fit, betas = alpha_fit(adj_rows) if adj_rows else ({'alpha': None, 'se': None, 't': None, 'G': 0, 'n': 0, 'K': 0}, {})
+    adj = [r['net'] - betas.get(r['quarter'], 0.0) * r['mkt'] for r in adj_rows]
     acl = [r['week'] for r in adj_rows]
     h1, h2 = halves(adj, acl)
     drop = largest_positive_week(adj, acl)
     keep = [r for r in adj_rows if r['week'] != drop]
-    a_wo = ols_alpha([r['net'] for r in keep], [r['mkt'] for r in keep], [r['week'] for r in keep])
-    bk = book(rows, span_years)
+    fit_wo = alpha_fit(keep)[0] if keep else {'alpha': None}
+    adj_all = [dict(r, net=(r['net'] - betas.get(r['quarter'], 0.0) * r['mkt']) if r.get('mkt') is not None else r['net'])
+               for r in rows]
+    mean_adj_all = sum(x['net'] for x in adj_all) / len(adj_all) if adj_all else None
+    ann_raw = book(rows, span_years)['annual_on_capital']
+    ann_adj = book(adj_all, span_years)['annual_on_capital']
+    liq = [bool(r.get('liquidated')) for r in rows]
+    pi = sum(liq) / len(liq) if liq else 0.0
+    nonliq = [r['net'] for r in rows if not r.get('liquidated')]
+    charge = max(0.0, pool - pi) * (1 + (sum(nonliq) / len(nonliq) if nonliq else 0.0)) if pool is not None else 0.0
+    a_tail = fit['alpha'] - charge if fit['alpha'] is not None else None
+    split = ols_cols([r['net'] for r in adj_rows], [[max(r['mkt'], 0.0) for r in adj_rows], [min(r['mkt'], 0.0) for r in adj_rows]],
+                     acl) if len(adj_rows) > 3 else {'alpha': None, 't': None}
     return {'n': len(v), 'G': G, 'mean': m, 't': t, 'median_raw': statistics.median(v) if v else None, 'q': q,
-            'alpha': a['alpha'], 'alpha_beta': a['beta'], 'alpha_t': a['t'], 'alpha_G': a['G'], 'alpha_n': a['n'],
-            'alpha_crit': alpha_crit(a['G'], q), 'adj_median': statistics.median(adj) if adj else None,
-            'adj_half_1': h1, 'adj_half_2': h2, 'alpha_without_largest_positive_week': a_wo['alpha'],
-            'annual_on_capital': bk['annual_on_capital'], 'span_years': span_years}
+            'alpha': fit['alpha'], 'alpha_se': fit['se'], 'alpha_t': fit['t'], 'alpha_G': fit['G'], 'alpha_n': fit['n'],
+            'alpha_K': fit['K'], 'betas': {k: betas[k] for k in sorted(betas)},
+            'alpha_crit': alpha_crit(fit['G'], q), 'adj_median': statistics.median(adj) if adj else None,
+            'adj_half_1': h1, 'adj_half_2': h2, 'alpha_without_largest_positive_week': fit_wo['alpha'],
+            'mean_adjusted': mean_adj_all, 'mean_econ': min(x for x in (m, mean_adj_all) if x is not None) if v else None,
+            'annual_raw': ann_raw, 'annual_adjusted': ann_adj,
+            'annual_econ': min(x for x in (ann_raw, ann_adj) if x is not None) if v else None,
+            'liquidation_rate': pi, 'pool_liquidation_rate': pool, 'tail_charge': charge, 'alpha_tail': a_tail,
+            'alpha_tail_t': (a_tail / fit['se']) if (a_tail is not None and fit['se']) else None,
+            'alpha_tail_without_largest_positive_week': (fit_wo['alpha'] - charge) if fit_wo['alpha'] is not None else None,
+            'alpha_split_reported': split['alpha'], 'alpha_split_t_reported': split['t'],
+            'span_years': span_years}
 
 
 def discovery_criteria(s):
-    """Significance and robustness on the MARKET-ADJUSTED series (alpha; adj = net - beta * mkt); the raw net only in
-    the economic bars (orchestrator decision 1)."""
+    """Significance and robustness on the MARKET-ADJUSTED series (alpha with quarter betas; adj); the economic bars on
+    min(raw, adjusted) (Revision 2, M1)."""
     def pos(x):
         return x is not None and x > 0
     acrit = alpha_crit(s.get('alpha_G', 0), Q_DISCOVERY)
@@ -624,8 +778,8 @@ def discovery_criteria(s):
         '2_adj_median_pos': pos(s['adj_median']),
         '3_adj_both_halves_pos': pos(s['adj_half_1']) and pos(s['adj_half_2']),
         '4_alpha_without_largest_positive_week_pos': pos(s['alpha_without_largest_positive_week']),
-        '5_econ_raw_mean_ge_100bp': s['mean'] is not None and s['mean'] >= ECON_MEAN,
-        '6_econ_book_ge_3pct_yr': s['annual_on_capital'] is not None and s['annual_on_capital'] >= ECON_ANNUAL,
+        '5_econ_min_raw_adj_mean_ge_100bp': s['mean_econ'] is not None and s['mean_econ'] >= ECON_MEAN,
+        '6_econ_min_raw_adj_book_ge_3pct_yr': s['annual_econ'] is not None and s['annual_econ'] >= ECON_ANNUAL,
     }
     return c, all(c.values()), acrit
 
@@ -644,8 +798,9 @@ def records_by_trial(events):
     return {'T1': t1, 'T2': [e for e in t1 if e.get('t2')]}
 
 
-STAT_KEYS = ('n', 'G', 'mean', 't', 'median_raw', 'alpha', 'alpha_beta', 'alpha_t', 'alpha_G', 'alpha_n', 'adj_median',
-             'adj_half_1', 'adj_half_2', 'alpha_without_largest_positive_week', 'annual_on_capital')
+STAT_KEYS = ('n', 'G', 'mean', 't', 'median_raw', 'alpha', 'alpha_se', 'alpha_t', 'alpha_G', 'alpha_n', 'alpha_K',
+             'adj_median', 'adj_half_1', 'adj_half_2', 'alpha_without_largest_positive_week', 'mean_adjusted',
+             'mean_econ', 'annual_raw', 'annual_adjusted', 'annual_econ')
 
 
 def _close(a, b):
@@ -691,13 +846,13 @@ def recheck_discovery(row):
 
 
 def confirm(s):
-    """The existence test on the carried trial, market-adjusted: alpha > 0, alpha t >= max(t_{G-2}(0.95), CAL), and alpha
-    > 0 without the listing week with the largest positive adjusted sum (its power cost is 0.000 in every simulated
-    world, <= 0.03: orchestrator decision 1)."""
+    """The existence test on the carried trial (Revision 2): the TAIL-ADJUSTED alpha (stats computed with the pooled
+    liquidation rate; M2) > 0, its t >= max(t_{G-2}(0.95), CAL_C), and the tail-adjusted alpha refitted without the
+    listing week with the largest positive adjusted sum > 0; >= 10 events and >= 5 weeks."""
     crit = alpha_crit(s.get('alpha_G', 0), Q_CONFIRM)
-    wo = s.get('alpha_without_largest_positive_week')
-    ok = (s['alpha_n'] >= MIN_EVENTS_CONF and s['alpha_G'] >= MIN_WEEKS_CONF and s['alpha'] is not None
-          and s['alpha'] > 0 and s['alpha_t'] is not None and crit is not None and s['alpha_t'] >= crit
+    wo = s.get('alpha_tail_without_largest_positive_week')
+    ok = (s['alpha_n'] >= MIN_EVENTS_CONF and s['alpha_G'] >= MIN_WEEKS_CONF and s.get('alpha_tail') is not None
+          and s['alpha_tail'] > 0 and s.get('alpha_tail_t') is not None and crit is not None and s['alpha_tail_t'] >= crit
           and wo is not None and wo > 0)
     return ok, crit
 
@@ -734,6 +889,24 @@ def placebo(rows, crit, seeds=PLACEBO_SEEDS):
             'gross_t_sd': statistics.pstdev(ts)}
 
 
+def placebo_alpha(rows, betas, crit, seeds=PLACEBO_SEEDS):
+    """Review r1 m9: calendar-month sign flips of the ADJUSTED series (net - beta_q * mkt), the decision's own scale.
+    Share of seeds whose clustered t of the flipped adjusted mean is >= crit."""
+    adj = [(r['net'] - betas.get(_quarter(r), 0.0) * r['mkt'], r['week'], month_of(r['entry_t'])) for r in rows
+           if r.get('mkt') is not None]
+    if len(adj) < 3:
+        return None
+    months = sorted({m for _, _, m in adj})
+    hits, ts = 0, []
+    for seed in range(seeds):
+        rnd = random.Random(seed)
+        sg = {m: rnd.choice((-1, 1)) for m in months}
+        _, t, _ = clustered_t([sg[m] * a for a, _, m in adj], [w for _, w, _ in adj])
+        hits += t is not None and t >= crit
+        ts.append(t or 0.0)
+    return {'seeds': seeds, 'share_t_ge_crit': hits / seeds, 't_sd': statistics.pstdev(ts)}
+
+
 # ------------------------------------------------------------------ simulation (SYNTHETIC only; §3)
 NU = 4.5
 SIGMA_E = 0.083                                 # scout §E: 7-d market-excess SD, non-event small-cap coin-weeks
@@ -746,14 +919,14 @@ def _tdraw(rnd, nu=NU):
     return z / math.sqrt(chi / nu) / math.sqrt(nu / (nu - 2))
 
 
-def _market_path(t0, t1, msd, drift_wk, rnd):
+def _market_path(t0, t1, msd, drift_at, rnd):
     """Continuous alt market (log level) sampled daily, linear inside the day: daily SD msd*SIGMA_M/sqrt(7) (SIGMA_M =
-    10.4 % per 7 days, the measured market part of non-event coin-weeks; msd 1 or a 1.5 stress), drift -drift_wk/7
-    per day (a FALLING alt market for drift > 0, which a short earns beta * drift from)."""
+    10.4 % per 7 days, the measured market part of non-event coin-weeks; msd 1 or a 1.5 stress); drift_at(t) per week
+    DOWN (a FALLING alt market for drift > 0, which a short earns beta * drift from)."""
     days = int((t1 - t0) // DAY) + 3
     lv, x = [0.0], 0.0
-    for _ in range(days):
-        x += rnd.gauss(-drift_wk / 7, msd * SIGMA_M / math.sqrt(7))
+    for i in range(days):
+        x += rnd.gauss(-drift_at(t0 + i * DAY) / 7, msd * SIGMA_M / math.sqrt(7))
         lv.append(x)
 
     def at(t):
@@ -764,66 +937,86 @@ def _market_path(t0, t1, msd, drift_wk, rnd):
     return at
 
 
-def sim_events(schedule, mu, beta, k, drift_wk, rnd, p_t2=0.7, liq_p=0.0, liq_week_p=0.0, msd=1.0):
+def sim_events(schedule, mu, beta, k, drift_wk, rnd, p_t2=0.7, liq_p=0.0, liq_week_p=0.0, msd=1.0, regime=None):
     """Synthetic events at the REAL first-trade times: entry = first trade + 24 h, exit = entry + 7 d (overlapping
-    holds); mkt = market return over the hold; net = mu - beta * mkt + k*SIGMA_E*t_4.5 (k scales the
-    idiosyncratic part only: listing windows are more volatile than other coins, the alt market is not) (+ squeeze atoms: an
-    event returns -1 w.p. liq_p, every event of a listing week w.p. liq_week_p; the non-atom mean is shifted so
-    the event mean stays mu), clipped to [-1, 1]."""
+    holds); mkt = market return over the hold; net = mu - beta_i * mkt + k*SIGMA_E*t_4.5 (k scales the idiosyncratic
+    part only), clipped to [-1, 1]; squeeze atoms: -1 w.p. liq_p per event, or for every event of a listing week w.p.
+    liq_week_p (the non-atom mean is shifted so the event mean stays mu). regime = (start, end, beta_in, drift_in):
+    events with a first trade in [start, end) carry beta_in and the market drifts down by drift_in per week inside
+    the window (review r1 B1); elsewhere beta and drift_wk."""
     if not schedule:
         return []
     t0 = min(schedule) - DAY
-    at = _market_path(t0, max(schedule) + 10 * DAY, msd, drift_wk, rnd)
-    wk_hit = {}
-    out = []
+    drift_at = (lambda t: regime[3] if regime[0] <= t < regime[1] else drift_wk) if regime else (lambda t: drift_wk)
+    at = _market_path(t0, max(schedule) + 11 * DAY, msd, drift_at, rnd)
+    wk_hit, out = {}, []
     shift = (mu + liq_p) / (1 - liq_p) if liq_p > 0 else mu
     for i, ft in enumerate(sorted(schedule)):
         e_t, x_t = ft + ENTRY_DELAY, ft + ENTRY_DELAY + HOLD
         mkt = math.exp(at(x_t) - at(e_t)) - 1
+        b = regime[2] if regime and regime[0] <= ft < regime[1] else beta
         w = iso_week(ft)
         if w not in wk_hit:
             wk_hit[w] = rnd.random() < liq_week_p
         if wk_hit[w] or rnd.random() < liq_p:
             net = -1.0
         else:
-            net = max(-1.0, min(1.0, shift - beta * mkt + k * SIGMA_E * _tdraw(rnd)))
-        out.append({'id': str(i), 'net': net, 'week': w, 'entry_t': e_t, 'exit_t': x_t, 'mkt': mkt,
-                    't2': rnd.random() < p_t2, 'liquidated': net == -1.0})
+            net = max(-1.0, min(1.0, shift - b * mkt + k * SIGMA_E * _tdraw(rnd)))
+        out.append({'id': str(i), 'net': net, 'week': w, 'quarter': quarter_of(ft), 'entry_t': e_t, 'exit_t': x_t,
+                    'mkt': mkt, 't2': rnd.random() < p_t2, 'liquidated': net == -1.0})
     return out
 
 
-def _rec(s, q, conf=False):
+def _sim_liquidations(schedule, liq_p, liq_week_p, rnd):
+    """Liquidation count of a calendar (the reported block's part of the pooled rate)."""
+    hit, n = {}, 0
+    for ft in schedule:
+        w = iso_week(ft)
+        if w not in hit:
+            hit[w] = rnd.random() < liq_week_p
+        n += hit[w] or rnd.random() < liq_p
+    return n
+
+
+def _rec(s, conf=False):
     """(alpha t, alpha G, every other condition of the stage) of one simulated trial, so the pass can be re-evaluated
-    at any critical value."""
+    at any critical value. Confirmation: tail-adjusted, plus the untailed version for comparison."""
     if conf:
-        other = (s['alpha_n'] >= MIN_EVENTS_CONF and s['alpha_G'] >= MIN_WEEKS_CONF and s['alpha'] is not None and s['alpha'] > 0
-                 and (s['alpha_without_largest_positive_week'] or 0) > 0)
-        other_no_wo = (s['alpha_n'] >= MIN_EVENTS_CONF and s['alpha_G'] >= MIN_WEEKS_CONF and s['alpha'] is not None
-                       and s['alpha'] > 0)
-        return (s['alpha_t'] if s['alpha_t'] is not None else -99.0, s['alpha_G'], other, other_no_wo)
+        base = s['alpha_n'] >= MIN_EVENTS_CONF and s['alpha_G'] >= MIN_WEEKS_CONF
+        t_tail = s['alpha_tail_t'] if s['alpha_tail_t'] is not None else -99.0
+        other = base and s['alpha_tail'] is not None and s['alpha_tail'] > 0 and (s['alpha_tail_without_largest_positive_week'] or 0) > 0
+        other_no_wo = base and s['alpha_tail'] is not None and s['alpha_tail'] > 0
+        t_plain = s['alpha_t'] if s['alpha_t'] is not None else -99.0
+        other_plain = base and s['alpha'] is not None and s['alpha'] > 0 and (s['alpha_without_largest_positive_week'] or 0) > 0
+        return (t_tail, s['alpha_G'], other, other_no_wo, t_plain, other_plain)
     c, _ok, _ = discovery_criteria(s)
     other = all(v for k, v in c.items() if k != '1_alpha_pos_t_ge_crit') and s['alpha'] is not None and s['alpha'] > 0
     return (s['alpha_t'] if s['alpha_t'] is not None else -99.0, s['alpha_G'], other)
 
 
-def simulate_worlds(disc_sched, conf_sched, disc_years, conf_years, worlds, sims=1000, seed=0):
+def simulate_worlds(disc_sched, conf_sched, disc_years, conf_years, worlds, sims=1000, seed=0, rep_sched=()):
     """Per world, `sims` draws of the registered path: discovery (both trials) and the confirmation calendar (both
-    trials). Each draw stores (alpha t, G, other conditions) per stage and trial, so `world_rates` can evaluate the
-    pass at any critical value (calibration and power from the same draws)."""
+    trials, tail-adjusted with the pooled liquidation rate of discovery + confirmation + the reported block). Each
+    draw stores (alpha t, G, other conditions) per stage and trial, so `world_rates` evaluates the pass at any
+    critical value (calibration and power from the same draws). A world may carry 'regime_d' / 'regime_c' =
+    (start, end, beta_in, drift_in) per calendar."""
     res = []
     for wi, w in enumerate(worlds):
         rnd = random.Random(seed * 1000 + wi)
         recs = []
         for _ in range(sims):
             kw = dict(p_t2=w.get('p_t2', 0.7), liq_p=w.get('liq_p', 0.0), liq_week_p=w.get('liq_week_p', 0.0), msd=w.get('msd', 1.0))
-            d = sim_events(disc_sched, w['mu_d'], w['beta'], w['k'], w['drift_d'], rnd, **kw)
-            cd = sim_events(conf_sched, w['mu_c'], w['beta'], w['k'], w['drift_c'], rnd, **kw)
+            d = sim_events(disc_sched, w['mu_d'], w['beta'], w['k'], w['drift_d'], rnd, regime=w.get('regime_d'), **kw)
+            cd = sim_events(conf_sched, w['mu_c'], w['beta'], w['k'], w['drift_c'], rnd, regime=w.get('regime_c'), **kw)
+            n_rep_liq = _sim_liquidations(rep_sched, w.get('liq_p', 0.0), w.get('liq_week_p', 0.0), rnd)
             r = {}
             for tr in TRIALS:
                 dr = d if tr == 'T1' else [x for x in d if x['t2']]
                 cr = cd if tr == 'T1' else [x for x in cd if x['t2']]
-                r['d' + tr] = _rec(trial_stats(dr, disc_years, Q_DISCOVERY), Q_DISCOVERY)
-                r['c' + tr] = _rec(trial_stats(cr, conf_years, Q_CONFIRM), Q_CONFIRM, conf=True)
+                n_all = len(dr) + len(cr) + len(rep_sched)
+                pool = (sum(x['liquidated'] for x in dr) + sum(x['liquidated'] for x in cr) + n_rep_liq) / n_all if n_all else 0.0
+                r['d' + tr] = _rec(trial_stats(dr, disc_years, Q_DISCOVERY))
+                r['c' + tr] = _rec(trial_stats(cr, conf_years, Q_CONFIRM, pool=pool), conf=True)
             recs.append(r)
         res.append({**w, 'records': recs})
     return res
@@ -834,18 +1027,20 @@ def world_rates(records, cal_d, cal_c):
     n = len(records)
     cd = lambda G: max(t_crit(G - 2, Q_DISCOVERY), cal_d) if G >= 3 else math.inf
     cc = lambda G: max(t_crit(G - 2, Q_CONFIRM), cal_c) if G >= 3 else math.inf
-    tal = {'disc_T1': 0, 'disc_T2': 0, 'disc': 0, 'conf_given': 0, 'joint': 0, 'conf_alone': 0, 'conf_alone_no_wo': 0}
+    tal = {'disc_T1': 0, 'disc_T2': 0, 'disc': 0, 'conf_given': 0, 'joint': 0, 'conf_alone': 0, 'conf_alone_no_wo': 0,
+           'conf_alone_untailed': 0}
     for r in records:
         p = {tr: r['d' + tr][2] and r['d' + tr][0] >= cd(r['d' + tr][1]) for tr in TRIALS}
         tal['disc_T1'] += p['T1']
         tal['disc_T2'] += p['T2']
-        t, G, other, other_no_wo = r['cT1']
+        t, G, other, other_no_wo, t_plain, other_plain = r['cT1']
         tal['conf_alone'] += other and t >= cc(G)
         tal['conf_alone_no_wo'] += other_no_wo and t >= cc(G)
+        tal['conf_alone_untailed'] += other_plain and t_plain >= cc(G)
         dec = decide_discovery(p)
         if dec[0] == 'read_confirmation':
             tal['disc'] += 1
-            t, G, other, _ = r['c' + dec[1]]
+            t, G, other = r['c' + dec[1]][:3]
             ok = other and t >= cc(G)
             tal['conf_given'] += ok
             tal['joint'] += ok
@@ -855,7 +1050,7 @@ def world_rates(records, cal_d, cal_c):
 
 
 def alpha_t_quantile(records, key, q):
-    """The q-quantile of the alpha t of one stage and trial (key 'dT1', 'dT2', 'cT1', 'cT2') among draws whose other
-    conditions hold with alpha > 0 counted as failing below 0 (the one-sided calibration target)."""
+    """The q-quantile of the decision t of one stage and trial (key 'dT1', 'dT2', 'cT1', 'cT2'); draws whose other
+    conditions fail count as -99 (the one-sided calibration target)."""
     ts = sorted((r[key][0] if r[key][2] else -99.0) for r in records)
     return ts[min(len(ts) - 1, int(q * len(ts)))]

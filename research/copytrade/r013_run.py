@@ -36,9 +36,11 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.pycache_prefix = tempfile.mkdtemp(prefix='r013-pyc-')   # review r1 m3: never load bytecode from an existing __pycache__
 sys.path.insert(0, str(HERE))
 from ct import listings013 as L  # noqa: E402
 
@@ -99,7 +101,7 @@ def result_rows(root, results_rel, match=is_013):
     res = Path(root) / results_rel
     if res.exists():
         texts.extend(res.read_text().splitlines())
-    hist = _git(root, 'log', '--all', '--reflog', '-m', '-p', '--format=', '--', results_rel)
+    hist = _git(root, 'log', '--all', '--reflog', '-m', '-p', '--text', '--no-textconv', '--no-ext-diff', '--no-color', '--format=', '--', results_rel)
     texts.extend(l[1:] for l in hist.stdout.splitlines() if l.startswith('+') and not l.startswith('+++'))
     out, seen = [], set()
     for line in texts:
@@ -115,7 +117,7 @@ def result_rows(root, results_rel, match=is_013):
 
 def head_rows(root, results_rel, name):
     out = []
-    for line in _git(root, 'show', f'HEAD:./{results_rel}').stdout.splitlines():
+    for line in _git(root, 'show', '--no-textconv', f'HEAD:./{results_rel}').stdout.splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -127,7 +129,7 @@ def head_rows(root, results_rel, name):
 
 def first_commit_containing(root, rel, needle):
     for c in _git(root, 'log', '--format=%H', '--reverse', '--', rel).stdout.split():
-        if needle in _git(root, 'show', f'{c}:./{rel}').stdout.splitlines():
+        if needle in _git(root, 'show', '--no-textconv', f'{c}:./{rel}').stdout.splitlines():
             return c
     return None
 
@@ -163,20 +165,85 @@ def ordering_failures(root, results_rel='results.jsonl'):
 
 
 # ------------------------------------------------------------------ (v) environment
+ENV_PACKAGES = ('duckdb', 'pyarrow')
+
+
+def env_fingerprint():
+    """Python version; for duckdb and pyarrow the version and the SHA-256 of EVERY installed distribution file
+    (__pycache__ / *.pyc excluded). Parity with r008 (review r1 m10). Stored in every started row; the
+    confirmation requires the discovery run's fingerprint."""
+    import importlib.metadata as md
+    out = {'python': sys.version.split()[0]}
+    for name in ENV_PACKAGES:
+        dist = md.distribution(name)
+        files = sorted(str(f) for f in (dist.files or []) if '__pycache__' not in str(f) and not str(f).endswith('.pyc'))
+        h, n = hashlib.sha256(), 0
+        for f in files:
+            path = Path(dist.locate_file(f))
+            if path.is_file():
+                h.update(f.encode())
+                h.update(sha256(path).encode())
+                n += 1
+        out[name] = {'version': dist.version, 'files_sha256': h.hexdigest(), 'files': n}
+    return out
+
+
+def shadow_modules(root):
+    """Ported from r008 (review r1 m3): anything importable that is not a tracked, unmodified file and could shadow a
+    module the run imports. Scanned on the FILE SYSTEM (git-ignored files count) in the top level of research/copytrade
+    (sys.path[0]) and in ct/: *.py, *.pyc (sourceless bytecode outside __pycache__), *.so / *.pyd, and packages (a
+    directory with __init__.py: a new package's __init__.py, and every file of a package inside ct/)."""
+    root = Path(root)
+    tracked = set(_git(root, 'ls-files', '-z').stdout.split('\0'))
+    modified = set(_git(root, 'ls-files', '-m', '-z').stdout.split('\0'))
+    bad = set()
+
+    def unclean(f):
+        rel = str(f.relative_to(root))
+        return rel not in tracked or rel in modified
+    for base, inside_ct in ((root, False), (root / 'ct', True)):
+        if not base.is_dir():
+            continue
+        for p in sorted(base.iterdir()):
+            if p.name == '__pycache__':
+                continue
+            if p.is_file() and p.suffix in ('.py', '.pyc', '.so', '.pyd'):
+                if unclean(p):
+                    bad.add(str(p.relative_to(root)))
+            elif p.is_dir() and (p / '__init__.py').exists():
+                files = [f for f in p.rglob('*') if f.is_file() and '__pycache__' not in f.parts] if inside_ct else [p / '__init__.py']
+                bad.update(str(f.relative_to(root)) for f in files if unclean(f))
+    return sorted(bad)
+
+
+def loaded_from_source():
+    """[failures]: every guarded module in this process was loaded from its hashed .py (not a .pyc or .so), and no
+    bytecode came from an existing __pycache__ (sys.pycache_prefix is a fresh directory; review r1 m3)."""
+    out = []
+    for name, rel in (('ct.listings013', 'ct/listings013.py'), ('ct', 'ct/__init__.py')):
+        mod = sys.modules.get(name)
+        if mod is None or Path(getattr(mod, '__file__', '') or '').resolve() != (HERE / rel).resolve():
+            out.append(f'(v) {name} was not loaded from {rel}')
+    if not sys.pycache_prefix or Path(sys.pycache_prefix).resolve().is_relative_to(HERE):
+        out.append('(v) sys.pycache_prefix must be a fresh directory outside the repository')
+    return out
+
+
 def environment_failures(root):
     out = []
     if sys.flags.optimize:
         out.append('(v) python -O / -OO is refused')
     if versions() != PINS:
         out.append(f'(v) versions {versions()} differ from the pins {PINS}')
-    for mod in ('duckdb', 'pyarrow'):
+    for mod in ENV_PACKAGES:
         spec = importlib.util.find_spec(mod)
         origin = Path(spec.origin).resolve() if spec and spec.origin else None
         if origin is None or not origin.is_relative_to(Path(sys.prefix).resolve()):
             out.append(f'(v) {mod} does not load from the interpreter prefix {sys.prefix}: {origin}')
-    untracked = _git(root, 'ls-files', '--others', '--exclude-standard', '--', ':(glob)*.py', ':(glob)ct/*.py').stdout.split()
-    if untracked:
-        out.append(f'(v) untracked python files could shadow imports: {untracked}')
+    shadow = shadow_modules(root)
+    if shadow:
+        out.append(f'(v) untracked, ignored or modified importable files could shadow an import: {shadow[:6]}')
+    out += loaded_from_source()
     return out
 
 
@@ -192,7 +259,7 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
         out.append(f'{reg.name} is not REGISTERED — refusing to compute any outcome.')
     if _git(root, 'ls-files', '--error-unmatch', '--', reg_rel).returncode:
         out.append(f'(a) {reg.name} is not tracked by git')
-    if _git(root, 'diff', '--quiet', 'HEAD', '--', reg_rel).returncode:
+    if _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', 'HEAD', '--', reg_rel).returncode:
         out.append(f'(b) {reg.name} differs from the committed version')
     commit = _git(root, 'log', '-1', '--format=%H', '--', reg_rel).stdout.strip()
     if not commit:
@@ -224,7 +291,7 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
         return out, commit
     if mode != 'confirmation':
         raise Refused(f'unknown mode {mode}')
-    head_lines = set(_git(root, 'show', f'HEAD:./{results_rel}').stdout.splitlines())
+    head_lines = set(_git(root, 'show', '--no-textconv', f'HEAD:./{results_rel}').stdout.splitlines())
     d = [(l, r) for l, r in rows if r.get('mode') == 'discovery']
     if len(d) != 1:
         out.append(f'(g1) {len(d)} 013 discovery rows anywhere; exactly one is required')
@@ -236,14 +303,14 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
     st = [(l, r) for l, r in rows if r.get('mode') == 'discovery_started']
     if len(st) != 1 or st[0][0] not in head_lines or st[0][1].get('registration_commit') != rc:
         out.append('(s) exactly one committed discovery_started row with the same registration commit is required')
-    elif env_check and st[0][1].get('versions') != versions():
-        out.append('(s) the pinned versions differ from those of the discovery run')
+    elif env_check and st[0][1].get('env') != env_fingerprint():
+        out.append('(s) the environment fingerprint (python, every duckdb / pyarrow file) differs from the discovery run')
     if not is_ancestor(root, rc):
         out.append("(g3) the discovery row's registration commit is not an ancestor of HEAD")
     else:
-        if _git(root, 'diff', '--quiet', rc, 'HEAD', '--', *code).returncode:
+        if _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', rc, 'HEAD', '--', *code).returncode:
             out.append('(g3) the guarded code changed since the discovery run')
-        changed = [l[1:] for l in _git(root, 'diff', '-U0', rc, 'HEAD', '--', reg_rel).stdout.splitlines()
+        changed = [l[1:] for l in _git(root, 'diff', '-U0', '--text', '--no-textconv', '--no-ext-diff', '--no-color', rc, 'HEAD', '--', reg_rel).stdout.splitlines()
                    if l[:1] in '+-' and not l.startswith(('+++', '---'))]
         if any(l.strip() and not APPROVAL.fullmatch(l.rstrip()) for l in changed):
             out.append('(r) the registration changed since the discovery run beyond an added approval line')
@@ -280,6 +347,9 @@ def guard(mode):
     return commit
 
 
+_REAL_GUARD = guard
+
+
 def append_row(row, results=None):
     line = json.dumps(row, default=str, sort_keys=True)
     with open(results or RESULTS, 'a') as f:
@@ -288,14 +358,41 @@ def append_row(row, results=None):
 
 
 def commit_results(msg):
-    """Commit results.jsonl ALONE (`git commit --only`), right after a row is appended (review B M3)."""
-    r = _git(RESULTS.parent, 'commit', '--only', RESULTS.name, '-m', msg)
+    """Commit results.jsonl ALONE (`git commit --only`), right after a row is appended (review B M3). Never pushes:
+    the owner pushes (review r1 m10)."""
+    r = _git(RESULTS.parent, 'commit', '--only', '-m', msg, '--', RESULTS.name)
     if r.returncode:
-        raise Refused(f'could not commit {RESULTS.name}: {r.stderr.strip()[:300]} — stop; the row stays uncommitted '
-                      'and (k) refuses every later run until the owner commits it')
+        raise Refused(f'could not commit {RESULTS.name}: {r.stderr.strip()[:300]} — stop; commit the row BY HAND as it '
+                      'is; (k) refuses every later run until it is committed')
 
 
 HOOKS = {'commit': commit_results}
+REAL_RESULTS = (HERE / 'results.jsonl').resolve()
+
+
+def real_tree_failures():
+    """Review r1 M4 (r008's real_tree_failures, ported): the real results file and the real data tree are used only
+    together, only with the default commit hook, and only with the real guard."""
+    real_r, real_d = RESULTS.resolve() == REAL_RESULTS, Path(DATA).resolve() == DATA_REAL
+    out = []
+    if real_r != real_d:
+        out.append('(M4) the real results.jsonl and the real data tree are used only together')
+    if (real_r or real_d) and HOOKS.get('commit') is not commit_results:
+        out.append('(M4) a non-default commit hook is never used on the real results file or data tree')
+    if (real_r or real_d) and guard is not _REAL_GUARD:
+        out.append('(M4) the real tree is opened only by the real guard')
+    return out
+
+
+def record(row, msg):
+    """Append a row, commit it through the hook, then REFUSE unless the line is in HEAD:results.jsonl (checked with the
+    real git, not the hook; review r1 M4)."""
+    line = append_row(row)
+    HOOKS['commit'](msg)
+    head = _git(RESULTS.parent, 'show', '--no-textconv', f'HEAD:./{RESULTS.name}').stdout.splitlines()
+    if line not in head:
+        raise Refused(f'the {row.get("mode")} row is not in HEAD:{RESULTS.name} after the commit — stop')
+    return line
 
 
 def hashes(files, root=HERE):
@@ -323,6 +420,9 @@ class Panel:
         self.symbols = json.loads((self.dir / 'symbols.json').read_text())
         self.con = duckdb.connect()
         self.has_market = (self.dir / 'market_1h.parquet').exists()
+        keys = root / 'listing' / 'event_keys.json'          # names-only listing: which funding month files exist
+        self.funding_months = ({k['id']: {d for _k, d, _z in k['funding']} for k in json.loads(keys.read_text())}
+                               if keys.exists() else {})
 
     def bars(self, eid):
         return [tuple(r) for r in self.con.execute(
@@ -378,15 +478,18 @@ def evaluate(panel, with_market=True):
         stress = L.simulate(ev, bars, fund, panel.end, slip_mult=L.STRESS['slip_mult'], pay_mult=L.STRESS['pay_mult'],
                             receive_mult=L.STRESS['receive_mult'])
         bn = L.simulate(ev, bars, fund, panel.end, fee=L.FEE_BINANCE)
-        missing = set(e.get('funding_months_missing') or [])
+        pre_missing = set(e.get('funding_months_missing_pre_entry') or [])
         pre_months = set(L.months_between(e['first_trade'], base['entry_t']))
         hold_months = set(L.months_between(base['entry_t'], base['exit_t']))
-        fpre = None if pre_months & missing else L.funding_before_entry(e['first_trade'], base['entry_t'], fund)
+        have = panel.funding_months.get(e['id'])
+        hold_missing = (hold_months - have) if have is not None else set()     # derived inside the gate (r1 m5)
+        fpre = None if pre_months & pre_missing else L.funding_before_entry(e['first_trade'], base['entry_t'], fund)
         mk = panel.market(base['entry_t'], base['exit_t'], e['symbol']) if with_market else None
         r = dict(base, symbol=e['symbol'], primary=prim, premarket=e['premarket'], continuation=e.get('continuation'),
-                 spot_first=e['spot_first'], week=L.iso_week(e['first_trade']), year=L.day_of(e['first_trade'])[:4],
+                 spot_first=e['spot_first'], week=L.iso_week(e['first_trade']), quarter=L.quarter_of(e['first_trade']),
+                 year=L.day_of(e['first_trade'])[:4],
                  net_stress=stress['net'], net_binance_fee=bn['net'], f_pre=fpre, t2=fpre is not None and fpre >= 0,
-                 mkt=mk, partial_funding=bool(hold_months & missing))
+                 mkt=mk, partial_funding=bool(hold_missing))
         recs.append(r)
         if not prim:
             continue
@@ -420,7 +523,12 @@ def summary(rows, key='net'):
 
 def alpha_summary(rows):
     adj = [r for r in rows if r.get('mkt') is not None]
-    return L.ols_alpha([r['net'] for r in adj], [r['mkt'] for r in adj], [r['week'] for r in adj]) if adj else None
+    if not adj:
+        return None
+    fit, betas = L.alpha_fit(adj)
+    one = L.ols_alpha([r['net'] for r in adj], [r['mkt'] for r in adj], [r['week'] for r in adj])
+    return {'quarter_beta': {k: fit[k] for k in ('alpha', 'se', 't', 'G', 'n', 'K')}, 'betas': betas,
+            'single_beta_reported': one}
 
 
 def reported_blocks(recs, cal, crit, trials=L.TRIALS):
@@ -442,34 +550,44 @@ def reported_blocks(recs, cal, crit, trials=L.TRIALS):
         'books': {tn: L.book(tr[tn], span_years(cal)) for tn in trials},
         'books_stressed': {tn: L.book([dict(r, net=r['net_stress']) for r in tr[tn]], span_years(cal)) for tn in trials},
         'placebo_month_flips': {tn: L.placebo(tr[tn], crit[tn]) for tn in trials if crit.get(tn) is not None},
+        'placebo_alpha_month_flips': {tn: L.placebo_alpha(tr[tn], L.alpha_fit([r for r in tr[tn] if r.get('mkt') is not None])[1],
+                                                          L.alpha_crit(len({r['week'] for r in tr[tn]}), L.Q_DISCOVERY if cal != 'confirmation'
+                                                                       else L.Q_CONFIRM) or 99.0)
+                                      for tn in trials if any(r.get('mkt') is not None for r in tr[tn])},
     }
 
 
 def compact(recs):
-    keys = ('id', 'week', 'entry_t', 'exit_t', 'status', 'net', 'net_stress', 'primary', 'premarket', 'continuation',
-            't2', 'mkt', 'liquidated', 'slip_tier')
+    keys = ('id', 'week', 'quarter', 'entry_t', 'exit_t', 'status', 'net', 'net_stress', 'primary', 'premarket',
+            'continuation', 't2', 'mkt', 'liquidated', 'slip_tier')
     return [{k: r.get(k) for k in keys} for r in recs]
 
 
 def _failed(mode, commit, err):
-    append_row({'registration': REG.name, 'mode': f'{mode}_failed', 'registration_commit': commit, 'error': repr(err)[:500],
-                'run_at': dt.datetime.now(dt.UTC).isoformat()})
-    HOOKS['commit'](f'013 {mode}_failed')
+    record({'registration': REG.name, 'mode': f'{mode}_failed', 'registration_commit': commit, 'error': repr(err)[:500],
+            'run_at': dt.datetime.now(dt.UTC).isoformat()}, f'013 {mode}_failed')
+
+
+def _refuse_real_tree():
+    f = real_tree_failures()
+    if f:
+        raise Refused('; '.join(f))
 
 
 def run_discovery():
+    _refuse_real_tree()
     commit = guard('discovery')
-    append_row({'registration': REG.name, 'mode': 'discovery_started', 'registration_commit': commit,
-                'versions': versions(), 'run_at': dt.datetime.now(dt.UTC).isoformat()})
-    HOOKS['commit']('013 discovery_started')
+    _refuse_real_tree()
+    record({'registration': REG.name, 'mode': 'discovery_started', 'registration_commit': commit,
+            'versions': versions(), 'env': env_fingerprint(), 'run_at': dt.datetime.now(dt.UTC).isoformat()},
+           '013 discovery_started')
     try:
         out = _discovery_row(commit)
     except Exception as e:
         _failed('discovery', commit, e)
         raise
-    append_row(out)
-    HOOKS['commit']('013 discovery result')
-    print(json.dumps({tn: {k: out['trials'][tn][k] for k in ('n', 'G', 'mean', 't', 'alpha', 'alpha_beta', 'alpha_t', 'alpha_crit',
+    record(out, '013 discovery result')
+    print(json.dumps({tn: {k: out['trials'][tn][k] for k in ('n', 'G', 'mean', 't', 'alpha', 'betas', 'alpha_t', 'alpha_crit',
                                                              'criteria', 'pass')} for tn in L.TRIALS}, indent=1, default=str))
     print('decision', out['decision'])
 
@@ -508,24 +626,24 @@ def _discovery_row(commit):
 
 
 def run_confirmation():
+    _refuse_real_tree()
     commit = guard('confirmation')
+    _refuse_real_tree()
     rows_all = result_rows(RESULTS.parent, RESULTS.name)
     (dline, drow), = [(l, r) for l, r in rows_all if r.get('mode') == 'discovery']
     dec, _ = L.recheck_discovery(drow)
     carried = dec[1]
-    append_row({'registration': REG.name, 'mode': 'confirmation_started', 'registration_commit': commit,
-                'discovery_row_sha256': line_sha(dline), 'carried': carried, 'versions': versions(),
-                'run_at': dt.datetime.now(dt.UTC).isoformat()})
-    HOOKS['commit']('013 confirmation_started')
+    record({'registration': REG.name, 'mode': 'confirmation_started', 'registration_commit': commit,
+            'discovery_row_sha256': line_sha(dline), 'carried': carried, 'versions': versions(), 'env': env_fingerprint(),
+            'run_at': dt.datetime.now(dt.UTC).isoformat()}, '013 confirmation_started')
     try:
         out = _confirmation_row(commit, dline, carried)
     except Exception as e:
         _failed('confirmation', commit, e)
         raise
-    append_row(out)
-    HOOKS['commit']('013 confirmation result')
-    print(json.dumps({k: out['stats'][k] for k in ('alpha_n', 'alpha_G', 'alpha', 'alpha_t', 'alpha_crit', 'mean', 't')},
-                     indent=1, default=str))
+    record(out, '013 confirmation result')
+    print(json.dumps({k: out['stats'][k] for k in ('alpha_n', 'alpha_G', 'alpha', 'alpha_tail', 'alpha_tail_t', 'alpha_crit',
+                                                   'mean', 't')}, indent=1, default=str))
     print('confirm', out['confirm'], 'deploy', json.dumps(out['deploy'], default=str), 'decision', out['decision'])
 
 
@@ -540,17 +658,20 @@ def _confirmation_row(commit, dline, carried):
             conf = (recs, counts, rows)
             print('counts before the decision:', json.dumps(counts))
     recs, counts, rows = conf
-    s = L.trial_stats(rows, span_years('confirmation'), L.Q_CONFIRM)
+    pool_rows = [r for rws, _s, _y in pooled.values() for r in rws]
+    pi_pool = sum(bool(r['liquidated']) for r in pool_rows) / len(pool_rows) if pool_rows else 0.0   # all three calendars (M2)
+    s = L.trial_stats(rows, span_years('confirmation'), L.Q_CONFIRM, pool=pi_pool)
     ok, cr = L.confirm(s)
     rcrit = L.t_crit(s['G'] - 1, L.Q_CONFIRM) if s['G'] >= 2 else None
-    dep = L.deploy(rows, pooled['confirmation'][1], pooled, span_years('confirmation'))
+    dep = L.deploy(rows, pooled['confirmation'][1], pooled, span_years('confirmation'), s['betas'])
     return {'registration': REG.name, 'mode': 'confirmation', 'registration_commit': commit,
             'discovery_row_sha256': line_sha(dline), 'carried': carried, 'run_at': dt.datetime.now(dt.UTC).isoformat(),
             'versions': versions(), 'code_hashes': hashes(GUARDED_CODE), 'data_hashes': hashes(GUARDED_DATA),
             'span_years': span_years('confirmation'), 'counts': counts, 'stats': {**s, 'alpha_crit': cr}, 'confirm': ok,
             'deploy': dep, 'decision': L.decide_confirmation(ok, dep),
             'reported': {**reported_blocks(recs, 'confirmation', {carried: rcrit}, trials=(carried,)),
-                         'pooled_liquidation_rate': dep['pi_pool'], 'pooled_counts': {c: len(v[0]) for c, v in pooled.items()}},
+                         'pooled_liquidation_rate': pi_pool, 'pooled_counts': {c: len(v[0]) for c, v in pooled.items()},
+                         'untailed_alpha': {k: s[k] for k in ('alpha', 'alpha_t', 'alpha_without_largest_positive_week')}},
             'events': compact(recs)}
 
 
@@ -561,30 +682,50 @@ def schedule(cal, path=None):
     return [e['first_trade'] for e in sch[cal] if e['first_trade'] and not e['premarket'] and not e['continuation']]
 
 
+CONF_CRASH = (L.ms('2025-10-06'), L.ms('2026-03-01'))     # review r1 B1: the cascade and the decline into early 2026
+CONF_CRASH_MISALIGNED = (L.ms('2025-11-15'), L.ms('2026-01-16'))
+DISC_CRASH = (L.ms('2024-12-09'), L.ms('2025-04-08'))     # the discovery calendar's alt decline (public), same treatment
+
+
+def _regime(bin_, bout, drift_in, k, conf_window=CONF_CRASH, name=None):
+    return {'name': name or f'regime b{bin_}/{bout} crash{drift_in} k{k}', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': bout, 'k': k,
+            'drift_d': 0.0, 'drift_c': 0.0, 'regime_d': (*DISC_CRASH, bin_, drift_in), 'regime_c': (*conf_window, bin_, drift_in)}
+
+
 WORLDS = [
     # alt market SD fixed at 10.4 % per 7 days (msd 1; a 1.5 stress); k scales the idiosyncratic part (listing windows)
     *({'name': f'null k{k} b{b} drift{d}', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': b, 'k': k, 'drift_d': d, 'drift_c': d}
       for k in (1.0, 2.0) for b in (1.0, 1.5, 2.0) for d in (0.0, 0.01, 0.02)),
     *({'name': f'null k{k} b2 drift0.02 msd1.5', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 2.0, 'k': k, 'drift_d': 0.02,
        'drift_c': 0.02, 'msd': 1.5} for k in (1.0, 2.0)),
+    # review r1 B1: beta and the market's fall concentrated in a window (aligned with quarters, and misaligned)
+    _regime(2.5, 1.0, 0.03, 1.5), _regime(2.0, 1.25, 0.02, 1.5), _regime(2.0, 1.25, 0.03, 1.5), _regime(2.0, 1.25, 0.03, 1.0),
+    _regime(2.5, 1.0, 0.03, 1.0),
+    _regime(2.0, 1.25, 0.03, 1.5, CONF_CRASH_MISALIGNED, 'regime misaligned b2.0/1.25 crash0.03 k1.5'),
+    _regime(2.5, 1.0, 0.03, 1.5, CONF_CRASH_MISALIGNED, 'regime misaligned b2.5/1.0 crash0.03 k1.5'),
     *({'name': f'decayed b{b} cdrift{d}', 'mu_d': 0.04, 'mu_c': 0.0, 'beta': b, 'k': 1.5, 'drift_d': 0.0, 'drift_c': d}
       for b in (1.0, 1.5, 2.0) for d in (0.0, 0.01, 0.02)),
-    {'name': 'null squeeze atoms p2%', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0,
-     'liq_p': 0.02},
-    {'name': 'null squeeze weeks 3%', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0,
-     'liq_week_p': 0.03},
+    # squeeze worlds (reported; the tail-adjusted alpha answers them, M2)
+    {'name': 'squeeze atoms p2% b1.5 k1.5', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0, 'liq_p': 0.02},
+    {'name': 'squeeze atoms p1% b1.5 k1', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.0, 'drift_d': 0.0, 'drift_c': 0.0, 'liq_p': 0.01},
+    {'name': 'squeeze atoms p2% b2 bear2', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 2.0, 'k': 1.5, 'drift_d': 0.02, 'drift_c': 0.02, 'liq_p': 0.02},
+    {'name': 'squeeze weeks 3% b1.5 k1.5', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0, 'liq_week_p': 0.03},
     *({'name': f'power mu{mu} k{k}', 'mu_d': mu, 'mu_c': mu, 'beta': 1.5, 'k': k, 'drift_d': 0.0, 'drift_c': 0.0}
       for k in (1.0, 1.5, 2.0) for mu in (0.02, 0.04, 0.06, 0.08)),
     {'name': 'power mu0.04 k1.5 drift1', 'mu_d': 0.04, 'mu_c': 0.04, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.01, 'drift_c': 0.01},
+    {'name': 'power mu0.04 k1.5 squeeze p2%', 'mu_d': 0.04, 'mu_c': 0.04, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0, 'liq_p': 0.02},
+    {'name': 'power mu0.04 k1.5 regime', **{k: v for k, v in _regime(2.0, 1.25, 0.03, 1.5).items() if k not in ('name', 'mu_d', 'mu_c')},
+     'mu_d': 0.04, 'mu_c': 0.04},
 ]
-NULL_PREFIX = 'null k'                                   # the calibration set (beta / drift / market worlds; not squeeze)
+CALIBRATION_PREFIXES = ('null k', 'regime')              # the calibration set: null, beta / drift / market and regime worlds
 
 
 def power(sims=1500, worlds=None, path=None, keep=None):
     """Synthetic size, calibration and power from the same draws. Prints, per world, the rates at the uncalibrated
     t_{G-2}(q) and at the registered critical values, and the alpha-t quantiles used for calibration."""
-    dsch, csch = schedule('discovery', path), schedule('confirmation', path)
-    res = L.simulate_worlds(dsch, csch, span_years('discovery'), span_years('confirmation'), worlds or WORLDS, sims=sims)
+    dsch, csch, rsch = schedule('discovery', path), schedule('confirmation', path), schedule('reported', path)
+    res = L.simulate_worlds(dsch, csch, span_years('discovery'), span_years('confirmation'), worlds or WORLDS, sims=sims,
+                            rep_sched=rsch)
     out = []
     for w in res:
         recs = w.pop('records')
@@ -608,7 +749,7 @@ if __name__ == '__main__':
         keep = {}
         out = power(keep=keep)
         (DATA / 'logs').mkdir(parents=True, exist_ok=True)
-        (DATA / 'logs' / 'power_r1.json').write_text(json.dumps(out, indent=1))
-        (DATA / 'logs' / 'power_r1_records.json').write_text(json.dumps(keep))
+        (DATA / 'logs' / 'power_r2.json').write_text(json.dumps(out, indent=1))
+        (DATA / 'logs' / 'power_r2_records.json').write_text(json.dumps(keep))
     else:
         sys.exit(__doc__)

@@ -122,6 +122,23 @@ def stats_checks():
                 meat[i][j] += u[i] * u[j]
     v00 = sum(inv[0][i] * meat[i][j] * inv[j][0] for i in range(2) for j in range(2)) * 3 / 2 * 5 / 4
     check('OLS alpha CR1 t equals the brute-force sandwich', close(o['t'], a_ / math.sqrt(v00), 1e-9))
+    o2 = L.ols_cols(y, [x], ['a', 'a', 'b', 'b', 'c', 'c'])
+    check('the general OLS (ols_cols) equals the one-regressor fit (alpha and its CR1 t)', close(o2['alpha'], o['alpha'], 1e-12)
+          and close(o2['t'], o['t'], 1e-9))
+    check('beta groups: calendar quarters; a quarter with < 10 events joins the previous; a short first group joins the next',
+          L.beta_groups(['2024-Q1'] * 3 + ['2024-Q2'] * 12 + ['2024-Q3'] * 5 + ['2024-Q4'] * 11)
+          == {'2024-Q1': 0, '2024-Q2': 0, '2024-Q3': 0, '2024-Q4': 1})
+    rnd_ = random.Random(9)
+    reg = []
+    for i in range(240):
+        qq = ('2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2')[i // 60]
+        m_ = (-0.06 if qq == '2025-Q4' else 0.0) + rnd_.gauss(0, 0.05)
+        reg.append({'net': -(2.5 if qq == '2025-Q4' else 1.0) * m_ + rnd_.gauss(0, 0.02), 'mkt': m_, 'quarter': qq, 'week': f'w{i // 3}'})
+    single = L.ols_alpha([r['net'] for r in reg], [r['mkt'] for r in reg], [r['week'] for r in reg])
+    fitq, bq = L.alpha_fit(reg)
+    check('a beta regime (2.5 in the crash quarter, 1 elsewhere; no edge): the pooled single-beta alpha is biased up; '
+          'the quarter-beta alpha is not (review r1 B1)', single['alpha'] > 0.01 and abs(fitq['alpha']) < 0.006 and abs(bq['2025-Q4'] + 2.5) < 0.2,
+          f"single {single['alpha']:.4f} quarter {fitq['alpha']:.4f}")
     h1, h2 = L.halves([1.0, 2.0, 3.0, 4.0, 5.0], ['w1', 'w2', 'w2', 'w3', 'w4'])
     check('halves by listing week order', close(h1, 2.0) and close(h2, 4.5))
     check('without the largest positive week', close(L.without_largest_positive_week([1.0, 2.0, -3.0, 5.0], ['a', 'b', 'b', 'c']), 0.0))
@@ -175,9 +192,12 @@ def trade_checks():
           'exit_last_trade, not exit (review B M1)', r6['status'] == 'exit_last_trade' and close(r6['p_x'], 60.0) and r6['exit_t'] == T_IN + 5 * DAY)
     r7 = L.simulate(ev(), bars(skip=lambda t: T_X <= t < T_X + 3 * HOUR), [], END)
     check('a halt at the exit target: exit at the first traded bar within 6 h', r7['status'] == 'exit' and r7['exit_t'] == T_X + 3 * HOUR)
-    r7b = L.simulate(ev(), bars(skip=lambda t: T_X - DAY <= t < T_X + DAY), [], END)
-    check('a data hole across the exit window with trading after it: exit_late at the first traded bar (review A m9)',
-          r7b['status'] == 'exit_late' and r7b['exit_t'] == T_X + DAY)
+    r7b = L.simulate(ev(), bars(skip=lambda t: T_X - DAY <= t < T_X + 12 * HOUR), [], END)
+    check('a data hole across the exit window with trading 12 h after the target: exit_late at the first traded bar (A m9)',
+          r7b['status'] == 'exit_late' and r7b['exit_t'] == T_X + 12 * HOUR)
+    r7c = L.simulate(ev(), bars(skip=lambda t: T_X - DAY <= t < T_X + 30 * HOUR), [], END)
+    check('no trade within 24 h after the target: exit_last_trade at the last traded close BEFORE the target (late exits '
+          'capped, so the tail bounds stay exact; review r1 m4)', r7c['status'] == 'exit_last_trade' and r7c['exit_t'] <= T_X - DAY)
     check("the calendar's data end bounds every read", L.simulate(ev(), bars(), [], T_X - HOUR)['status'] == 'exit_last_trade')
     mk = L.simulate(ev(), bars(price=lambda t: 100.0 if t < T_IN + DAY else 90.0), [], END)['marks']
     check('daily marks at each UTC midnight while open (entry costs paid, price mark to the last traded close)',
@@ -208,9 +228,15 @@ def calendar_checks():
     check('later trading segments: a run after >= 7 days without trades is found; hours before not_before are ignored',
           L.later_trading_segments(hs, L.ms('2024-05-01')) == [L.ms('2024-07-01')]
           and L.later_trading_segments(hs, L.ms('2024-06-20')) == [])
-    check('continuations: the fixed list (names) covers the four categories, every id keyed (symbol@d0)',
-          all(v[0] in 'abcd' and '@' in k for k, v in L.CONTINUATIONS.items()) and L.CONTINUATIONS['POLUSDT@2024-09-13'].startswith('a')
-          and L.CONTINUATIONS['XAUTUSDT@2026-03-26'].startswith('d'))
+    check('continuations: ONE rule (p: the token or its predecessor had a Binance perp before d0) plus (d) gold; '
+          'the withdrawn rule-(c) names (LUMIA, SYRUP, CFG, ASTER, BEAMX) and USTC are back in the events',
+          all(v[0] in 'pd' and (v[1] is None) == (v[0] == 'd') for v in L.CONTINUATIONS.values())
+          and not any(k.split('USDT@')[0] in ('LUMIA', 'SYRUP', 'CFG', 'ASTER', 'BEAMX', 'USTC') for k in L.CONTINUATIONS)
+          and sum(1 for k in L.CONTINUATIONS if L.calendar_of_day(k.split('@')[1]) == 'discovery') == 14
+          and sum(1 for k in L.CONTINUATIONS if L.calendar_of_day(k.split('@')[1]) == 'confirmation') == 5)
+    check('continuation_failures: a predecessor whose first file is not before d0 is caught (point in time)',
+          L.continuation_failures({'MATICUSDT': ['2024-09-20']}) != [] and
+          not [f for f in L.continuation_failures({'MATICUSDT': ['2020-10-22']}) if f.startswith('POLUSDT')])
     check('pre-market flag only from 2025', L.is_premarket('2025-04-05', False) and not L.is_premarket('2021-03-01', False))
     check('months_between spans month boundaries', L.months_between(L.ms('2024-01-31'), L.ms('2024-02-08')) == ['2024-01', '2024-02'])
 
@@ -230,9 +256,9 @@ def book_checks():
     b = L.book(rows, 1.0)
     check('rolling week cap: 10 entries within hours -> 7 taken', b['events_taken'] == L.WEEK_MAX)
     rnd = random.Random(7)
-    dense = [_row(i, t0 + i * 2 * HOUR, -1.0, hold=rnd.choice((HOUR, 3 * DAY, L.HOLD))) for i in range(1200)]
+    dense = [_row(i, t0 + i * 2 * HOUR, -1.0, hold=rnd.choice((HOUR, 3 * DAY, L.HOLD, L.HOLD + L.LATE_WINDOW))) for i in range(1200)]
     b = L.book(dense, 1.0)
-    check(f'structural bounds hold on an adversarial dense schedule (every exit a liquidation): worst exit week >= {L.STRUCTURAL_WEEK:.3f}, '
+    check(f'structural bounds hold on an adversarial dense schedule incl. late exits at target + 24 h (every exit -1): week >= {L.STRUCTURAL_WEEK:.3f}, '
           f'worst exit month >= {L.STRUCTURAL_MONTH:.3f}', b['worst_week'] >= L.STRUCTURAL_WEEK - 1e-12 and b['worst_month'] >= L.STRUCTURAL_MONTH - 1e-12,
           f"{b['worst_week']:.4f} {b['worst_month']:.4f}")
     check('the pre-registered plausible month is inside the -30 % line', L.PLAUSIBLE_MONTH > -0.30 and close(L.PLAUSIBLE_MONTH, -0.296875))
@@ -247,13 +273,18 @@ def book_checks():
     conf = [_row(i, L.ms('2025-08-01') + i * 2 * DAY, 0.06) for i in range(100)]
     pool_liq = [_row(i, L.ms('2024-01-01') + i * 2 * DAY, -1.0 if i % 10 == 0 else 0.06) for i in range(200)]
     pooled = {'discovery': (pool_liq, pool_liq, 1.1), 'confirmation': (conf, conf, 0.55)}
-    d = L.deploy(conf, conf, pooled, 0.55)
+    d = L.deploy(conf, conf, pooled, 0.55, {})['raw']
     check('deploy: a liquidation-free confirmation is charged the pooled liquidation rate (peso problem)',
           d['pi_conf'] == 0 and d['pi_pool'] > 0 and d['mu_tail'] < d['mu_conf'] and d['tail_charge_per_year'] > 0)
     check('deploy: one definition; the economic bar is evaluated at c*, after the charges',
           d['c_star'] <= L.C_EVENT and close(d['annual_charged'], d['annual_at_c_star'] - d['tail_charge_per_year']))
+    bear = [dict(_row(i, L.ms('2025-08-01') + i * 2 * DAY, 0.05), mkt=-0.05, quarter='2025-Q3') for i in range(100)]
+    db = L.deploy(bear, bear, {'confirmation': (bear, bear, 0.55)}, 0.55, {'2025-Q3': -1.0})
+    check('deploy on min(raw, adjusted) (review r1 M1): a bear calendar whose raw +5 % is all beta (adjusted 0) does not deploy',
+          db['raw']['bars']['mean_tail_ge_100bp'] and db['adjusted']['mu_tail'] < 0.01 and db['deploy'] is False
+          and db['c_star'] == min(db['raw']['c_star'], db['adjusted']['c_star']))
     worse = [_row(i, L.ms('2024-01-01') + i * DAY, -1.0) for i in range(60)]
-    d2 = L.deploy(conf, conf, {'discovery': (worse, worse, 1.0), 'confirmation': (conf, conf, 0.55)}, 0.55)
+    d2 = L.deploy(conf, conf, {'discovery': (worse, worse, 1.0), 'confirmation': (conf, conf, 0.55)}, 0.55, {})['raw']
     check('deploy: a pooled worst month beyond -30 % scales c* down to the -30 % size',
           close(d2['c_star'], L.C_EVENT * -0.30 / d2['worst_month_pooled_at_c0']) and d2['c_star'] < L.C_EVENT)
 
@@ -262,7 +293,8 @@ def book_checks():
 def good_stats(**over):
     s = {'n': 200, 'G': 60, 'mean': 0.04, 't': 3.0, 'median_raw': 0.03, 'alpha': 0.03, 'alpha_beta': -1.2, 'alpha_t': 3.5,
          'alpha_G': 58, 'alpha_n': 190, 'adj_median': 0.02, 'adj_half_1': 0.02, 'adj_half_2': 0.04,
-         'alpha_without_largest_positive_week': 0.025, 'annual_on_capital': 0.2, 'span_years': 1.55, 'q': L.Q_DISCOVERY}
+         'alpha_without_largest_positive_week': 0.025, 'mean_econ': 0.03, 'annual_econ': 0.2, 'span_years': 1.55,
+         'q': L.Q_DISCOVERY}
     s.update(over)
     return s
 
@@ -300,7 +332,8 @@ def decision_checks():
     fails = {'alpha t below crit': good_stats(alpha_t=cr - 1e-6), 'alpha <= 0': good_stats(alpha=-0.002),
              'adjusted median negative': good_stats(adj_median=-0.001), 'adjusted second half negative': good_stats(adj_half_2=-0.01),
              'alpha without the best week <= 0': good_stats(alpha_without_largest_positive_week=-0.001),
-             'raw mean below 100 bp': good_stats(mean=0.009), 'book below 3 %/yr': good_stats(annual_on_capital=0.029),
+             'min(raw, adjusted) mean below 100 bp': good_stats(mean_econ=0.009),
+             'min(raw, adjusted) book below 3 %/yr': good_stats(annual_econ=0.029),
              'too few weeks': good_stats(alpha_G=9), 'too few events': good_stats(alpha_n=19)}
     check('each criterion alone fails the trial', all(not L.discovery_criteria(s)[1] for s in fails.values()),
           str([k for k, s in fails.items() if L.discovery_criteria(s)[1]]))
@@ -320,13 +353,20 @@ def decision_checks():
     forged['trials']['T1']['alpha_t'] = 0.5
     check('a forged alpha t under pass labels is caught', L.recheck_discovery(forged)[1] != [])
     check('recheck of an empty row fails', L.recheck_discovery({})[1] != [])
-    s = {'alpha_n': 120, 'alpha_G': 40, 'alpha': 0.02, 'alpha_t': 2.2, 'alpha_without_largest_positive_week': 0.01}
+    s = {'alpha_n': 120, 'alpha_G': 40, 'alpha_tail': 0.02, 'alpha_tail_t': 2.5, 'alpha_tail_without_largest_positive_week': 0.01}
     ok, cr = L.confirm(s)
-    check('confirmation = existence test on alpha: alpha > 0, t >= max(t_{G-2}(0.95), CAL_C), alpha > 0 without the best week',
+    check('confirmation = existence test on the TAIL-ADJUSTED alpha: > 0, t >= max(t_{G-2}(0.95), CAL_C), > 0 without the best week',
           ok and close(cr, L.alpha_crit(40, L.Q_CONFIRM)))
-    check('confirmation fails at alpha t just below crit, alpha <= 0, < 5 weeks, or alpha <= 0 without the best week',
-          not L.confirm(dict(s, alpha_t=cr - 1e-6))[0] and not L.confirm(dict(s, alpha=-0.01))[0] and not L.confirm(dict(s, alpha_G=4))[0]
-          and not L.confirm(dict(s, alpha_without_largest_positive_week=-0.001))[0])
+    check('confirmation fails at t just below crit, alpha_tail <= 0, < 5 weeks, or <= 0 without the best week',
+          not L.confirm(dict(s, alpha_tail_t=cr - 1e-6))[0] and not L.confirm(dict(s, alpha_tail=-0.01))[0]
+          and not L.confirm(dict(s, alpha_G=4))[0] and not L.confirm(dict(s, alpha_tail_without_largest_positive_week=-0.001))[0])
+    recs = syn_records()
+    st0 = L.trial_stats(recs, 1.55, L.Q_CONFIRM, pool=0.0)
+    st1 = L.trial_stats(recs, 1.55, L.Q_CONFIRM, pool=0.02)
+    check('tail-adjusted alpha (review r1 M2): no charge when the pooled liquidation rate <= the sample\'s; otherwise alpha - '
+          '(pool - pi) * (1 + mean non-liquidated net), same SE', close(st0['alpha_tail'], st0['alpha'])
+          and close(st1['alpha_tail'], st1['alpha'] - 0.02 * (1 + sum(r['net'] for r in recs) / len(recs)), 1e-12)
+          and close(st1['alpha_tail_t'] / st1['alpha_tail'], st1['alpha_t'] / st1['alpha'], 1e-9))
     check('decision after CONFIRM only: deploy -> paper; not deploy -> below bar; no CONFIRM -> not confirmed',
           L.decide_confirmation(True, {'deploy': True}) == 'confirm_paper' and L.decide_confirmation(True, {'deploy': False}) == 'confirm_below_bar'
           and L.decide_confirmation(False, {'deploy': True}) == 'not_confirmed')
@@ -338,8 +378,13 @@ def placebo_and_sim_checks():
     rows = [dict(r, fees=0.0012, slip=0.0013) for r in syn_records(mu=0.0)]
     p = L.placebo(rows, L.t_crit(59, 0.975))
     check('placebo: calendar-month sign flips, costs kept', p['seeds'] == 200 and 0 <= p['pass_share_net_t'] <= 0.2, json.dumps(p))
+    pa = L.placebo_alpha(syn_records(mu=0.0), {}, L.t_crit(58, 0.975))
+    check('alpha placebo: month flips of the adjusted series (review r1 m9)', pa['seeds'] == 200 and pa['share_t_ge_crit'] <= 0.2, json.dumps(pa))
     rnd = random.Random(1)
     sched = [L.CALENDARS['discovery'][0] + int(rnd.random() * 500 * DAY) for _ in range(200)]
+    reg_ev = L.sim_events(sched, 0.0, 1.0, 1.0, 0.0, random.Random(2), regime=(L.ms('2024-06-01'), L.ms('2024-09-01'), 2.5, 0.03))
+    check('regime worlds: events with a first trade in the window carry beta_in; every event has its quarter',
+          all('quarter' in e for e in reg_ev) and len(reg_ev) == 200)
     ev_ = L.sim_events(sched, 0.0, 1.5, 1.0, 0.02, rnd)
     check('simulated events sit at the given first-trade times with overlapping 7-day holds and a continuous market',
           len(ev_) == 200 and all(e['exit_t'] - e['entry_t'] == L.HOLD for e in ev_) and len({round(e['mkt'], 9) for e in ev_}) > 150)
@@ -458,9 +503,9 @@ def build_checks():
         later = out.pop('_later_segments')
         a = out['discovery']['events'][0]
         check('first trade = the first 1m bar with trades', a['first_trade'] == L.ms('2024-03-05') + 600 * MIN)
-        check('per-event coverage is PRE-ENTRY only (rows in [d0, first trade + 25 h)); no hold-window count stored (000n)',
+        check('per-event coverage is PRE-ENTRY only (rows in [d0, first trade + 24 h)); no hold-window count stored (000n)',
               set(a['cov_pre_entry']) == {'daily_files_d0_d1', 'rows_1m', 'rows_zero_trades', 'first_trade_on_d0', 'funding_rows'}
-              and a['cov_pre_entry']['rows_1m'] == 600 + 25 * 60 and 'cov' not in a)
+              and a['cov_pre_entry']['rows_1m'] == 600 + 24 * 60 and 'cov' not in a)
         check('calendar counts hold no window-level total', not any(k in out['discovery']['counts'] for k in ('rows_1m', 'funding_rows', 'rows_zero_trades')))
         b = out['confirmation']['events']
         check('confirmation listing: microsecond stamps read as ms; nothing on or after 2026-07-01',
@@ -580,51 +625,73 @@ def _syn_panel(root, cal, n_weeks, seed, mu=0.08):
 
 
 def run_e2e_checks():
-    print('the full runs end to end (synthetic panels, guard and commit stubbed, temp results file)')
+    print('the full runs end to end (synthetic panels, guard stubbed, a temp git repo for results.jsonl, the DEFAULT commit hook)')
     import r013_run as R
-    saved = (R.guard, R.DATA, R.RESULTS, dict(R.HOOKS), R.evaluate)
+    saved = (R.guard, R.DATA, R.RESULTS, R.evaluate)
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         _syn_panel(root, 'discovery', 30, 1)
         _syn_panel(root, 'reported', 3, 2)
         _syn_panel(root, 'confirmation', 14, 3)
-        commits = []
+        git = lambda *a: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=root, capture_output=True, text=True)
+        git('init', '-q', '-b', 'main')
+        git('config', 'user.name', 't')
+        git('config', 'user.email', 't@t')
+        (root / 'results.jsonl').write_text('')
+        git('add', 'results.jsonl')
+        git('commit', '-q', '-m', 'empty results')
         try:
             R.guard = lambda mode: 'c0ffee'
             R.DATA, R.RESULTS = root, root / 'results.jsonl'
-            R.HOOKS['commit'] = lambda msg: commits.append(msg)
-            R.RESULTS.write_text('')
+            check('real_tree_failures is empty on a fully synthetic tree', R.real_tree_failures() == [])
             R.run_discovery()
-            rows = [json.loads(l) for l in R.RESULTS.read_text().splitlines()]
-            check('discovery: started row, committed; then one result row, committed', [r['mode'] for r in rows] == ['discovery_started', 'discovery']
-                  and commits == ['013 discovery_started', '013 discovery result'] and rows[0]['versions'] == R.versions())
+            lines = R.RESULTS.read_text().splitlines()
+            rows = [json.loads(l) for l in lines]
+            head = git('show', 'HEAD:results.jsonl').stdout.splitlines()
+            check('discovery: started row then one result row, EACH IN HEAD (committed alone by the default hook, verified)',
+                  [r['mode'] for r in rows] == ['discovery_started', 'discovery'] and all(l in head for l in lines)
+                  and rows[0]['env']['duckdb']['files'] > 0)
             dec, f = L.recheck_discovery(rows[1])
             check('discovery row: the decision recomputed from its per-event records equals the stored one', not f and dec == rows[1]['decision'], str(f))
-            check('discovery row: the pre-market and continuation events are out of T1, in their strata',
-                  rows[1]['trials']['T1']['n'] == sum(1 for e in rows[1]['events'] if e['primary'] and e['status'] != 'no_entry')
-                  and rows[1]['reported']['continuation_stratum'] is not None)
+            check('discovery row: quarter betas, min(raw, adjusted) economics, split-beta alpha and both placebos are recorded',
+                  rows[1]['trials']['T1']['betas'] and 'annual_econ' in rows[1]['trials']['T1'] and 'alpha_split_reported' in rows[1]['trials']['T1']
+                  and rows[1]['reported']['placebo_alpha_month_flips'])
             if dec[0] != 'read_confirmation':
                 check('the synthetic discovery was planted to pass', False, str(rows[1]['trials']['T1']['criteria']))
             R.run_confirmation()
-            rows = [json.loads(l) for l in R.RESULTS.read_text().splitlines()]
-            check('confirmation: started row bound to the discovery row, then one decided row with the deploy block; each committed',
-                  [r['mode'] for r in rows][2:] == ['confirmation_started', 'confirmation'] and len(commits) == 4
-                  and rows[2]['discovery_row_sha256'] == R.line_sha(R.RESULTS.read_text().splitlines()[1])
-                  and rows[3]['decision'] in ('confirm_paper', 'confirm_below_bar', 'not_confirmed') and 'c_star' in rows[3]['deploy'],
-                  rows[3].get('decision'))
+            lines = R.RESULTS.read_text().splitlines()
+            rows = [json.loads(l) for l in lines]
+            head = git('show', 'HEAD:results.jsonl').stdout.splitlines()
+            check('confirmation: started (bound to the discovery row) and result rows in HEAD; tail-adjusted alpha; deploy on raw AND adjusted',
+                  [r['mode'] for r in rows][2:] == ['confirmation_started', 'confirmation'] and all(l in head for l in lines)
+                  and rows[2]['discovery_row_sha256'] == R.line_sha(lines[1]) and 'alpha_tail' in rows[3]['stats']
+                  and {'raw', 'adjusted'} <= set(rows[3]['deploy']) and rows[3]['decision'] in ('confirm_paper', 'confirm_below_bar', 'not_confirmed'))
             R.RESULTS.write_text('')
-            commits.clear()
+            git('commit', '-q', '-am', 'reset for the crash probe')
 
             def boom(*a, **k):
                 raise RuntimeError('disk full')
             R.evaluate = boom
             check('a crash after the started row writes and commits a discovery_failed row (a terminal state)',
                   _raises(R.run_discovery, (RuntimeError,)) and [json.loads(l)['mode'] for l in R.RESULTS.read_text().splitlines()]
-                  == ['discovery_started', 'discovery_failed'] and commits == ['013 discovery_started', '013 discovery_failed'])
+                  == ['discovery_started', 'discovery_failed'] and R.RESULTS.read_text().splitlines()[-1] in
+                  git('show', 'HEAD:results.jsonl').stdout.splitlines())
+            R.evaluate = saved[3]
+            saved_hook = R.HOOKS['commit']
+            R.HOOKS['commit'] = lambda msg: None
+            try:
+                check('a MOCKED commit hook that does not commit: the row is not in HEAD, so the run refuses (review r1 M4)',
+                      _raises(lambda: R.record({'registration': '013-x.md', 'mode': 'probe'}, 'probe'), REF))
+                R.DATA = R.DATA_REAL
+                check('a mocked hook, or a stubbed guard, on the real data tree is refused (r008 real_tree_failures, ported)',
+                      any('non-default commit hook' in x for x in R.real_tree_failures())
+                      and any('only together' in x for x in R.real_tree_failures()) and any('real guard' in x for x in R.real_tree_failures()))
+            finally:
+                R.HOOKS['commit'] = saved_hook
+            R.DATA, R.RESULTS = root, R.REAL_RESULTS
+            check('the real results.jsonl with a synthetic data tree is refused too', any('only together' in x for x in R.real_tree_failures()))
         finally:
-            R.guard, R.DATA, R.RESULTS, R.evaluate = saved[0], saved[1], saved[2], saved[4]
-            R.HOOKS.clear()
-            R.HOOKS.update(saved[3])
+            R.guard, R.DATA, R.RESULTS, R.evaluate = saved
 
 
 # ------------------------------------------------------------------ guard (throwaway git repos)
@@ -816,12 +883,64 @@ def bypass_checks():
     check('(7) an anchor commit that is not an ancestor refuses (w)',
           any(x.startswith('(w)') for x in R.guard_failures(root, REG_REL, CODE, DATAF, anchor=R.ANCHOR)[0]))
     (root / 'duckdb.py').write_text('raise SystemExit("shadow")\n')
-    check('(8) an untracked duckdb.py next to the runner is refused (v)', any('untracked python' in x for x in R.environment_failures(root)))
+    check('(8) an untracked duckdb.py next to the runner is refused (v)', any('shadow' in x for x in R.environment_failures(root)))
+    # ---- review r1 m2: textconv / -diff attributes and an external diff driver cannot blind the scans
+    root, git = base()
+    _add(root, {'registration': '013-x.md', 'mode': 'discovery'})
+    git('commit', '-q', '-am', 'row')
+    (root / 'results.jsonl').write_text('\n'.join(l for l in (root / 'results.jsonl').read_text().splitlines() if '013-x' not in l) + '\n')
+    git('commit', '-q', '-am', 'row erased')
+    (root / '.git' / 'info').mkdir(exist_ok=True)
+    (root / '.git' / 'info' / 'attributes').write_text('results.jsonl -diff\n*.jsonl diff=blank\n')
+    git('config', 'diff.blank.textconv', 'true')
+    check('(11) a `-diff` attribute and a textconv driver on results.jsonl do not hide an erased row (--text --no-textconv)',
+          any(x.startswith('(f)') for x in f(root)))
+    root, git = base()
+    rc = git('rev-parse', 'HEAD').stdout.strip()
+    (root / REG_REL).write_text((root / REG_REL).read_text() + 'prose added later\n')
+    git('commit', '-q', '-am', 'prose')
+    git('config', 'diff.external', '/usr/bin/true')
+    changed = [l for l in R._git(root, 'diff', '-U0', '--text', '--no-textconv', '--no-ext-diff', '--no-color', rc, 'HEAD', '--',
+                                 REG_REL).stdout.splitlines() if l.startswith('+') and not l.startswith('+++')]
+    check('(12) diff.external cannot blank the (r) diff (--no-ext-diff)', changed == ['+prose added later'])
+    # ---- review r1 m3: r008's shadow_modules (packages, sourceless .pyc, ignored files, extension modules)
+    root, git = base()
+    (root / 'email').mkdir()
+    (root / 'email' / '__init__.py').write_text('raise SystemExit("shadow")\n')
+    (root / 'ipaddress.pyc').write_bytes(b'\x00')
+    (root / 'quopri.py').write_text('x = 1\n')
+    (root / '.git' / 'info' / 'exclude').write_text('quopri.py\n')
+    import sysconfig
+    (root / 'ct' / ('listings013' + sysconfig.get_config_var('EXT_SUFFIX'))).write_bytes(b'\x00')
+    sh = R.shadow_modules(root)
+    check('(13) shadow_modules catches a top-level package, a sourceless .pyc, an ignored .py and an extension module in ct/',
+          {'email/__init__.py', 'ipaddress.pyc', 'quopri.py', 'ct/listings013' + sysconfig.get_config_var('EXT_SUFFIX')} <= set(sh), str(sh))
+    # ---- review r1 m3: a forged __pycache__ .pyc (header matching the source's mtime and size) is never loaded
+    with tempfile.TemporaryDirectory() as d:
+        dd = Path(d)
+        (dd / 'modx.py').write_text('X = 1\n')
+        import importlib.util as iu, marshal, struct
+        st = (dd / 'modx.py').stat()
+        code = compile('X = 666\n', str(dd / 'modx.py'), 'exec')
+        pyc = dd / '__pycache__' / f'modx.{sys.implementation.cache_tag}.pyc'
+        pyc.parent.mkdir()
+        pyc.write_bytes(iu.MAGIC_NUMBER + struct.pack('<III', 0, int(st.st_mtime) & 0xFFFFFFFF, st.st_size & 0xFFFFFFFF) + marshal.dumps(code))
+        run = lambda pre: subprocess.run([sys.executable, '-I', '-c', pre + 'import sys; sys.path.insert(0, "."); import modx; print(modx.X)'],
+                                         cwd=dd, capture_output=True, text=True).stdout.strip()
+        check('(14) a forged __pycache__ .pyc IS loaded by plain Python (the attack is real) and is NOT once sys.pycache_prefix '
+              'points to a fresh directory (what r013_run does before importing ct)',
+              run('') == '666' and run('import sys, tempfile; sys.pycache_prefix = tempfile.mkdtemp(); ') == '1')
+    p2 = subprocess.run([sys.executable, '-I', '-c', 'import sys; sys.path.insert(0, "."); import r013_run as R; print(R.loaded_from_source())'],
+                        cwd=HERE, capture_output=True, text=True)
+    check('(15) the runner, imported as a program does, loads ct from source under a fresh pycache prefix', p2.stdout.strip() == '[]', p2.stderr[-200:])
     p = subprocess.run([sys.executable, '-O', '-c', 'import sys; sys.path.insert(0, ".");'
                         'import r013_run as R; print(any("-O" in x for x in R.environment_failures(R.HERE)))'],
                        cwd=HERE, capture_output=True, text=True)
     check('(9) `python -O` is refused by (v)', p.stdout.strip() == 'True', p.stderr[-200:])
     check('(10) the pinned versions match this interpreter (python 3.14.8, duckdb 1.5.6, pyarrow 25.0.1)', R.versions() == R.PINS)
+    fp = R.env_fingerprint()
+    check('(16) the environment fingerprint hashes every duckdb and pyarrow file (parity with r008; review r1 m10)',
+          fp['duckdb']['files'] > 10 and fp['pyarrow']['files'] > 10 and fp == R.env_fingerprint())
 
 
 # ------------------------------------------------------------------ the real files
@@ -830,16 +949,19 @@ def real_file_checks():
     print('the real registration (DRAFT) and its hash table')
     reg = HERE / 'registrations' / '013-new-perp-listings.md'
     text = reg.read_text()
-    check('the status line says DRAFT', '\n**Status: DRAFT**' in text)
+    status = 'DRAFT' if '\n**Status: DRAFT**' in text else ('REGISTERED' if '\n**Status: REGISTERED' in text else None)
+    check('the status line is DRAFT or REGISTERED (this check does not go stale at commit or registration; review r1 m1)', status is not None)
     check('no line starts with the approval phrase', not R.APPROVAL.findall(text) and not any(l.startswith('Confirmation:') for l in text.splitlines()))
     fails = R.guard_failures(HERE, 'registrations/013-new-perp-listings.md', mode='discovery', toplevel=R.REPO, anchor=R.ANCHOR)[0]
-    check('the real guard refuses discovery today (not REGISTERED, untracked)', any('not REGISTERED' in x for x in fails) and any(x.startswith('(a)') for x in fails))
+    check('while DRAFT the real guard refuses on status (commit state is not asserted)', status != 'DRAFT' or any('not REGISTERED' in x for x in fails))
     table = dict(R.HASH_ROW.findall(text))
     files = (*R.GUARDED_CODE, *R.GUARDED_DATA)
     missing = [f for f in files if f not in table]
     wrong = [f for f in files if f in table and (not (HERE / f).exists() or R.sha256(HERE / f) != table[f])]
     check('§10 lists every guarded code and data file, and every hash matches', not missing and not wrong, f'missing {missing} wrong {wrong}')
-    check('results.jsonl holds no 013 row (any name starting 013-)', not R.result_rows(HERE, 'results.jsonl'))
+    check('before registration results.jsonl holds no 013 row (any name starting 013-)', status != 'DRAFT' or not R.result_rows(HERE, 'results.jsonl'))
+    days = json.loads((R.DATA_REAL / 'listing' / 'um_daily_1d_days.json').read_text())
+    check('every continuation is point in time against the 1d listing (names and dates only)', L.continuation_failures(days) == [])
     import duckdb
     con = duckdb.connect()
     want = {'bars_1m.parquet': ['id', 't', 'o', 'h', 'l', 'c', 'qv', 'n'], 'funding.parquet': ['id', 'calc_time', 'interval_h', 'rate'],
@@ -855,7 +977,7 @@ def real_file_checks():
         for e in json.loads((R.DATA_REAL / f'panel_{cal}' / 'events.json').read_text()):
             ev_keys |= set(e) | set(e.get('cov_pre_entry', {}))
     check('the real events.json files hold pre-entry fields only (000n)', ev_keys == {'id', 'symbol', 'd0', 'calendar', 'first_trade', 'premarket',
-          'spot_first', 'continuation', 'funding_months_missing', 'cov_pre_entry', 'daily_files_d0_d1', 'rows_1m', 'rows_zero_trades',
+          'spot_first', 'continuation', 'funding_months_missing_pre_entry', 'cov_pre_entry', 'daily_files_d0_d1', 'rows_1m', 'rows_zero_trades',
           'first_trade_on_d0', 'funding_rows'}, str(ev_keys))
 
 
