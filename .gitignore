@@ -192,6 +192,8 @@ research/copytrade/.venv/
 # Alpha-discovery research (round 4): data stays local
 # (docs/alpha-discovery-orchestrator-prompt-2026-10-13.md).
 research/alpha/data/
+# Raw simulation record dumps from review probes (summaries and logs are committed)
+research/alpha/scratch_review*/*_records.json
 __pycache__/
 
 # Claude Code personal settings

@@ -459,6 +459,32 @@ routing bar (A), pins the Europe file when it is pulled (A), and records a
 interpreter tampering (as 008's forged-`.pyc` residual). Then B rechecks
 R1-M1/M2 only, and 015 is registered.
 
+**2026-10-13 — 016 review A: not ready (2 blockers, 3 majors); Revision 1
+ordered with both reviews.** (`research/alpha/registrations/reviews/016-review-a.md`;
+probes in `research/alpha/scratch_review016a/`, synthetic only.) Sound: the
+rule is a faithful transcription of the paper; dropping per-cell β is
+justified (cells absorb 0.6–1.5 of a real trend's α t).
+- **B1** the H1 critical value is too low: in bull markets with a leverage
+  effect, constant slopes credit unearned α (false pass 0.056–0.116; the
+  drafter's worst world at 3,000 draws has q95 1.83, not 1.731).
+  *Decision:* the primary becomes a **holdings-based timing statistic (Lo
+  2008)** (false pass ≤ 0.013 in those worlds, power at SR 1 0.61–0.87 vs
+  0.72–0.85); the factor α t is reported.
+- **B2** the designer-known span (a) can carry a pass alone (0.20–0.24 when
+  (c) has no trend), breaking `000t`. *Decision:* a pass also needs the
+  span-(c)-alone t ≥ 1.282 (false pass 0.02–0.035; −0.18 power at SR 1).
+- **M1** H2 mostly measures market drift (bear drift → false "decayed"
+  0.08–0.16). *Decision:* decay tested on α, calibrated as proposed
+  (indicative power 0.96–0.98 at SR 0); a three-step ladder of outcomes.
+- **M2** a dead book ends "undecided" 45–79% of the time and the owner
+  would keep trading it. *Decision:* any allocation ends at the read unless
+  H1 passes.
+- **M3** the economic bar clears on 67–90% of passes even where the book is
+  dead (2.8× leverage vs HLP's 4%). *Decision:* the bar uses the return at
+  the Bayes-Kelly size.
+- **Revision 1** goes to the 016 drafter with every A and B finding and the
+  015 guard fixes (including 015-B's merge bypass); then probe rechecks.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -509,6 +535,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 Revision 1 | drafter | 2026-10-13 | done (200/200); recheck A register, B two majors |
 | 015 Revision 2 | drafter | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
-| 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | running |
+| 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
+| 016 Revision 1 | drafter | 2026-10-13 | running |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |

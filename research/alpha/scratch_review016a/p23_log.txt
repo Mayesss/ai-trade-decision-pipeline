@@ -1,0 +1,26 @@
+S1 (a) trend SR~1.5, (c) dead t 1.60 T 1.10 sr 0.66 t_a 2.39 t_c -0.82 74s
+S2 (a) trend SR~2.5, (c) dead t 2.52 T 1.86 sr 1.12 t_a 3.65 t_c -0.80 146s
+S3 (a) trend SR~1.5, (c) SR~0.75 t 2.75 T 1.87 sr 1.13 t_a 2.47 t_c 1.01 218s
+S4 (a) dead, (c) SR~1 t 1.07 T 0.78 sr 0.47 t_a -0.80 t_c 1.41 291s
+S5 both SR~1 t 2.32 T 1.56 sr 0.94 t_a 1.28 t_c 1.45 363s
+S6 both SR~0.75 t 1.77 T 1.22 sr 0.73 t_a 0.88 t_c 1.01 436s
+S7 both SR~1.5 t 3.71 T 2.50 sr 1.51 t_a 2.35 t_c 2.55 505s
+S8 both dead (kappa 0) t -0.80 T -0.54 sr -0.33 t_a -0.91 t_c -0.89 573s
+H h60 SR 0 fwd drift +0% t -0.10 T 0.08 sr 0.05 t_a -0.42 t_c -0.37 643s
+H h60 SR 0 fwd drift -40% t -0.11 T -1.26 sr -0.76 t_a -0.51 t_c -0.40 713s
+H h60 SR 0 fwd drift +40% t 0.00 T 1.20 sr 0.72 t_a -0.39 t_c -0.30 783s
+H h60 SR 0.5 fwd drift +0% t 1.06 T 0.88 sr 0.53 t_a 0.32 t_c 0.52 853s
+H h60 SR 0.5 fwd drift -40% t 1.06 T -0.31 sr -0.18 t_a 0.34 t_c 0.46 922s
+H h60 SR 0.5 fwd drift +40% t 1.12 T 1.75 sr 1.06 t_a 0.43 t_c 0.54 992s
+H h60 SR 0.75 fwd drift +0% t 1.77 T 1.15 sr 0.69 t_a 0.87 t_c 1.01 1062s
+H h60 SR 0.75 fwd drift -40% t 1.64 T 0.27 sr 0.16 t_a 0.79 t_c 0.89 1131s
+H h60 SR 0.75 fwd drift +40% t 1.77 T 2.02 sr 1.22 t_a 0.89 t_c 1.03 1202s
+H h60 SR 1 fwd drift +0% t 2.37 T 1.68 sr 1.02 t_a 1.35 t_c 1.47 1271s
+H h60 SR 1 fwd drift -40% t 2.42 T 0.86 sr 0.52 t_a 1.32 t_c 1.51 1340s
+H h60 SR 1 fwd drift +40% t 2.36 T 2.41 sr 1.46 t_a 1.33 t_c 1.53 1409s
+H h60 SR 1.57 fwd drift +0% t 3.95 T 2.68 sr 1.62 t_a 2.68 t_c 2.82 1481s
+H h60 SR 1.57 fwd drift -40% t 3.85 T 2.01 sr 1.21 t_a 2.49 t_c 2.70 1550s
+H h60 SR 1.57 fwd drift +40% t 4.00 T 3.23 sr 1.95 t_a 2.65 t_c 2.78 1651s
+H h20 SR 1.57 fwd drift +0% t 4.02 T 2.59 sr 1.56 t_a 2.69 t_c 2.83 1779s
+H h120 SR 1.57 fwd drift +0% t 3.87 T 2.56 sr 1.54 t_a 2.54 t_c 2.65 1892s
+H h120 SR 1.57 fwd drift -40% t 3.87 T 1.82 sr 1.10 t_a 2.45 t_c 2.67 1967s

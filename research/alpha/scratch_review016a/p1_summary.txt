@@ -1,0 +1,17 @@
+N1 flat, GJR leverage, t3                                  t:-0.90/0.83/0.003 t_year:-1.60/0.28/0.001 t_half:-2.28/-0.34/0.000 H1 0.003 sr -0.26 H2rej 0.668 127s
+N2 bull +80%/yr, GJR leverage, t3                          t:+0.05/1.83/0.065 t_year:-0.56/1.37/0.031 t_half:-1.31/0.64/0.005 H1 0.056 sr 1.76 H2rej 0.004 261s
+N3 bull +80%, GJR t3, -35% crash in (c)                    t:+0.05/2.06/0.096 t_year:-0.47/1.60/0.040 t_half:-1.16/0.76/0.005 H1 0.091 sr 0.99 H2rej 0.043 393s
+N4 alt-minus-BTC drift (BTC +30%, alts -50%/yr extra)      t:-0.73/0.92/0.004 t_year:-1.29/0.54/0.001 t_half:-1.71/0.24/0.000 H1 0.004 sr -0.98 H2rej 0.903 526s
+N5 beta rises in uptrends (x1.4/x0.6), bull +60%           t:-1.55/0.24/0.002 t_year:-1.98/-0.14/0.001 t_half:-2.21/-0.33/0.000 H1 0.002 sr 1.19 H2rej 0.018 656s
+N6 vol timing pays (+100% low vol / -60% high), GJR t3     t:+0.54/2.19/0.123 t_year:+0.00/1.84/0.065 t_half:-0.78/1.24/0.015 H1 0.116 sr 1.94 H2rej 0.004 835s
+N7 2022-style bear in (c) with +12% short squeezes, GJR    t:-0.44/1.26/0.017 t_year:-1.17/0.79/0.007 t_half:-1.81/0.14/0.000 H1 0.013 sr 0.26 H2rej 0.338 1032s
+N8 2025-26 path in (a) + alt bleed in (a), GJR t3, (c) fla t:-0.20/1.60/0.041 t_year:-1.05/1.03/0.012 t_half:-1.64/0.37/0.002 H1 0.032 sr -0.12 H2rej 0.587 1165s
+N9 universe enters on rallies (volume ~ 30d return), flat  t:-0.78/0.92/0.005 t_year:-1.40/0.47/0.001 t_half:-1.85/0.09/0.000 H1 0.005 sr -0.29 H2rej 0.675 1289s
+N10 universe enters on rallies, bull +60%, GJR t3          t:-0.23/1.53/0.031 t_year:-0.90/1.15/0.014 t_half:-1.70/0.29/0.000 H1 0.028 sr 1.26 H2rej 0.028 1415s
+N11 binding world re-run (cells aligned, t3, GJR)          t:+0.24/1.83/0.063 t_year:-0.54/1.33/0.023 t_half:-2.01/0.02/0.000 H1 0.057 sr 0.15 H2rej 0.405 1789s
+R1 momentum crash x2 (quiet +150% rally, -35% day, V rebou t:-0.44/1.16/0.023 t_year:-0.55/1.30/0.023 t_half:-0.84/1.20/0.013 H1 0.022 sr -0.05 H2rej 0.618 1865s
+R2 year-aligned bull/bear +80/-80/+80                      t:+0.40/2.08/0.117 t_year:-1.12/0.85/0.005 t_half:-1.63/0.23/0.000 H1 0.105 sr 0.57 H2rej 0.182 1942s
+R3 Markov regimes +-80%/yr, mean duration 120 d            t:+0.18/1.77/0.055 t_year:-0.54/1.23/0.020 t_half:-1.23/0.58/0.003 H1 0.047 sr 0.14 H2rej 0.388 2015s
+T1 AR trend h60 kappa 0.116 (drafter SR~1)                 t:+2.42/4.07/0.750 t_year:+1.71/3.51/0.500 t_half:+0.93/2.74/0.253 H1 0.725 sr 0.96 H2rej 0.112 2090s
+T2 AR trend h120 kappa 0.110 (drafter SR~1)                t:+2.35/4.09/0.737 t_year:+1.59/3.61/0.460 t_half:+0.88/2.96/0.257 H1 0.707 sr 0.85 H2rej 0.188 2164s
+T3 AR trend h20 kappa 0.153 (drafter SR~1)                 t:+2.73/4.25/0.860 t_year:+2.15/4.02/0.638 t_half:+1.45/3.35/0.407 H1 0.833 sr 1.10 H2rej 0.050 2238s

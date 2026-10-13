@@ -1,0 +1,46 @@
+== selection on span (a) in the 11 trend-free calibration worlds (pooled)
+  t_a >=   -9: n  6600  P(pass registered) 0.018  P(pass with t_c>=1) 0.014
+  t_a >=  0.0: n  2001  P(pass registered) 0.049  P(pass with t_c>=1) 0.037
+  t_a >=  1.0: n   561  P(pass registered) 0.109  P(pass with t_c>=1) 0.073
+  t_a >=  1.5: n   170  P(pass registered) 0.200  P(pass with t_c>=1) 0.124
+  t_a >=  2.0: n    50  P(pass registered) 0.260  P(pass with t_c>=1) 0.120
+  t_a >=  2.5: n    13  P(pass registered) 0.077  P(pass with t_c>=1) 0.077
+== economic bar on H1 passes (drafter trend worlds; no funding; raw=mean, adj=alpha)
+  trend h20 SR 0       passes   9  P(bar clears | pass) 0.667  min -0.069 median 0.056
+  trend h20 SR 0.5     passes 115  P(bar clears | pass) 0.861  min -0.060 median 0.117
+  trend h20 SR 0.75    passes 239  P(bar clears | pass) 0.895  min -0.051 median 0.151
+  trend h20 SR 1       passes 332  P(bar clears | pass) 0.931  min -0.117 median 0.191
+  trend h20 SR 1.5     passes 389  P(bar clears | pass) 0.974  min -0.059 median 0.306
+  trend h20 SR 1.57    passes 392  P(bar clears | pass) 0.992  min -0.026 median 0.337
+  trend h60 SR 0       passes  19  P(bar clears | pass) 0.895  min -0.025 median 0.104
+  trend h60 SR 0.5     passes  90  P(bar clears | pass) 0.900  min -0.014 median 0.134
+  trend h60 SR 0.75    passes 162  P(bar clears | pass) 0.877  min -0.060 median 0.131
+  trend h60 SR 1       passes 288  P(bar clears | pass) 0.868  min -0.080 median 0.169
+  trend h60 SR 1.5     passes 385  P(bar clears | pass) 0.956  min -0.084 median 0.271
+  trend h60 SR 1.57    passes 388  P(bar clears | pass) 0.956  min -0.090 median 0.321
+  trend h120 SR 0      passes  16  P(bar clears | pass) 0.750  min -0.022 median 0.100
+  trend h120 SR 0.5    passes  99  P(bar clears | pass) 0.848  min -0.095 median 0.128
+  trend h120 SR 0.75   passes 201  P(bar clears | pass) 0.881  min -0.103 median 0.143
+  trend h120 SR 1      passes 270  P(bar clears | pass) 0.863  min -0.144 median 0.163
+  trend h120 SR 1.5    passes 375  P(bar clears | pass) 0.896  min -0.148 median 0.275
+  trend h120 SR 1.57   passes 385  P(bar clears | pass) 0.943  min -0.124 median 0.294
+== alpha t as the decay statistic: c2 = min q05 of t_const over the SR-1.57 worlds
+  c2 = 2.093 {'trend h20 SR 1.57': 2.437, 'trend h60 SR 1.57': 2.212, 'trend h120 SR 1.57': 2.093}
+  trend h20 SR 0       reject 1.57: T-based 0.507   alpha-t-based 0.990
+  trend h20 SR 0.5     reject 1.57: T-based 0.195   alpha-t-based 0.820
+  trend h20 SR 0.75    reject 1.57: T-based 0.115   alpha-t-based 0.537
+  trend h20 SR 1       reject 1.57: T-based 0.055   alpha-t-based 0.245
+  trend h20 SR 1.5     reject 1.57: T-based 0.015   alpha-t-based 0.043
+  trend h20 SR 1.57    reject 1.57: T-based 0.005   alpha-t-based 0.028
+  trend h60 SR 0       reject 1.57: T-based 0.505   alpha-t-based 0.983
+  trend h60 SR 0.5     reject 1.57: T-based 0.220   alpha-t-based 0.843
+  trend h60 SR 0.75    reject 1.57: T-based 0.233   alpha-t-based 0.675
+  trend h60 SR 1       reject 1.57: T-based 0.117   alpha-t-based 0.357
+  trend h60 SR 1.5     reject 1.57: T-based 0.033   alpha-t-based 0.068
+  trend h60 SR 1.57    reject 1.57: T-based 0.028   alpha-t-based 0.037
+  trend h120 SR 0      reject 1.57: T-based 0.500   alpha-t-based 0.983
+  trend h120 SR 0.5    reject 1.57: T-based 0.285   alpha-t-based 0.807
+  trend h120 SR 0.75   reject 1.57: T-based 0.203   alpha-t-based 0.575
+  trend h120 SR 1      reject 1.57: T-based 0.155   alpha-t-based 0.432
+  trend h120 SR 1.5    reject 1.57: T-based 0.098   alpha-t-based 0.102
+  trend h120 SR 1.57   reject 1.57: T-based 0.050   alpha-t-based 0.050
