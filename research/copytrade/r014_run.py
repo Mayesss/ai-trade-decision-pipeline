@@ -99,7 +99,7 @@ def result_rows(root, results_rel, name):
 def first_commit_containing(root, rel, needle):
     """The oldest commit on HEAD's history whose version of `rel` contains the line `needle`."""
     for c in _git(root, 'log', '--format=%H', '--reverse', '--', rel).stdout.split():
-        if needle in _git(root, 'show', f'{c}:{rel}').stdout.splitlines():
+        if needle in _git(root, 'show', f'{c}:./{rel}').stdout.splitlines():  # ./ = relative to root (review B, B1)
             return c
     return None
 
@@ -136,7 +136,7 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
         if rows:
             out.append(f'(f) {results_rel} (or the history of any branch) already holds a {reg.name} row — the trial runs once')
         return out, commit
-    head = set(_git(root, 'show', f'HEAD:{results_rel}').stdout.splitlines())
+    head = set(_git(root, 'show', f'HEAD:./{results_rel}').stdout.splitlines())  # ./ = relative to root (review B, B1)
     disc = [(ln, r) for ln, r in rows if r.get('mode') == 'discovery']
     started = [(ln, r) for ln, r in rows if r.get('mode') == 'discovery_started']
     if len(disc) != 1:

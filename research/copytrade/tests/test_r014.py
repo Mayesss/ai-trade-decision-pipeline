@@ -51,6 +51,7 @@ def main():
     fetch_checks()
     build_and_panel_checks()
     guard_checks()
+    guard_checks('research/copytrade')
     e2e_checks()
     tail_checks()
     real_file_checks()
@@ -502,16 +503,20 @@ def build_and_panel_checks():
 
 
 # ------------------------------------------------------------------ guard (throwaway git repo)
-def guard_checks():
-    print('guard (throwaway git repo): status, (a)-(f), discovery_started first, one result row, holdout (g1)-(g4), (h\'), (i)')
+def guard_checks(sub=''):
+    """Run in two layouts: the runner at the repo top level, and the real one, in a subdirectory
+    (review B, B1: `git show <rev>:<path>` resolves from the repo root unless the path starts with ./)."""
+    print(f"guard (throwaway git repo, runner at {sub or 'the top level'}): status, (a)-(f), discovery_started first, "
+          "one result row, holdout (g1)-(g4), (h'), (i)")
     import r014_run as R
     code, data = ('ct/shortvol.py', 'r014_run.py'), ('data/r014/panel_discovery/x.json',)
     reg_rel = 'registrations/014-x.md'
     with tempfile.TemporaryDirectory() as d:
-        root = Path(d)
+        root = Path(d) / sub
+        root.mkdir(parents=True, exist_ok=True)
         git = lambda *a: subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=root,
                                         capture_output=True, text=True, check=True)
-        git('init', '-q', '-b', 'main')
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=d, capture_output=True, text=True, check=True)
         for f, body in (('ct/shortvol.py', 'x = 1\n'), ('r014_run.py', 'y = 2\n'), ('data/r014/panel_discovery/x.json', '{}\n'),
                         ('results.jsonl', json.dumps({'registration': '005-y.md'}) + '\n')):
             (root / f).parent.mkdir(parents=True, exist_ok=True)

@@ -19,6 +19,16 @@ week explicitly; detach the size from the test; add the regime null (review A M2
 calibration. The pull and both panels stay on disk and pinned; the 2021-03-24 → 2026-06-30 Deribit
 calendars remain unread by any outcome computation.
 
+**Revision 2 (2026-10-13, owner: "fix it instead"; review B, B1 fixed; still PARKED).** The holdout
+gate read `git show HEAD:results.jsonl` and `git show <c>:<rel>`, which git resolves from the repository
+root, so with the runner in `research/copytrade/` (g2) and (h') always refused and the gate could never
+open. Both calls now use `<rev>:./<path>` (relative to the runner's directory). `tests/test_r014.py` runs
+the guard checks in both layouts, the top level and `research/copytrade/`; the real-layout run failed
+before the fix exactly as the review found ((g2) twice, (h')) and passes after it. Only `r014_run.py`'s
+hash changes in §9 (owner-approved pin update, 2026-10-13). No data, mechanics, criterion or calendar
+changed; no outcome was read. Review B's M1–M4 and review A's findings remain open; the parking reason
+(economics at a robust size) is unchanged.
+
 **Revision 1 (2026-10-13, orchestrator decision `000m`): the realistic hedged tail.** The registered
 H24 mechanics, unchanged, were run on the 21 out-of-calendar weeks (entries 2019-03-29 → 2021-03-05, all
 holds ending before 2021-03-24) whose BTC or ETH weekly excursion is ≥ 25 %, selected on the underlying
@@ -619,7 +629,7 @@ this registration's calendars.
 - [x] `r014_run.py` — the guard, `Panel` (whitelist and read lock), `positions`, `--discovery`
   (`discovery_started` row first, exactly one result row), `--holdout` ((g1)–(g4), (h'), (i); the
   decision recomputed from the committed row; one started row, one result row), `--power` (synthetic).
-- [x] `tests/test_r014.py` — **126 checks pass** (`.venv/bin/python -m tests.test_r014`):
+- [x] `tests/test_r014.py` — **144 checks pass** (126 before Revision 2, which runs the guard checks in both layouts) (`.venv/bin/python -m tests.test_r014`):
   - maths (parity, IV round trip, t quantiles); calendars (143 / 129 entries, the embargo week);
   - entry (nearest traded strike, window bounds, stale index → perp, missing reasons, coverage twin
     agrees); settlement (per-minute TWAP, < 10 minutes → perp, the trade at 08:00 excluded);
@@ -664,7 +674,7 @@ orchestrator at commit):
 | `ct/__init__.py` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 | `ct/shortvol.py` | `ce119f7c17cc01786091732c325fe3cd1a457ae67db8eec028367dbf9a7a9329` |
 | `ct/shortvol_sim.py` | `1435acbfbfe7382e30a123ae09b802681dfa1797a882a818f30b61eb7b4cd48b` |
-| `r014_run.py` | `c1025c84ddf811dccdb40bc30b450e0aa8859a14d633a0932e6bacc2dac150e8` |
+| `r014_run.py` | `c4330c143619e3b2f03eb3c886c832bcdd10c07b8ae3e26284e5883105e94fbd` |
 | `r014_fetch.py` | `7c1987e1ae785289178865d7590fa3d135f27ce35fb03b5fd793c60617b8182e` |
 | `r014_tail.py` | `7ca3baaed14137c7e395d7e43cf68e7193554c400ea0de8108ba330a262e802c` |
 | `r014_build.py` | `4aac7529cd61fe94c6212d0d38c46616ac3b8d5240b43e28699fdad69c918bca` |
