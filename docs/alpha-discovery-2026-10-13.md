@@ -288,6 +288,23 @@ table by hand: SR 1 → monthly 0.289 × √33 = 1.66; 6.2 years for 80%.)
   exists is free, it is the only light with a 15–20%/yr path, and a
   decay verdict is itself worth having. Exposure ledgered as `000t`.
 
+**2026-10-13 — 015 DRAFT committed (`012eff7`); two independent reviews
+launched.** The orchestrator re-ran the suite: 137/137. Primary: the L/S
+month statistic y_m on Mkt-RF with settlement-era means, 149 months; confirm
+iff mean > 0, t ≥ max(1.655, **1.91**) (calibrated over 13 regime worlds,
+10,000 draws each; the binding world is a 2020-style crash ending on a
+pressure-window end), and mean > 0 without the largest month. False pass
+0.024–0.049 across the worlds; a two-crash stress world gives 0.086 at 1.91
+and would need 2.13 (−0.07 power; D8 for the reviewers). Power 0.69–0.88 at
+the full effect, 0.22–0.45 at half. **Weakness stated by the drafter:** the
+primary cannot tell the settlement mechanism apart (an effect left on the
+unshifted T+3 windows still passes 0.65); the paired contrast has power
+0.15–0.22, so it is reported only. Size 1.0× on MES (≈ ¼–⅓ Kelly): +10%/yr at
+full effect, +4.9% at half; worst week −20%, month −23 to −25%. Reviews: A
+(design, statistics, economics, tail) and B (guard, integrity, data,
+calendar; including the sequencing with 016's untracked files, which 015's
+shadow-module check refuses on).
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -332,6 +349,8 @@ Everything in round 2 §5 and round 3 §5 (all under
 | C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | done; `000t` |
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
-| 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | running |
+| 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | DRAFT committed `012eff7` (137/137) |
+| 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | running |
+| 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
