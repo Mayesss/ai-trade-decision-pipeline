@@ -28,7 +28,7 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 |---|---|---|---|---|---|
 | 008 (L3) | Inverted 001 T3 positioning, HL holdout only | REGISTERED; fetch attempt 3 ≥ 2026-10-14 06:40, attempt 4 ≥ 24 h later, then the read | 1 in 5 (gross) | 1 in 20 (taker book never traded) | a confirm only earns a cost-reduced follow-up |
 | A1 | Be the house: perp-DEX LP pools and protocol vaults (counterparty to persistent losers, fact 1) | **scout done; no trial** — an allocation with a venue-exploit tail (5–10%/yr est.), NAV test unpowered (~9 yr for t 2) | LLP 0.6 | LLP 1 in 6 | HLP-like; owner option: HLP + LLP sleeve ≤ 25% per venue |
-| B1 | US equities/ETFs/rates: scheduled and structural flows, executed on `xyz` perps / CFDs / futures | scout running | — | — | — |
+| B1 | US equities/ETFs/rates: scheduled and structural flows, executed on `xyz` perps / CFDs / futures | **scout done; 015 (month-end liquidity cycle, settlement-shifted) to be drafted**; auctions and FOMC weeks held; overnight drift, PEAD, `xyz` carry dead or lending | 1 in 3 | 1 in 5 | ≈ 5%/yr at half effect, 1.2×; 11–25%/yr at full effect, 1.2–2.6× |
 | C1 | Crypto trend following (N7-1) and convex crypto exposures: a test with power | scout running | — | — | — |
 | D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | **scout done; parked, no trial** — best trial is T2 frozen, P(confirm) ≈ 0.09, ≈ 0–4%/yr at the robust size after the peso charge; calendar stays unread | 1 in 3 | 1 in 20 | below HLP |
 | E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | **scout done; no trial** — all lending-like today; BNB stack ≈ 2.5%/yr hedged at the 2026-H1 pace | 9 in 10 (paid) | 1 in 4 | below HLP calm |
@@ -189,6 +189,45 @@ checksums pass; small count discrepancies recorded in `000r`.)
 - **Decision.** No trial. The BNB stack is recorded as an owner option at
   ~2.5%/yr hedged today, rising only if Binance's listing cadence returns.
 
+**2026-10-13 — B1 scout: scheduled institutional flows are testable on
+149 unread months; 015 (month-end liquidity cycle) to be drafted.**
+(`research/alpha/scouts/b1-equities-flows.md`; the orchestrator recounted the
+month-end calendar (150 rows, 149 complete, settlement lags 44 / 80 / 25)
+and checked the power arithmetic: t 2.67 at 85 bp over 149 months implies a
+window SD ≈ 3.9%, consistent with 1.12% daily vol over ~13 days.)
+- **Month-end liquidity cycle (Etula et al. RFS 2020), shifted by the
+  settlement lag** (T+3 → T+2 on 2017-09-05, SEC 34-80295; → T+1 on
+  2024-05-28, SEC 34-96930): 2014-01 → 2026-05 is after the paper's sample
+  and unread by us. Long/short power 0.85 at the published 85 bp, 0.38 at
+  half. Cost ≈ 1–2 bp per round trip on MES or the `xyz` SP500 perp.
+  **Return:** ≈ 5%/yr at half effect and 1.2×; ≈ 11%/yr at full effect and
+  1.2×, 25%/yr at 2.6×. Tail at 1.2×: worst week −13 to −17%, month −15 to
+  −20% (documented two-day S&P falls −10.5% 2025-04, −13.9% 2020-03).
+- **Pension-rebalancing front-run (Harvey, Mazzoleni & Melone 2025):** SR
+  1.11, skew +5.2 over 1997–2023, the one convex payoff here. But the
+  authors' sample (extended to 2025) covers our whole calendar: a pass is a
+  replication; the post-publication span (~16 months) has t ≈ 1.15 at SR 1.
+- **Treasury auction cycle (Lou, Yan & Zhang):** the best-powered test here
+  (2y/5y t 3.5–4 at the full effect), but futures-only and ≈ 5%/yr at a
+  robust size. Held.
+- **Dead or lending:** overnight drift (≈ 0 in 2021–25 per its own authors,
+  and below `xyz` cost even at full effect), `xyz` funding carry (≈ +1%/yr
+  over T-bills, with weekend-gap and venue tails), PEAD (large caps, gone),
+  pre-holiday, an earnings-week premium on `xyz` names (data and
+  survivorship block it). FOMC even weeks: one paper, no post-2016
+  replication; held.
+- **Decision.** Draft **015: the settlement-shifted month-end liquidity
+  cycle**, one trial in a new family (US equity calendar flows, count 1).
+  Why spend a trial here when its likely landing is 5–11%/yr: it is the only
+  light of the round that is (i) testable with power on a calendar nobody
+  in this programme has read, (ii) almost free to execute, (iii) leverable
+  with a documented tail, and (iv) carries a **mechanism prediction** (the
+  window moves with the settlement lag) that a calendar fluke cannot fake.
+  A confirm at near-full effect is the round's first credible 20%+ path at
+  2–2.6×. HMM rebalancing goes in as a pre-stated **reported replication**
+  (decides nothing); the 2026-07 → calendar stays held back for a forward
+  confirmation of either. Exposure ledgered as `000s`.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -210,7 +249,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | worker | deliverable | started | state |
 |---|---|---|---|
 | A1 scout (house side) | `research/alpha/scouts/a1-house-side.md` | 2026-10-13 | done; exposures to ledger `000p` |
-| B1 scout (equities, rates) | `research/alpha/scouts/b1-equities-flows.md` | 2026-10-13 | running |
+| B1 scout (equities, rates) | `research/alpha/scouts/b1-equities-flows.md` | 2026-10-13 | done; `000s` |
 | C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | running |
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
