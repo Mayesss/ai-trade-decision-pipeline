@@ -31,7 +31,7 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 | B1 | US equities/ETFs/rates: scheduled and structural flows, executed on `xyz` perps / CFDs / futures | scout running | — | — | — |
 | C1 | Crypto trend following (N7-1) and convex crypto exposures: a test with power | scout running | — | — | — |
 | D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | **scout done; parked, no trial** — best trial is T2 frozen, P(confirm) ≈ 0.09, ≈ 0–4%/yr at the robust size after the peso charge; calendar stays unread | 1 in 3 | 1 in 20 | below HLP |
-| E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | scout running | — | — | — |
+| E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | **scout done; no trial** — all lending-like today; BNB stack ≈ 2.5%/yr hedged at the 2026-H1 pace | 9 in 10 (paid) | 1 in 4 | below HLP calm |
 
 ## 2. Family counts and holdouts (carried over)
 
@@ -158,6 +158,37 @@ checksums pass.)
   (2021-11 → 2024-01; no listing windows). That is a continuation-after-large-move
   look: any trend or momentum registration on Binance 2021–23 states it.
 
+**2026-10-13 — E1 scout: every structural payer found is real, and every
+one is lending-like at our size today; no trial.**
+(`research/alpha/scouts/e1-structural-payers.md`; the orchestrator recounted
+the reward table: 97 events to 2026-06-30, none edited after the cutoff,
+checksums pass; small count discrepancies recorded in `000r`.)
+- **BNB reward stack (N7-2), behaviour step done.** HODLer airdrops 5 / 54 /
+  7 projects (2024-H2 / 2025 / 2026-H1), Launchpool 21 / 8 / 1 (2024 / 2025 /
+  2026-H1), Megadrop ended 2025-04. Reward size per airdrop halved (median 2%
+  → 1% of max supply). Launchpool pool size is public (16.6–19.1 M BNB); the
+  HODLer pool is not, but shares the same Simple Earn base. Hedge feasible
+  (HL BNB perp, ~$105–143k within 10 bp). **Hedged return: ~5%/yr at the
+  2025 pace, ~2.5%/yr at the 2026-H1 pace, over half of it ordinary funding
+  carry.** The payer's decay is measured, not assumed. Venue tail
+  (Binance freeze) unpriced; size as money one accepts losing.
+- **Crypto dollar yields** (sUSDe, Pendle PT, Aave/Morpho/Sky): lending,
+  3–6%/yr, with documented depeg/insolvency tails (USDe $0.65 on Binance
+  2025-10-10; xUSD −77% 2025-11-04).
+- **Event contracts:** no access change since `l5b`. New reachable venue:
+  HL HIP-4 outcome markets (live 2026-05-02, 7/4 bp); no bias study, two
+  months of pre-cutoff history.
+- **Commodity carry/momentum:** CFD financing (~4%/yr each side) exceeds the
+  premium; futures net ~5.5% at 15% vol, test power 0.30–0.55, and full
+  per-contract history is not keyless (Nasdaq Data Link needs a free key →
+  owner's call; not requested, since even a pass is lending-plus).
+- **Rejected:** points/airdrop farming (one-off bets, rules set after the
+  fact: not testable), HL pre-IPO perps/hyperps (funding ×0.005 so nobody
+  pays carry; 3 pre-cutoff conversions), maker rebates (unreachable),
+  CFD carry, insurance underwriting.
+- **Decision.** No trial. The BNB stack is recorded as an owner option at
+  ~2.5%/yr hedged today, rising only if Binance's listing cadence returns.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -182,5 +213,5 @@ Everything in round 2 §5 and round 3 §5 (all under
 | B1 scout (equities, rates) | `research/alpha/scouts/b1-equities-flows.md` | 2026-10-13 | running |
 | C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | running |
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
-| E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | running |
+| E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
