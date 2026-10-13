@@ -295,6 +295,25 @@ tested beats HLP. Best point estimate: 013 T2's discovery book, about
 +6%/yr at 2.5% per event (α t 1.24, not significant). Best statistically
 supported result: 010 T2, +2.96%/yr (the lending rate).
 
+**After round 4's scouting (2026-10-13, no trial spent yet):**
+- **Closed or parked without a trial:** house-side pools (an allocation
+  with an exploit tail, unpowered as alpha), listings T2 (≈ 0–4%/yr at a
+  robust size), every structural payer (lending-like today), overnight
+  drift, PEAD, `xyz` carry.
+- **Two registrations being drafted:**
+  - **015, month-end liquidity cycle** (149 unread months): a confirm at
+    the published effect ≈ 11%/yr at 1.2×, 25%/yr at 2.6× (month tail −15
+    to −20% at 1.2×); at half the effect ≈ 5%/yr. Odds of a confirm ≈ 1 in
+    3. Decidable now.
+  - **016, crypto trend verbatim**: if alive at half strength ≈ +16–18%/yr
+    at 25% vol, month tail −30 to −40%. Decided 2028-01; decay verdict is
+    the likely answer.
+- **The honest picture.** The 30–100% zone needs leverage on an edge that
+  survives out of sample. Only 015 (at near-full effect, 2–2.6×) and 016
+  (alive, 25%+ vol) reach 20%+, each with a 30–40% drawdown budget; the two
+  would diversify each other (equity calendar vs crypto trend). HLP-like
+  allocations (A1, E1) remain owner options for the lending leg.
+
 ## 5. Data inventory
 
 Everything in round 2 §5 and round 3 §5 (all under
@@ -313,4 +332,6 @@ Everything in round 2 §5 and round 3 §5 (all under
 | C1 scout (crypto trend) | `research/alpha/scouts/c1-crypto-trend.md` | 2026-10-13 | done; `000t` |
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
+| 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | running |
+| 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
