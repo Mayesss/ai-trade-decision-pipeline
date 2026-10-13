@@ -1,8 +1,8 @@
 """Registration 016 — synthetic worlds for size, calibration and power. Reads no data at all.
 
 A world is a 24-coin daily panel (BTC plus 23 alts) from SIM_START to the registered END, on the real calendar, so
-the registered path runs end to end on it: universe selection, the nine-lookback book, the three factors, H1 with
-half-year cells and month clusters, H2. Log returns:
+the registered path runs end to end on it: universe selection, the nine-lookback book, the timing statistic t_A
+(pooled and on span (c) alone), the reported factor alpha and raw Sharpe. Simple returns:
 
     r_i,t = mu_i,t + beta_i(t) m_t + s_i (sigma_t / sigma_bar) eta_i,t
     m_t   = d_t + sigma_t z_t,  sigma_t^2 = omega + a (sigma z)_{t-1}^2 [+ g 1[z<0] (sigma z)^2] + b sigma_{t-1}^2
@@ -75,10 +75,13 @@ def make_world(spec, seed):
     vol_mult = spec.get('vol_mult', 1.0)
     sbar = SIGMA_BAR * vol_mult
     omega = sbar * sbar * max(1e-6, 1.0 - a_ - b_ - g_ / 2.0)
-    d0, d1 = R.day(SIM_START), R.day(R.END)
+    d0 = R.day(dt.date.fromisoformat(spec['start'])) if 'start' in spec else R.day(SIM_START)
+    d1 = R.day(dt.date.fromisoformat(spec['end'])) if 'end' in spec else R.day(R.END)
+    k_until = R.day(dt.date.fromisoformat(spec['kappa_until'])) if 'kappa_until' in spec else None
     drift = drift_fn(spec)
     crash = {R.day(dt.date.fromisoformat(x)): v for x, v in spec.get('crashes', {}).items()}
     ar = spec.get('ar', 0.0)                  # market return autocorrelation (mean reversion < 0)
+    equal_drift = spec.get('equal_drift', False)
     names = [R.BTC] + [f'C{i:02d}USDT' for i in range(1, N_COINS)]
     betas = [1.0] + [rng.uniform(1.0, 1.5) for _ in range(1, N_COINS)]
     idio = [0.30 / math.sqrt(365)] + [rng.uniform(0.35, 0.80) / math.sqrt(365) for _ in range(1, N_COINS)]
@@ -102,7 +105,8 @@ def make_world(spec, seed):
         sig = math.sqrt(sig2) * (2.0 if boost > 0 else 1.0)
         boost = max(0, boost - 1)
         z = _t_unit(rng, df)
-        m = drift(o, sig) + sig * z + ar * prev_m
+        dr = drift(o, sig)
+        m = dr + sig * z + ar * prev_m
         prev_shock = sig * z
         if o in crash:
             m += math.log(1.0 + crash[o])
@@ -119,6 +123,10 @@ def make_world(spec, seed):
             if kappa:
                 v[i] = phi * v[i] + innov * rng.gauss(0.0, 1.0)
                 mu = kappa * tot_sd[i] * (rho * u + math.sqrt(1.0 - rho * rho) * v[i])
+                if k_until is not None and o > k_until:
+                    mu = 0.0
+            if equal_drift and i:              # every coin's expected drift equals the market's (no alt excess drift)
+                mu += (1.0 - b) * dr
             r = mu + b * m + idio[i] * (sig / sbar) * _t_unit(rng, df)
             price[i] *= max(0.05, 1.0 + r)               # simple returns: E[r | past] = mu + beta d exactly
             occ[i] = 0.98 * occ[i] + rng.gauss(0.0, 0.08)
@@ -128,52 +136,55 @@ def make_world(spec, seed):
 
 
 def run_draw(spec, seed):
-    """One draw through the registered path. Returns the statistics the size and power tables need, for the primary
-    market model (constant slopes, D14) and the two calendar-cell variants (reported)."""
+    """One draw through the registered path: t_A pooled and on (c) alone (the decision statistics), the raw Sharpe;
+    with spec['with_alpha'] also the reported constant-slope factor alpha t (BTC, EW alt, vol-managed EW)."""
     syms = make_world(spec, seed)
-    out = R.compute(syms)
-    bk = out['book']
-    days = bk['days']
-    y = bk['ret']
-    fac = [out['F1'], out['F2'], out['F3']]
-    b = S.h2(days, y, cal=None)
-    sc = [i for i, d in enumerate(days) if d >= R.day(R.SPAN_C[0])]
-    sa = [i for i, d in enumerate(days) if d <= R.day(R.SPAN_A[1])]
-    sub = lambda idx: ([days[i] for i in idx], [y[i] for i in idx], [[f[i] for i in idx] for f in fac])
-    rec = {'T': b['T'], 'sr': b['sr'], 'vol': b['sd_month'] * math.sqrt(12), 'G': b['G'],
+    a, b = R.day(R.START), R.day(R.END)
+    ufn = R.universe_fn_for(syms)
+    bk = R.run_book(syms, a, b, ufn)
+    days, y = bk['days'], bk['ret']
+    pooled = S.timing(days, bk['contrib'], bk['cost'])
+    fwd = S.timing(days, bk['contrib'], bk['cost'], S.forward_idx(days))
+    span_a = S.timing(days, bk['contrib'], bk['cost'], [i for i, d in enumerate(days) if d <= R.day(R.SPAN_A[1])])
+    sh = S.sharpe(days, y)
+    rec = {'tA': pooled['t'], 'tA_c': fwd['t'], 'tA_a': span_a['t'], 'A_annual': pooled['annual'],
+           'A_sr': pooled['sr_annual'], 'T': sh['T'], 'sr': sh['sr'], 'vol': sh['sd_month'] * math.sqrt(12),
            'gross_mean': sum(bk['gross']) / len(bk['gross']), 'turnover': bk['turnover_per_year']}
-    for key, kw in (('const', {'per_cell': False}), ('half', {'per_cell': True}),
-                    ('year', {'per_cell': True, 'cells': R.YEAR_CELLS})):
-        full = S.alpha_fit(days, y, fac, **kw)
-        fwd = S.alpha_fit(*sub(sc), **kw)
-        rec[f't_{key}'] = full['t']
-        rec[f'k_{key}'] = full['k']
-        rec[f'fwd_{key}_pos'] = fwd['alpha'] > 0
-        rec[f'alpha_{key}'] = full['alpha_annual']
-    rec['t_btc_only'] = S.alpha_fit(days, y, [out['F1']], per_cell=False)['t']
-    for key, idx in (('a', sa), ('c', sc)):
-        dd, yy, ff = sub(idx)
-        rec[f'{key}_t'] = S.alpha_fit(dd, yy, ff)['t']
-        rec[f'{key}_sr'] = S.sharpe(dd, yy)['sr']
-    rec['t'] = rec['t_half' if S.PRIMARY_PER_CELL else 't_const']
+    if spec.get('with_alpha'):
+        f1, f3 = R.factor_series(syms, a, b, ufn)
+        rec['t_alpha'] = S.alpha_fit(days, y, [f1, bk['ew_alt'], f3], per_cell=False)['t']
     return rec
 
 
+def table4_draw(spec, seed):
+    """The paper's in-sample object on a synthetic decade (Table 4 calibration, review A M1): the book from 2015-01-01
+    to 2025-03-19, its constant-beta alpha against BTC alone (the paper's alpha), its beta and its volatility."""
+    syms = make_world(spec, seed)
+    a, b = R.day(R.dt.date(2015, 1, 1)), R.day(R.PAPER_END)
+    ufn = R.universe_fn_for(syms)
+    bk = R.run_book(syms, a, b, ufn)
+    f1, _ = R.factor_series(syms, a, b, ufn, with_vm=False)
+    fit = S.alpha_fit(bk['days'], bk['ret'], [f1], per_cell=False)
+    vol = S.mean_t(bk['days'], bk['ret'])['sd_annual']
+    return {'alpha': fit['alpha_annual'], 'beta': fit['slopes'][0], 'vol': vol, 'ratio': fit['alpha_annual'] / vol}
+
+
 def _worker(args):
-    spec, seed = args
-    return run_draw(spec, seed)
+    fn, spec, seed = args
+    return (table4_draw if fn == 'table4' else run_draw)(spec, seed)
 
 
-def run_world(spec, draws, seed0, pool=None):
-    jobs = [(spec, seed0 + i) for i in range(draws)]
+def run_world(spec, draws, seed0, pool=None, fn='draw'):
+    jobs = [(fn, spec, seed0 + i) for i in range(draws)]
     if pool is None:
         return [_worker(j) for j in jobs]
-    return pool.map(_worker, jobs, chunksize=max(1, draws // 40))
+    return pool.map(_worker, jobs, chunksize=max(1, draws // 80))
 
 
 # ------------------------------------------------------------------ the worlds
-CELL_SEQ = (0.9, -0.7, 0.3, -0.5, 0.8, -0.3)          # annual market log drifts per half-year cell (aligned)
-CALIBRATION = [                                       # trend-free: a beta-only book would pass several of these raw
+GJR = (0.05, 0.88, 0.10)                              # GARCH with a leverage term (review A B1)
+CELL_SEQ = (0.9, -0.7, 0.3, -0.5, 0.8, -0.3)          # annual drifts per half-year cell (aligned)
+CALIBRATION = [                                       # trend-free (constant or regime drift): H1's size, 3,000 draws each
     {'name': 'null flat', 'drift': 'flat'},
     {'name': 'null bull +60%', 'drift': 'const', 'annual': 0.6},
     {'name': 'null bear -60%', 'drift': 'const', 'annual': -0.6},
@@ -183,28 +194,73 @@ CALIBRATION = [                                       # trend-free: a beta-only 
     {'name': 'null mean-reverting chop', 'drift': 'flat', 'ar': -0.10},
     {'name': 'null vol-timing pays', 'drift': 'voldrift', 'low': 1.0, 'high': -1.0},
     {'name': 'null alt-beta cells', 'drift': 'cells', 'seq': CELL_SEQ, 'beta_cells': (1.5, 0.7, 1.4, 0.8, 1.5, 0.7)},
-    {'name': 'null fat t3 leverage cells', 'drift': 'cells', 'seq': CELL_SEQ, 'df': 3, 'garch': (0.05, 0.88, 0.10)},
+    {'name': 'null fat t3 leverage cells', 'drift': 'cells', 'seq': CELL_SEQ, 'df': 3, 'garch': GJR},
     {'name': 'null bull + crash', 'drift': 'const', 'annual': 0.6, 'crashes': {'2025-10-10': -0.30}},
+    # review A B1: leverage effect with a sustained bull, and asymmetric vol timing
+    {'name': 'lev bull +40% GJR t3', 'drift': 'const', 'annual': 0.4, 'df': 3, 'garch': GJR},
+    {'name': 'lev bull +80% GJR t3', 'drift': 'const', 'annual': 0.8, 'df': 3, 'garch': GJR},
+    {'name': 'lev bull +80% GJR t4', 'drift': 'const', 'annual': 0.8, 'df': 4, 'garch': GJR},
+    {'name': 'lev bull +80% GJR t3, -35% day in (a)', 'drift': 'const', 'annual': 0.8, 'df': 3, 'garch': GJR,
+     'crashes': {'2025-10-10': -0.35}},
+    {'name': 'lev bull +80% GJR t3, -35% day in (c)', 'drift': 'const', 'annual': 0.8, 'df': 3, 'garch': GJR,
+     'crashes': {'2027-03-15': -0.35}},
+    {'name': 'lev bull +120% GJR t3', 'drift': 'const', 'annual': 1.2, 'df': 3, 'garch': GJR},
+    {'name': 'vol timing asym (+100/-60) GJR t3', 'drift': 'voldrift', 'low': 1.0, 'high': -0.6, 'df': 3, 'garch': GJR},
+    {'name': 'lev bear -60% GJR t3', 'drift': 'const', 'annual': -0.6, 'df': 3, 'garch': GJR},
 ]
 HINDSIGHT = [                                         # the designer-known shape of span (a); span (c) trend-free
     {'name': 'hindsight (a) rally->crash->decline, (c) flat', 'drift': 'windows',
      'windows': [('2025-04-01', '2025-10-05', 1.2), ('2025-10-11', '2026-02-28', -1.0)],
      'crashes': {'2025-10-10': -0.20}},
-]
-MISALIGNED = [                                        # regimes switching mid-cell: trend by definition (reported)
+    # review A B2: trend in the warm-up and (a), none in (c) — the choice to test now made because (a) looked good
+    {'name': 'S1 trend (a) SR~1.5, (c) dead', 'kappa': 0.161, 'half_life': 60, 'kappa_until': '2026-06-30'},
+    {'name': 'S2 trend (a) SR~2.5, (c) dead', 'kappa': 0.26, 'half_life': 60, 'kappa_until': '2026-06-30'},
     {'name': 'regimes misaligned (quarterly)', 'drift': 'windows',
      'windows': [('2025-04-01', '2025-06-30', 1.0), ('2025-10-01', '2025-12-31', -1.0), ('2026-04-01', '2026-06-30', 1.0),
                  ('2026-10-01', '2026-12-31', -1.0), ('2027-04-01', '2027-06-30', 1.0), ('2027-10-01', '2027-12-31', -1.0)]},
 ]
+TARGETS = (0.0, 0.5, 0.75, 1.0, 1.5)
+HALF_LIVES = (20, 60, 120)
+# kappa for each target Sharpe (mean per-draw 33-month Sharpe of the book), from the Revision-0 pilot (200 draws per
+# kappa in {0.05, 0.1, 0.15, 0.2, 0.3}); the achieved mean per-draw and pooled Sharpes are reported (review A m1).
+KAPPA = {20: {0.0: 0.050, 0.5: 0.101, 0.75: 0.127, 1.0: 0.153, 1.5: 0.200},
+         60: {0.0: 0.045, 0.5: 0.079, 0.75: 0.096, 1.0: 0.116, 1.5: 0.161},
+         120: {0.0: 0.044, 0.5: 0.076, 0.75: 0.092, 1.0: 0.110, 1.5: 0.149}}
+# Table 4 (review A M1): kappa at which a synthetic decade 2015-01 -> 2025-03-19 (BTC-like drift +75%/yr shared by
+# every coin, GJR t3)
+# reproduces the paper's alpha / vol = 10.8% / 9% = 1.2 against BTC; filled from the Table-4 pilot (§6).
+KAPPA_PUB = {20: 0.090, 60: 0.065, 120: 0.061}     # pilot: 40 decades per kappa in {0, .03, .06, .09, .12}
+TABLE4_WORLD = {'start': '2014-01-01', 'end': '2025-03-19', 'drift': 'const', 'annual': 0.75, 'df': 3, 'garch': GJR,
+                'equal_drift': True}
+FWD_DRIFTS = (0.0, 0.4, -0.4)
 
 
 def trend_world(kappa, half_life, extra=None):
-    w = {'name': f'trend h{half_life} k{kappa:g}', 'drift': 'flat', 'kappa': kappa, 'half_life': half_life}
+    w = {'name': f'trend h{half_life} k{kappa:g}', 'drift': 'flat', 'kappa': kappa, 'half_life': half_life,
+         'with_alpha': True}
     w.update(extra or {})
     return w
 
 
-# ------------------------------------------------------------------ helpers
+def target_worlds():
+    return [trend_world(KAPPA[h][s], h, {'name': f'trend h{h} SR {s:g}', 'target_sr': s})
+            for h in HALF_LIVES for s in TARGETS]
+
+
+def drift_power_worlds():
+    """H2 power at a dead and a half-strength book under a forward market drift of +-40%/yr (review A M1)."""
+    return [trend_world(KAPPA[60][s], 60, {'name': f'trend h60 SR {s:g} drift {d:+.0%}', 'drift': 'const',
+                                             'annual': d, 'target_sr': s})
+            for s in (0.0, 0.5) for d in (0.4, -0.4)]
+
+
+def table4_worlds():
+    """The as-published worlds for C2: kappa_pub(h) x forward drift 0 / +-40% (GJR t3) on the test calendar."""
+    return [{'name': f'as published h{h} drift {d:+.0%}', 'kappa': KAPPA_PUB[h], 'half_life': h, 'drift': 'const',
+             'annual': d, 'df': 3, 'garch': GJR} for h in HALF_LIVES if h in KAPPA_PUB for d in FWD_DRIFTS]
+
+
+# ------------------------------------------------------------------ quantiles with Monte Carlo standard errors
 def quantile(v, q):
     v = sorted(x for x in v if x == x)
     if not v:
@@ -215,94 +271,118 @@ def quantile(v, q):
     return v[lo] + (v[hi] - v[lo]) * (pos - lo)
 
 
-# ------------------------------------------------------------------ the size / calibration / power run
-KEYS = ('t_const', 't_year', 't_half', 't_btc_only', 'T', 'sr', 'vol', 'a_t', 'c_t', 'a_sr', 'c_sr', 'alpha_const',
-        'gross_mean', 'turnover')
+def quantile_se(v, q):
+    """Order-statistic standard error of the q-quantile: half the width of the 95% binomial interval / 1.96."""
+    n = len([x for x in v if x == x])
+    d = 1.96 * math.sqrt(q * (1 - q) / n)
+    return (quantile(v, min(1.0, q + d)) - quantile(v, max(0.0, q - d))) / (2 * 1.96)
 
 
-def summarise(name, recs):
-    out = {'name': name, 'draws': len(recs)}
-    for k in KEYS:
-        v = [r[k] for r in recs if r.get(k) is not None and r[k] == r[k]]
-        out[f'mean_{k}'] = sum(v) / len(v) if v else None
-    for k in ('t_const', 't_year', 't_half'):
-        out[f'q95_{k}'] = quantile([r[k] for r in recs], 0.95)
-    out['q05_T'] = quantile([r['T'] for r in recs], 0.05)
-    return out
+def summary_row(name, recs):
+    """The per-world summary written to the log (a deterministic function of the records)."""
+    row = {'name': name, 'draws': len(recs)}
+    for k in recs[0]:
+        v = [r[k] for r in recs if isinstance(r[k], (int, float)) and r[k] == r[k]]
+        row[f'mean_{k}'] = sum(v) / len(v) if v else None
+    if 'tA' in recs[0]:
+        row['q95_tA'] = quantile([r['tA'] for r in recs], 0.95)
+        row['q95_tA_se'] = quantile_se([r['tA'] for r in recs], 0.95)
+        row['q05_tA'] = quantile([r['tA'] for r in recs], 0.05)
+        row['q05_tA_se'] = quantile_se([r['tA'] for r in recs], 0.05)
+    return row
 
 
-def pass_rates(recs, crit, fwd_key='fwd_alpha_pos', t_key='t'):
-    n = len(recs)
-    t_only = sum(1 for r in recs if r[t_key] == r[t_key] and r[t_key] >= crit) / n
-    full = sum(1 for r in recs if r[t_key] == r[t_key] and r[t_key] >= crit and r[fwd_key]) / n
-    return t_only, full
+def _world_file(cache_dir, spec, draws, seed0, fn):
+    import hashlib
+    import json
+    key = json.dumps({'spec': spec, 'draws': draws, 'seed0': seed0, 'fn': fn}, sort_keys=True)
+    return cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()[:20]}.json", key
 
 
-def reject_rate(recs, crit):
-    return sum(1 for r in recs if r['T'] == r['T'] and r['T'] < crit) / len(recs)
-
-
-def run_set(worlds, draws, pool, seed0, log=None, keep=None):
+def run_set(worlds, draws, pool, seed0, log=None, keep=None, fn='draw', cache_dir=None):
+    """Run each world (draw seeds seed0 + 100,000 x its index + i). With cache_dir, a world whose file holds the same
+    (spec, draws, seed0, fn) is NOT re-run: its records are read back (resumable); a new world's file is written
+    atomically as soon as it finishes. The records depend only on (spec, seed), never on the pool or on the order of
+    execution, so a resumed run returns exactly the records of an uninterrupted one."""
+    import json
     res = []
     for wi, spec in enumerate(worlds):
-        recs = run_world(spec, draws, seed0 + 100_000 * wi, pool)
+        s0 = seed0 + 100_000 * wi
+        recs = None
+        if cache_dir is not None:
+            path, key = _world_file(cache_dir, spec, draws, s0, fn)
+            if path.exists():
+                blob = json.loads(path.read_text())
+                if blob.get('key') == key:
+                    recs = blob['records']
+        if recs is None:
+            recs = run_world(spec, draws, s0, pool, fn)
+            if cache_dir is not None:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix('.tmp')
+                tmp.write_text(json.dumps({'key': key, 'records': recs}))
+                tmp.replace(path)
         if keep is not None:
             keep[spec['name']] = recs
-        row = summarise(spec['name'], recs)
+        row = summary_row(spec['name'], recs)
         res.append(row)
         if log:
             log(row)
     return res
 
 
+def kappa_for_ratio(rows, target=1.2):
+    """Linear interpolation of kappa at which the mean alpha / vol ratio of the Table-4 decade equals target."""
+    pts = sorted((r['kappa'], r['mean_ratio']) for r in rows)
+    for (k0, r0), (k1, r1) in zip(pts, pts[1:]):
+        if (r0 - target) * (r1 - target) <= 0 and r1 != r0:
+            return k0 + (k1 - k0) * (target - r0) / (r1 - r0)
+    return None
+
+
 # ------------------------------------------------------------------ the registered tables
-VARIANTS = {'constant': ('t_const', 'fwd_const_pos', 3), 'year': ('t_year', 'fwd_year_pos', 9),
-            'half_year': ('t_half', 'fwd_half_pos', 18)}
-G_SPAN = 33
-TARGETS = (0.0, 0.5, 0.75, 1.0, 1.5, 1.57)
-HALF_LIVES = (20, 60, 120)
-# kappa for each target Sharpe, by linear interpolation in a synthetic pilot (200 draws per kappa in {0.05, 0.1, 0.15,
-# 0.2, 0.3}; the mean per-draw 33-month Sharpe of the book; registration §6). The achieved mean Sharpe is reported.
-KAPPA = {20: {0.0: 0.050, 0.5: 0.101, 0.75: 0.127, 1.0: 0.153, 1.5: 0.200, 1.57: 0.212},
-         60: {0.0: 0.045, 0.5: 0.079, 0.75: 0.096, 1.0: 0.116, 1.5: 0.161, 1.57: 0.170},
-         120: {0.0: 0.044, 0.5: 0.076, 0.75: 0.092, 1.0: 0.110, 1.5: 0.149, 1.57: 0.156}}
+def pass_rates(recs, crit, t_fwd=None):
+    t_fwd = S.T_FWD if t_fwd is None else t_fwd
+    n = len(recs)
+    t_only = sum(1 for r in recs if r['tA'] == r['tA'] and r['tA'] >= crit) / n
+    full = sum(1 for r in recs if r['tA'] == r['tA'] and r['tA'] >= crit and r['tA_c'] == r['tA_c']
+               and r['tA_c'] >= t_fwd) / n
+    return t_only, full
 
 
-def target_worlds():
-    return [trend_world(KAPPA[h][s], h, {'name': f'trend h{h} SR {s:g}', 'target_sr': s})
-            for h in HALF_LIVES for s in TARGETS if h in KAPPA and s in KAPPA[h]]
-
-
-def critical_values(keep, worlds=None):
-    """Per variant: the floor t_{G-1-k}(0.95), the largest 95th percentile of the alpha t over the calibration
-    worlds, and the registered critical value max(floor, that percentile)."""
-    names = [w['name'] for w in (worlds or CALIBRATION)]
-    out = {}
-    for v, (tk, _fk, k) in VARIANTS.items():
-        floor = S.t_crit(G_SPAN - 1 - k)
-        q = max(quantile([r[tk] for r in keep[n]], 0.95) for n in names if n in keep)
-        out[v] = {'floor': floor, 'max_q95': q, 'crit': max(floor, q), 'k': k}
-    return out
-
-
-def h2_critical(keep, names):
-    q = min(quantile([r['T'] for r in keep[n]], 0.05) for n in names if n in keep)
-    nct = S.nct_quantile(S.Q, G_SPAN - 1, S.SR_PAPER * math.sqrt(G_SPAN / 12.0))
-    return {'nct_q05': nct, 'min_q05_sr157_worlds': q, 'crit': min(nct, q)}
-
-
-def tables(keep):
-    """Every rate the registration quotes, from the per-draw records."""
-    crit = critical_values(keep)
-    pub = [w['name'] for w in target_worlds() if w.get('target_sr') == 1.57]
-    h2c = h2_critical(keep, pub) if pub else None
+def tables(keep, cal_names, pub_names, cal_h1, c2):
+    """Every rate the registration quotes, from the per-draw records, at the registered critical values."""
     rows = []
     for name, recs in keep.items():
-        row = {'world': name, 'draws': len(recs), 'mean_sr': sum(r['sr'] for r in recs) / len(recs)}
-        for v, (tk, fk, _k) in VARIANTS.items():
-            t_only, full = pass_rates(recs, crit[v]['crit'], fk, tk)
-            row[v] = {'mean_t': sum(r[tk] for r in recs) / len(recs), 'h1_t_only': t_only, 'h1': full}
-        if h2c:
-            row['h2_reject'] = reject_rate(recs, h2c['crit'])
+        if 'tA' not in recs[0]:
+            continue
+        t_only, full = pass_rates(recs, cal_h1)
+        n = len(recs)
+        srs = [r['sr'] for r in recs]
+        pooled_sr = (sum(r['sr'] * r['vol'] for r in recs) / n) / math.sqrt(sum(r['vol'] ** 2 for r in recs) / n)
+        row = {'world': name, 'draws': n, 'mean_per_draw_sr': sum(srs) / n, 'pooled_sr': pooled_sr,
+               'mean_tA': sum(r['tA'] for r in recs) / n, 'q95_tA': quantile([r['tA'] for r in recs], 0.95),
+               'q95_tA_se': quantile_se([r['tA'] for r in recs], 0.95),
+               'q05_tA': quantile([r['tA'] for r in recs], 0.05), 'h1_t_only': t_only, 'h1': full,
+               'decayed': sum(1 for r in recs if not (r['tA'] >= cal_h1 and r['tA_c'] >= S.T_FWD) and r['tA'] < c2) / n}
+        if 't_alpha' in recs[0]:
+            row['mean_t_alpha'] = sum(r['t_alpha'] for r in recs) / n
         rows.append(row)
-    return {'critical_values': crit, 'h2': h2c, 'worlds': rows}
+    cal = [r for r in rows if r['world'] in cal_names]
+    pub = [r for r in rows if r['world'] in pub_names]
+    return {'cal_h1': cal_h1, 'c2': c2,
+            'max_q95_plus_2se': max(r['q95_tA'] + 2 * r['q95_tA_se'] for r in cal) if cal else None,
+            'min_q05_minus_2se': min(r['q05_tA'] - 2 * quantile_se(keep[r['world']] and [x['tA'] for x in keep[r['world']]], 0.05)
+                                     for r in pub) if pub else None,
+            'worlds': rows}
+
+
+def power_run(pool, log, draws_cal=3000, draws_pub=3000, draws_power=600, draws_hind=1000, cache_dir=None):
+    """The registered size, calibration and power run (reads no data). Returns {name: [records]} in a fixed order."""
+    keep = {}
+    run_set(CALIBRATION, draws_cal, pool, 7, log, keep, cache_dir=cache_dir)
+    run_set(table4_worlds(), draws_pub, pool, 11, log, keep, cache_dir=cache_dir)
+    run_set(target_worlds(), draws_power, pool, 9, log, keep, cache_dir=cache_dir)
+    run_set(drift_power_worlds(), draws_power, pool, 13, log, keep, cache_dir=cache_dir)
+    run_set(HINDSIGHT, draws_hind, pool, 8, log, keep, cache_dir=cache_dir)
+    return keep

@@ -299,6 +299,23 @@ def select_universe(syms, d, non_coin=frozenset(), b=B):
     return [(n, -m) for m, n in cand[:b]]
 
 
+def age_excluded(syms, d, non_coin=frozenset(), b=B):
+    """Reported (review A m3, review B m6): symbols that would rank in the top b at month end d but for the 365-day
+    perp-age rule (token migrations restart the age at the new ticker: POL, S, RENDER, SKY, A)."""
+    with_age = {n for n, _ in select_universe(syms, d, non_coin, b)}
+    cand = []
+    for name, s in syms.items():
+        if not crypto_symbol(name, non_coin) or s.first_traded is None:
+            continue
+        if any((x not in s.rows) or s.rows[x][2] <= 0 for x in range(d - TRADED_TAIL_DAYS + 1, d + 1)):
+            continue
+        m = median_qv(s, d)
+        if m is not None and m >= MIN_MEDIAN_QV:
+            cand.append((-m, name))
+    cand.sort()
+    return [n for _, n in cand[:b] if n not in with_age]
+
+
 def liquidity_exit(s, d):
     """§7.2 p. 18: removed if the 30-day median volume < $1 M or the 30-day median |daily change| < 0.5%."""
     mq, ma = median_qv(s, d), median_abs_ret(s, d)
@@ -324,8 +341,10 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
                          sub-models rebalance (§5.1); cost x |net change in notional|; the §7.2 liquidity exit.
     At a month end the universe is rebuilt and every sleeve reset to 1/B of book value (§7.2), cost charged on
     every change in notional. `lag` = 1 trades at each close on the previous close's state (reported execution check).
-    Returns a dict: days, ret (net), ew_alt (D15 factor 2), gross_exposure, counts, members by month, and the
-    turnover; `keep_paths` adds per-day sleeve notionals (tests)."""
+    Returns a dict: days, ret (net), ew_alt (D15 factor 2), gross_exposure, counts, members by month, the turnover,
+    and for the timing statistic (D14) per day the (symbol, weight held into the day = notional / book value at the
+    previous close, return) of every sleeve held into it and the day's cost (fees + funding) over that value, so that
+    sum(w r) - cost equals the day's return exactly; `keep_paths` adds per-day sleeve notionals (tests)."""
     nl = len(LOOKBACKS)
     zero = (0.0,) * nl
     counts = {'missing_rows': 0, 'delisting_cuts': 0, 'liquidity_exits': 0, 'member_days': 0, 'resets': 0,
@@ -336,6 +355,7 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
     members_by_month = {}
     turnover = 0.0
     out_days, out_ret, out_alt, out_gross = [], [], [], []
+    out_contrib, out_cost = [], []                 # per day: [(sym, weight held into the day, return)], cost / value
     paths = [] if keep_paths else None
 
     def sig(sym, d):
@@ -360,7 +380,7 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
             new[sym] = targets(st[0], st[2]) if st else zero
         target_eq = value / B
         moved = 0.0
-        for sym in set(old) | set(new):
+        for sym in sorted(set(old) | set(new)):        # a fixed order: fees sum bit-identically in every process
             n_old = sum(old[sym][1]) / nl * old[sym][0] if sym in old else 0.0
             n_new = sum(new[sym]) / nl * target_eq if sym in new else 0.0
             moved += abs(n_new - n_old)
@@ -379,28 +399,33 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
         v_prev = V
         alt = []
         gross = 0.0
+        items = []
+        day_cost = 0.0
         for sym in list(sleeves):
             sl = sleeves[sym]
             eq, held, lc = sl
             s = syms[sym]
             row = s.rows.get(d)
             counts['member_days'] += 1
+            H = sum(held) / nl
             if row is None:
                 counts['missing_rows'] += 1
-                sl[1] = held
+                items.append((sym, H * eq / v_prev, 0.0))
                 continue
-            H = sum(held) / nl
             if row[2] <= 0 or row[0] <= 0:           # dead row: settle at the last traded close
                 counts['delisting_cuts'] += 1
                 fee = cost * abs(H) * eq
                 turnover += abs(H) * eq
                 cash += eq - fee
+                day_cost += fee
+                items.append((sym, H * eq / v_prev, 0.0))
                 del sleeves[sym]
                 continue
             r = row[0] / lc - 1.0
             if sym != BTC:
                 alt.append(r)
             notional = H * eq
+            items.append((sym, notional / v_prev, r))
             gross += abs(notional)
             pnl = notional * r
             fund = 0.0
@@ -421,6 +446,7 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
             fee = cost * abs(dH) * eq_new
             turnover += abs(dH) * eq_new
             eq_new -= fee
+            day_cost += fund + fee
             sl[0], sl[1], sl[2] = eq_new, new, row[0]
             if liquidity_exit(s, d):
                 counts['liquidity_exits'] += 1
@@ -428,13 +454,17 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
                 fee = cost * abs(Hn) * eq_new
                 turnover += abs(Hn) * eq_new
                 cash += eq_new - fee
+                day_cost += fee
                 del sleeves[sym]
         V = cash + sum(sl[0] for sl in sleeves.values())
         if is_month_end(d) and d < end:
             V, moved = build(d, V)
             turnover += moved
+            day_cost += cost * moved
             counts['resets'] += 1
         out_days.append(d)
+        out_contrib.append(items)
+        out_cost.append(day_cost / v_prev)
         out_ret.append(V / v_prev - 1.0)
         out_alt.append(sum(alt) / len(alt) if alt else 0.0)
         out_gross.append(gross / v_prev if v_prev else 0.0)
@@ -443,10 +473,10 @@ def run_book(syms, start, end, universe_fn, cost=COST_PAPER, funding=None, mode=
     years = (end - start + 1) / 365.0
     return {'days': out_days, 'ret': out_ret, 'ew_alt': out_alt, 'gross': out_gross, 'counts': counts,
             'members': members_by_month, 'turnover_per_year': turnover / years if years else None,
-            'paths': paths}
+            'paths': paths, 'contrib': out_contrib, 'cost': out_cost}
 
 
-def factor_series(syms, start, end, universe_fn):
+def factor_series(syms, start, end, universe_fn, with_vm=True):
     """D15: BTC's close-to-close return; the equal-weight alt basket (members other than BTC, as held by the
     book); the vol-managed EW basket (the same book with Pos = 1 throughout, gross of costs)."""
     refuse_unless(BTC in syms, 'BTCUSDT is required for the market factor')
@@ -456,6 +486,8 @@ def factor_series(syms, start, end, universe_fn):
         row = btc.rows.get(d)
         prev = btc.last_traded_close(d)
         f1.append(row[0] / prev - 1.0 if row and row[2] > 0 and prev else 0.0)
+    if not with_vm:
+        return f1, None
     vm = run_book(syms, start, end, universe_fn, cost=0.0, mode='always')
     return f1, vm['ret']
 

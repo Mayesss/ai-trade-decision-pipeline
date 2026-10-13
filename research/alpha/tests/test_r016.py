@@ -1,8 +1,10 @@
-"""Registration 016 (crypto trend, verbatim) — mechanics, statistics, parsers, the fetch, the read gate and the guard,
-on SYNTHETIC data only. No real kline, funding or price is read: the real-file checks read the registration, the
-hash table and file hashes, and call the real guard read-only.
+"""Registration 016 (crypto trend, verbatim), Revision 1 — mechanics, the timing statistic, parsers, the fetch, the read
+gate and the guard, on SYNTHETIC data only. No real kline, funding or price is read: the real-file checks read the
+registration, the hash table and file hashes, and call the real guard read-only. The network is disabled for the
+whole suite (review B m4): any socket connection raises.
 
-    research/copytrade/.venv/bin/python -I tests/test_r016.py          (from research/alpha)
+    python3 -I -S tests/test_r016.py                 (from research/alpha)
+    python3 -I -S tests/test_r016.py --only gate     (one section; used by tests/test_r016_mutants.py)
 """
 import ast
 import datetime as dt
@@ -11,6 +13,8 @@ import json
 import math
 import os
 import random
+import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -18,8 +22,16 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+
+def _no_network(*a, **k):
+    raise OSError('the 016 suite never opens a network connection (review B m4)')
+
+
+socket.socket.connect = _no_network
+socket.create_connection = _no_network
+
 HERE = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE))
 import r016_fetch as F  # noqa: E402
 import r016_run as RUN  # noqa: E402
 from ct16 import data as D  # noqa: E402
@@ -233,6 +245,8 @@ def book_checks():
     check('a missing row is carried and counted (D4)', b4['counts']['missing_rows'] >= 1)
     bl = R.run_book(syms, a, b, ufn, cost=0.001, lag=1)
     check('the one-close-lag variant runs and differs (reported execution check)', bl['ret'] != b1['ret'])
+    check('the per-day records reconstruct the book: sum(w r) - cost = R_d, exactly (the timing statistic\'s input)',
+          max(abs(sum(w * r for _, w, r in it) - c - y) for it, c, y in zip(b1['contrib'], b1['cost'], b1['ret'])) < 1e-12)
     f1, f3 = R.factor_series(syms, a, b, ufn)
     btc = syms[R.BTC]
     check('F1 is BTC close-to-close', close(f1[5], btc.rows[a + 5][0] / btc.rows[a + 4][0] - 1))
@@ -240,97 +254,106 @@ def book_checks():
     check('F3 is the same book with Pos = 1, gross of costs', vm['ret'] == f3 and vm['gross'][10] > b0['gross'][10] * 0.99)
 
 
-# ------------------------------------------------------------------ statistics
+# ------------------------------------------------------------------ statistics (Revision 1: the timing statistic)
+def _fake_book(days, seed=4, timing=0.0, drift=0.0, fwd_timing=None):
+    """Per-day contrib for 3 coins: weight w_t = 0.1 + timing * sign(z_t) where z_t is next day's shock direction
+    (a timing skill of strength `timing`), plus a constant drift."""
+    rng = random.Random(seed)
+    contrib, cost = [], []
+    for d in days:
+        tm = timing if (fwd_timing is None or d < R.day(R.SPAN_C[0])) else fwd_timing
+        items = []
+        for s in ('BTCUSDT', 'AUSDT', 'BUSDT'):
+            z = rng.gauss(0, 0.03)
+            w = 0.1 + 0.05 * rng.random() + tm * (1 if z > 0 else -1) * rng.random()
+            items.append((s, w, z + drift))
+        contrib.append(items)
+        cost.append(0.00002)
+    return contrib, cost
+
+
 def stats_checks():
-    print('statistics: t and noncentral t, CR1 OLS, cells, H1, H2, the decision, the recheck')
+    print('statistics: t, the CR1 mean, the timing statistic A_t, H1 (pooled + span (c) alone), the ladder, the bar, '
+          'the recheck; the reported factor alpha')
     check('t_crit: t_32(0.95) 1.694, t_14(0.95) 1.761', close(S.t_crit(32), 1.6939, 2e-4) and close(S.t_crit(14), 1.7613, 2e-4))
     check('noncentral t at delta 0 is Student t', close(S.nct_quantile(0.05, 20, 0.0), -S.t_crit(20), 1e-3))
     rng = random.Random(4)
-    hits = sum(1 for _ in range(20000) if (rng.gauss(0, 1) + 2.6) / math.sqrt(rng.gammavariate(16, 2) / 32) < 0.9545)
-    check('nct 5% quantile (df 32, delta 1.57 sqrt(33/12)) = 0.95 matches Monte Carlo', abs(hits / 20000 - 0.05) < 0.006,
-          f'{hits / 20000:.4f}')
-    x = [rng.gauss(0, 1) for _ in range(600)]
-    y = [0.2 + 1.5 * v + rng.gauss(0, 1) for v in x]
-    cl = [i // 20 for i in range(600)]
-    f = S.ols_cr1(y, [[1.0, v] for v in x], cl)
-    mx, my = statistics.fmean(x), statistics.fmean(y)
-    bh = sum((a - mx) * (b - my) for a, b in zip(x, y)) / sum((a - mx) ** 2 for a in x)
-    check('OLS slope and intercept equal the closed form', close(f['coef'][1], bh, 1e-9) and close(f['coef'][0], my - bh * mx, 1e-9))
-    e = [b - f['coef'][0] - f['coef'][1] * a for a, b in zip(x, y)]
-    meat = {}
-    for a, ee, g in zip(x, e, cl):
-        u = meat.setdefault(g, [0.0, 0.0])
-        u[0] += ee
-        u[1] += a * ee
-    n, G = 600, 30
-    sxx = sum((a - mx) ** 2 for a in x)
-    inv = [[sum(a * a for a in x) / (n * sxx), -mx / sxx], [-mx / sxx, 1 / sxx]]
-    m00 = sum(u[0] ** 2 for u in meat.values())
-    m01 = sum(u[0] * u[1] for u in meat.values())
-    m11 = sum(u[1] ** 2 for u in meat.values())
-    v00 = inv[0][0] ** 2 * m00 + 2 * inv[0][0] * inv[0][1] * m01 + inv[0][1] ** 2 * m11
-    v00 *= G / (G - 1) * (n - 1) / (n - 2)
-    check('CR1 standard error of the intercept equals the sandwich by hand', close(f['se'][0], math.sqrt(v00), 1e-10))
     days = list(range(R.day(R.START), R.day(R.END) + 1))
-    grp = S.cell_groups(days)
-    check('six half-year cells over the span; the 103-day stub stands (>= 60 days)', max(grp.values()) == 5
-          and sum(1 for d in days if grp[d] == 0) == 103)
     check('G = 33 month clusters (the March 2025 stub joins April)', len({R.cluster_of(d) for d in days}) == 33)
-    short = days[:40] + days[200:400]
-    check('a cell under 60 days joins its neighbour', len(set(S.cell_groups(short).values())) <= 2)
-    # alpha recovery with cell-specific slopes
+    x = [rng.gauss(0.001, 0.01) for _ in days]
+    mt = S.mean_t(days, x)
+    m = sum(x) / len(x)
+    g = {}
+    for d, v in zip(days, x):
+        g[R.cluster_of(d)] = g.get(R.cluster_of(d), 0.0) + v - m
+    se = math.sqrt(sum(u * u for u in g.values()) / len(x) ** 2 * 33 / 32)
+    check('mean_t: the CR1 standard error by calendar month, by hand', close(mt['se'], se, 1e-15) and close(mt['t'], m / se))
+    contrib, cost = _fake_book(days, timing=0.0, drift=0.0005)
+    A, wbar = S.timing_series(contrib, cost)
+    R_ = [sum(w * r for _, w, r in it) - c for it, c in zip(contrib, cost)]
+    passive = [sum(wbar[s] * r for s, _, r in it) for it in contrib]
+    check('A_t = book return - sum_i wbar_i r_i,t (Lo 2008: active = total - passive), exactly',
+          max(abs(a - (rr - p)) for a, rr, p in zip(A, R_, passive)) < 1e-15)
+    t0 = S.timing(days, contrib, cost)['t']
+    check('a constant drift and no timing gives no timing t (|t| < 2), whatever the passive drift earns', abs(t0) < 2.0,
+          f'{t0:.2f}')
+    c1, k1 = _fake_book(days, timing=0.05)
+    h = S.h1(days, c1, k1, cal=1.9)
+    check('H1 passes a strong timing book: pooled t >= crit and span (c) alone t >= 1.282', h['pass'] and h['pass_forward'],
+          f"{h['pooled']['t']:.2f} / {h['forward']['t']:.2f}")
+    fi = S.forward_idx(days)
+    _, wb_c = S.timing_series(c1, k1, fi)
+    check('the span-(c) statistic uses its OWN wbar (computed over (c) member-days only)',
+          close(h['forward']['t'], S.mean_t([days[i] for i in fi], S.timing_series(c1, k1, fi)[0])['t']))
+    c2_, k2 = _fake_book(days, timing=0.05, fwd_timing=0.0)
+    h2_ = S.h1(days, c2_, k2, cal=1.9)
+    check('H1 refuses when the pooled t passes but (c) alone is below 1.282 (review A B2)',
+          h2_['pass_t'] and not h2_['pass_forward'] and not h2_['pass'], f"{h2_['pooled']['t']:.2f} / {h2_['forward']['t']:.2f}")
+    check('the floor is t_{G-1}(0.95) = t_32; a calibrated value never lowers it',
+          S.h1_crit(33, cal=0.0) == (S.t_crit(32), S.t_crit(32)) and S.h1_crit(33, cal=2.5)[0] == 2.5)
+    check('ladder: alive > decayed (t < C2) > not_demonstrated',
+          S.ladder({'pass': True, 'pooled': {'t': 5.0}}, c2=1.0) == 'alive'
+          and S.ladder({'pass': False, 'pooled': {'t': 0.5}}, c2=1.0) == 'decayed'
+          and S.ladder({'pass': False, 'pooled': {'t': 1.5}}, c2=1.0) == 'not_demonstrated'
+          and S.ladder({'pass': False, 'pooled': {'t': 2.5}}, c2=1.0) == 'not_demonstrated')
+    e = S.economic({'sr_annual': 1.0}, 3.0, 2.78)
+    srs = 1.0 * (1 - 1 / 9)
+    check('economic bar (review A M3): return at the Bayes-Kelly vol SR_s/(1 + 1/years) of the shrunk Sharpe, vs 4%',
+          close(e['return_at_bk'], srs * srs / (1 + 1 / 2.78)) and e['clears']
+          and not S.economic({'sr_annual': 0.25}, 2.0, 2.78)['clears'])
+    check('routes: decayed -> close; not_demonstrated -> not_demonstrated; alive -> paper or below bar',
+          S.route('decayed', None) == 'close' and S.route('not_demonstrated', None) == 'not_demonstrated'
+          and S.route('alive', {'clears': True}) == 'paper_then_scale' and S.route('alive', {'clears': False})
+          == 'exists_below_bar')
+    dec = S.decision_from_series(days, c1, k1, c1, k1, cal_h1=1.9, c2=0.0)
+    pack = lambda c: [[[s, w, r] for s, w, r in day] for day in c]
+    row = {'series': {'days': [R.date_of(d).isoformat() for d in days], 'contrib': pack(c1), 'cost': k1,
+                      'dep_contrib': pack(c1), 'dep_cost': k1},
+           'outcome': dec['outcome'], 'route': dec['route'], 'h1_t': dec['h1']['pooled']['t'],
+           'h1_t_forward': dec['h1']['forward']['t']}
+    saved = (S.CAL_H1, S.C2)
+    S.CAL_H1, S.C2 = 1.9, 0.0
+    try:
+        check('recheck: a genuine row recomputes', S.recheck(json.loads(json.dumps(row)))[0] == [])
+        forged = dict(row, outcome='decayed')
+        check('recheck: a forged outcome is caught', S.recheck(forged)[0] != [])
+        tampered = json.loads(json.dumps(row))
+        tampered['series']['contrib'][100][0][1] += 0.5
+        check('recheck: a tampered record under the stored statistics is caught', S.recheck(tampered)[0] != [])
+    finally:
+        S.CAL_H1, S.C2 = saved
+    check('the registered constants: CAL_H1 and C2 are set and C2 < CAL_H1', S.CAL_H1 is not None and S.C2 is not None
+          and S.C2 < S.CAL_H1, f'{S.CAL_H1} / {S.C2}')
+    # the reported factor alpha (constant slopes) still recovers a known alpha
     f1 = [rng.gauss(0, 0.03) for _ in days]
     f2 = [0.8 * a + rng.gauss(0, 0.02) for a in f1]
     f3 = [0.3 * a + rng.gauss(0, 0.01) for a in f2]
-    cells = [grp[d] for d in days]
-    yv = [0.0004 + (0.1 + 0.05 * c) * a + 0.05 * b - 0.2 * cc + rng.gauss(0, 0.004)
-          for a, b, cc, c in zip(f1, f2, f3, cells)]
-    fit = S.alpha_fit(days, yv, [f1, f2, f3], per_cell=True)
-    check('alpha_fit with half-year cells recovers a known alpha and cell slopes (k = 18)', fit['k'] == 18 and abs(fit['alpha'] - 0.0004) < 0.0002
-          and abs(fit['slopes'][0] - 0.1) < 0.05 and abs(fit['slopes'][15] - 0.35) < 0.05, f"{fit['alpha']:.6f}")
-    check('the H1 floor is t_{G-1-k}(0.95): t_14 for k 18, t_29 for the primary k 3',
-          close(S.h1_crit(33, 18, cal=0.0)[0], S.t_crit(14), 1e-12) and close(S.h1_crit(33, 3, cal=0.0)[0], S.t_crit(29), 1e-12))
     yc = [0.0004 + 0.2 * a + 0.05 * b - 0.2 * cc + rng.gauss(0, 0.004) for a, b, cc in zip(f1, f2, f3)]
     fc = S.alpha_fit(days, yc, [f1, f2, f3])
-    check('the primary market model (D14): constant slopes on three factors, k = 3, G = 33',
-          fc['k'] == 3 and fc['G'] == 33 and abs(fc['slopes'][0] - 0.2) < 0.03 and not S.PRIMARY_PER_CELL)
-    check('a calibrated critical value never lowers the floor', S.h1_crit(33, 18, cal=1.0)[0] == S.t_crit(14)
-          and S.h1_crit(33, 18, cal=2.5)[0] == 2.5)
-    h = S.h1(days, yv, [f1, f2, f3], cal=0.0)
-    check('H1 passes on a strong alpha with a positive forward alpha', h['pass'] and h['pass_forward_sign'])
-    yneg = [v + (-0.0008 if d >= R.day(R.SPAN_C[0]) else 0.003) for v, d in zip(yv, days)]
-    h2_ = S.h1(days, yneg, [f1, f2, f3], cal=0.0)
-    check('H1 refuses when the pooled t passes but the forward alpha is <= 0 (D18)', h2_['pass_t'] and not h2_['pass'],
-          f"t {h2_['pooled']['t']:.2f}")
-    # H2
-    yy = [0.0 if i % 2 else 0.001 for i in range(len(days))]
-    yy = [v + rng.gauss(0, 0.01) for v in yy]
-    hh = S.h2(days, yy)
-    check('H2: T = sqrt(G) mean / sd of monthly returns; rejects iff T < crit',
-          close(hh['T'], math.sqrt(33) * hh['mean_month'] / hh['sd_month']) and hh['reject'] == (hh['T'] < hh['crit']))
-    check('H2 critical: min(noncentral-t q05 0.954, CAL_H2 0.117) = 0.117 (SR-hat below ~0.07 rejects 1.57)',
-          abs(hh['nct_q05'] - 0.9545) < 0.01 and hh['crit'] == min(hh['nct_q05'], S.CAL_H2) == 0.117)
-    check('H1 critical: max(t_29(0.95) 1.699, CAL_H1 1.731) = 1.731', S.h1_crit(33, 3) == (1.731, S.t_crit(29)))
-    check('decide: the four outcomes', S.decide(True, False) == 'alive_as_published' and S.decide(True, True) == 'alive_decayed'
-          and S.decide(False, True) == 'decayed_not_shown' and S.decide(False, False) == 'undecided')
-    e1 = S.economic(0.05, 0.03, 3.0)
-    check('economic bar: min(raw, adjusted) x k x (1 - 1/t^2) vs 4%/yr',
-          close(e1['shrunk_at_k'], 2.8 * 0.03 * (1 - 1 / 9)) and e1['clears'])
-    check('economic bar fails at a small shrunk value', not S.economic(0.01, 0.02, 1.9)['clears'])
-    check('routes: no economic bar without an H1 pass; a fail never routes to paper',
-          S.route('undecided', None) == 'not_demonstrated' and S.route('decayed_not_shown', None) == 'close'
-          and S.route('alive_decayed', S.economic(0.1, 0.1, 4.0)) == 'paper_reduced_size')
-    series = {'days': [R.date_of(d).isoformat() for d in days], 'net': yv, 'F1': f1, 'F2': f2, 'F3': f3, 'deploy': yv}
-    dec = S.decision_from_series(days, yv, [f1, f2, f3], days, yv)
-    row = {'series': series, 'outcome': dec['outcome'], 'route': dec['route'], 'h1_t': dec['h1']['pooled']['t'],
-           'h2_T': dec['h2']['T']}
-    fails, _ = S.recheck(row)
-    check('recheck: a genuine row recomputes', fails == [], str(fails))
-    forged = dict(row, outcome='alive_as_published' if row['outcome'] != 'alive_as_published' else 'undecided')
-    check('recheck: a forged outcome is caught', S.recheck(forged)[0] != [])
-    tampered = json.loads(json.dumps(row))
-    tampered['series']['net'] = [v + 0.001 for v in yv]
-    check('recheck: a tampered series under the stored statistics is caught', S.recheck(tampered)[0] != [])
+    check('the reported factor alpha: constant slopes, k = 3, G = 33, recovers the slope', fc['k'] == 3 and fc['G'] == 33
+          and abs(fc['slopes'][0] - 0.2) < 0.03)
+    fh = S.alpha_fit(days, yc, [f1, f2, f3], per_cell=True)
+    check('half-year cells (reported): k = 18', fh['k'] == 18 and fh['cells'] == 6)
 
 
 # ------------------------------------------------------------------ parsers
@@ -389,19 +412,25 @@ def _two_member_zip():
     return b.getvalue()
 
 
+
+
 # ------------------------------------------------------------------ throwaway repositories (both layouts)
 CODE = ('ct16/rule.py', 'r016_run.py')
 DATAF = ('data/static.json',)
 REG = 'registrations/016-x.md'
 NOW = dt.datetime(2028, 1, 10, tzinfo=dt.UTC)
 EARLY = dt.datetime(2028, 1, 7, 23, 0, tzinfo=dt.UTC)
+GIT = '/usr/bin/git'
+PY = sys.executable
 
 
-def _git_fn(cwd):
+def _git_fn(cwd, name='t'):
     def git(*a, check_=True):
         env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-        return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *a], cwd=cwd, capture_output=True,
-                              text=True, check=check_, env=env)
+        env.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull})
+        return subprocess.run([GIT, '-c', f'user.name={name}', '-c', f'user.email={name}@t', '-c',
+                               'core.hooksPath=' + os.devnull, *a], cwd=cwd, capture_output=True, text=True,
+                              check=check_, env=env)
     return git
 
 
@@ -439,10 +468,22 @@ def _has(fs, prefix):
     return any(x.startswith(prefix) for x in fs)
 
 
+def _registered(layout='sub'):
+    root, top, git = _repo(layout)
+    _write_reg(root)
+    git('add', '.')
+    git('commit', '-q', '-m', 'registered')
+    return root, top, git
+
+
+def _rel(root, top, p):
+    return str((root / p).relative_to(top))
+
+
 def guard_checks(layout):
     print(f'guard ({layout} layout, throwaway git repository)')
     root, top, git = _repo(layout)
-    rel = lambda p: str((root / p).relative_to(top))
+    rel = lambda p: _rel(root, top, p)
     _write_reg(root, status='DRAFT')
     git('add', '.gitignore', rel('ct16'), rel('r016_run.py'), rel('results.jsonl'))
     git('commit', '-q', '-m', 'code')
@@ -452,138 +493,186 @@ def guard_checks(layout):
     git('add', rel(REG))
     git('commit', '-q', '-m', 'register')
     check('REGISTERED, committed, clean, after 2028-01-08: the fetch gate opens', _gf(root) == [], str(_gf(root)))
-    check('(t) the date gate refuses before 2028-01-08 (UTC)', _has(_gf(root, now=EARLY), '(t)'))
+    check('(t) the date gate refuses before 2028-01-08 (UTC)', _has(_gf(root, now=EARLY), '(t) the forward span'))
     check('the real clock today is before the gate', _has(_gf(root, now=None), '(t)') or dt.date.today() >= R.READ_NOT_BEFORE)
-    (root / REG).write_text((root / REG).read_text() + 'edit\n')
-    check('(b) the registration modified after its commit', _has(_gf(root), '(b)'))
+    (root / REG).write_text((root / REG).read_text().replace('REGISTERED', 'DRAFT'))
+    f_wt = _gf(root)
+    check('(s) is read from HEAD, (b) sees the working-tree edit', not _has(f_wt, '(s)') and _has(f_wt, '(b)'))
     git('checkout', '--', rel(REG))
     (root / 'ct16/rule.py').write_text('x = 3\n')
     f4 = _gf(root)
-    check('(d)+(e) guarded code edited', _has(f4, '(d)') and _has(f4, '(e) ct16/rule.py'))
+    check('(d)+(e) guarded code edited', _has(f4, '(d) guarded code') and _has(f4, '(e) ct16/rule.py'))
     git('checkout', '--', rel('ct16/rule.py'))
-    (root / REG).write_text((root / REG).read_text() + f"| `ct16/rule.py` | `{'0' * 64}` |\n")
-    git('commit', '-q', '-am', 'dup')
-    check('(e) a file listed twice in the hash table', _has(_gf(root), '(e) files listed more than once'))
-    git('reset', '-q', '--hard', 'HEAD~1')
     _add(root, {'registration': '016-x.md', 'mode': 'fetch_attempt'})
     check('(k) results.jsonl dirty', _has(_gf(root), '(k)'))
     git('checkout', '--', rel('results.jsonl'))
-    # shadow modules
-    (root / 'statistics.py').write_text('raise SystemExit("shadow")\n')
-    check('(d) an untracked statistics.py next to the runner shadows an import', _has(_gf(root), '(d) untracked'))
-    (root / 'statistics.py').unlink()
-    (root / 'ct16' / 'rule').mkdir()
-    (root / 'ct16' / 'rule' / '__init__.py').write_text('x = 9\n')
-    check('(d) a package ct16/rule/ beside ct16/rule.py is refused', _has(_gf(root), '(d) untracked'))
-    (root / 'ct16' / 'rule' / '__init__.py').unlink()
-    (root / 'ct16' / 'rule').rmdir()
-    import sysconfig
-    ext = 'stats' + sysconfig.get_config_var('EXT_SUFFIX')
-    (root / 'ct16' / ext).write_bytes(b'\x00')
-    (root / 'ipaddress.pyc').write_bytes(b'\x00')
-    sh = RUN.shadow_modules(root)
-    check('shadow_modules: an extension module in ct16/ and a sourceless .pyc at the top level',
-          {f'ct16/{ext}', 'ipaddress.pyc'} <= set(sh), str(sh))
-    (root / 'ct16' / ext).unlink()
-    (root / 'ipaddress.pyc').unlink()
-    # (w)
+    (root / 'results.jsonl').write_text('{"registration": "015-y.md"}')
+    git('commit', '-q', '-am', 'no newline')
+    check('(k) results.jsonl without a final newline (a row would merge into another; review B m3)',
+          _has(_gf(root), '(k) results.jsonl does not end with a newline'))
+    check('append_row refuses to glue a row onto a line without a newline',
+          raises(lambda: RUN.append_row({'registration': '016-x.md'}, root / 'results.jsonl')))
+    git('reset', '-q', '--hard', 'HEAD~1')
     check('(w) the anchor must be an ancestor of HEAD', _has(_gf(root, anchor='0' * 40), '(w)'))
-    check('(w) the git top level must be the repository', _has(_gf(root, toplevel=root / 'nowhere'), '(w)')
-          and not _has(_gf(root, toplevel=top), '(w)'))
     rc = git('rev-parse', 'HEAD').stdout.strip()
-    # --- the fetch rows; (f)
     _add(root, {'registration': '016-x.md', 'mode': 'fetch_started', 'registration_commit': rc})
     git('commit', '-q', '-am', 'fetch_started')
-    check('a committed fetch_started row: the fetch resumes', _gf(root) == [])
+    check('a committed fetch_started row carrying reg0: the fetch resumes', _gf(root) == [], str(_gf(root)))
     store = root / RUN.STORE_REL
     store.mkdir(parents=True)
     (store / 'a.zip').write_bytes(b'abc')
     files = {'a.zip': RUN.sha256(store / 'a.zip')}
     (store / 'manifest.json').write_text(json.dumps({'files': files, 'digest': RUN.manifest_digest(files)}))
-    fetched = {'registration': '016-x.md', 'mode': 'fetched', 'registration_commit': rc,
-               'code_hashes': RUN.hashes(root, CODE), 'manifest_digest': RUN.manifest_digest(files)}
-    _add(root, fetched)
+    _add(root, {'registration': '016-x.md', 'mode': 'fetched', 'registration_commit': rc,
+                'code_hashes': RUN.hashes(root, CODE), 'manifest_digest': RUN.manifest_digest(files)})
     git('commit', '-q', '-am', 'fetched')
     check('(f) the fetch runs once: a fetched row closes it', _has(_gf(root), '(f) the fetch has completed'))
     fr = _gf(root, mode='run')
     check("(h') the read needs the approval line", _has(fr, "(h')") and not _has(fr, '(g'), str(fr))
     fline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"fetched"' in l][0]
-    appr = f'016 read: APPROVED 2028-01-11 row {RUN.line_sha(fline)}\n'
-    (root / REG).write_text((root / REG).read_text() + '\n' + appr)
+    (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2028-01-11 row {RUN.line_sha(fline)}\n')
     git('commit', '-q', '-am', 'approval')
-    check('everything in order: the read gate opens (HEAD:./ paths resolve in this layout)', _gf(root, mode='run') == [],
-          str(_gf(root, mode='run')))
+    check('everything in order: the read gate opens (HEAD:./ paths; reg0 accepts an approval line)',
+          _gf(root, mode='run') == [], str(_gf(root, mode='run')))
     check('the read gate also refuses before the date', _has(_gf(root, mode='run', now=EARLY), '(t)'))
     (store / 'a.zip').write_bytes(b'abd')
     check('(g3) a fetched file changed after the fetch', _has(_gf(root, mode='run'), '(g3)'))
     (store / 'a.zip').write_bytes(b'abc')
-    (root / REG).write_text((root / REG).read_text() + 'new prose\n')
-    git('commit', '-q', '-am', 'prose')
-    check('(r) prose added to the registration after the fetch', _has(_gf(root, mode='run'), '(r)'))
-    git('reset', '-q', '--hard', 'HEAD~1')
-    (root / 'ct16/rule.py').write_text('x = 4\n')
-    git('commit', '-q', '-am', 'code change')
-    fcc = _gf(root, mode='run')
-    check('(g2) code changed since the fetch', _has(fcc, '(g2)'), str(fcc))
-    git('reset', '-q', '--hard', 'HEAD~1')
     _add(root, {'registration': '016-x.md', 'mode': 'read_started'})
-    git('commit', '-q', '-am', 'started')
+    git('commit', '-q', '-am', 'started by hand')
     check('(i) a read_started row without a restart line blocks', _has(_gf(root, mode='run'), '(i)'))
     sline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"read_started"' in l][0]
     (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2028-01-12 started-row '
                             f'{RUN.line_sha(sline)}\n')
     git('commit', '-q', '-am', 'restart')
-    check('a later committed restart line reopens a mechanical stop', _gf(root, mode='run') == [], str(_gf(root, mode='run')))
+    check('a restart line reopens a started row that no runner commit wrote', _gf(root, mode='run') == [],
+          str(_gf(root, mode='run')))
     _add(root, {'registration': '016-x.md', 'mode': 'read'})
     git('commit', '-q', '-am', 'read')
     git('reset', '-q', '--hard', 'HEAD~1')
     check('(i) a read row erased by reset --hard still blocks (reflog)', _has(_gf(root, mode='run'), '(i)'))
-    return root, top, git
 
 
-def _approval_same_commit(layout):
-    root, top, git = _repo(layout)
-    _write_reg(root)
-    git('add', '.')
-    git('commit', '-q', '-m', 'all')
+def prose_checks():
+    print('(r) prose committed after REGISTERED, even if later reset, refuses forever (review B M4)')
+    root, top, git = _registered()
+    (root / REG).write_text((root / REG).read_text() + 'new prose\n')
+    git('commit', '-q', '-am', 'prose')
+    check('(r) prose committed after REGISTERED', _has(_gf(root), '(r)'))
+    git('reset', '-q', '--hard', 'HEAD~1')
+    check('(r) ... and still after `reset --hard` (the reflog keeps the second REGISTERED content)', _has(_gf(root), '(r)'))
+
+
+def restart_checks():
+    print('restart: refused when the runner itself committed a read row (the data were opened)')
+    root, top, git = _registered()
     rc = git('rev-parse', 'HEAD').stdout.strip()
-    store = root / RUN.STORE_REL
-    store.mkdir(parents=True)
-    (store / 'manifest.json').write_text(json.dumps({'files': {}, 'digest': RUN.manifest_digest({})}))
-    _add(root, {'registration': '016-x.md', 'mode': 'fetch_started', 'registration_commit': rc})
-    f = {'registration': '016-x.md', 'mode': 'fetched', 'registration_commit': rc, 'code_hashes': RUN.hashes(root, CODE),
-         'manifest_digest': RUN.manifest_digest({})}
-    line = json.dumps(f, sort_keys=True)
+    _add(root, {'registration': '016-x.md', 'mode': 'read_started', 'registration_commit': rc})
+    rg = _git_fn(top, name=RUN.RUNNER_NAME)
+    rg('commit', '-q', '-am', 'started by the runner')
+    sline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"read_started"' in l][0]
+    (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2028-01-12 started-row '
+                            f'{RUN.line_sha(sline)}\n')
+    git('commit', '-q', '-am', 'restart line')
+    check('(i) a runner-committed read_started row is never restarted', _has(_gf(root, mode='run'), '(i) a read_started'))
+
+
+def history_checks():
+    print('reg0 (review B M4): the read is bound to the one REGISTERED content')
+    root, top, git = _registered()
+    (root / 'ct16/rule.py').write_text('x = 99\n')
+    _write_reg(root)
+    git('commit', '-q', '-am', 'a 2027 revision of the code and the table')
+    f = _gf(root)
+    check('a committed revision of code + hash table after REGISTERED refuses, naming the REGISTERED commit',
+          any('(r) ct16/rule.py at HEAD differs from the REGISTERED commit' in x for x in f), str(f[:3]))
+    root, top, git = _registered()
+    git('checkout', '-q', '-b', 'side')
+    (root / REG).write_text((root / REG).read_text().replace('# 016', '# 016 (revised)'))
+    git('commit', '-q', '-am', 'a second REGISTERED content on a side branch')
+    git('checkout', '-q', 'main')
+    git('merge', '-q', '--no-ff', '-s', 'ours', 'side', '-m', 'merge keeping main')
+    f = _gf(root)
+    check('a second REGISTERED content anywhere (a --no-ff merge) refuses',
+          any('different REGISTERED versions' in x for x in f), str(f[:3]))
+    root, top, git = _registered()
+    rel = _rel(root, top, 'ct16/rule.py')
+    (root / 'ct16/rule.py').write_text('x = 7\n')
+    git('update-index', '--skip-worktree', rel)
+    f = _gf(root)
+    check('(d) skip-worktree on guarded code refuses (review B M3)', any('index flag' in x for x in f) and _has(f, '(d) guarded'))
+    git('update-index', '--no-skip-worktree', rel)
+    git('checkout', '--', rel)
+    git('update-index', '--assume-unchanged', _rel(root, top, REG))
+    (root / REG).write_text((root / REG).read_text() + 'x\n')
+    f = _gf(root)
+    check('(b)+(d) assume-unchanged on the registration refuses', _has(f, '(b)') and any('index flag' in x for x in f))
+    git('update-index', '--no-assume-unchanged', _rel(root, top, REG))
+    git('checkout', '--', _rel(root, top, REG))
+    (top / '.gitattributes').write_text('*.py filter=x\n')
+    git('add', '.gitattributes')
+    git('commit', '-q', '-m', 'attr')
+    check('(d) a filter attribute on guarded code refuses', any('filter attribute' in x for x in _gf(root)))
+    root, top, git = _registered()
+    _add(root, {'registration': '016-x.md', 'mode': 'fetched'})
+    git('commit', '-q', '-am', 'row')
+    tree = git('write-tree').stdout.strip()
+    git('checkout', '-q', '--orphan', 'orphan')
+    git('rm', '-q', '-r', '--cached', '.', check_=False)
+    (root / 'results.jsonl').write_text('{"registration": "016-x.md", "mode": "read"}\n')
+    git('add', _rel(root, top, 'results.jsonl'))
+    git('commit', '-q', '-m', 'orphan root with a read row')
+    git('checkout', '-q', '-f', 'main')
+    check('a read row in the ROOT commit of an orphan branch is seen (log --root, showRoot)',
+          _has(_gf(root, mode='run'), '(i)'))
+    root, top, git = _registered()
+    _add(root, {'registration': '016-x.md', 'mode': 'read'})
+    git('commit', '-q', '-am', 'row')
+    row_c = git('rev-parse', 'HEAD').stdout.strip()
+    (root / 'results.jsonl').write_text('')
+    git('commit', '-q', '-am', 'erased')
+    decoy = git('rev-parse', 'HEAD~2').stdout.strip()
+    git('replace', row_c, decoy)
+    check('git replace cannot hide a read row (--no-replace-objects)', _has(_gf(root, mode='run'), '(i)'))
+    root, top, git = _registered()
     with open(root / 'results.jsonl', 'a') as fh:
-        fh.write(line + '\n')
-    (root / REG).write_text((root / REG).read_text() + f'\n016 read: APPROVED 2028-01-11 row {RUN.line_sha(line)}\n')
-    git('commit', '-q', '-am', 'rows and approval together')
-    return _gf(root, mode='run')
+        fh.write('{"registration": "016-x.md", "mode": "read"\n')
+    git('commit', '-q', '-am', 'broken line')
+    check('(f) an unparseable added line that mentions a 016 registration refuses',
+          any('unparseable line mentions a 016' in x for x in _gf(root)))
 
 
 def bypass_checks():
-    print('bypasses the reviewers used on earlier runners (erasure, attributes, GIT_DIR, nested repos, .pyc, -O)')
+    print('bypasses used on earlier runners (erasure, attributes, GIT_DIR, nested repos, .pyc, -O)')
     for layout in ('top', 'sub'):
-        check(f"({layout}) (h') an approval committed with the fetched row is refused", _has(_approval_same_commit(layout), "(h')"))
-
-    def base():
-        root, top, git = _repo('sub')
+        root, top, git = _repo(layout)
         _write_reg(root)
         git('add', '.')
         git('commit', '-q', '-m', 'all')
-        return root, top, git
-    root, top, git = base()
+        rc = git('rev-parse', 'HEAD').stdout.strip()
+        store = root / RUN.STORE_REL
+        store.mkdir(parents=True)
+        (store / 'manifest.json').write_text(json.dumps({'files': {}, 'digest': RUN.manifest_digest({})}))
+        _add(root, {'registration': '016-x.md', 'mode': 'fetch_started', 'registration_commit': rc})
+        fr = {'registration': '016-x.md', 'mode': 'fetched', 'registration_commit': rc,
+              'code_hashes': RUN.hashes(root, CODE), 'manifest_digest': RUN.manifest_digest({})}
+        line = json.dumps(fr, sort_keys=True)
+        with open(root / 'results.jsonl', 'a') as fh:
+            fh.write(line + '\n')
+        (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2028-01-11 row {RUN.line_sha(line)}\n')
+        git('commit', '-q', '-am', 'rows and approval together')
+        check(f"({layout}) (h') an approval committed with the fetched row is refused", _has(_gf(root, mode='run'), "(h')"))
+    root, top, git = _registered()
     _add(root, {'registration': '016-x.md', 'mode': 'fetched'})
     git('commit', '-q', '-am', 'row')
-    keep = [l for l in (root / 'results.jsonl').read_text().splitlines() if '016-x' not in l]
-    (root / 'results.jsonl').write_text('\n'.join(keep) + ('\n' if keep else ''))
+    (root / 'results.jsonl').write_text('')
     git('commit', '-q', '--amend', '--allow-empty', '-am', 'row removed by amend')
     check('a row removed with commit --amend still blocks (reflog)', _has(_gf(root), '(f)'))
-    root, top, git = base()
+    root, top, git = _registered()
     _add(root, {'registration': '016-other.md', 'mode': 'fetched'})
     git('stash', '-q')
     check('a stashed row (a merge commit) blocks (-m), keyed on the 016- prefix', _has(_gf(root), '(f)'))
-    root, top, git = base()
+    root, top, git = _registered()
     _add(root, {'registration': '016-x.md', 'mode': 'read'})
     git('commit', '-q', '-am', 'row')
     (root / 'results.jsonl').write_text('')
@@ -591,31 +680,17 @@ def bypass_checks():
     (top / '.git' / 'info').mkdir(exist_ok=True)
     (top / '.git' / 'info' / 'attributes').write_text('*.jsonl -diff\n*.jsonl diff=blank\n')
     git('config', 'diff.blank.textconv', 'true')
-    check('a -diff attribute and a textconv driver do not hide an erased row (--text --no-textconv)',
-          _has(_gf(root, mode='run'), '(i)'))
-    root, top, git = base()
+    check('a -diff attribute and a textconv driver do not hide an erased row', _has(_gf(root, mode='run'), '(i)'))
+    root, top, git = _registered()
     _add(root, {'registration': '016-x.md', 'mode': 'fetched'})
     git('commit', '-q', '-am', 'row')
-    other, otop, ogit = base()
+    other, otop, ogit = _registered()
     os.environ['GIT_DIR'] = str(otop / '.git')
     try:
         fr = _gf(root)
     finally:
         del os.environ['GIT_DIR']
     check('GIT_DIR pointing at another repository is stripped: the real history still blocks', _has(fr, '(f)'))
-    sub = root / 'nested'
-    sub.mkdir()
-    subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=sub, capture_output=True)
-    check('a nested git init: (w) refuses when the top level differs',
-          _has(RUN.guard_failures(sub, 'fetch', now=NOW, code=(), data=(), reg_rel=REG, toplevel=top)[0], '(w)'))
-    root, top, git = base()
-    rc = git('rev-parse', 'HEAD').stdout.strip()
-    (root / REG).write_text((root / REG).read_text() + 'prose added later\n')
-    git('commit', '-q', '-am', 'prose')
-    git('config', 'diff.external', '/usr/bin/true')
-    changed = [l for l in RUN._git(root, 'diff', '-U0', '--text', '--no-textconv', '--no-ext-diff', '--no-color', rc, 'HEAD',
-                                   '--', REG).stdout.splitlines() if l.startswith('+') and not l.startswith('+++')]
-    check('diff.external cannot blank the (r) diff (--no-ext-diff)', changed == ['+prose added later'])
     with tempfile.TemporaryDirectory() as d:
         dd = Path(d)
         (dd / 'modx.py').write_text('X = 1\n')
@@ -628,24 +703,126 @@ def bypass_checks():
         pyc.parent.mkdir()
         pyc.write_bytes(iu.MAGIC_NUMBER + struct.pack('<III', 0, int(st.st_mtime) & 0xFFFFFFFF, st.st_size & 0xFFFFFFFF)
                         + marshal.dumps(code))
-        run = lambda pre: subprocess.run([sys.executable, '-I', '-c', pre + 'import sys; sys.path.insert(0, "."); import modx; '
+        run = lambda pre: subprocess.run([PY, '-I', '-S', '-c', pre + 'import sys; sys.path.insert(0, "."); import modx; '
                                           'print(modx.X)'], cwd=dd, capture_output=True, text=True).stdout.strip()
         check('a forged __pycache__ .pyc IS loaded by plain Python and is NOT under a fresh sys.pycache_prefix',
               run('') == '666' and run('import sys, tempfile; sys.pycache_prefix = tempfile.mkdtemp(); ') == '1')
-    p = subprocess.run([sys.executable, '-I', '-c', 'import sys; sys.path.insert(0, "."); import r016_run as R; '
-                        'print(R.loaded_from_source())'], cwd=HERE, capture_output=True, text=True)
-    check('the runner, imported as a program, loads ct16 from source under a fresh pycache prefix', p.stdout.strip() == '[]',
-          p.stderr[-300:])
-    p = subprocess.run([sys.executable, '-O', '-c', 'import sys; sys.path.insert(0, "."); import r016_run as R; '
-                        'print(any("-O" in x for x in R.environment_failures(R.HERE)))'], cwd=HERE, capture_output=True,
-                       text=True)
-    check('python -O is refused by (v)', p.stdout.strip() == 'True', p.stderr[-200:])
-    check('the Python pin matches this interpreter', RUN.versions() == RUN.PINS, str(RUN.versions()))
     asserts = []
     for f in RUN.GUARDED_CODE:
-        tree = ast.parse((HERE / f).read_text())
-        asserts += [f for n in ast.walk(tree) if isinstance(n, ast.Assert)]
+        asserts += [f for n in ast.walk(ast.parse((HERE / f).read_text())) if isinstance(n, ast.Assert)]
     check('no assert statement anywhere in the guarded code (refusals survive -O)', not asserts, str(asserts))
+
+
+# ------------------------------------------------------------------ the environment (review B M2)
+def env_checks():
+    print('environment: -I -S, interpreter and stdlib pins, module origins, stdlib-named files, the fetcher\'s imports')
+    p = subprocess.run([PY, '-c', 'import sys; sys.path.append("."); import r016_run as R; '
+                        'print([x[:40] for x in R.environment_failures(R.HERE)])'], cwd=HERE, capture_output=True,
+                       text=True)
+    check('without -I: (v) refuses (isolation)', '(v) run with python3 -I -S (isolated' in p.stdout, p.stderr[-200:])
+    p = subprocess.run([PY, '-I', '-c', 'import sys; sys.path.append("."); import r016_run as R; '
+                        'print([x[:40] for x in R.environment_failures(R.HERE)])'], cwd=HERE, capture_output=True,
+                       text=True)
+    check('-I without -S: (v) refuses (a site-packages .pth would run)', '(no site)' in p.stdout, p.stdout[-300:])
+    p = subprocess.run([PY, '-I', '-S', 'r016_run.py', '--check'], cwd=HERE, capture_output=True, text=True)
+    out = p.stdout
+    check('the registered command (python3 -I -S r016_run.py) shows no (v) failure: the pins equal this interpreter',
+          '(v)' not in out and p.returncode == 0, out[-400:] + p.stderr[-300:])
+    p = subprocess.run([PY, '-I', '-S', '-O', '-c', 'import sys; sys.path.append("."); import r016_run as R; '
+                        'print(any("-O" in x for x in R.environment_failures(R.HERE)))'], cwd=HERE,
+                       capture_output=True, text=True)
+    check('python -O is refused by (v)', p.stdout.strip() == 'True', p.stderr[-200:])
+    p = subprocess.run([PY, '-I', '-S', '-c', 'import runpy, sys; runpy.run_path("r016_fetch.py", run_name="fetcher"); '
+                        'print(sys.modules["r016_run"].module_origin_failures())'], cwd=HERE, capture_output=True,
+                       text=True)
+    check('the fetcher imports the guard from source under a fresh pycache prefix (review B M2)',
+          p.stdout.strip() == '[]', p.stdout[-300:] + p.stderr[-300:])
+    root, top, git = _registered()
+    (root / 'csv.py').write_text('MARK = True\n')
+    git('add', _rel(root, top, 'csv.py'))
+    git('commit', '-q', '-m', 'a committed csv.py')
+    check('(d) a COMMITTED stdlib-named module beside the runner is refused', any('csv.py (stdlib name)' in x for x in _gf(root)))
+    for f in ('ct16/__init__.py', 'ct16/data.py', 'ct16/rule.py', 'ct16/stats.py', 'r016_run.py'):
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(HERE / f, root / f)
+    p = subprocess.run([PY, '-I', '-S', '-c', 'import sys; sys.path.append("."); import r016_run; import csv; '
+                        'print(hasattr(csv, "MARK"), csv.__file__)'], cwd=root, capture_output=True, text=True)
+    check('with research/alpha APPENDED to sys.path, `import csv` resolves to the stdlib', p.stdout.startswith('False'),
+          p.stdout + p.stderr[-200:])
+
+
+# ------------------------------------------------------------------ the binding to the real repository (review B B1)
+def make_sandbox():
+    """A stand-in for the real repository: a fresh git repo (no clone of the real one, no real data) holding a copy of
+    016's code with REAL_REPO and ANCHOR rewritten to the sandbox, a synthetic pull listing and exchangeInfo, and a
+    REGISTERED registration whose table matches the sandbox's files. Returns (alpha dir, top, git)."""
+    top = Path(tempfile.mkdtemp(prefix='r016-sandbox-')).resolve()
+    alpha = top / 'research' / 'alpha'
+    git = _git_fn(top)
+    git('init', '-q', '-b', 'alpha-discovery')
+    (top / 'README').write_text('anchor\n')
+    git('add', 'README')
+    git('commit', '-q', '-m', 'anchor')
+    anchor = git('rev-parse', 'HEAD').stdout.strip()
+    for f in (*RUN.GUARDED_CODE, 'tests/test_r016.py'):
+        (alpha / f).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(HERE / f, alpha / f)
+    src = (alpha / 'r016_run.py').read_text()
+    src = src.replace(f"REAL_REPO = Path('{RUN.REAL_REPO}')", f"REAL_REPO = Path('{top}')")
+    src = src.replace(f"ANCHOR = '{RUN.ANCHOR}'", f"ANCHOR = '{anchor}'")
+    (alpha / 'r016_run.py').write_text(src)
+    (alpha / 'results.jsonl').write_text('')
+    (top / '.gitignore').write_text('research/alpha/data/\n__pycache__/\n')
+    (alpha / RUN.KLINES_A_REL).mkdir(parents=True)
+    (alpha / RUN.KLINES_A_REL / 'SHA256SUMS').write_text('a' * 64 + '  klines/XUSDT/1d/XUSDT-1d-2026-06.zip\n')
+    (alpha / RUN.STATIC_EXCHANGE_REL).parent.mkdir(parents=True)
+    (alpha / RUN.STATIC_EXCHANGE_REL).write_text('{"symbols": []}')
+    rows = '\n'.join(f'| `{f}` | `{RUN.sha256(alpha / f)}` |' for f in (*RUN.GUARDED_CODE, *RUN.GUARDED_DATA))
+    (alpha / RUN.REG_REL).parent.mkdir(parents=True, exist_ok=True)
+    (alpha / RUN.REG_REL).write_text(f'# 016 sandbox\n\n**Status: REGISTERED 2026-10-14**\n\n| file | sha256 |\n'
+                                     f'|---|---|\n{rows}\n')
+    git('add', '.')
+    git('commit', '-q', '-m', 'sandbox REGISTERED')
+    return alpha, top, git
+
+
+def _check(alpha, script='r016_run.py', args=('--check',)):
+    p = subprocess.run([PY, '-I', '-S', script, *args], cwd=alpha, capture_output=True, text=True)
+    return p.stdout + p.stderr
+
+
+def binding_checks():
+    print('binding (review B B1): only the main worktree of the pinned repository, on a named branch')
+    alpha, top, git = make_sandbox()
+    out = _check(alpha)
+    lines = [l for l in out.splitlines() if l.startswith('(')]
+    check('the sandbox standing in for the real repository refuses only on (t) and (g1) today',
+          {l[:3] for l in lines} == {'(t)', '(g1'} and not any(l.startswith('(w)') for l in lines), out[-500:])
+    clone = Path(tempfile.mkdtemp(prefix='r016-clone-')) / 'repo'
+    subprocess.run([GIT, 'clone', '-q', '--local', str(top), str(clone)], capture_output=True, check=True)
+    calpha = clone / 'research' / 'alpha'
+    (calpha / RUN.KLINES_A_REL).mkdir(parents=True)
+    shutil.copy(alpha / RUN.KLINES_A_REL / 'SHA256SUMS', calpha / RUN.KLINES_A_REL / 'SHA256SUMS')
+    (calpha / RUN.STATIC_EXCHANGE_REL).parent.mkdir(parents=True)
+    shutil.copy(alpha / RUN.STATIC_EXCHANGE_REL, calpha / RUN.STATIC_EXCHANGE_REL)
+    out = _check(calpha)
+    check('a clone with its data copied refuses with (w)', '(w)' in out, out[-300:])
+    p = subprocess.run([PY, '-I', '-S', 'r016_fetch.py'], cwd=calpha, capture_output=True, text=True)
+    check('the fetcher in a clone refuses: it runs only from the real repository',
+          'the fetcher runs only from the real repository' in p.stdout + p.stderr, (p.stdout + p.stderr)[-300:])
+    wt = Path(tempfile.mkdtemp(prefix='r016-wt-')) / 'wt'
+    git('worktree', 'add', '-q', '--detach', str(wt))
+    walpha = wt / 'research' / 'alpha'
+    out = _check(walpha)
+    check('a linked worktree refuses with (w)', '(w)' in out, out[-300:])
+    git('worktree', 'remove', '--force', str(wt))
+    git('checkout', '-q', '--detach')
+    out = _check(alpha)
+    check('a detached HEAD in the real repository refuses with (w)', '(w) HEAD is detached' in out, out[-300:])
+    git('checkout', '-q', 'alpha-discovery')
+    real_line = f'016 repo-path: APPROVED 2028-01-01 {clone}\n'
+    check('a repo-path line is ignored while the pinned repository exists',
+          RUN.bound_repo(real_line) == RUN.REAL_REPO)
 
 
 # ------------------------------------------------------------------ the gate and the real tree
@@ -654,56 +831,131 @@ def gate_checks():
     check('Panel refuses the real data without the gate (before any file is opened)', raises(lambda: RUN.Panel('run')))
     check('Panel refuses the real span-(a) pull even next to a synthetic store',
           raises(lambda: RUN.Panel('run', store=tempfile.mkdtemp())))
-    RUN._GATE = (str(RUN.HERE), 'fetch', 'x')
+    RUN._GUARD_PASSED = (str(RUN.HERE), 'run', 'x')
     try:
-        check('a gate for another mode does not open the read', raises(lambda: RUN.Panel('run')))
+        check('a guard token without the post-started gate does not open the read', raises(lambda: RUN.Panel('run')))
     finally:
-        RUN._GATE = None
+        RUN._GUARD_PASSED = None
+    copy = Path(tempfile.mkdtemp())
+    (copy / 'SHA256SUMS').write_text('synthetic copy\n')
+    saved = RUN.registered_real_hashes
+    RUN.registered_real_hashes = lambda: {D.sha256_bytes(b'synthetic copy\n')}
+    try:
+        check('a byte copy of a registered pull listing outside the real tree is refused (review B m2)',
+              raises(lambda: RUN.Panel('run', klines_a=copy, store=tempfile.mkdtemp())))
+    finally:
+        RUN.registered_real_hashes = saved
     check('the real results file and the real data tree only together',
           RUN.real_tree_failures([tempfile.mkdtemp()]) != [] and RUN.real_tree_failures() == [])
-    saved = RUN.HOOKS['commit']
-    RUN.HOOKS['commit'] = lambda msg: None
+    saved_g = RUN.guard_failures
+    RUN.guard_failures = lambda *a, **k: ([], {})
     try:
-        check('a mocked commit hook is refused on the real tree', RUN.real_tree_failures() != [])
+        check('a stubbed guard_failures is refused on the real tree (review B m2)', RUN.real_tree_failures() != [])
     finally:
-        RUN.HOOKS['commit'] = saved
-    saved_g = RUN.guard
-    RUN.guard = lambda mode: {'commit': 'x'}
-    try:
-        check('a stubbed guard is refused on the real tree', RUN.real_tree_failures() != [])
-    finally:
-        RUN.guard = saved_g
-    mh = _mock_hooks({})
-    mh.pop('calls')
-    check('fetch: mock hooks on the real store are refused', raises(lambda: F.fetch(hooks=mh), (SystemExit,)))
-    check('fetch: a missing hook is refused (no fallback)', raises(lambda: F.fetch(root=tempfile.mkdtemp(),
-                                                                                 hooks={'get': None}), (SystemExit,)))
+        RUN.guard_failures = saved_g
+    is_real = RUN.in_real(RUN.HERE)
+    if is_real:
+        real_res = RUN.REAL_RESULTS
+        before = real_res.read_bytes() if real_res.exists() else None
+        head0 = RUN._git(RUN.HERE, 'rev-parse', 'HEAD').stdout
+        mh = _mock_hooks({})
+        mh.pop('calls')
+        for label, kw in (('root = the real directory', dict(root=RUN.HERE, store=tempfile.mkdtemp())),
+                          ('store under the real store', dict(root=tempfile.mkdtemp(), store=RUN.HERE / RUN.STORE_REL / 'sub'))):
+            try:
+                F._fetch_in(hooks=mh, now=NOW, **kw)
+                msg = ''
+            except SystemExit as e:
+                msg = str(e)
+            check(f'mock hooks and `now` with {label} are refused before anything is written (review B M1)', '(M1)' in msg, msg[:200])
+        check('the real results.jsonl and HEAD are unchanged', (real_res.read_bytes() if real_res.exists() else None) == before
+              and RUN._git(RUN.HERE, 'rev-parse', 'HEAD').stdout == head0)
+        nf = RUN.guard_failures(RUN.HERE, 'fetch', now=NOW)[0]
+        check('`now` is refused on the real repository (it never opens the date gate there)', _has(nf, '(t) a `now` override'))
+    else:                                   # a clone (the commit simulation): not the real repository at all
+        rw = RUN.guard_failures(RUN.HERE, 'run', real_repo=RUN.REAL_REPO)[0]
+        check('outside the real repository (a clone): the binding refuses with (w)', _has(rw, '(w)'), str(rw[:2]))
+    check('fetch: a missing hook is refused (no fallback)',
+          raises(lambda: F._fetch_in(tempfile.mkdtemp(), tempfile.mkdtemp(), {'get': None}, NOW), (SystemExit,)))
     check('fetch: the real hooks refuse outside the real guarded fetch', raises(lambda: F._get('x'), (SystemExit,)))
-    rr = RUN.guard_failures(RUN.HERE, 'run', toplevel=RUN.REPO, anchor=RUN.ANCHOR)[0]
-    check('the real guard (read-only call) refuses today: the date gate (t)', _has(rr, '(t)') or dt.date.today() >= R.READ_NOT_BEFORE,
-          str(rr[:3]))
-    # record(): the default hook commits and the line is verified in HEAD; a no-op hook refuses
+    rr = RUN.guard_failures(RUN.HERE, 'run', real_repo=RUN.REAL_REPO, anchor=RUN.ANCHOR)[0]
+    check('the real guard (read-only call) refuses today on the date (t); (w) appears only outside the real repository',
+          (_has(rr, '(t)') or dt.date.today() >= R.READ_NOT_BEFORE) and _has(rr, '(w)') == (not is_real), str(rr[:3]))
     root, top, git = _repo('sub')
     git('add', '.')
     git('commit', '-q', '-m', 'init')
     saved_r = RUN.RESULTS
     RUN.RESULTS = root / 'results.jsonl'
+    saved_h = RUN.HOOKS['commit']
     try:
         RUN.record({'registration': '016-x.md', 'mode': 'probe'}, 'probe row')
-        check('record() commits the row alone and finds it in HEAD:./results.jsonl (subdirectory layout)',
-              '"probe"' in git('show', 'HEAD:' + str((root / 'results.jsonl').relative_to(top))).stdout)
-        RUN.HOOKS['commit'] = lambda msg: None
+        log = git('log', '-1', '--format=%an').stdout.strip()
+        check('record() commits the row alone, as the runner identity, and finds it in HEAD:./results.jsonl',
+              '"probe"' in git('show', 'HEAD:' + _rel(root, top, 'results.jsonl')).stdout and log == RUN.RUNNER_NAME)
+        RUN.HOOKS['commit'] = lambda msg, results=None: None
         check('record() refuses when the hook did not commit', raises(lambda: RUN.record({'registration': '016-x.md',
                                                                                           'mode': 'p2'}, 'x')))
     finally:
-        RUN.HOOKS['commit'] = saved
+        RUN.HOOKS['commit'] = saved_h
         RUN.RESULTS = saved_r
 
 
+# ------------------------------------------------------------------ the panel's own cuts (review B m4)
+def _mini_panel(extra_a=None, june_with_july_row=False):
+    """A tiny synthetic pull (BTC 2026-06) and store (BTC 2026-07) for the panel's cut checks."""
+    base = Path(tempfile.mkdtemp())
+    a, f = base / 'a', base / 'f'
+    jun = [(R.day(dt.date(2026, 6, 1)) + i, 100.0 + i, 5e7, 10) for i in range(30)]
+    if june_with_july_row:
+        jun.append((R.day(dt.date(2026, 7, 1)), 999.0, 5e7, 10))
+    files = {'klines/BTCUSDT/1d/BTCUSDT-1d-2026-06.zip': _zip('x.csv', kline_csv(jun))}
+    if extra_a:
+        files.update(extra_a)
+    sums = []
+    for rel, blob in files.items():
+        (a / rel).parent.mkdir(parents=True, exist_ok=True)
+        (a / rel).write_bytes(blob)
+        sums.append(f'{D.sha256_bytes(blob)}  {rel}')
+    (a / 'SHA256SUMS').write_text('\n'.join(sums) + '\n')
+    jul = [(R.day(dt.date(2026, 7, 1)) + i, 200.0 + i, 5e7, 10) for i in range(31)]
+    mf = {'klines/BTCUSDT/1d/BTCUSDT-1d-2026-07.zip': _zip('y.csv', kline_csv(jul)),
+          'fapi_exchangeInfo.json': b'{"symbols": []}', 'hl_presence.json': b'{}'}
+    for rel, blob in mf.items():
+        (f / rel).parent.mkdir(parents=True, exist_ok=True)
+        (f / rel).write_bytes(blob)
+    man = {rel: D.sha256_bytes(blob) for rel, blob in mf.items()}
+    (f / 'manifest.json').write_text(json.dumps({'files': man, 'digest': RUN.manifest_digest(man)}))
+    static = base / 'static.json'
+    static.write_text('{"symbols": []}')
+    return RUN.Panel('run', klines_a=a, store=f), static
+
+
+def panel_checks():
+    print('panel: the span-(a) month cap, the span-(a) row cut, the hashes of the bytes used')
+    p, st = _mini_panel(extra_a={'klines/ETHUSDT/1d/ETHUSDT-1d-2026-07.zip': _zip('z.csv', kline_csv(
+        [(R.day(dt.date(2026, 7, 1)), 5.0, 5e7, 10)]))})
+    try:
+        p.load(static_exchange=st)
+        msg = ''
+    except R.Refused as e:
+        msg = str(e)
+    check('a pull listing a 2026-07 file is refused (the month cap)', 'holds a month after 2026-06' in msg, msg[:120])
+    p, st = _mini_panel(june_with_july_row=True)
+    try:
+        v = p.load(static_exchange=st)[0]['BTCUSDT'].rows[R.day(dt.date(2026, 7, 1))][0]
+    except R.Refused as e:
+        v = f'refused: {e}'
+    check('a 2026-06 file holding a 2026-07 row: the row is cut, the forward value is used (the row cut)', v == 200.0, str(v))
+    p, st = _mini_panel()
+    p.table = {f'{RUN.KLINES_A_REL}/SHA256SUMS': '0' * 64, RUN.STATIC_EXCHANGE_REL: '0' * 64}
+    check('the panel re-hashes the SHA256SUMS and exchangeInfo bytes it parses against the table (review B m8)',
+          raises(lambda: p.load(static_exchange=st)))
+
+
 # ------------------------------------------------------------------ the fetcher against mocks
-def _mock_hooks(objects, page=3, hl=None, fail=(), empty=(), badsum=()):
+def _mock_hooks(objects, page=3, hl=None, fail=(), empty=(), badsum=(), witness=None, ex=None):
     """S3 ListObjects v1 with `page` keys per page and an EXCLUSIVE marker; data.binance.vision GET; HL funding with
-    INCLUSIVE start and end."""
+    INCLUSIVE start and end; the witness (keys, server date)."""
     calls = {'list': 0, 'get': []}
     keys = sorted(objects)
 
@@ -744,18 +996,19 @@ def _mock_hooks(objects, page=3, hl=None, fail=(), empty=(), badsum=()):
 
     def hl_funding(coin, start, end):
         h = hl[coin]
-        t = h['first']
         out = []
         stop = h['last'] if h['last'] is not None else F.ms(dt.date(2028, 1, 1)) + 10 * 3600000
-        t = max(t, start - (start - h['first']) % 3600000)
+        t = max(h['first'], start - (start - h['first']) % 3600000)
         while t <= min(end, stop) and len(out) < 500:
             if t >= start:
                 out.append({'coin': coin, 'time': t, 'fundingRate': '0.00001'})
             t += 3600000
         return out
-    return {'s3_list': s3_list, 'get': get, 'exchange_info': lambda: {'symbols': [{'symbol': 'BTCUSDT',
-                                                                                    'contractType': 'PERPETUAL',
-                                                                                    'underlyingType': 'COIN'}]},
+    wit = witness or ([k for k in keys if k.startswith(F.KLINES_BASE + 'BTCUSDT/1d/')],
+                      dt.datetime(2028, 1, 9, tzinfo=dt.UTC))
+    return {'witness': lambda: wit, 's3_list': s3_list, 'get': get,
+            'exchange_info': lambda: ex or {'symbols': [{'symbol': 'BTCUSDT', 'contractType': 'PERPETUAL',
+                                                          'underlyingType': 'COIN'}]},
             'hl_meta': lambda: [{'name': c} for c in hl], 'hl_funding': hl_funding, 'calls': calls}
 
 
@@ -770,25 +1023,34 @@ def _month_zip(sym, mo, dead=False):
 def _fund_zip(sym, mo):
     y, m = map(int, mo.split('-'))
     t = int(dt.datetime(y, m, 1, 8, tzinfo=dt.UTC).timestamp() * 1000)
-    return _zip(f'{sym}-fundingRate-{mo}.csv', 'calc_time,funding_interval_hours,last_funding_rate\n'
-                f'{t},8,0.0001\n')
+    return _zip(f'{sym}-fundingRate-{mo}.csv', f'calc_time,funding_interval_hours,last_funding_rate\n{t},8,0.0001\n')
+
+
+def _objs(syms=('BTCUSDT', 'ETHUSDT'), k_months=('2026-05', '2028-02'), f_months=('2025-01', '2028-02')):
+    objs = {}
+    for sym in syms:
+        for mo in F.months(*k_months):
+            objs[f'{F.KLINES_BASE}{sym}/1d/{sym}-1d-{mo}.zip'] = _month_zip(sym, mo)
+        for mo in F.months(*f_months):
+            objs[f'{F.FUNDING_BASE}{sym}/{sym}-fundingRate-{mo}.zip'] = _fund_zip(sym, mo)
+    return objs
 
 
 def fetch_checks():
-    print('fetch (mocks): paging, months, checksums, never caching an error, coverage, persistence, the HL probe')
-    objs = {}
-    for sym in ('BTCUSDT', 'ETHUSDT'):
-        for mo in F.months('2026-05', '2028-02'):
-            objs[f'{F.KLINES_BASE}{sym}/1d/{sym}-1d-{mo}.zip'] = _month_zip(sym, mo)
-        for mo in F.months('2025-01', '2028-02'):
-            objs[f'{F.FUNDING_BASE}{sym}/{sym}-fundingRate-{mo}.zip'] = _fund_zip(sym, mo)
+    print('fetch (mocks): witness, paging, months, checksums, resume, coverage rules, persistence, the HL probe')
+    objs = _objs()
     hk = _mock_hooks(objs)
     want, later = F.plan(hk, F.KLINES_BASE, '1d/', *RUN.FWD_MONTHS)
     check('plan: exactly the 18 forward months per symbol; later months counted, never planned; <= 2026-06 not planned',
           [m for m, _ in want['BTCUSDT']] == F.months('2026-07', '2027-12') and later == 4)
     full = [k for kind, k in hk['s3_list'](F.KLINES_BASE + 'BTCUSDT/1d/') if kind == 'obj']
-    check('S3 paging forward with an exclusive marker: every key once, none skipped (page size 3)',
+    check('S3 paging forward with an exclusive marker: every key once (page size 3)',
           full == sorted(k for k in objs if k.startswith(F.KLINES_BASE + 'BTCUSDT/1d/')) and len(full) == len(set(full)))
+    early = _mock_hooks(objs, witness=([k for k in objs if '2026-0' in k and 'BTCUSDT/1d' in k],
+                                       dt.datetime(2028, 1, 9, tzinfo=dt.UTC)))
+    check('witness: the archive must list BTCUSDT 2027-12', F.witness_failures(early) != [])
+    late_clock = _mock_hooks(objs, witness=([k for k in objs if 'BTCUSDT/1d' in k], dt.datetime(2027, 12, 31, tzinfo=dt.UTC)))
+    check('witness: the server date must be >= 2028-01-08', F.witness_failures(late_clock) != [] and F.witness_failures(hk) == [])
     with tempfile.TemporaryDirectory() as d:
         store = Path(d)
         key = f'{F.KLINES_BASE}BTCUSDT/1d/BTCUSDT-1d-2026-07.zip'
@@ -803,51 +1065,64 @@ def fetch_checks():
         check('a failed download is a keyed error and is never written',
               'klines_error:BTCUSDT:2026-07' in errors and not (store / 'klines/BTCUSDT/1d/BTCUSDT-1d-2026-07.zip').exists()
               and len(files) == 35)
+        tam = store / 'klines/BTCUSDT/1d/BTCUSDT-1d-2026-08.zip'
+        tam.write_bytes(b'tampered')
         _, files2, errors2, _l = F.pull(hk, store, F.KLINES_BASE, '1d/', *RUN.FWD_MONTHS, 'klines')
-        check('the re-run fetches only the missing file (resumable)', not errors2 and len(files2) == 36
-              and sum(1 for k in hk['calls']['get'] if k.endswith('2026-07.zip') and 'BTCUSDT' in k) == 1)
-        a_sums = {}
-        cov = F.coverage(Path(d), store, files2, a_sums)
-        check('coverage: BTC has every forward day; no gap', cov == {}, str(cov))
-        files3 = {k: v for k, v in files2.items() if '2027-03' not in k or 'ETHUSDT' not in k}
-        cov3 = F.coverage(Path(d), store, files3, a_sums)
-        check('coverage: an interior month missing is a keyed refusal', 'klines_gap:ETHUSDT' in cov3)
-        files4 = {k: v for k, v in files2.items() if 'BTCUSDT-1d-2027-12' not in k}
-        check('coverage: BTC missing its last month refuses (never persistable)', 'btc_months' in F.coverage(Path(d), store, files4, a_sums))
-    att = {1: {'refusals': {'klines_gap:ETHUSDT'}, 'time': 1_000_000}, 2: {'refusals': {'klines_gap:ETHUSDT'},
-                                                                          'time': 1_000_000 + 90_000}}
-    blk, per = F.apply_persistence({'klines_gap:ETHUSDT': 'x', 'btc_months': 'y'}, att, 1_000_000 + 180_000)
-    check('persistence: the same key on 3 attempts >= 24 h apart becomes unavailable; BTC never does',
-          'klines_gap:ETHUSDT' in per and 'btc_months' in blk)
-    blk2, per2 = F.apply_persistence({'klines_gap:ETHUSDT': 'x'}, att, 1_000_000 + 100_000)
-    check('persistence: attempts closer than 24 h do not chain', 'klines_gap:ETHUSDT' in blk2 and not per2)
-    # HL presence: inclusive endTime; [s, s + 2 d - 1 ms] windows; bisection for the last funding month start
+        check('resume: a stored file is re-checked against .CHECKSUM and re-fetched when it differs (review B m5d)',
+              not errors2 and len(files2) == 36
+              and D.sha256_bytes(tam.read_bytes()) == D.sha256_bytes(objs[f'{F.KLINES_BASE}BTCUSDT/1d/BTCUSDT-1d-2026-08.zip']))
+        _, ff, ferr, _l = F.pull(hk, store, F.FUNDING_BASE, '', *RUN.FUNDING_MONTHS, 'fundingRate')
+        allf = {**files2, **ff}
+        root = Path(tempfile.mkdtemp())
+        check('coverage: BTC every forward day, no gap, funding for every traded month', F.coverage(root, store, allf, {}) == {},
+              str(F.coverage(root, store, allf, {}))[:300])
+        no_eth = {k: v for k, v in allf.items() if not ('ETHUSDT' in k and '2027-03' in k and k.startswith('klines'))}
+        check('coverage: an interior month missing is a keyed refusal', 'klines_gap:ETHUSDT' in F.coverage(root, store, no_eth, {}))
+        no_dec = {k: v for k, v in allf.items() if not ('ETHUSDT-1d-2027-12' in k)}
+        check('coverage: traded at the end of 2027-11 but no 2027-12 file (the second seam; review B m5b)',
+              'klines_seam:ETHUSDT:2027-12' in F.coverage(root, store, no_dec, {}))
+        no_btc = {k: v for k, v in allf.items() if 'BTCUSDT-1d-2027-12' not in k}
+        check('coverage: BTC missing its last month refuses (never persistable)', 'btc_months' in F.coverage(root, store, no_btc, {}))
+        no_fund = {k: v for k, v in allf.items() if not ('ETHUSDT-fundingRate-2027-05' in k)}
+        check('coverage: a traded kline month without a funding file refuses (review B m5a)',
+              'funding_missing:ETHUSDT:2027-05' in F.coverage(root, store, no_fund, {}))
+        ex = {'symbols': [{'symbol': 'NEWUSDT', 'contractType': 'PERPETUAL', 'underlyingType': 'COIN', 'status': 'TRADING',
+                           'onboardDate': F.ms(dt.date(2027, 2, 1))}]}
+        check('coverage: a live COIN perp of the exchangeInfo with no forward klines refuses (review B m5c)',
+              'listing_missing:NEWUSDT' in F.coverage(root, store, allf, {}, ex))
+        a_dir = root / RUN.KLINES_A_REL
+        rel = 'klines/SOLUSDT/1d/SOLUSDT-1d-2026-06.zip'
+        blob = _month_zip('SOLUSDT', '2026-06')
+        (a_dir / rel).parent.mkdir(parents=True)
+        (a_dir / rel).write_bytes(blob)
+        cov = F.coverage(root, store, allf, {rel: D.sha256_bytes(blob)})
+        check('coverage: traded at the end of 2026-06 in the pinned pull but no 2026-07 file (the seam)',
+              'klines_seam:SOLUSDT' in cov, str(cov)[:200])
+    gap, t0 = F.PERSIST_GAP_S, 1_900_000_000
+    att = {1: {'refusals': {'klines_gap:ETHUSDT', 'klines_error:BTCUSDT:2026-07'}, 'time': t0},
+           2: {'refusals': {'klines_gap:ETHUSDT', 'klines_error:BTCUSDT:2026-07'}, 'time': t0 + gap + 10}}
+    blk, per = F.apply_persistence({'klines_gap:ETHUSDT': 'x', 'klines_error:BTCUSDT:2026-07': 'y'}, att,
+                                   t0 + 2 * gap + 20, not_before_s=0)
+    check('persistence: 3 attempts >= 24 h apart make a key unavailable; a BTCUSDT key never',
+          'klines_gap:ETHUSDT' in per and 'klines_error:BTCUSDT:2026-07' in blk)
+    blk2, per2 = F.apply_persistence({'klines_gap:ETHUSDT': 'x'}, att, t0 + 2 * gap + 20, not_before_s=t0 + 1)
+    check('persistence: attempts committed before 2028-01-08 never count (review B m1)', 'klines_gap:ETHUSDT' in blk2)
     end_ms = F.ms(dt.date(2028, 1, 1))
     hl = {'AAA': {'first': F.ms(dt.date(2023, 6, 1)), 'last': None},
           'BBB': {'first': F.ms(dt.date(2024, 2, 1)), 'last': F.ms(dt.date(2026, 9, 15))},
           'CCC': {'first': F.ms(dt.date(2026, 11, 1)), 'last': F.ms(dt.date(2026, 11, 1))}}
-    mh = _mock_hooks({}, hl=hl)
-    pres, err = F.hl_presence(mh, ['AAA', 'BBB', 'CCC'], end_ms)
-    check('HL: alive at the end -> last None; first funding time found',
-          pres['AAA'] == {'first': hl['AAA']['first'], 'last': None} and not err)
-    check('HL: a coin that stopped -> the last month start with funding (bisection)',
-          pres['BBB']['last'] == F.ms(dt.date(2026, 9, 1)), str(pres['BBB']))
+    pres, err = F.hl_presence(_mock_hooks({}, hl=hl), ['AAA', 'BBB', 'CCC'], end_ms)
+    check('HL: alive at the end -> last None; a coin that stopped -> its last funding month start (bisection)',
+          pres['AAA']['last'] is None and pres['BBB']['last'] == F.ms(dt.date(2026, 9, 1)) and not err)
     check('HL: a row exactly at a window end (s + 2 d) is outside [s, s + 2 d - 1 ms] (inclusive endTime handled)',
           pres['CCC']['last'] == F.ms(dt.date(2026, 11, 1)))
-    ufn = RUN.hl_universe_fn(lambda d: ['AAAUSDT', 'BBBUSDT', '1000CCCUSDT'], {'AAA': pres['AAA'], 'BBB': pres['BBB'],
-                                                                                'kCCC': pres['CCC']})
-    check('HL sub-book: members listed at the month start, mapped (1000X -> kX)',
-          ufn(R.day(dt.date(2026, 10, 31))) == ['AAAUSDT', '1000CCCUSDT'] and ufn(R.day(dt.date(2026, 8, 31)))
-          == ['AAAUSDT', 'BBBUSDT'] and ufn(R.day(dt.date(2026, 11, 30))) == ['AAAUSDT'])
 
 
 # ------------------------------------------------------------------ end to end on a synthetic tree (both layouts)
 def _synthetic_tree(root, seed=11):
-    """A scout-like pull (months <= 2026-06) and nothing forward: the fetch fills the rest from mocks."""
     syms = sim.make_world({'name': 'e2e', 'drift': 'flat', 'kappa': 0.25, 'half_life': 60}, seed)
     a_dir = root / RUN.KLINES_A_REL
-    objs = {}
-    sums = []
+    objs, sums = {}, []
     for name, s in syms.items():
         by_m = {}
         for d_, (c, q, n) in s.rows.items():
@@ -882,95 +1157,119 @@ def e2e_checks(layout):
     hooks = _mock_hooks(objs, page=50)
     hooks.pop('calls')
     kw = dict(code=CODE, data=data, reg_rel=REG)
-    check('fetch refuses before 2028-01-08', raises(lambda: F.fetch(root=root, now=EARLY, hooks=hooks, **kw), (SystemExit,)))
-    row = F.fetch(root=root, now=NOW, hooks=hooks, **kw)
-    head = git('show', 'HEAD:' + str((root / 'results.jsonl').relative_to(top))).stdout
-    check('the fetch commits fetch_started, an attempt row and the fetched row (verified in HEAD)',
-          head.count('"fetch_started"') == 1 and '"fetch_attempt"' in head and '"fetched"' in head)
-    check('the fetch runs once', raises(lambda: F.fetch(root=root, now=NOW, hooks=hooks, **kw), (SystemExit,)))
+    store = root / RUN.STORE_REL
+    check('fetch refuses before 2028-01-08', raises(lambda: F._fetch_in(root, store, hooks, EARLY, **kw), (SystemExit,)))
+    F._fetch_in(root, store, hooks, NOW, **kw)
+    head = git('show', 'HEAD:' + _rel(root, top, 'results.jsonl')).stdout
+    check('the fetch commits fetch_started, an attempt row and the fetched row (verified in HEAD), as the runner',
+          head.count('"fetch_started"') == 1 and '"fetch_attempt"' in head and '"fetched"' in head
+          and git('log', '-1', '--format=%an').stdout.strip() == RUN.RUNNER_NAME)
+    check('the fetch runs once', raises(lambda: F._fetch_in(root, store, hooks, NOW, **kw), (SystemExit,)))
     fr = RUN.guard_failures(root, 'run', now=NOW, **kw)[0]
     check("the read needs the approval line (h')", _has(fr, "(h')") and len(fr) == 1, str(fr))
     fline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"fetched"' in l][0]
     (root / REG).write_text((root / REG).read_text() + f'\n016 read: APPROVED 2028-01-11 row {RUN.line_sha(fline)}\n')
     git('commit', '-q', '-am', 'approval')
-    check('after the approval the read gate opens', RUN.guard_failures(root, 'run', now=NOW, **kw)[0] == [])
-    panel = RUN.Panel('run', klines_a=root / RUN.KLINES_A_REL, store=root / RUN.STORE_REL)
+    gfo = RUN.guard_failures(root, 'run', now=NOW, **kw)[0]
+    check('after the approval the read gate opens', gfo == [], str(gfo))
+    table = RUN.guard_failures(root, 'run', now=NOW, **kw)[1]['table']
+    panel = RUN.Panel('run', klines_a=root / RUN.KLINES_A_REL, store=store, table=table)
     syms, funding, non_coin, hl, counts = panel.load(static_exchange=root / RUN.STATIC_EXCHANGE_REL)
     check('the panel joins the pinned pull (<= 2026-06) and the fetch (2026-07 -> 2027-12) without overlap',
           counts['symbols'] == 24 and min(syms[R.BTC].rows) == R.day(sim.SIM_START)
           and max(syms[R.BTC].rows) == R.day(R.END) and len(funding) == 24, str(counts))
-    dec, rep, series, bk = RUN.compute(syms, funding, non_coin, hl, placebo_seeds=3)
-    row = {'outcome': dec['outcome'], 'route': dec['route'], 'h1_t': dec['h1']['pooled']['t'], 'h2_T': dec['h2']['T'],
-           'series': series}
+    dec, rep, series, bk = RUN.compute(syms, funding, non_coin, hl, placebo_seeds=2)
+    row = {'outcome': dec['outcome'], 'route': dec['route'], 'h1_t': dec['h1']['pooled']['t'],
+           'h1_t_forward': dec['h1']['forward']['t'], 'series': series}
     fails, _ = S.recheck(json.loads(json.dumps(row)))
-    check('compute runs end to end on the synthetic trend world; the decision recomputes from the stored series',
-          fails == [] and dec['h1']['pooled']['G'] == 33, f"{dec['outcome']} t {dec['h1']['pooled']['t']:.2f}")
-    check('the reported blocks are present (strata, variants, tail, placebo)',
-          {'strata', 'costs', 'long_short', 'tail_25pct_vol', 'placebo_shifted_signals'} <= set(rep))
-    tamper = root / RUN.STORE_REL / 'klines' / 'BTCUSDT' / '1d' / 'BTCUSDT-1d-2027-01.zip'
+    check('compute runs end to end on the synthetic trend world; the decision recomputes from the stored records',
+          fails == [] and dec['h1']['pooled']['G'] == 33, f"{dec['outcome']} tA {dec['h1']['pooled']['t']:.2f} {fails}")
+    check('the reported blocks are present (strata, factor alphas, raw Sharpe, variants, tail, age, placebo)',
+          {'strata', 'factor_alpha_constant', 'raw_sharpe_vs_paper', 'costs', 'long_short', 'tail_gross_x_k25',
+           'age_excluded_by_month', 'placebo_shifted_signals'} <= set(rep))
+    tamper = store / 'klines' / 'BTCUSDT' / '1d' / 'BTCUSDT-1d-2027-01.zip'
     blob = bytearray(tamper.read_bytes())
     blob[len(blob) // 2] ^= 0xFF
     tamper.write_bytes(bytes(blob))
     check('a forward file altered after the fetch: (g3) refuses and the panel refuses it',
           _has(RUN.guard_failures(root, 'run', now=NOW, **kw)[0], '(g3)')
-          and raises(lambda: RUN.Panel('run', klines_a=root / RUN.KLINES_A_REL, store=root / RUN.STORE_REL).load(
+          and raises(lambda: RUN.Panel('run', klines_a=root / RUN.KLINES_A_REL, store=store, table=table).load(
               static_exchange=root / RUN.STATIC_EXCHANGE_REL)))
 
 
 # ------------------------------------------------------------------ the simulator
 def sim_checks():
-    print('simulator: determinism, a trend-free world is a martingale, a trend world trends')
+    print('simulator: determinism, the timing statistic in trend-free and leverage-bull worlds')
     a = sim.run_draw({'name': 'x', 'drift': 'flat'}, 5)
-    b = sim.run_draw({'name': 'x', 'drift': 'flat'}, 5)
-    check('a draw is a deterministic function of (spec, seed)', a == b)
+    check('a draw is a deterministic function of (spec, seed)', a == sim.run_draw({'name': 'x', 'drift': 'flat'}, 5))
     w = sim.make_world({'name': 'x', 'drift': 'flat', 'df': None, 'garch': (0, 0, 0)}, 2)
     btc = w[R.BTC]
     r = [btc.tclose[i] / btc.tclose[i - 1] - 1 for i in range(1, len(btc.tclose))]
     ac = sum(x * y for x, y in zip(r, r[1:])) / sum(x * x for x in r)
     check('trend-free world: BTC daily returns have ~zero mean and ~zero autocorrelation',
           abs(statistics.fmean(r)) < 0.003 and abs(ac) < 0.08, f'mean {statistics.fmean(r):.5f} ac {ac:.3f}')
-    check('every calibration world has a name and runs', all(sim.run_draw(s, 1)['G'] == 33 for s in sim.CALIBRATION[:3]))
+    b = sim.run_draw({'name': 'x', 'drift': 'const', 'annual': 0.8, 'df': 3, 'garch': sim.GJR}, 3)
+    check('a leverage-bull draw records tA, tA on (c), tA on (a), T', {'tA', 'tA_c', 'tA_a', 'T'} <= set(b))
+    code = ('import sys, json; sys.path.append("."); from ct16 import sim; '
+            'print(json.dumps(sim.run_draw({"name": "x", "drift": "const", "annual": 0.5}, 9)))')
+    outs = {subprocess.run([PY, '-I', '-S', '-c', code], cwd=HERE, capture_output=True, text=True).stdout for _ in range(3)}
+    check('a draw is bit-identical across processes (string hashing differs per process; no set order reaches a sum)',
+          len(outs) == 1 and next(iter(outs)).startswith('{'), str(outs)[:200])
+    cache = Path(tempfile.mkdtemp())
+    w = [{'name': 'tiny flat', 'drift': 'flat'}]
+    k1, k2, k3 = {}, {}, {}
+    sim.run_set(w, 2, None, 5, keep=k1)
+    sim.run_set(w, 2, None, 5, keep=k2, cache_dir=cache)
+    files = sorted(cache.glob('*.json'))
+    sim.run_set(w, 2, None, 5, keep=k3, cache_dir=cache)
+    check('the power run is resumable: a cached world is read back, identical to an uninterrupted run',
+          k1 == k2 == k3 and len(files) == 1 and sorted(cache.glob('*.json')) == files)
+    sim.run_set(w, 2, None, 6, keep=k3, cache_dir=cache)
+    check('a different seed is a different world file (never reused)', len(list(cache.glob('*.json'))) == 2)
+    rq = random.Random(1)
+    q = sim.quantile_se([rq.gauss(0, 1) for _ in range(3000)], 0.95)
+    check('the Monte Carlo SE of a 95th percentile at 3,000 draws is ~0.04', 0.02 < q < 0.07, f'{q:.3f}')
 
 
 def real_file_checks():
-    print('the real registration and its hash table (does not go stale at commit or at REGISTERED)')
+    print('the real registration and its hash table (does not go stale at commit, REGISTERED or approval)')
     reg = HERE / 'registrations' / RUN.REG_NAME
     check('the registration exists', reg.exists())
     text = reg.read_text()
     m = RUN.STATUS.search(text)
     check('the status line is DRAFT or REGISTERED', m is not None and m.group(1) in ('DRAFT', 'REGISTERED'))
-    check('no approval or restart line exists yet', not RUN.APPROVAL.findall(text) and not RUN.RESTART.findall(text))
+    has_fetched = any(r.get('mode') == 'fetched' for _, r in RUN.result_rows(HERE)[0])
+    check('no approval line exists before a fetched row exists (review B m9)', has_fetched or not RUN.APPROVAL.findall(text))
     tbl = RUN.HASH_ROW.findall(text)
     names = [f for f, _ in tbl]
     check('the hash table lists every guarded code and data file exactly once',
-          sorted(names) == sorted((*RUN.GUARDED_CODE, *RUN.GUARDED_DATA)), str(sorted(set(names) ^ set((*RUN.GUARDED_CODE,
-                                                                                                          *RUN.GUARDED_DATA)))))
+          sorted(names) == sorted((*RUN.GUARDED_CODE, *RUN.GUARDED_DATA)))
     tab = dict(tbl)
     stale = [f for f in RUN.GUARDED_CODE if RUN.sha256(HERE / f) != tab.get(f)]
     check('the code hashes in the table equal the files on disk', not stale, str(stale))
     present = [f for f in RUN.GUARDED_DATA if (HERE / f).exists()]
     check('the data hashes equal the files on disk (where the gitignored data exist on this machine)',
           all(RUN.sha256(HERE / f) == tab.get(f) for f in present))
-    check('the calendars: (a) 2025-03-20 -> 2026-06-30, (c) 2026-07-01 -> 2027-12-31, gate 2028-01-08',
+    check('the calendars: (a) 2025-03-20 -> 2026-06-30, (c) 2026-07-01 -> 2027-12-31, gate 2028-01-08 = END + 8 days',
           R.SPAN_A == (dt.date(2025, 3, 20), dt.date(2026, 6, 30)) and R.SPAN_C == (dt.date(2026, 7, 1), dt.date(2027, 12, 31))
           and R.READ_NOT_BEFORE == dt.date(2028, 1, 8) == R.END + dt.timedelta(days=8))
 
 
+SECTIONS = {
+    'signal': lambda: signal_checks(), 'universe': lambda: universe_checks(), 'book': lambda: book_checks(),
+    'stats': lambda: stats_checks(), 'parsers': lambda: parser_checks(),
+    'guard': lambda: [guard_checks(l) for l in ('top', 'sub')], 'restart': lambda: (prose_checks(), restart_checks()),
+    'history': lambda: history_checks(), 'bypass': lambda: bypass_checks(), 'env': lambda: env_checks(),
+    'binding': lambda: binding_checks(), 'gate': lambda: gate_checks(), 'panel': lambda: panel_checks(),
+    'fetch': lambda: fetch_checks(), 'e2e': lambda: [e2e_checks(l) for l in ('top', 'sub')], 'sim': lambda: sim_checks(),
+    'real': lambda: real_file_checks(),
+}
+
+
 def main():
-    signal_checks()
-    universe_checks()
-    book_checks()
-    stats_checks()
-    parser_checks()
-    for layout in ('top', 'sub'):
-        guard_checks(layout)
-    bypass_checks()
-    gate_checks()
-    fetch_checks()
-    for layout in ('top', 'sub'):
-        e2e_checks(layout)
-    sim_checks()
-    real_file_checks()
+    only = sys.argv[sys.argv.index('--only') + 1].split(',') if '--only' in sys.argv else list(SECTIONS)
+    for name in only:
+        SECTIONS[name]()
     print(f'all checks passed ({N_CHECKS[0]})')
 
 

@@ -1,11 +1,14 @@
-"""Registration 016 — the estimators, the two hypotheses, the decision and its recheck. Pure functions.
+"""Registration 016 (Revision 1) — the estimators, the decision and its recheck. Pure functions.
 
-H1 (existence): the intercept alpha of the daily net book return on BTC, the EW alt basket and the vol-managed EW
-basket (one slope per factor over the span, D14; calendar-cell slopes are reported, never trailing-trend cells), CR1
-standard errors clustered by calendar month; one-sided. Passes iff t >= max(t_{G-1-k}(0.95), CAL_H1) AND the same
-model fitted on the forward span alone has alpha > 0.
-H2 (decay): the annualised Sharpe ratio of the monthly net book returns against the paper's 1.57; one-sided
-(lower). Rejects iff T = sqrt(G) * mean / sd < min(the noncentral-t 5% quantile, CAL_H2).
+The primary statistic (D14, review A B1) is Lo's (2008) holdings-based timing component of the net book return:
+    A_t = sum_i (w_i,t-1 - wbar_i) r_i,t - cost_t
+w_i,t-1 the book weight of coin i held into day t (notional over book value), wbar_i its mean over the coin's
+member-days in the span evaluated, cost_t the day's fees (and, in the deployable variant, funding) over book value.
+Under ANY constant drift the timing component has mean ~0 whatever the vol dynamics (leverage effect included);
+drift that changes over time — what a trend rule harvests — gives it a positive mean. t_A = mean / CR1 SE, clustered
+by calendar month (G = 33). Ladder (review A M1): `alive` iff t_A >= CAL_H1 and t_A on span (c) alone (its own
+wbar) >= 1.282 (review A B2); else `decayed` iff t_A < C2 (calibrated on Table-4 worlds); else `not_demonstrated`.
+The factor alpha t, the raw Sharpe and the calendar-cell alphas are reported blocks.
 """
 import math
 
@@ -13,12 +16,7 @@ from ct16 import rule as R
 
 Q = 0.05
 SR_PAPER = 1.57                    # Table 4, p. 19: top-20 long-only, net of 10 bp, 2015-01-01 -> 2025-03-19
-CAL_H1 = 1.731                     # §5: the largest 95th percentile of the alpha t over the 11 calibration worlds
-                                   # (1.7308, 'null fat t3 leverage cells'; the floor t_29(0.95) is 1.699)
-CAL_H2 = 0.117                     # §6: the smallest 5th percentile of T over the three SR-1.57 worlds (0.1177, h120;
-                                   # the noncentral-t value is 0.954); the smaller of the two is used
 HLP_CALM = 0.04                    # the economic bar: HLP's calm return, %/yr (programme benchmark)
-K_PROPOSED = 2.8                   # the post-pass size: 25% book vol over the paper's ~9% (scout §4.4)
 
 
 # ------------------------------------------------------------------ distributions
@@ -220,7 +218,7 @@ def design(days, factors, cells=R.CELLS, per_cell=True):
     return X, ng
 
 
-PRIMARY_PER_CELL = False          # D14: one slope per factor over the span (half-year and year cells reported)
+PRIMARY_PER_CELL = False          # the reported factor alpha: one slope per factor (calendar cells also reported)
 
 
 def alpha_fit(days, y, factors, per_cell=None, cells=None):
@@ -237,26 +235,6 @@ def alpha_fit(days, y, factors, per_cell=None, cells=None):
     return {'alpha': fit['coef'][0], 't': fit['t'][0], 'se': fit['se'][0], 'G': fit['G'], 'k': k, 'n': fit['n'],
             'cells': ng, 'alpha_annual': fit['coef'][0] * R.ANN_DAYS, 'resid_sd_annual': sd * math.sqrt(R.ANN_DAYS),
             'slopes': fit['coef'][1:]}
-
-
-def h1_crit(G, k, cal=None):
-    """max(t_{G-1-k}(0.95), CAL_H1); the floor never falls below t_{G-1-k}."""
-    floor = t_crit(max(G - 1 - k, 1))
-    c = CAL_H1 if cal is None else cal
-    return max(floor, c or 0.0), floor
-
-
-def h1(days, y, factors, cal=None):
-    """H1 on the pooled span, plus the forward-span alpha (its sign is a pass condition, D18)."""
-    pooled = alpha_fit(days, y, factors)
-    crit, floor = h1_crit(pooled['G'], pooled['k'], cal)
-    fwd_idx = [i for i, d in enumerate(days) if d >= R.day(R.SPAN_C[0])]
-    fwd = alpha_fit([days[i] for i in fwd_idx], [y[i] for i in fwd_idx], [[f[i] for i in fwd_idx] for f in factors]) \
-        if len(fwd_idx) > 60 else None
-    t_ok = pooled['t'] == pooled['t'] and pooled['alpha'] > 0 and pooled['t'] >= crit
-    f_ok = fwd is not None and fwd['alpha'] > 0
-    return {'pooled': pooled, 'crit': crit, 'floor': floor, 'forward': fwd, 'pass_t': t_ok, 'pass_forward_sign': f_ok,
-            'pass': bool(t_ok and f_ok)}
 
 
 # ------------------------------------------------------------------ monthly returns and H2
@@ -282,30 +260,91 @@ def sharpe(days, y):
     return {'G': G, 'mean_month': m, 'sd_month': sd, 'sr': sr, 'T': math.sqrt(G) * m / sd if sd else float('nan')}
 
 
-def h2_crit(G, cal=None, sr0=SR_PAPER):
-    delta = sr0 * math.sqrt(G / 12.0)
-    q = nct_quantile(Q, G - 1, delta)
-    c = CAL_H2 if cal is None else cal
-    return (min(q, c) if c is not None else q), q
-
-
-def h2(days, y, cal=None):
+def raw_sharpe_vs_paper(days, y, sr0=SR_PAPER):
+    """Reported only (review A M1): T = sqrt(G) mean / sd of monthly returns and the noncentral-t 5% quantile at the
+    paper's 1.57. It carries the forward market drift and decides nothing."""
     s = sharpe(days, y)
-    crit, q = h2_crit(s['G'], cal)
-    return {**s, 'crit': crit, 'nct_q05': q, 'reject': bool(s['T'] == s['T'] and s['T'] < crit)}
+    return {**s, 'nct_q05_at_paper': nct_quantile(Q, s['G'] - 1, sr0 * math.sqrt(s['G'] / 12.0))}
 
 
-# ------------------------------------------------------------------ the decision (§5)
-OUTCOMES = {
-    (True, False): 'alive_as_published',
-    (True, True): 'alive_decayed',
-    (False, True): 'decayed_not_shown',
-    (False, False): 'undecided',
-}
+# ------------------------------------------------------------------ the timing statistic (D14) and the ladder
+T_FWD = 1.282                      # review A B2: span (c) alone must be one-sided significant at 10%
 
 
-def decide(h1_pass, h2_reject):
-    return OUTCOMES[(bool(h1_pass), bool(h2_reject))]
+def timing_series(contrib, cost, idx=None):
+    """(A_t for t in idx, wbar): wbar_i is coin i's mean held weight over its member-days INSIDE idx."""
+    idx = list(range(len(contrib))) if idx is None else list(idx)
+    wsum, wcnt = {}, {}
+    for i in idx:
+        for s_, w, _r in contrib[i]:
+            wsum[s_] = wsum.get(s_, 0.0) + w
+            wcnt[s_] = wcnt.get(s_, 0) + 1
+    wbar = {k: wsum[k] / wcnt[k] for k in wsum}
+    return [sum((w - wbar[s_]) * r for s_, w, r in contrib[i]) - cost[i] for i in idx], wbar
+
+
+def mean_t(days, x):
+    """Mean of x with a CR1 standard error clustered by calendar month (intercept-only OLS)."""
+    n = len(x)
+    R.refuse_unless(n > 1 and n == len(days), 'mean_t: shape')
+    m = sum(x) / n
+    g = {}
+    for d, v in zip(days, x):
+        c = R.cluster_of(d)
+        g[c] = g.get(c, 0.0) + (v - m)
+    G = len(g)
+    R.refuse_unless(G > 1, 'mean_t: one cluster')
+    var = sum(u * u for u in g.values()) / (n * n) * G / (G - 1)      # CR1 with one parameter: (n-1)/(n-p) = 1
+    se = math.sqrt(var)
+    sd = math.sqrt(sum((v - m) ** 2 for v in x) / (n - 1))
+    return {'mean': m, 'se': se, 't': m / se if se > 0 else float('nan'), 'G': G, 'n': n,
+            'annual': m * R.ANN_DAYS, 'sd_annual': sd * math.sqrt(R.ANN_DAYS),
+            'sr_annual': m / sd * math.sqrt(R.ANN_DAYS) if sd > 0 else float('nan')}
+
+
+def timing(days, contrib, cost, idx=None):
+    idx = list(range(len(days))) if idx is None else list(idx)
+    A, wbar = timing_series(contrib, cost, idx)
+    return {**mean_t([days[i] for i in idx], A), 'coins': len(wbar)}
+
+
+def forward_idx(days):
+    return [i for i, d in enumerate(days) if d >= R.day(R.SPAN_C[0])]
+
+
+CAL_H1 = 1.75                      # §5: max over the 19 calibration worlds of q95 + 2 MC SE, rounded up
+                                   # ('null vol-timing pays': q95 1.691, SE 0.028 -> 1.746), 3,000 draws per world
+C2 = -1.26                         # §6: min over the 9 Table-4 worlds of q05 - 2 MC SE, rounded down
+                                   # ('as published h120 drift +0%': q05 -1.174, SE 0.040 -> -1.254)
+
+
+def h1_crit(G, cal=None):
+    """max(t_{G-1}(0.95), CAL_H1); the floor never falls below Student t with G - 1 df."""
+    floor = t_crit(max(G - 1, 1))
+    c = CAL_H1 if cal is None else cal
+    return max(floor, c or 0.0), floor
+
+
+def h1(days, contrib, cost, cal=None):
+    pooled = timing(days, contrib, cost)
+    crit, floor = h1_crit(pooled['G'], cal)
+    fi = forward_idx(days)
+    fwd = timing(days, contrib, cost, fi) if len(fi) > 60 else None
+    t_ok = pooled['t'] == pooled['t'] and pooled['t'] >= crit
+    f_ok = fwd is not None and fwd['t'] == fwd['t'] and fwd['t'] >= T_FWD
+    return {'pooled': pooled, 'crit': crit, 'floor': floor, 'forward': fwd, 't_forward_min': T_FWD,
+            'pass_t': bool(t_ok), 'pass_forward': bool(f_ok), 'pass': bool(t_ok and f_ok)}
+
+
+def ladder(h1res, c2=None):
+    """alive (H1 passes) > decayed (t_A < C2) > not_demonstrated."""
+    c2 = C2 if c2 is None else c2
+    if h1res['pass']:
+        return 'alive'
+    t = h1res['pooled']['t']
+    if c2 is not None and t == t and t < c2:
+        return 'decayed'
+    return 'not_demonstrated'
 
 
 def shrink_factor(t):
@@ -315,60 +354,54 @@ def shrink_factor(t):
     return 1.0 - 1.0 / (t * t)
 
 
-def economic(dep_raw_annual, dep_adj_annual, t_alpha, k=K_PROPOSED, bar=HLP_CALM):
-    """Applied only after H1 passes; never a pass condition of H1 or H2. The deployable book's annualised net return
-    (6 bp, Binance funding) at the proposed size k, taken as min(raw, market-adjusted), shrunk by the H1 alpha's
-    t, against HLP's calm 4%/yr."""
-    base = min(dep_raw_annual, dep_adj_annual)
-    s = shrink_factor(t_alpha)
-    val = k * base * s
-    return {'k': k, 'raw_annual': dep_raw_annual, 'adj_annual': dep_adj_annual, 'min_annual': base, 'shrink': s,
-            'shrunk_at_k': val, 'bar': bar, 'clears': bool(val >= bar)}
+def economic(dep, t_h1, years, bar=HLP_CALM):
+    """Applied only to `alive`; routes only (review A M3). The deployable variant's timing leg (6 bp, Binance funding),
+    its annualised Sharpe shrunk by the H1 t, sized at the Bayes-Kelly vol SR_s / (1 + 1/years) (the variance of a
+    Sharpe estimate over `years`), gives the return SR_s^2 / (1 + 1/years); it must reach 4%/yr. A sanity floor."""
+    sr = dep['sr_annual']
+    s = shrink_factor(t_h1)
+    sr_s = max(0.0, sr * s) if sr == sr else 0.0
+    vol = sr_s / (1.0 + 1.0 / years)
+    ret = sr_s * vol
+    return {'sr_timing_leg': sr, 'shrink': s, 'sr_shrunk': sr_s, 'bayes_kelly_vol': vol, 'return_at_bk': ret,
+            'bar': bar, 'clears': bool(ret >= bar)}
 
 
-ROUTE = {
-    ('alive_as_published', True): 'paper_then_scale',
-    ('alive_as_published', False): 'exists_below_bar',
-    ('alive_decayed', True): 'paper_reduced_size',
-    ('alive_decayed', False): 'exists_below_bar',
-    ('decayed_not_shown', None): 'close',
-    ('undecided', None): 'not_demonstrated',
-}
+ROUTES = {'alive': ('paper_then_scale', 'exists_below_bar'), 'not_demonstrated': 'not_demonstrated',
+          'decayed': 'close'}
 
 
 def route(outcome, econ):
-    if outcome in ('decayed_not_shown', 'undecided'):
-        return ROUTE[(outcome, None)]
-    return ROUTE[(outcome, bool(econ and econ['clears']))]
+    if outcome != 'alive':
+        return ROUTES[outcome]
+    return ROUTES['alive'][0 if econ and econ['clears'] else 1]
 
 
-def decision_from_series(days, y, factors, dep_days, dep_y, cal_h1=None, cal_h2=None):
-    """Everything the decision uses, from the stored daily series (the recheck path)."""
-    a = h1(days, y, factors, cal_h1)
-    b = h2(days, y, cal_h2)
-    out = decide(a['pass'], b['reject'])
+def decision_from_series(days, contrib, cost, dep_contrib, dep_cost, cal_h1=None, c2=None):
+    """Everything the decision uses, from the stored per-day records (the recheck path)."""
+    a = h1(days, contrib, cost, cal_h1)
+    out = ladder(a, c2)
     econ = None
-    if a['pass']:
-        dep = alpha_fit(dep_days, dep_y, factors)
-        raw = sum(dep_y) / len(dep_y) * R.ANN_DAYS
-        adj = dep['alpha_annual']
-        econ = economic(raw, adj, a['pooled']['t'])
-    return {'h1': a, 'h2': b, 'outcome': out, 'economic': econ, 'route': route(out, econ)}
+    if out == 'alive':
+        econ = economic(timing(days, dep_contrib, dep_cost), a['pooled']['t'], len(days) / R.ANN_DAYS)
+    return {'h1': a, 'outcome': out, 'economic': econ, 'route': route(out, econ),
+            'c2': C2 if c2 is None else c2}
 
 
 def recheck(row):
-    """([failures], decision) recomputed from the row's stored daily series; the row's own decision must match."""
+    """([failures], decision) recomputed from the row's stored per-day records; the stored decision must match."""
     fails = []
     try:
         s = row['series']
         days = [R.day(R.dt.date.fromisoformat(x)) for x in s['days']]
-        dec = decision_from_series(days, s['net'], [s['F1'], s['F2'], s['F3']], days, s['deploy'])
+        tup = lambda c: [[tuple(x) for x in day] for day in c]
+        dec = decision_from_series(days, tup(s['contrib']), s['cost'], tup(s['dep_contrib']), s['dep_cost'])
     except Exception as e:  # noqa: BLE001 - a malformed row unlocks nothing
         return [f'recheck: {e!r}'[:200]], None
     if dec['outcome'] != row.get('outcome') or dec['route'] != row.get('route'):
         fails.append(f"recheck: recomputed {dec['outcome']}/{dec['route']} != stored {row.get('outcome')}/{row.get('route')}")
-    for key, val in (('h1_t', dec['h1']['pooled']['t']), ('h2_T', dec['h2']['T'])):
+    for key, val in (('h1_t', dec['h1']['pooled']['t']), ('h1_t_forward', (dec['h1']['forward'] or {}).get('t'))):
         st = row.get(key)
-        if st is None or abs(st - val) > 1e-9:
+        if st is None or val is None or abs(st - val) > 1e-9:
             fails.append(f'recheck: {key} {st} != {val}')
     return fails, dec
