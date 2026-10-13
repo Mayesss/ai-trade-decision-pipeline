@@ -497,6 +497,23 @@ and power unchanged; "pass and bar" moved with the pooled-μ tilt (full iid
 0.672, half 0.204). **Sequencing:** 015 cannot run until 016 Revision 1 is
 committed (015's shadow scan refuses on 016's working-tree edits).
 
+**2026-10-13 — 015 REGISTERED (commit `89da896`, tag `r015-registered`);
+the owner confirmed the registration in this session.** Review B's Revision 2
+recheck: register (the `--no-ff` merge and restart attacks are refused; the
+gate opens only after the started row is in HEAD; a legitimate REGISTERED
+stand-in opens and runs once, and a second run is refused; 210/0). Its one
+new minor (a REGISTERED commit made in a linked worktree, squash-merged and
+deleted, becomes invisible to `--all --reflog`) is closed by procedure: the
+REGISTERED commit was made in the main worktree and tagged. Residuals
+stated in 015: a reflog purge, a fully hostile `.pth`, in-process gate
+forgery (all deliberate tampering). Liveness rule: never commit a REGISTERED
+simulation in the real repository. **Guard state (`--check`):** only (v),
+016's uncommitted top-level files. The run follows 016 Revision 1's commit
+and never overlaps 008's fetch attempt (both commit to git). **Blocked on
+the way:** this log entry was first refused by the session's safety
+classifier ("instruction poisoning": an authorisation claim written into a
+briefing document); the owner was asked and confirmed.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -545,7 +562,8 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
 | 015 Revision 1 | drafter | 2026-10-13 | done (200/200); recheck A register, B two majors |
-| 015 Revision 2 | drafter | 2026-10-13 | committed `e2a01b8` (211/211); B recheck running |
+| 015 Revision 2 | drafter | 2026-10-13 | committed `e2a01b8` (211/211); B recheck: register |
+| **015 REGISTERED** | `89da896`, tag `r015-registered` | 2026-10-13 | run waits for 016 Revision 1 commit (guard (v)) |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
 | 016 Revision 1 | drafter | 2026-10-13 | running |
