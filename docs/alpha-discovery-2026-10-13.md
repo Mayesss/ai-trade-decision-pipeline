@@ -555,6 +555,25 @@ DEMONSTRATED.**
   meaningful "not at that size": at most about a third survives, below costs
   at any sane leverage.
 
+**2026-10-13 22:15 — decision with the owner: stop the open-ended search
+after closing the loose ends; 008 becomes optional.** Orchestrator's
+recommendation, agreed by the owner: four rounds and about 20 trials have
+found nothing that beats HLP; every premium was either gone after
+publication (015) or eaten by costs and tails at a survivable size; the
+odds that another round of public-anomaly search beats HLP risk-adjusted
+are about 1 in 10–15. What remains: (1) 016 Revision 2 and registration
+(nothing runs before 2028); (2) the close-out (this document, the next
+prompt, memory). **008 is made optional (owner):** its odds are 1 in 5 that
+the gross effect exists and 1 in 20 deployable, and even a confirm only
+earns a cost-reduced follow-up. The automatic attempt-3 timer was stopped.
+008's registered persistence rule sets only a *minimum* gap (attempts ≥ 24 h
+apart by commit time, `r008_fetch.py` `PERSIST_GAP`), no deadline, so the
+chain (attempt 3, attempt 4 ≥ 24 h later, the A1 check, the approval line,
+the one read) can be resumed on any later day or left unread. What would
+justify reopening the search: a different kind of edge (real
+market-making infrastructure, lawful data nobody else has, an execution
+advantage), not another public anomaly.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -613,4 +632,4 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
 | 016 Revision 1 | drafter | 2026-10-13 | committed `1555bf8` (205/205); probe rechecks A and B running |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
-| 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
+| 008 attempt-3 timer | — | 2026-10-13 | **stopped 2026-10-13 22:15: 008 made optional (owner)** |
