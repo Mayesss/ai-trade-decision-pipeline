@@ -28,7 +28,7 @@ drawdown −2.5%, long the spiral tail. Its lending leg: about 3%/yr.
 | N1 | HL `xyz` perps off-hours vs the underlying | **scout done; parked** — the premise mostly does not hold (US names are priced externally 24/5; re-anchoring is Sunday evening, not Monday's open); an index test cannot detect even full reversion | 1 in 3 | 1 in 6 | cheap to trade (index weekend round trip ~3 bp) but ~$2–6k per weekend at a hypothetical 20 bp edge |
 | N2(a) | Long gamma when the liquidation map is dense | **closed at scout** (wing fills cost 10–20% of premium; a dense map coincides with *lower* IV) | 1 in 10 | 1 in 25 | −20 to −40% of the premium budget a year |
 | N2(b) | Sized short-vol book on Deribit BTC/ETH (014) | **PARKED after review** (robust size n ≈ 0.10–0.15 → ≈ +2–3%/yr at the published premium; pricing off index not forward); no trial spent | VRP sign public | 1 in 15 | below HLP's lending leg at a robust size |
-| N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **drafted; in review** | 1 in 2 | 1 in 4 | 3% per event, ~127 events/yr: +15%/yr at 4% net per event, +30% at 8% (assumed); worst month −28% plausible |
+| N3(i) | New Binance perps: short at first trade + 24 h, 1× isolated, 7 days (013) | **Revision 1; second-round review** | 1 in 2 | 1 in 4 | 2.5% per event, ~100 events/yr; ≈ 5–11%/yr after the squeeze-tail charge at a 4–6% edge; plausible worst month −30%; joint power 0.77 at 4% |
 | N3(ii–iii) | Listing announcements; token unlocks | **parked** (no end-datable announcement API; no free point-in-time unlock calendar; `000i`) | 1 in 2 / 1 in 3 | 1 in 10 / 1 in 8 | — |
 | N7-1 | Crypto trend following (Donchian ensemble, vol-targeted) | desk only; candidate | 1 in 3 | 1 in 5 overall | 10–30%/yr if alive; convex; only 2025-04 → 2026-06 is out of the paper's sample (t ≈ 1.1 at Sharpe 1) |
 | N7-3 | Month-end liquidity cycle, equity index (settlement-lag natural experiment) | desk only; candidate | 1 in 3 | — | 8–15%/yr at 2–3×, tail −45% at 3× |
@@ -499,6 +499,26 @@ and failed-commit path all work). Decisions at registration:
   (requester-pays, ≈ $0.30, owner-approved 2026-10-12) runs once 013
   Revision 1 is committed; then the one read.
 
+**2026-10-13 — 013 Revision 1 committed (`02fbd1d`); second-round review
+running; 008 fetch started.**
+- **013 Revision 1** (125/125 tests, orchestrator re-ran). Discovery and
+  confirmation decided on α (each event's net regressed on its own market
+  return, β estimated, listing-week clusters); confirmation critical value
+  calibrated to **1.90** over the reviewers' null worlds (size 0.027–0.043;
+  edge-gone-in-confirmation false confirm 0.03–0.04, down from 0.13–0.24).
+  **Joint power at k 1.5: 0.19 / 0.77 / 0.96 at a true 2 / 4 / 6% net per
+  event.** Size 2.5% per event with rolling caps; plausible worst month
+  −29.7%, bounds −17.5% week / −47.5% month. Exclusion list fixed (16 / 7 / 6
+  continuation names); primary events 237 / 119. **Economics restated
+  honestly:** after the deploy rule's squeeze-tail charge (≥ 4.6%/yr), a 4–6%
+  edge per event nets about **5–11%/yr**, not the 15–30% of the first draft.
+  Remaining doubt: with squeeze atoms (2% of events losing 100%) the
+  confirmation still over-rejects (0.079); the reviewer is asked whether the
+  confirmation itself must be tail-robust.
+- **008.** With every `.py` committed, the guard's only refusal was (g1),
+  so the guarded requester-pays fetch is running (log in the session
+  scratchpad).
+
 **2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
 (`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
 timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
@@ -617,7 +637,8 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 013 drafter | `registrations/013-new-perp-listings.md` | 2026-10-12 | drafted |
 | 013 review A (design) | `registrations/reviews/013-review-a.md` | 2026-10-13 | done: 1 blocker, 4 majors |
 | 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | done: 5 majors; `000n` |
-| 013 Revision 1 | drafter, resumed | 2026-10-13 | running |
+| 013 Revision 1 | committed `02fbd1d` | 2026-10-13 | done (125/125) |
+| 013 re-review | `reviews/013-review-r1.md` | 2026-10-13 | running |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
@@ -625,4 +646,4 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 008 re-review | `registrations/reviews/008-review-r1.md` | 2026-10-13 | done: register after 1 blocker + 1 major |
 | 008 Revision 2 | drafter | 2026-10-13 | done (132/132) |
 | 008 Revision 2 recheck | `reviews/008-review-r1.md` (appendix) | 2026-10-13 | done: register |
-| **008 REGISTERED** | commit `2bd855a` | 2026-10-13 | fetch waits for 013's files to be committed |
+| **008 REGISTERED** | commit `2bd855a` | 2026-10-13 | fetch running |
