@@ -658,8 +658,7 @@ def _confirmation_row(commit, dline, carried):
             conf = (recs, counts, rows)
             print('counts before the decision:', json.dumps(counts))
     recs, counts, rows = conf
-    pool_rows = [r for rws, _s, _y in pooled.values() for r in rws]
-    pi_pool = sum(bool(r['liquidated']) for r in pool_rows) / len(pool_rows) if pool_rows else 0.0   # all three calendars (M2)
+    pi_pool = L.pooled_liquidation_rate({c: rws for c, (rws, _s, _y) in pooled.items()})   # max(all three, 2024+) (r2-m1)
     s = L.trial_stats(rows, span_years('confirmation'), L.Q_CONFIRM, pool=pi_pool)
     ok, cr = L.confirm(s)
     rcrit = L.t_crit(s['G'] - 1, L.Q_CONFIRM) if s['G'] >= 2 else None
@@ -716,6 +715,16 @@ WORLDS = [
     {'name': 'power mu0.04 k1.5 squeeze p2%', 'mu_d': 0.04, 'mu_c': 0.04, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0, 'drift_c': 0.0, 'liq_p': 0.02},
     {'name': 'power mu0.04 k1.5 regime', **{k: v for k, v in _regime(2.0, 1.25, 0.03, 1.5).items() if k not in ('name', 'mu_d', 'mu_c')},
      'mu_d': 0.04, 'mu_c': 0.04},
+    # review r2-m1: pool dilution (the 2020-23 block squeezes less than the perp-first regime); appended last so the
+    # earlier worlds keep their seeds
+    {'name': 'dilution squeeze p2% rep0 b1.5 k1.5', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.5, 'drift_d': 0.0,
+     'drift_c': 0.0, 'liq_p': 0.02, 'liq_p_rep': 0.0},
+    {'name': 'dilution squeeze p2% rep0.5% b1.5 k1', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.0, 'drift_d': 0.0,
+     'drift_c': 0.0, 'liq_p': 0.02, 'liq_p_rep': 0.005},
+    {'name': 'dilution squeeze p1% rep0 b1.5 k1', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 1.5, 'k': 1.0, 'drift_d': 0.0,
+     'drift_c': 0.0, 'liq_p': 0.01, 'liq_p_rep': 0.0},
+    {'name': 'dilution squeeze p2% rep0 b2 bear2', 'mu_d': 0.0, 'mu_c': 0.0, 'beta': 2.0, 'k': 1.5, 'drift_d': 0.02,
+     'drift_c': 0.02, 'liq_p': 0.02, 'liq_p_rep': 0.0},
 ]
 CALIBRATION_PREFIXES = ('null k', 'regime')              # the calibration set: null, beta / drift / market and regime worlds
 
@@ -749,7 +758,7 @@ if __name__ == '__main__':
         keep = {}
         out = power(keep=keep)
         (DATA / 'logs').mkdir(parents=True, exist_ok=True)
-        (DATA / 'logs' / 'power_r2.json').write_text(json.dumps(out, indent=1))
-        (DATA / 'logs' / 'power_r2_records.json').write_text(json.dumps(keep))
+        (DATA / 'logs' / 'power_r3.json').write_text(json.dumps(out, indent=1))
+        (DATA / 'logs' / 'power_r3_records.json').write_text(json.dumps(keep))
     else:
         sys.exit(__doc__)

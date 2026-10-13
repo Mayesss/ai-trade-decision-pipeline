@@ -633,6 +633,19 @@ def book(rows, span_years, c=C_EVENT):
             'kelly_fraction_per_event': kelly, 'quarter_kelly_per_event': kelly / 4 if kelly is not None else None}
 
 
+RECENT = ('discovery', 'confirmation')
+
+
+def pooled_liquidation_rate(rows_by_calendar):
+    """Revision 3 (review r1 recheck, r2-m1): the LARGER of the liquidation rate pooled over every calendar given and
+    the rate pooled over discovery + confirmation only, so a calmer 2020-23 spot-first block cannot dilute the charge.
+    rows_by_calendar: {calendar: [rows with 'liquidated']}."""
+    def rate(cals):
+        rows = [r for c in cals for r in rows_by_calendar.get(c, [])]
+        return sum(bool(r['liquidated']) for r in rows) / len(rows) if rows else 0.0
+    return max(rate(list(rows_by_calendar)), rate([c for c in RECENT if c in rows_by_calendar]))
+
+
 def squeeze_months(monthly, c=C_EVENT):
     """Exit months whose book P&L at c is at or below half the plausible squeeze month at c."""
     line = 0.5 * SQUEEZE_MIX * MONTH_MAX * c
@@ -645,7 +658,8 @@ def deploy_one(conf_rows, conf_stress_rows, pooled, span_conf):
     pooled: {calendar: (rows, stress_rows, span_years)} for reported, discovery and confirmation, carried rule.
       c*  = min(C_EVENT, quarter Kelly of the CONFIRMATION book, C_EVENT * (-0.30) / W) where W is the worst exit
             month at C_EVENT over the pooled calendars, base and stressed costs.
-      Peso charges (decision 2): pi = liquidations per event; mu_tail = mu_conf - max(0, pi_pool - pi_conf) *
+      Peso charges (decision 2; Revision 3: pi_pool and f_pool are the larger of the all-calendar and the discovery +
+            confirmation values, r2-m1): pi = liquidations per event; mu_tail = mu_conf - max(0, pi_pool - pi_conf) *
             (1 + mean net of the confirmation's non-liquidated events); squeeze months per year f (`squeeze_months`)
             with f_eff = max(f_pool, 1 / Y_pool); the annual book at c* is charged
             (mu_conf - mu_tail) * events per year * c*  +  max(0, f_eff - f_conf) * |plausible month at c*|.
@@ -665,16 +679,18 @@ def deploy_one(conf_rows, conf_stress_rows, pooled, span_conf):
     if w is not None and w < MONTH_LOSS_LIMIT:
         cands.append(C_EVENT * MONTH_LOSS_LIMIT / w)
     c_star = min(cands)
-    pool_rows = [r for rows, _s, _y in pooled.values() for r in rows]
     y_pool = sum(y for _r, _s, y in pooled.values())
-    pi_pool = sum(r['liquidated'] for r in pool_rows) / len(pool_rows) if pool_rows else 0.0
+    pi_pool = pooled_liquidation_rate({c: rows for c, (rows, _s, _y) in pooled.items()})   # max(all, 2024+) (r2-m1)
     pi_conf = sum(r['liquidated'] for r in conf_rows) / len(conf_rows) if conf_rows else 0.0
     nonliq = [r['net'] for r in conf_rows if not r['liquidated']]
     mu_conf = sum(r['net'] for r in conf_rows) / len(conf_rows) if conf_rows else None
     mu_tail = (mu_conf - max(0.0, pi_pool - pi_conf) * (1 + (sum(nonliq) / len(nonliq) if nonliq else 0.0))
                if mu_conf is not None else None)
-    sq_pool = sum(len(squeeze_months(book(rows, y)['monthly'])) for rows, _s, y in pooled.values() if rows)
-    f_eff = max(sq_pool / y_pool, 1 / y_pool) if y_pool > 0 else None
+    sq = {c: len(squeeze_months(book(rows, y)['monthly'])) if rows else 0 for c, (rows, _s, y) in pooled.items()}
+    sq_pool = sum(sq.values())
+    y_recent = sum(y for c, (_r, _s, y) in pooled.items() if c in RECENT)
+    f_recent = sum(sq[c] for c in pooled if c in RECENT) / y_recent if y_recent > 0 else 0.0
+    f_eff = max(sq_pool / y_pool, f_recent, 1 / y_pool) if y_pool > 0 else None     # max(all, 2024+), floor (r2-m1)
     f_conf = len(squeeze_months(b0['monthly'])) / span_conf
     annual_star = b0['annual_on_capital'] * c_star / C_EVENT if b0['annual_on_capital'] is not None else None
     plaus_star = SQUEEZE_MIX * MONTH_MAX * c_star
@@ -996,7 +1012,8 @@ def _rec(s, conf=False):
 
 def simulate_worlds(disc_sched, conf_sched, disc_years, conf_years, worlds, sims=1000, seed=0, rep_sched=()):
     """Per world, `sims` draws of the registered path: discovery (both trials) and the confirmation calendar (both
-    trials, tail-adjusted with the pooled liquidation rate of discovery + confirmation + the reported block). Each
+    trials, tail-adjusted with the pooled liquidation rate: the larger of discovery + confirmation + the reported
+    block and discovery + confirmation alone; a world may set 'liq_p_rep' for the reported block, review r2-m1). Each
     draw stores (alpha t, G, other conditions) per stage and trial, so `world_rates` evaluates the pass at any
     critical value (calibration and power from the same draws). A world may carry 'regime_d' / 'regime_c' =
     (start, end, beta_in, drift_in) per calendar."""
@@ -1008,13 +1025,14 @@ def simulate_worlds(disc_sched, conf_sched, disc_years, conf_years, worlds, sims
             kw = dict(p_t2=w.get('p_t2', 0.7), liq_p=w.get('liq_p', 0.0), liq_week_p=w.get('liq_week_p', 0.0), msd=w.get('msd', 1.0))
             d = sim_events(disc_sched, w['mu_d'], w['beta'], w['k'], w['drift_d'], rnd, regime=w.get('regime_d'), **kw)
             cd = sim_events(conf_sched, w['mu_c'], w['beta'], w['k'], w['drift_c'], rnd, regime=w.get('regime_c'), **kw)
-            n_rep_liq = _sim_liquidations(rep_sched, w.get('liq_p', 0.0), w.get('liq_week_p', 0.0), rnd)
+            n_rep_liq = _sim_liquidations(rep_sched, w.get('liq_p_rep', w.get('liq_p', 0.0)), w.get('liq_week_p', 0.0), rnd)
             r = {}
             for tr in TRIALS:
                 dr = d if tr == 'T1' else [x for x in d if x['t2']]
                 cr = cd if tr == 'T1' else [x for x in cd if x['t2']]
-                n_all = len(dr) + len(cr) + len(rep_sched)
-                pool = (sum(x['liquidated'] for x in dr) + sum(x['liquidated'] for x in cr) + n_rep_liq) / n_all if n_all else 0.0
+                n_all, n_rec = len(dr) + len(cr) + len(rep_sched), len(dr) + len(cr)
+                liq_rec = sum(x['liquidated'] for x in dr) + sum(x['liquidated'] for x in cr)
+                pool = max((liq_rec + n_rep_liq) / n_all if n_all else 0.0, liq_rec / n_rec if n_rec else 0.0)   # r2-m1
                 r['d' + tr] = _rec(trial_stats(dr, disc_years, Q_DISCOVERY))
                 r['c' + tr] = _rec(trial_stats(cr, conf_years, Q_CONFIRM, pool=pool), conf=True)
             recs.append(r)

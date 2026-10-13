@@ -360,6 +360,11 @@ def decision_checks():
     check('confirmation fails at t just below crit, alpha_tail <= 0, < 5 weeks, or <= 0 without the best week',
           not L.confirm(dict(s, alpha_tail_t=cr - 1e-6))[0] and not L.confirm(dict(s, alpha_tail=-0.01))[0]
           and not L.confirm(dict(s, alpha_G=4))[0] and not L.confirm(dict(s, alpha_tail_without_largest_positive_week=-0.001))[0])
+    mk = lambda n, k: [{'liquidated': i < k} for i in range(n)]
+    pr = L.pooled_liquidation_rate({'reported': mk(100, 0), 'discovery': mk(100, 4), 'confirmation': mk(50, 0)})
+    pr2 = L.pooled_liquidation_rate({'reported': mk(100, 10), 'discovery': mk(100, 1), 'confirmation': mk(50, 0)})
+    check('pooled liquidation rate = max(all calendars, discovery + confirmation): a calm 2020-23 block cannot dilute it '
+          '(review r2-m1)', close(pr, 4 / 150) and close(pr2, 11 / 250))
     recs = syn_records()
     st0 = L.trial_stats(recs, 1.55, L.Q_CONFIRM, pool=0.0)
     st1 = L.trial_stats(recs, 1.55, L.Q_CONFIRM, pool=0.02)

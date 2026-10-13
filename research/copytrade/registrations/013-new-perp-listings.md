@@ -1,6 +1,14 @@
 # 013 — Short new Binance USDⓈ-M perps at day 1, 1× isolated, 7 days (N3 i: new perp listings)
 
-**Status: DRAFT**
+**Status: REGISTERED 2026-10-13** (orchestrator, under the owner's delegation of 2026-10-12: "you are
+allowed to register yourself and take decision as you would recommend as long as they take us nearer
+towards the goal"). Revision 3, after two first-round reviews (`reviews/013-review-a.md`,
+`013-review-b.md`), a second-round review and its Revision 2 recheck (`reviews/013-review-r1.md`,
+verdict: register), and the recheck's two minors (§R3). Every row of §11 is approved as written.
+**Open questions (§12), decided at registration:** (1) the continuation list stands as mechanically
+checked; (2) the peso floor stays one squeeze month per pooled sample (it binds only after a confirm);
+(3) slippage tiers stand for the test, and a bookDepth slippage measurement is a precondition of any
+paper step, not of the test; (4) the ticker-reuse tokens are not added; (5) the environment pins stand.
 
 **Revision 2 (2026-10-13), after the second-round review `reviews/013-review-r1.md`** (1 blocker, 4 majors,
 minors) and the orchestrator's binding decisions. Every finding is in §R2 with its file and line.
@@ -34,6 +42,13 @@ minors) and the orchestrator's binding decisions. Every finding is in §R2 with 
   - m6: ledgered;
   - m8, m9: the split-β α and the α placebo are reported;
   - m10: the environment fingerprint hashes every duckdb and pyarrow file; the runner never pushes.
+
+**Revision 3 (2026-10-13), the two minors of the Revision 2 recheck** (§R3):
+- π_pool, and the squeeze-month frequency in the deploy charge, become max(all three calendars,
+  discovery + confirmation). In the dilution worlds, size at CAL_C 2.05 is 0.022–0.039, so CAL_C is
+  unchanged.
+- §6 states that a deploy needs both the hedged and the unhedged book to pay, so it depends on the
+  market path.
 
 **Revision 1 (2026-10-13)** answered the first reviews (`013-review-a.md`, `013-review-b.md`) and `000n`:
 - the α decision;
@@ -238,13 +253,13 @@ Ledger note (review r1 m6): the list implies that the events AIAUSDT and PUMPUSD
 
 ## 3. Size, power and calibration (synthetic only; `listings013.simulate_worlds`; Revision 2)
 
-`r013_run.py --power`: **55 worlds × 1,500 draws**. Logs:
-- `data/r013/logs/power_r2.txt` (rates at the uncalibrated and the registered critical values, and the
+`r013_run.py --power`: **59 worlds × 1,500 draws** (Revision 3: four pool-dilution worlds appended last,
+so the earlier worlds keep their seeds; π_pool = max(all, 2024+)). Logs:
+- `data/r013/logs/power_r3.txt` (rates at the uncalibrated and the registered critical values, and the
   quantiles);
-- `power_r2_records.json` (per-draw records);
-- `power_r2_registered.json`.
+- `power_r3_records.json` (per-draw records).
 
-The hashed runner reproduces them exactly (§10). The only real input is `schedule.json`: the real
+The hashed runner produced them directly (the Revision 3 run is the registered one). The only real input is `schedule.json`: the real
 first-trade times of the primary events (discovery 239, confirmation 121, reported 251, the last for the
 pooled liquidation rate).
 
@@ -259,6 +274,8 @@ pooled liquidation rate).
   - or 2025-11-15 → 2026-01-15 (misaligned).
 - **Squeeze worlds (M2):** −1 atoms per event (p 1–2%) or per listing week (3%). The reported block's
   liquidations enter the pooled rate.
+- **Dilution worlds (Revision 3, r2-m1):** the perp-first calendars squeeze at p 1–2% and the 2020–23 block
+  at 0 or 0.5%.
 - The registered path end to end:
   - `trial_stats` (**quarter-β α**, adjusted robustness, min(raw, adjusted) economics, the
     **tail-adjusted α** at confirmation);
@@ -269,7 +286,7 @@ pooled liquidation rate).
 | stage | uncalibrated size, over the 27 calibration worlds (null β / drift / market / k, and regime) | nominal | decision |
 |---|---|---|---|
 | discovery (family-wise) | **0.007–0.053** (worst: regime β 2.5 / 1.0, misaligned) | 0.05 | within nominal + 0.01 → **not calibrated** (CAL_D = 0) |
-| confirmation (tail-adjusted α) | **0.043–0.090** (worst: misaligned regime β 2.5 / 1.0) | 0.05 | above → **CAL_C = 2.05**, the largest 95th percentile of the α t over every calibration world and both trials (2.052; regime β 2.5 / 1.0, k 1, T2) |
+| confirmation (tail-adjusted α) | **0.043–0.088** (worst: misaligned regime β 2.5 / 1.0) | 0.05 | above → **CAL_C = 2.05**, the largest 95th percentile of the α t over every calibration world and both trials (Revision 3 run: 2.050; Revision 2: 2.052) |
 
 The Revision 1 value of 1.90 is superseded. The quarter β and the added regime worlds raised the noise
 of the α t.
@@ -282,13 +299,18 @@ of the α t.
 | **regime, aligned** (β 2.5/1.0 or 2.0/1.25; fall 2–3%/wk; k 1–1.5) | 0.027–0.053 | **0.029–0.039** | 0.029–0.039 | 0.000–0.122 (≤ 80 carries) | ≤ 0.0033 |
 | **regime, misaligned** (2025-11-15 → 2026-01-15) | 0.035–0.053 | **0.043** | 0.043–0.045 | 0.019–0.037 | ≤ 0.0020 |
 | **decayed edge** (μ 4% in discovery, 0 in confirmation; β 1–2; confirmation drift 0–2%) | 0.71–0.92 | 0.023–0.038 | 0.025–0.039 | **0.023–0.038** | 0.017–0.033 |
-| **squeeze atoms** p 2% (β 1.5) / p 1% (k 1) / p 2% with a bear drift (β 2) | 0.03–0.07 | **0.021 / 0.023 / 0.017** | 0.079 / 0.091 / 0.066 | 0.03–0.07 | ≤ 0.0020 |
-| squeeze weeks, 3% per week | 0.001 | 0.001 | 0.014 | — | 0.000 |
+| **squeeze atoms** p 2% (β 1.5) / p 1% (k 1) / p 2% with a bear drift (β 2) | 0.03–0.07 | **0.018 / 0.019 / 0.015** | 0.079 / 0.091 / 0.066 | 0.03–0.07 | ≤ 0.0020 |
+| squeeze weeks, 3% per week | 0.001 | 0.000 | 0.014 | — | 0.000 |
+| **pool dilution** (Revision 3): perp-first p 2% or 1%, 2020–23 block p 0 or 0.5%; β 1.5–2; k 1–1.5; one with a bear drift | 0.03–0.08 | **0.022–0.039** | 0.060–0.104 | 0.02–0.10 (on ≤ 120 carries) | ≤ 0.0047 |
 
 - **B1 is fixed.** The reviewer's aligned regime worlds gave a false confirm of 0.08–0.15 with a single
   β. With quarter β they give 0.029–0.039, and the misaligned window 0.043.
 - **M2 is fixed.** Independent squeeze atoms gave an untailed confirmation of 0.066–0.091 at the
-  registered critical value. The tail-adjusted α gives **0.017–0.023**.
+  registered critical value. The tail-adjusted α gives **0.015–0.019**.
+- **Pool dilution is closed (r2-m1).** With a calmer 2020–23 block, the reviewer measured 0.049–0.057
+  under an all-calendar pool. Under max(all, 2024+) the confirmation size is **0.022–0.039**, at or below
+  nominal, so CAL_C needs no recalibration. Including the dilution worlds in the calibration set would
+  not change it either: their largest 95th percentile is 2.01, below 2.05.
 - The joint path (a false discovery, then a false confirmation) stays at ≤ 0.0033 in every null world.
 
 **Power at the registered critical values** (β 1.5, no drift, T2 70% of T1):
@@ -301,14 +323,14 @@ of the α t.
 | 8% | 1 / **1.5** / 2 | 1.00 / **1.00** / 0.99 | 1.00 / **1.00** / 1.00 | 1.00 / **1.00** / 0.98 |
 | 4%, 1%/wk drift in both calendars | 1.5 | 0.92 | 0.91 | 0.83 |
 | 4%, a regime (β 2.0/1.25, 3%/wk fall) | 1.5 | 0.93 | 0.92 | 0.87 |
-| **4%, squeeze atoms p 2%** | 1.5 | 0.71 | **0.54** (untailed 0.60) | 0.39 |
+| **4%, squeeze atoms p 2%** | 1.5 | 0.71 | **0.53** (untailed 0.60) | 0.38 |
 
 - **The power costs of the Revision 2 changes**, at μ 4%, k 1.5, joint power:
   - quarter β plus CAL 2.05: 0.77 (Revision 1) → **0.72**;
-  - **the tail adjustment costs nothing without liquidations** (untailed and tailed agree to 0.0003), and
-    0.056 with p = 2% atoms (0.60 → 0.54), which is its purpose.
-- **"α > 0 without the best week"** costs **0.000** in every world, at most 0.0006 (squeeze p 2%). That
-  is within ≤ 0.03, so it is required at confirmation.
+  - **the tail adjustment costs nothing without liquidations** (untailed and tailed agree to 0.006 at
+    most), and 0.07 with p = 2% atoms (0.60 → 0.53), which is its purpose.
+- **"α > 0 without the best week"** costs **0.000** in every world. That is within ≤ 0.03, so it is
+  required at confirmation.
 - **Not modelled:**
   - β varying within a quarter beyond the regime windows above;
   - intraday market paths;
@@ -385,6 +407,13 @@ quarter betas; raw where there is no market return):
 
 This is conservative in a bear calendar, where the raw net carries the market's fall, and in a bull
 calendar, where it carries the rise.
+
+**A deploy needs both the market-hedged and the unhedged book to pay** (min(raw, adjusted); Revision 3,
+review r2-m2). The deploy-given-confirm rate therefore **depends on the calendar's market path**. For a
+true 4% edge it is 0.40 in a flat calendar, where the raw side's market noise binds, and 0.61 at an alt
+fall of 2% a week, where the adjusted side binds (reviewer's r12). The rule **adds no false deploys**
+(joint false deploy 0.0025–0.005), but it costs deploy power, mostly in calm calendars. That is the price
+of requiring both books to pay, and it is accepted.
 1. **c\*** = min(2.5%, ¼ Kelly of the **confirmation** book, 2.5% × (−30%) / W). W is the worst exit month
    at 2.5% over the pooled calendars (reported 2020–23, discovery, confirmation), base and stressed
    costs. The confirmation's Kelly is used because the discovery Kelly is selection-inflated.
@@ -392,6 +421,9 @@ calendar, where it carries the rise.
    - π = liquidations per event. μ_tail = μ_conf − max(0, π_pool − π_conf) × (1 + the mean net of the
      confirmation's non-liquidated events): the confirmation mean, re-weighted to the pooled liquidation
      rate.
+   - **π_pool, and the squeeze-month frequency f_pool, are the larger of the value pooled over all three
+     calendars and the value pooled over discovery + confirmation only** (Revision 3, r2-m1). A calmer
+     2020–23 spot-first block can raise the charge but never dilute it.
    - A **squeeze month** is an exit month whose book loses ≥ half the plausible month (≥ 14.8% at 2.5%).
      f_eff = max(f_pool, 1 / Y_pool), so at least one squeeze month is assumed per pooled sample (6.4
      years): a floor of 0.156 a year.
@@ -475,15 +507,16 @@ net_i = α + Σ_q β_q·mkt_i·1[quarter(i) = q] + ε_i.
 - α_tail = α̂ − max(0, π_pool − π_conf)·(1 + the mean net of the confirmation's non-liquidated events);
 - t_tail = α_tail / se(α̂), with the same SE.
 
-Here π is liquidations per event of the carried trial, and **π_pool pools all three calendars**:
-reported 2020–23, discovery and confirmation. The longest sample is used, as in §6; the reported block's
-spot-first regime is stated as a weakness (§9). This is §6's peso correction moved inside the test. It is
+Here π is liquidations per event of the carried trial. **π_pool is the larger of** the rate pooled over
+all three calendars (reported 2020–23, discovery, confirmation) **and** the rate pooled over discovery +
+confirmation only (Revision 3, review r2-m1). The 2020–23 spot-first block, about 41% of the pool, can
+raise the charge but never dilute it below the perp-first regime's own rate. This is §6's peso correction moved inside the test. It is
 zero whenever the confirmation already holds at least the pooled share of liquidations.
 
 **CONFIRM iff** all of:
 - α_tail > 0, with **t_tail ≥ max(t_{G−2}(0.95), CAL_C = 2.05)**;
 - **α_tail > 0 refitted without the listing week with the largest positive adjusted sum** (power cost
-  0.000–0.0006 in every world, within ≤ 0.03, so it is required);
+  0.000 in every world, within ≤ 0.03, so it is required);
 - ≥ 10 events and ≥ 5 listing weeks.
 
 This is an **existence test on the tail-adjusted, market-adjusted net**. The raw net and the untailed α
@@ -530,8 +563,9 @@ No reported block may become a primary.
 - **Market convexity.** A downside β above the upside β makes the linear α positive with no listing edge
   (review r1 m8: "confirm" 0.89 in an extreme case). It is reported, not removed. A pass with a split-β α
   near zero should be read as a convexity return, not a listing edge.
-- **π_pool includes the 2020–23 spot-first block.** Its liquidation rate may differ from the perp-first
-  regime's. The pooled rate over the longest sample is used by choice, stated now.
+- **π_pool and the 2020–23 block.** The spot-first block's liquidation rate may differ from the perp-first
+  regime's. Revision 3 takes the larger of the all-calendar and the 2024+ pooled rates, so it can only
+  raise the charge (§3, dilution worlds).
 - **Continuations:** the renames are the drafter's public knowledge; the predecessor perps are checked
   mechanically.
 - **Ticker reuse loses two genuine new tokens** (PUMP 2025-07, LIT 2025-12) by rule.
@@ -579,7 +613,7 @@ No reported block may become a primary.
   - **`env_fingerprint()`** goes in every started row and is compared at confirmation.
   - The gated `Panel` (with the names-only funding-month listing); `evaluate`; `--discovery`,
     `--confirmation` (pooled π, tail-adjusted α, two-sided deploy), `--power`. It never pushes.
-- [x] `tests/test_r013.py`: **145 checks pass**, before and after a (throwaway) commit, at DRAFT and at
+- [x] `tests/test_r013.py`: **146 checks pass**, before and after a (throwaway) commit, at DRAFT and at
   REGISTERED (below).
   - **New in Revision 2:**
     - the general OLS against the one-regressor fit;
@@ -610,7 +644,7 @@ No reported block may become a primary.
   scratchpad, with its own `.git`, so the real repository is untouched. 013's current files are copied in
   and committed, and the suite runs at DRAFT and again after the status line is changed to REGISTERED
   and committed. Result:
-  - **145 of 145 pass when committed at DRAFT, and 145 of 145 when committed at REGISTERED.**
+  - **146 of 146 pass when committed at DRAFT, and 146 of 146 when committed at REGISTERED** (Revision 3 run).
   - The real guard, called in the REGISTERED clone with all its checks, returns **no refusal**. No outcome
     mode was run there; the clone was discarded.
 - **Other suites:** unchanged by 013. The pre-existing stale state test is `test_carry012`'s "status line
@@ -634,10 +668,10 @@ frozen modules, imported read-only.
 | file | sha256 |
 |---|---|
 | `ct/__init__.py` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `ct/listings013.py` | `10e262816e9d5cee760529b1bd790a3d7a4c597f31308299edc575b6896fbbfa` |
+| `ct/listings013.py` | `db5f315a026b35e0e6cc6642aad795d2abcde52922f48dfcc5d1511f04629499` |
 | `ct/factors.py` | `a1e70b9a5a2c1b58f43d2b08a2eaeac5ce5a3fd45868a659d745a3354bd61197` |
 | `ct/stats.py` | `bfcc85f285dc7af28f364e2d77e0fbe04b6c2367724f4b822b7fbf6ff435d472` |
-| `r013_run.py` | `317d75a850e311a911a3dad3ad49b8e3eebe36de7591266ad97135f41fd5dc6e` |
+| `r013_run.py` | `7e8d8f5e9fd3cd9a62a9bf5f2897ef2b4b101f34c8f2428189406949f9772db2` |
 | `r013_build.py` | `41cb8b70e47b3254fdd665d96f70488975bd710fec6f0f72b4c46b3b40256054` |
 | `r013_fetch.py` | `6de5e028e7786858ef5519431834ce4771c1f924097a071aba0055cbe4c9fc1b` |
 | `data/r013/panel_reported/events.json` | `15688e4b00e8ac2ce51244df80f04af4787cdba1e6c0536ab3313502f36e475c` |
@@ -667,7 +701,7 @@ frozen modules, imported read-only.
 | `data/r013/raw_funding/SHA256SUMS` | `05094fc4cbf4ff0503faaa84bb7e5cc0fe4e3bbef9d79bf4a701bc48f7a17130` |
 | `data/r013/raw_klines1h/SHA256SUMS` | `4884d513be612e413a9f589ce0dd69e0360d030c559ebf0c27abc91c18ed4a95` |
 
-## 11. Owner decisions — PROPOSED (Revision 2)
+## 11. Owner decisions — APPROVED 2026-10-13 (orchestrator, under the owner's 2026-10-12 delegation; each row as proposed)
 
 | # | item | PROPOSED |
 |---|---|---|
@@ -828,3 +862,10 @@ File keys as in §R. Line numbers are those of this revision.
 | m10 environment parity; push | `env_fingerprint` hashes every duckdb and pyarrow file, stored in the started rows and compared at confirmation; the runner never pushes | R:171, R:306, R:360 |
 | m11 ticker reuse | accepted as is (conservative for the short) | §2.5 |
 | Orch. 1–7 | as B1, M1, M2, M3, M4, the minors, and the commit-state simulation | above; §10 |
+
+## R3. Revision 3: the Revision 2 recheck's minors (`reviews/013-review-r1.md`, "Revision 2 recheck")
+
+| finding | change | where |
+|---|---|---|
+| **r2-m1** pool dilution by a calmer 2020–23 block (size 0.049–0.057 in the reviewer's worlds) | π_pool = **max(the rate over all three calendars, the rate over discovery + confirmation)** in the tail-adjusted α and in the deploy rule; the squeeze-month frequency in the deploy charge likewise; the simulator uses the same pool, with a separate reported-block rate (`liq_p_rep`); four dilution worlds appended to `WORLDS`. **Size at CAL_C 2.05: 0.022–0.039** (untailed 0.060–0.104). The calibration's largest 95th percentile is 2.050 (2.01 in the dilution worlds), so **CAL_C stays 2.05** | L:639 `pooled_liquidation_rate`, L:683, L:693 (`deploy_one`), L:1028, L:1035 (`simulate_worlds`); R:661 (`_confirmation_row`), R:720 (`WORLDS`); T:366; §3, §6, §7.2, §9 |
+| **r2-m2** deploy depends on the market path | §6 states that a deploy needs both the market-hedged and the unhedged book to pay. Deploy-given-confirm at a 4% edge is 0.40 flat and 0.61 in a bear calendar (reviewer), with no added false deploys | §6 (line 396) |
