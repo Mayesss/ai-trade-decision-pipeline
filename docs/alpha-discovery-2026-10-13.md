@@ -485,6 +485,18 @@ justified (cells absorb 0.6–1.5 of a real trend's α t).
 - **Revision 1** goes to the 016 drafter with every A and B finding and the
   015 guard fixes (including 015-B's merge bypass); then probe rechecks.
 
+**2026-10-13 — 015 Revision 2 committed (`e2a01b8`, 211/211, re-run by
+the orchestrator); B rechecks R1-M1/M2 only.** REGISTERED versions are
+collected over `--all --reflog` (exactly one REGISTERED content; HEAD's
+registration and every guarded blob must equal it; the `--no-ff` attack is
+refused); a restart is refused if any commit anywhere adding a 015 line was
+made by the runner (the constant `data_opened` removed); the data gate is
+issued only after the started row is verified in HEAD of the real ledger;
+`.pth`/`sys.flags` hardening plus a stated residual. Critical value, size
+and power unchanged; "pass and bar" moved with the pooled-μ tilt (full iid
+0.672, half 0.204). **Sequencing:** 015 cannot run until 016 Revision 1 is
+committed (015's shadow scan refuses on 016's working-tree edits).
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -533,7 +545,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
 | 015 Revision 1 | drafter | 2026-10-13 | done (200/200); recheck A register, B two majors |
-| 015 Revision 2 | drafter | 2026-10-13 | running |
+| 015 Revision 2 | drafter | 2026-10-13 | committed `e2a01b8` (211/211); B recheck running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
 | 016 Revision 1 | drafter | 2026-10-13 | running |
