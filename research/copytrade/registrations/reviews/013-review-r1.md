@@ -408,3 +408,110 @@ computed. Nothing dated on or after 2026-07-01 was opened. No paid or keyed sour
    - the PumpBTC symbol change.
 
    These are exposure notes for `000`-type ledgering, like §0's cascade line.
+
+---
+
+## Revision 2 recheck (2026-10-13, `323899e`)
+
+**Scope.** I re-ran my probes against `323899e` and checked each fix in code. This is not a third review.
+- All work was done in a throwaway clone at `323899e`, in the session scratchpad, with `data/r013`
+  symlinked read-only. Bytecode writes were off (`-B`).
+- The probes and outputs are copied to `scratch_review013r1/r2/`. Nothing in the real repository was run,
+  staged or committed. No `.py` was created at the top level or in `ct/`, so 008's running fetch is
+  untouched.
+
+**Tests.** In the clone, `.venv/bin/python -B -m tests.test_r013` → **"all checks passed (145)"**. The
+real-file checks run to the end (r1 m1 fixed).
+
+### Status of the r1 findings
+
+| r1 | status | verified in code / by probe |
+|---|---|---|
+| **B1** regime β | **Fixed** | `alpha_fit` / `ols_cols` fit one β per calendar quarter of first trade. `beta_groups` merges any quarter with < 10 events into the previous group (a short first group joins the next). `quarter` comes from the first trade (`evaluate`) and is stored in `compact`, so the recheck uses the same grouping. Regime worlds are in the calibration set. My own code (r9, no import of `listings013`) gives, against `power_r2.json`: regime β 2.5/1.0, crash 3%/wk, k 1.5 → confirmation alone **0.037** (registered 0.031); at k 1 **0.040** (0.039). The same worlds gave 0.13–0.15 before. |
+| **M1** economic bars on raw net | **Fixed** (conservatively) | Criteria 5–6 use `mean_econ` / `annual_econ` = min(raw, adjusted). `deploy` runs `deploy_one` on both the raw and the quarter-β-adjusted series: c\* is the smaller, and it deploys only if both do. The revised code on r5's worlds (r12) gives a joint false deploy of **0.005** with β 2 and −2%/wk (r1: 0.020), and **0.0025** with squeeze plus bear (r1: 0.043). |
+| **M2** squeeze atoms | **Fixed** | `trial_stats(pool=…)`: α_tail = α − max(0, π_pool − π)·(1 + mean non-liquidated net); t_tail = α_tail / se(α); the same charge on the best-week refit. `confirm` decides on α_tail. Own code: p 2%, k 1.5 → **0.024** (registered 0.021; untailed 0.079); p 1%, k 1 → **0.025** (0.023; untailed 0.091). |
+| **M3** continuation rule | **Fixed** | One rule (p): the token or its predecessor had a Binance USDⓈ-M perp before d0. Plus (d), gold tokens. `continuation_failures` checks point in time that the predecessor's first 1d file is before d0; the build refuses otherwise. I re-ran it on the 1d listing: **0 failures**. Every (p) predecessor dates from 2020-08 → 2025-04, before its d0. |
+| **M4** mocked commit hook | **Fixed** | `record()` appends, commits through the hook, then refuses unless the line is in `HEAD:results.jsonl`, read with the real `_git`. P4a: a no-op hook is refused ("not in HEAD"). `real_tree_failures()` runs before and after `guard`. P4b: a mock hook on the real tree is refused. P4d: synthetic results with the real data, and vice versa, are refused. P4c: the default hook on the real tree passes. |
+| m1 stale test | Fixed | 145/145. |
+| m2 scan flags | Fixed | `--text --no-textconv --no-ext-diff --no-color` on `log`, `diff` and `show`. With `-diff` and with a textconv driver in `.git/info/attributes`, the erased row is still found (1/1). |
+| m3 shadow / bytecode | Fixed | Ported `shadow_modules`: all four plants (top-level package, sourceless `.pyc`, excluded `.py`, `.so` in `ct/`) are refused. `sys.pycache_prefix` is a fresh temp directory set before `from ct import …`, and `loaded_from_source()` checks `__file__`. |
+| m4 `exit_late` bounds | Fixed | The late exit is capped at target + 24 h; after that the exit is `exit_last_trade` at the last pre-target close (verified with a 30 h halt). Windows are now 16 and 40 days. Adversarially through `book()`: week ≤ −17.5%, month ≤ −47.5% for every status. Capacity is now 156 / 80 / 219 events (101 and 89 a year), matching §6. |
+| m5 coverage residues | Fixed | `funding_months_missing_pre_entry` covers [d0, first trade + 24 h]; hold months are derived in the gated `evaluate` from `event_keys.json`; `PRE_ENTRY` is 24 h. |
+| m7 / m8 / m9 / m10 | Fixed or reported | Calibration over 55 worlds. Split-β α and α placebo are reported. Environment fingerprint and push procedure are in place. |
+| erase probe (B's `probe_erase`) | Same as r1 | Reset, amend and stash refuse. Cases (1) and (4b) need rows written outside `record()`, which now refuses to continue unless the row is in HEAD. |
+
+### Reproductions (own code, 1,500 draws)
+
+| cell | own | registered (`power_r2.json`) |
+|---|---|---|
+| **power** μ 4%, k 1.5: discovery / confirmation alone / joint | 0.794 / 0.925 / **0.729** | 0.803 / 0.911 / **0.725** |
+| **regime size** β 2.5/1.0, crash 3%/wk, k 1.5: discovery / confirmation alone | 0.043 / **0.037** | 0.053 / **0.031** |
+| regime size, k 1 | 0.039 / **0.040** | 0.037 / **0.039** |
+| squeeze p 2%, k 1.5 / p 1%, k 1: confirmation alone | 0.024 / 0.025 | 0.021 / 0.023 |
+
+### The tail-adjusted α, checked as asked
+
+- **Sign is correct.** The charge subtracts only when the trial's own liquidation rate π is below π_pool.
+  It is one-sided: max(0, ·), with no credit for an unlucky confirmation. Replacing one non-liquidated
+  event by −1 moves the mean by −(1 + its net), hence the (1 + mean non-liquidated net) factor.
+  - That mean is the *raw* non-liquidated net, so in a bear calendar the factor is larger. This is the
+    conservative direction.
+- **Same SE.** The variance of π_pool − π is ignored. Measured size is still 0.021–0.025 in the
+  homogeneous squeeze worlds, so this is immaterial.
+- **Can π_pool be gamed?** Not after registration.
+  - The pool is fixed in code: the carried trial's primary events over reported + discovery +
+    confirmation, the same rule in `_confirmation_row` and in `simulate_worlds`.
+  - The discovery row does reveal the reported-block and discovery liquidation counts before the
+    approval line. But no parameter can change after that ((r), (g3)), and a `DECLINED` line only closes
+    013.
+- **What the pool can do is dilute.** The 2020–23 spot-first block is about 41% of the pool. If its
+  squeeze rate is lower than the perp-first regime's, the charge shrinks. `r13_pool_dilution.py` (own
+  code; perp-first p 2%):
+  - reported block p 0 → confirmation size **0.049**;
+  - reported block p 0.5%, k 1 → **0.057**;
+  - for comparison, 0.021–0.024 when the regimes match, and 0.077–0.091 untailed.
+
+  So the fix degrades toward nominal but does not fail. **Minor (r2-m1):** use
+  π_pool = max(π over all three calendars, π over discovery + confirmation). One line; same calibration
+  logic.
+
+### Continuation rule: applied point in time and consistently
+
+- **VANRY, AEVO, ASTER: in T1.** Their predecessors TVKUSDT, RBNUSDT and APXUSDT have no 1d file in the
+  listing; neither do ORN, MPL, INST, MC, UST or BEAM.
+- **CFG: in T1.** CFGUSDT's first file is the event itself (2026-03-16).
+- **PUMPBTC (p, PUMPUSDT):** PUMPUSDT's first file is 2025-04-12, before 2025-06-13. Point in time ✓.
+  - The *mapping* (that PUMPBTCUSDT is PumpBTC's contract renamed) is still a public-notice fact that the
+    code cannot check. It is consistent with the PUMPUSDT trading gap and the 2025-07-10 later segment.
+- **DODOX (p, DODOUSDT):** DODOUSDT's first file is 2021-02-19, before 2023-08-08 ✓. Reported block only.
+- USTC left the stratum by the same rule. UST had no perp, and it is algorithmic, not backed. Reported only.
+- **Counts:** schedule 239 / 121 / 251 primary events; continuation stratum 14 / 5 / 4. All match the
+  registration.
+- Residual (accepted): the rule cannot detect a *missing* predecessor mapping. I found none in a
+  name-by-name pass of both calendars.
+
+### New observation (not blocking)
+
+- **r2-m2. The min(raw, adjusted) deploy rule is conservative, not path-free.** For a true 4% edge,
+  P(deploy | confirm) is **0.40** in a flat calendar and **0.61** at −2%/wk (r12). In a flat market the raw
+  side's market noise binds; in a bear one the adjusted side does.
+  - This was the orchestrator's choice. It adds no false deploys (0.0025–0.005), but it costs deploy
+    power, mostly in calm calendars.
+  - State it in §6's expected-return text: a deploy needs both the hedged and the unhedged book to pay.
+
+### Verdict
+
+**REGISTER.** B1 and M1–M4 are fixed in code and reproduced with independent code. No blocker or major
+remains. The two items above (r2-m1: pool = max(all, 2024+); r2-m2: one sentence in §6) are minor and can
+go in the REGISTERED commit or be left as stated weaknesses.
+
+**Real-data reads in this recheck:**
+- the test suite's real-file checks (registration, hashes, 013-row count, parquet column names,
+  `events.json` field names);
+- `schedule.json` (first-trade times, flags, continuation ids);
+- `listing/um_daily_1d_days.json`: the first 1d day of the 21 predecessor symbols and the absence of 10
+  more, as listed above (names and dates only);
+- `logs/power_r2.json` (synthetic).
+
+No price, return, funding, liquidation or P&L on any listing window was read or computed. Nothing dated on
+or after 2026-07-01 was opened.

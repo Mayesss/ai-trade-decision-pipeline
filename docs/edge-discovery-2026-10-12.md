@@ -609,6 +609,51 @@ size and power cells reproduced: 0.037 vs 0.029, 0.759 vs 0.772.)
   source. That needs deliberate tampering. 008's code is frozen, so it is
   recorded as a known limitation, not fixed there; 013 closes it.
 
+**2026-10-13 — 013 Revision 2 committed (`323899e`); 008 fetch attempt 2
+started; 013 probe recheck running.**
+- **013 Revision 2** (145/145, orchestrator re-ran; the suite also passes in
+  a clone committed at DRAFT and at REGISTERED). β per calendar quarter;
+  deploy and criteria 5–6 on min(raw, adjusted); tail-adjusted α in the
+  confirmation; one continuation rule (239 / 121 events; ASTER, LUMIA,
+  SYRUP, CFG, BEAMX back in). Recalibrated **CAL_C = 2.05** over 55 worlds.
+  Size at registered values: confirmation alone 0.017–0.043, joint ≤ 0.033
+  in every world. **Joint power at k 1.5: 0.17 / 0.72 / 0.95 at 2 / 4 / 6%
+  net per event**; 0.39 at 4% with 2% squeeze atoms. Economics unchanged:
+  about 5–11%/yr after the squeeze-tail charge at a 4–6% edge.
+- **008.** With the tree clean, the guard's only refusal was "fetch first";
+  attempt 2 is running.
+
+**2026-10-13 — 013 Revision 2 recheck: register.** (`reviews/013-review-r1.md`,
+appendix; worked in a throwaway clone so 008's running fetch was
+untouched.) Independent simulation: strongest regime world false confirm
+0.037 (registered 0.031); joint power at 4%, k 1.5 0.729 (0.725); false
+deploys 0.0025–0.005 (from 0.020–0.043); tail-adjusted confirmation size
+0.024–0.025; continuation rule point-in-time and consistent (VANRY, AEVO,
+ASTER, CFG in; PUMPBTC, DODOX pass). Two new minors, both to be applied
+before REGISTERED (after 008's fetch, since they touch a guarded `.py`):
+(1) the squeeze-tail pool uses the larger of the rates pooled over all
+three calendars and over discovery + confirmation only (the 2020–23 block
+could dilute it; size then 0.049–0.057); (2) §6 states that a deploy needs
+both the hedged and the unhedged book to pay.
+- **Order from here:** 008 fetch → the A1 check → the read; then 013's two
+  minors → REGISTERED → discovery run. The two never write `results.jsonl`
+  at the same time.
+
+**2026-10-13 — 008 fetch attempt 2: one genuine gap; the read waits about
+two days, by the registered rule.** The boundary fix worked: all 168
+symbols' Bitget blocks fetched, fills and G1/G2 clean, 3.35 GiB spent in
+total. One refusal remains: `closes_partial:PONSUSDT:1787760000000`, 19
+hours missing in a late-August block of a symbol Bitget still lists (no
+price was printed). Under the registered persistence rule, the same
+refusal on a chain of 3 attempts, each ≥ 24 h after the previous by commit
+time, records the name as unavailable (1 of 168, ceiling 8), and the fetch
+then completes. Attempts 1–2 were both on 2026-10-13 (ends 05:24 and 06:36
++0200), so **attempt 3 ≥ 2026-10-14 06:40 +0200 and attempt 4 ≥
+2026-10-15 06:40 +0200**, then the A1 check and the read. Before each
+attempt the tree must be clean (all `.py` committed).
+- 013 goes first meanwhile: the two recheck minors, then REGISTERED, then
+  its discovery run.
+
 **2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
 (`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
 timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
@@ -729,7 +774,7 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | done: 5 majors; `000n` |
 | 013 Revision 1 | committed `02fbd1d` | 2026-10-13 | done (125/125) |
 | 013 re-review | `reviews/013-review-r1.md` | 2026-10-13 | done: 1 blocker, 4 majors |
-| 013 Revision 2 | drafter, resumed | 2026-10-13 | running |
+| 013 Revision 2 | committed `323899e` | 2026-10-13 | recheck: **register**; two minors being applied |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
@@ -737,4 +782,4 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 008 re-review | `registrations/reviews/008-review-r1.md` | 2026-10-13 | done: register after 1 blocker + 1 major |
 | 008 Revision 2 | drafter | 2026-10-13 | done (132/132) |
 | 008 Revision 2 recheck | `reviews/008-review-r1.md` (appendix) | 2026-10-13 | done: register |
-| **008 REGISTERED** | `2bd855a`; Amendment 1 `963dcc8` | 2026-10-13 | probe recheck, then fetch attempt 2 (after 013 Rev 2 is committed) |
+| **008 REGISTERED** | `2bd855a`; Amendment 1 `963dcc8` | 2026-10-13 | attempt 2: one genuine gap (PONSUSDT); attempts 3 ≥ 10-14 06:40, 4 ≥ 10-15 06:40 (+0200), then read |
