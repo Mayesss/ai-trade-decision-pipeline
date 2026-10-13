@@ -442,6 +442,23 @@ the real guard refuses only with (w), the repo-binding check).
 - HMM dropped (`r015_hmm.py` and the Treasury copies removed). The
   overclaim in this document's B1 entry is corrected in place.
 
+**2026-10-13 — 015 Revision 1 rechecks: A says register; B says register
+after two majors; Revision 2 ordered.** A: every major and minor fixed;
+an independent estimator agrees to 1e-15; size at 1.92 is 0.026–0.049 (the
+binding world's q95 1.913: no spare margin); power within MC error of the
+registration. B: every round-1 attack and the three 016-B faults refused; a
+stand-in of the real layout opens and runs once. **R1-M1:** the REGISTERED
+version was searched on first-parent history only, so a post-REGISTERED
+revision merged `--no-ff` from a side branch opened the guard (null t −1.80
+→ +1.78). **R1-M2:** the restart clause checked authorship in HEAD's history
+only: after a runner-committed started row and a real read, `reset --hard`
+plus a hand re-commit reopened it. Revision 2 fixes both, opens the data
+gate only after the started row is in HEAD, takes μ from all eras for the
+routing bar (A), pins the Europe file when it is pulled (A), and records a
+`.pth` that swaps `sys.flags` as a stated limitation needing deliberate
+interpreter tampering (as 008's forged-`.pyc` residual). Then B rechecks
+R1-M1/M2 only, and 015 is registered.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -489,7 +506,8 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | DRAFT committed `012eff7` (137/137) |
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
-| 015 Revision 1 | drafter | 2026-10-13 | done (200/200); probe rechecks A and B running |
+| 015 Revision 1 | drafter | 2026-10-13 | done (200/200); recheck A register, B two majors |
+| 015 Revision 2 | drafter | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | running |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
