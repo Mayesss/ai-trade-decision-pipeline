@@ -369,6 +369,25 @@ REGISTERED.)
 - **Revision 1** goes to the 015 drafter with every A and B fix; then the
   reviewers re-run their probes only.
 
+**2026-10-13 — 016 DRAFT committed (`66df71a`); two reviews launched.**
+The orchestrator re-ran the suite: 186/186 (both guard layouts, clones at
+DRAFT and REGISTERED). H1: α of the daily net book (10 bp, no funding)
+against BTC, an equal-weight alt basket and a vol-managed basket,
+month-clustered (G = 33), t ≥ **1.731** (largest q95 over 11 regime worlds)
+**and** α > 0 on the forward span alone, so the designer-known span (a)
+cannot carry a pass. Power 0.68–0.83 at SR 1 (0.41–0.54 forward-only);
+false pass 0.000–0.048; a world shaped like the known 2025–26 path passes
+0.017. H2 (decay vs SR 1.57) has power only ≈ 0.5 at true SR 0 (the
+scout's 0.76–0.88 was optimistic: slow trends make a 33-month Sharpe noisy).
+**Departure from the brief, for the reviewers:** one slope per factor, not β
+per calendar cell (cell slopes absorb the timing gain: −1.1 to −1.6 in t).
+Expected over cash, alive at full strength: +13.7%/yr at ≈ 9% vol, +36–38%
+at 25%; half strength +6.6% / +16–18%. Real data seen beyond hashes and
+dates: one in-paper row (BTCUSDT 2020-01-01) and CSV headers (016 §15).
+Reviews: A (β choice, H2, span (a), fidelity to the paper, economics) and B
+(every 015-review-b fault, the date gate, the fetcher, the current-state
+exchangeInfo snapshot as a survivorship risk).
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -417,5 +436,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
 | 015 Revision 1 | drafter | 2026-10-13 | running |
-| 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | running |
+| 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
+| 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | running |
+| 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
