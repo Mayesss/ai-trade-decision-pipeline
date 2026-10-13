@@ -514,6 +514,15 @@ the way:** this log entry was first refused by the session's safety
 classifier ("instruction poisoning": an authorisation claim written into a
 briefing document); the owner was asked and confirmed.
 
+**2026-10-13 18:09 — session restart (VS Code closed).** The 016 power
+calibration had been paused at the owner's request (machine needed); the
+restart killed it with 16 worlds logged, and stopped 008's timer. Nothing
+else was lost (all commits intact; `research/alpha/results.jsonl` empty;
+016's Revision 1 edits intact in the working tree). The 008 timer was
+re-armed (fires 2026-10-14 06:45 +0200); the 016 drafter was resumed and
+asked to make the power run resumable (skip completed worlds with identical
+specs and seeds; verify by re-running one) before relaunching it.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
