@@ -228,6 +228,23 @@ window SD ≈ 3.9%, consistent with 1.12% daily vol over ~13 days.)
   (decides nothing); the 2026-07 → calendar stays held back for a forward
   confirmation of either. Exposure ledgered as `000s`.
 
+**2026-10-13 — owner: fix blockers instead of parking around them; 014
+review B's B1 fixed (`ed8f06b`).** The owner, on 014-review-b B1: "fix it
+instead and ask me if such a blocker comes along the way and why it was
+blocked." The fault: the holdout gate used `git show HEAD:results.jsonl`
+and `git show <c>:<rel>`, which git resolves from the repository root, so
+with the runner in `research/copytrade/` the gate could never open. Fix:
+`<rev>:./<path>`. A new test runs the guard checks in both layouts; the
+real-layout run failed before the fix exactly as reviewed and passes after
+(144/144). **Blocked on the way:** updating `r014_run.py`'s SHA-256 pin in
+014 §9 was refused by the session's safety classifier ("modify shared
+resources": it protects registration pins from silent code swaps); I asked
+the owner, who approved the pin update. 014 stays PARKED on economics; its
+other review findings remain open. 008's guard re-checked after the commit:
+only "fetch first". **Carried forward:** the 015 drafter was told to use
+`<rev>:./<path>` and test both layouts, since its runner lives in
+`research/alpha/`.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
