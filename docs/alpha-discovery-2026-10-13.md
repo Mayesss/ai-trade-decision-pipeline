@@ -222,7 +222,9 @@ window SD ≈ 3.9%, consistent with 1.12% daily vol over ~13 days.)
   light of the round that is (i) testable with power on a calendar nobody
   in this programme has read, (ii) almost free to execute, (iii) leverable
   with a documented tail, and (iv) carries a **mechanism prediction** (the
-  window moves with the settlement lag) that a calendar fluke cannot fake.
+  window moves with the settlement lag; *correction after review A: the
+  primary cannot separate it from the unshifted windows, and the paired
+  contrast has power 0.15–0.22, so the mechanism is reported, not decided*).
   A confirm at near-full effect is the round's first credible 20%+ path at
   2–2.6×. HMM rebalancing goes in as a pre-stated **reported replication**
   (decides nothing); the 2026-07 → calendar stays held back for a forward
@@ -417,6 +419,29 @@ before Binance's archive holds BTC through 2027-12-31).
   templates had the same holes. After 015 Revision 1, 016 ports 015's
   revised guard rather than re-deriving it.
 
+**2026-10-13 — 015 Revision 1 done (every A and B finding plus 016-B's
+shared faults); probe-only rechecks launched.** The orchestrator re-ran the
+suite: 200/200 (199/199 in a synthetic clone at DRAFT and REGISTERED, where
+the real guard refuses only with (w), the repo-binding check).
+- **Primary z = y / (√12·σ̂)**, σ̂ = RMS of x over T−28…T−9, floor
+  0.4%/day. **Critical value 1.92** (binding world: one 2008-style crash
+  aligned to a pressure-window end, q95 1.862 ± 0.026 MC SE, + 2 SE, rounded
+  up). False pass 0.024–0.045 over the 13 worlds; placement-averaged crashes
+  0.029–0.033; double alignment 0.070 (reported). **Power** full 0.769 iid /
+  0.986 GARCH t4; half 0.278 / 0.620. Decayed worlds still pass 0.12–0.27.
+- **What a pass buys:** paper only. Real money needs the held-back Europe
+  confirmation and **015F** (forward 2026-06 → 2028-12, forward t ≥ 1).
+- **Guard:** real repo path pinned, main worktree only, no detached HEAD;
+  `run()` takes no root; `python3 -I -S` required, module/bytecode origins
+  checked, interpreter and stdlib pinned, unpinned `.pth` refused, committed
+  stdlib-shadowing modules refused; `/usr/bin/git` with neutral config, no
+  replace objects, no hooks; registration read from HEAD and file bytes
+  compared with HEAD blobs; index flags and filters refused; the row binds
+  the REGISTERED commit. The clone test itself caught one more hole (the
+  suite's real-ledger test wrote a row into a clone's ledger), now refused.
+- HMM dropped (`r015_hmm.py` and the Treasury copies removed). The
+  overclaim in this document's B1 entry is corrected in place.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -464,7 +489,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | DRAFT committed `012eff7` (137/137) |
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
-| 015 Revision 1 | drafter | 2026-10-13 | running |
+| 015 Revision 1 | drafter | 2026-10-13 | done (200/200); probe rechecks A and B running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | running |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |

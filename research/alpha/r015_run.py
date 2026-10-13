@@ -1,68 +1,94 @@
-"""Registration 015 — the month-end liquidity cycle, settlement-shifted: the guarded run (once).
+"""Registration 015 — the month-end liquidity cycle, settlement-shifted: the guarded run (once). Revision 1.
 
-    python3 -I r015_run.py --check       # print every reason the run may not start; computes nothing
-    python3 -I r015_run.py --calendar    # DATES ONLY: rebuild data/r015/calendar.json (pre-registration; no value parsed)
-    python3 -I r015_run.py --run         # the read, once: started row, result row, reported row (each committed)
+    python3 -I -S research/alpha/r015_run.py --check      # every reason the run may not start; computes nothing
+    python3 -I -S research/alpha/r015_run.py --fingerprint # the interpreter / stdlib fingerprint (pin recovery); no data
+    python3 -I -S research/alpha/r015_run.py --calendar    # DATES ONLY: rebuild data/r015/calendar.json (pre-registration)
+    python3 -I -S research/alpha/r015_run.py --run         # the read, once: started, result, reported rows (each committed)
 
 The run refuses unless (every check is a refusal, never an assert):
-  (s)  the registration says REGISTERED;  (a) it is tracked;  (b) unmodified against HEAD;  (c) it has a commit;
-  (d)  the guarded code is clean;  (e) every guarded code and data file is listed exactly once in the registration's
-       SHA-256 table and matches it;
-  (k)  results.jsonl is tracked and clean against HEAD (a row is never left uncommitted);
-  (w)  git's top level, asked from THIS file's directory, is the repository two levels above it, and the anchor commit
-       is an ancestor of HEAD; GIT_* variables are stripped from every git call;
-  (v)  python -O is refused; the Python version equals the pin; no untracked, ignored or modified importable file
-       (*.py, sourceless *.pyc, *.so / *.pyd, packages) sits at research/alpha's top level; r015_core and r015_hmm
-       were loaded from their hashed sources; sys.pycache_prefix is a fresh directory outside the repository;
-  (f)  no row of any registration whose name starts '015-' exists in the working tree, in any branch, in the reflog,
-       or in a merge or stash diff (`git log --all --reflog -m -p --text --no-textconv --no-ext-diff`): run once.
-Every `<rev>:<path>` is written `<rev>:./<path>` (git resolves it from the repository root otherwise; 014 review B B1).
-Reads: the data loaders open the real tree (data/r015) only after the real guard passed in this process (a gate
-token); mock hooks, a stubbed guard or a mixed real/synthetic tree are refused on the real files. The loader drops
-every row dated on or after 2026-06-10 before parsing its values, and refuses a file whose SHA-256 differs from the
-registration table. The runner commits results.jsonl alone (`git commit --only`) after each row, verifies the row in
-HEAD, and never pushes.
+  (s)  the registration AS COMMITTED IN HEAD says REGISTERED (status and hash table are read from HEAD:./, review B M3);
+  (a)  it is tracked;  (b) its working-tree bytes (`git hash-object --no-filters`) equal its HEAD blob;  (c) it has a commit;
+  (d)  every guarded code file's working-tree bytes equal its HEAD blob; no guarded path or results.jsonl carries an
+       assume-unchanged / skip-worktree flag or a filter attribute (review B M3);
+  (e)  every guarded code and data file is listed exactly once in the HEAD table and matches it;
+  (k)  results.jsonl is tracked, equals its HEAD blob, and is empty or ends with a newline (review B m3);
+  (w)  the repository is THE real one: this file's repository equals the pinned absolute path REAL_REPO, git's top level
+       is that path, the working tree is the main worktree (--git-dir == --git-common-dir == REAL_REPO/.git), HEAD is
+       a named branch (not detached), and the anchor commit is an ancestor of HEAD (review B B1);
+  (v)  python -I -S (isolated, no site: a site-packages .pth cannot run) and no -O; no .pth file in the interpreter's
+       site-packages (pinned empty list); the interpreter version, the interpreter binary's SHA-256 and the stdlib tree
+       fingerprint equal the pins; every loaded module comes from the pinned stdlib or is r015_core / r015_run in this
+       directory, and every cached bytecode from the fresh sys.pycache_prefix (review B M2); no untracked, ignored or
+       modified importable file (*.py, sourceless *.pyc, *.so / *.pyd, packages) at research/alpha's top level,
+       judged by blob equality, not by `git status`, and NO module at that level, tracked or not, whose name is a
+       stdlib module name (research/alpha is appended to sys.path, after the stdlib) — **every top-level .py and package, 016's included, must be
+       committed before 015 runs** (review B m7);
+  (r)  the registration commit is the FIRST commit on HEAD's first-parent history whose registration says REGISTERED
+       (reg0, stored in every row), and neither the registration nor any guarded code changed between reg0 and HEAD
+       (016 review B M4);
+  (f)  no row of any registration whose name starts '015-' exists anywhere (working tree; `git log --all --reflog -m
+       --root -p --text --no-textconv --no-ext-diff` with log.showRoot=true and no replace objects), and no unparseable
+       added line mentions 015 — except the narrow restart below.
+Restart (review B m6): one restart is allowed only when the sole 015 row anywhere is a `started` row with
+data_opened false that is committed in HEAD by a commit NOT authored by the runner (the runner's own commit failed,
+so the row was committed by hand); nothing was read.
+git is called by absolute path with GIT_* stripped, no system or global config, no replace objects, no hooks.
+Every `<rev>:<path>` is `<rev>:./<path>`. The loaders hash the bytes they parse, refuse a hash differing from the
+HEAD table, drop rows dated outside [2013-11-01, 2026-06-04) on their date before parsing values, and open the real
+tree (or any byte copy of a registered real file) only after the real guard passed in this process. run() takes no
+argument: guard, data, table and ledger are all the real tree's (review B M1). The runner never pushes.
 """
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import sysconfig
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.pycache_prefix = tempfile.mkdtemp(prefix='r015-pyc-')    # never load bytecode from an existing __pycache__
-sys.path.insert(0, str(HERE))
+sys.path.append(str(HERE))                                    # after the stdlib (016 review B M2)
 import r015_core as C  # noqa: E402
-import r015_hmm as H  # noqa: E402
 
 Refused = C.Refused
+_HERE0 = HERE                                                 # captured at import; production uses only these
 REPO = HERE.parent.parent
-REG = HERE / 'registrations' / '015-month-end-liquidity-cycle.md'
+REAL_REPO = Path('/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline')   # (w), review B B1
+REG_NAME = '015-month-end-liquidity-cycle.md'
+REG_REL = f'registrations/{REG_NAME}'
+REG = HERE / REG_REL
 REG_PREFIX = '015-'
 RESULTS = HERE / 'results.jsonl'
 DATA = HERE / 'data' / 'r015'
-DATA_REAL = (HERE / 'data' / 'r015').resolve()             # never reassigned: the gate compares against it
+DATA_REAL = (HERE / 'data' / 'r015').resolve()
 REAL_RESULTS = (HERE / 'results.jsonl').resolve()
-ANCHOR = '15c6421e31b345f209cfbee7f73ef47b88ffc3cd'         # "B1 scout ...; decision to draft 015" (2026-10-13), (w)
+ANCHOR = '15c6421e31b345f209cfbee7f73ef47b88ffc3cd'          # "B1 scout ...; decision to draft 015" (2026-10-13)
+GIT_BIN = '/usr/bin/git'
+RUNNER_NAME, RUNNER_EMAIL = 'r015_run', 'r015_run@localhost'
 PY_PIN = '3.14.8'
+PY_EXE_SHA256 = '7ebde552773a4045532637b114d645a313e045ac07b26f5e520bf039f1e34063'
+STDLIB_SHA256 = 'c99bbd7540f6c89e5a15b371f3fe3a853da11f6556ed2bbe55609286c650071e'
+PTH_PINNED = ()                                               # .pth files allowed in site-packages: none
+STDLIB_SKIP = {'site-packages', '__pycache__', 'test', 'tests', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip'}
 
 FRENCH_DIR = 'data/r015/french_20261013T093725Z'
-TREASURY_DIR = 'data/r015/treasury_copy_20261013T093812Z'
 US_ZIP = f'{FRENCH_DIR}/F-F_Research_Data_Factors_daily_CSV.zip'
-EU_ZIP = f'{FRENCH_DIR}/Europe_3_Factors_Daily_CSV.zip'
-TREASURY = tuple(f'{TREASURY_DIR}/daily_treasury_yield_curve_{y}.csv' for y in range(2014, 2027))
 CALENDAR = 'data/r015/calendar.json'
 POWER_LOG = 'data/r015/logs/power.json'
-GUARDED_CODE = ('r015_core.py', 'r015_hmm.py', 'r015_power.py', 'r015_run.py')
-GUARDED_DATA = (US_ZIP, EU_ZIP, *TREASURY, f'{FRENCH_DIR}/SHA256SUMS', f'{TREASURY_DIR}/SHA256SUMS', CALENDAR, POWER_LOG)
+GUARDED_CODE = ('r015_core.py', 'r015_power.py', 'r015_run.py')
+GUARDED_DATA = (US_ZIP, f'{FRENCH_DIR}/SHA256SUMS', CALENDAR, POWER_LOG)
+ALLOWED_PROJECT_MODULES = ('r015_core.py', 'r015_run.py')
 HASH_ROW = re.compile(r'^\|\s*`([^`]+)`\s*\|\s*`([0-9a-f]{64})`\s*\|', re.M)
 STATUS = re.compile(r'^\*\*Status: (\w+)', re.M)
-_GATE = None                                                 # (dir, commit), set only by the real guard()
+_GATE = None                                                  # (dir, commit), set only by the real guard()
+_STATE = {'data_opened': False}
 
 
 # ------------------------------------------------------------------ git and hashing helpers
@@ -78,9 +104,17 @@ def line_sha(line):
     return hashlib.sha256(line.encode()).hexdigest()
 
 
-def _git(root, *a):
+def git_env():
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-    return subprocess.run(['git', *a], cwd=root, capture_output=True, text=True, env=env)
+    env.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_NO_REPLACE_OBJECTS': '1',
+                'GIT_TERMINAL_PROMPT': '0'})
+    return env
+
+
+def _git(root, *a):
+    return subprocess.run([GIT_BIN, '-c', 'core.hooksPath=' + os.devnull, '-c', 'log.showRoot=true', '-c',
+                           'core.fsmonitor=false', '--no-replace-objects', *a],
+                          cwd=root, capture_output=True, text=True, env=git_env())
 
 
 def revpath(rev, rel):
@@ -88,34 +122,75 @@ def revpath(rev, rel):
     return f'{rev}:./{rel}'
 
 
+def head_text(root, rel):
+    r = _git(root, 'show', '--no-textconv', revpath('HEAD', rel))
+    return r.stdout if r.returncode == 0 else None
+
+
+def head_blob(root, rel):
+    r = _git(root, 'rev-parse', '--verify', '-q', revpath('HEAD', rel))
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def work_blob(root, rel):
+    r = _git(root, 'hash-object', '--no-filters', '--', rel)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def same_as_head(root, rel):
+    hb = head_blob(root, rel)
+    return hb is not None and (Path(root) / rel).is_file() and work_blob(root, rel) == hb
+
+
 def is_015(row):
     return isinstance(row, dict) and str(row.get('registration', '')).startswith(REG_PREFIX)
 
 
+def _added_lines(root, rel):
+    r = _git(root, 'log', '--all', '--reflog', '-m', '--root', '-p', '--text', '--no-textconv', '--no-ext-diff',
+             '--no-color', '--format=', '--', rel)
+    return r.returncode, [l[1:] for l in r.stdout.splitlines() if l.startswith('+') and not l.startswith('+++')]
+
+
 def result_rows(root, results_rel='results.jsonl', match=is_015):
-    """[(line, row)] of every distinct matching line in the working tree and every ADDED line in
-    `git log --all --reflog -m -p` (every branch, the reflog, merge and stash diffs)."""
-    texts = []
+    """([(line, row)], [problems]). Every distinct matching line in the working tree and every ADDED line in the
+    history of every branch, the reflog, merges, stashes and root commits. A line that mentions a 015 registration but
+    does not parse, or a failing git call, is a problem (fail closed)."""
+    texts, problems = [], []
     res = Path(root) / results_rel
     if res.exists():
         texts.extend(res.read_text().splitlines())
-    hist = _git(root, 'log', '--all', '--reflog', '-m', '-p', '--text', '--no-textconv', '--no-ext-diff', '--no-color',
-                '--format=', '--', results_rel)
-    texts.extend(l[1:] for l in hist.stdout.splitlines() if l.startswith('+') and not l.startswith('+++'))
+    rc, lines = _added_lines(root, results_rel)
+    if rc != 0:
+        problems.append(f'git log over {results_rel} failed')
+    texts.extend(lines)
+    other = Path(root).parent / 'copytrade' / 'results.jsonl'          # the ledger spans both roots (review B m11)
+    if other.exists():
+        texts.extend(_added_lines(root, '../copytrade/results.jsonl')[1])
+        texts.extend(other.read_text().splitlines())
     out, seen = [], set()
     for line in texts:
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
+            if f'"registration": "{REG_PREFIX}' in line or f'"registration":"{REG_PREFIX}' in line:
+                problems.append('an unparseable line mentions a 015 registration')
             continue
         if match(row) and line not in seen:
             seen.add(line)
             out.append((line, row))
-    return out
+    return out, problems
 
 
 def head_lines(root, results_rel='results.jsonl'):
     return _git(root, 'show', '--no-textconv', revpath('HEAD', results_rel)).stdout.splitlines()
+
+
+def first_commit_containing(root, rel, needle):
+    for c in _git(root, 'log', '--format=%H', '--reverse', '--', rel).stdout.split():
+        if needle in _git(root, 'show', '--no-textconv', revpath(c, rel)).stdout.splitlines():
+            return c
+    return None
 
 
 def is_ancestor(root, c):
@@ -123,91 +198,182 @@ def is_ancestor(root, c):
 
 
 # ------------------------------------------------------------------ (v) environment
+def stdlib_root():
+    return Path(os.path.realpath(sysconfig.get_paths()['stdlib']))
+
+
+def stdlib_fingerprint():
+    root = stdlib_root()
+    h, n = hashlib.sha256(), 0
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if x not in STDLIB_SKIP)
+        for f in sorted(files):
+            if f.endswith(('.py', '.so')):
+                p = os.path.join(d, f)
+                with open(p, 'rb') as fh:
+                    b = fh.read()
+                h.update(os.path.relpath(p, root).encode())
+                h.update(hashlib.sha256(b).digest())
+                n += 1
+    return h.hexdigest(), n
+
+
 def env_fingerprint():
-    """Python version and executable, and the SHA-256 of the stdlib sources the decision path imports."""
-    import csv
-    import math
-    import statistics
-    h, files = hashlib.sha256(), []
-    for mod in (csv, statistics, zipfile, json, dt, hashlib, math):
-        f = getattr(mod, '__file__', None)
-        if f and Path(f).is_file():
-            h.update(Path(f).name.encode())
-            h.update(sha256(f).encode())
-            files.append(Path(f).name)
-    return {'python': sys.version.split()[0], 'executable': sys.executable, 'stdlib_files': files,
-            'stdlib_sha256': h.hexdigest(), 'flags_optimize': sys.flags.optimize}
+    exe = os.path.realpath(sys.executable)
+    fp, n = stdlib_fingerprint()
+    return {'python': sys.version.split()[0], 'executable': exe, 'executable_sha256': sha256(exe),
+            'stdlib_sha256': fp, 'stdlib_files': n, 'isolated': sys.flags.isolated, 'no_site': sys.flags.no_site,
+            'optimize': sys.flags.optimize, 'pth_files': pth_files(),
+            'git': GIT_BIN, 'git_version': _git(HERE, '--version').stdout.strip()}
 
 
 def shadow_modules(root):
-    """Anything importable at research/alpha's top level (sys.path[0]) that is not a tracked, unmodified file and could
-    shadow an import: *.py, sourceless *.pyc, *.so / *.pyd, and packages (a directory with __init__.py). Scanned on
-    the FILE SYSTEM, so git-ignored files count (ported from r008 / r013)."""
+    """Anything importable at research/alpha's top level (sys.path[0]) whose bytes are not its HEAD blob: *.py,
+    sourceless *.pyc, *.so / *.pyd, and packages (a directory with __init__.py). Scanned on the FILE SYSTEM, so
+    git-ignored files count; judged by `hash-object --no-filters` against HEAD (review B M3), not by `git status`."""
     root = Path(root)
-    tracked = set(_git(root, 'ls-files', '-z').stdout.split('\0'))
-    modified = set(_git(root, 'ls-files', '-m', '-z').stdout.split('\0'))
     bad = set()
-
-    def unclean(f):
-        rel = str(f.relative_to(root))
-        return rel not in tracked or rel in modified
+    std = set(sys.stdlib_module_names)
     for p in sorted(root.iterdir()):
         if p.name == '__pycache__':
             continue
         if p.is_file() and p.suffix in ('.py', '.pyc', '.so', '.pyd'):
-            if unclean(p):
-                bad.add(str(p.relative_to(root)))
+            if p.name.split('.')[0] in std:
+                bad.add(p.name + ' (stdlib name)')
+            elif not same_as_head(root, p.name):
+                bad.add(p.name)
         elif p.is_dir() and (p / '__init__.py').exists():
-            if unclean(p / '__init__.py'):
-                bad.add(str((p / '__init__.py').relative_to(root)))
+            if p.name in std:
+                bad.add(f'{p.name}/__init__.py (stdlib name)')
+            elif not same_as_head(root, f'{p.name}/__init__.py'):
+                bad.add(f'{p.name}/__init__.py')
     return sorted(bad)
 
 
-def loaded_from_source():
+def pth_files():
+    """Every .pth in the interpreter's site-packages directories (they execute at startup unless -S)."""
     out = []
-    for name, rel in (('r015_core', 'r015_core.py'), ('r015_hmm', 'r015_hmm.py')):
-        mod = sys.modules.get(name)
-        if mod is None or Path(getattr(mod, '__file__', '') or '').resolve() != (HERE / rel).resolve():
-            out.append(f'(v) {name} was not loaded from {rel}')
-    if not sys.pycache_prefix or Path(sys.pycache_prefix).resolve().is_relative_to(REPO.resolve()):
-        out.append('(v) sys.pycache_prefix must be a fresh directory outside the repository')
+    for k in ('purelib', 'platlib'):
+        d = Path(sysconfig.get_paths()[k])
+        if d.is_dir():
+            out += sorted(str(f) for f in d.iterdir() if f.suffix == '.pth')
+    return sorted(set(out))
+
+
+def module_origin_failures(here=None):
+    """Every loaded module with a file is either in the pinned stdlib tree or one of the allowed r015 modules in this
+    directory; every cached bytecode is under the fresh sys.pycache_prefix (review B M2, m1)."""
+    here = Path(here or HERE).resolve()
+    std = stdlib_root()
+    allowed = {(here / f).resolve() for f in ALLOWED_PROJECT_MODULES}
+    pyc = Path(sys.pycache_prefix).resolve() if sys.pycache_prefix else None
+    out = []
+    for name, mod in sorted(sys.modules.items()):
+        f = getattr(mod, '__file__', None)
+        if f:
+            p = Path(f).resolve()
+            if not (p.is_relative_to(std) or p in allowed):
+                out.append(f'(v) module {name} is loaded from {p}, outside the pinned stdlib and the allowed r015 files')
+        cached = getattr(mod, '__cached__', None)
+        if cached and f and not Path(f).resolve().is_relative_to(std):
+            if pyc is None or not Path(cached).resolve().is_relative_to(pyc):
+                out.append(f'(v) module {name} bytecode {cached} is not under the fresh pycache_prefix')
     return out
 
 
 def environment_failures(root):
     out = []
+    if not sys.flags.isolated:
+        out.append('(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load')
+    if not sys.flags.no_site:
+        out.append('(v) run with python -I -S (no site) — a site-packages .pth would execute at startup')
+    extra_pth = [f for f in pth_files() if Path(f).name not in PTH_PINNED]
+    if extra_pth:
+        out.append(f'(v) .pth files in site-packages that are not pinned: {extra_pth[:4]}')
     if sys.flags.optimize:
         out.append('(v) python -O / -OO is refused')
     if sys.version.split()[0] != PY_PIN:
         out.append(f'(v) python {sys.version.split()[0]} differs from the pin {PY_PIN}')
+    exe = os.path.realpath(sys.executable)
+    if not Path(exe).is_file() or sha256(exe) != PY_EXE_SHA256:
+        out.append(f'(v) the interpreter binary {exe} does not match its pinned SHA-256 (recovery: reinstall python '
+                   f'{PY_PIN} until `--fingerprint` equals the pins; the pins are never edited after REGISTERED)')
+    if stdlib_fingerprint()[0] != STDLIB_SHA256:
+        out.append('(v) the stdlib tree fingerprint differs from the pin')
     shadow = shadow_modules(root)
     if shadow:
-        out.append(f'(v) untracked, ignored or modified importable files could shadow an import: {shadow[:6]}')
-    out += loaded_from_source()
+        out.append(f'(v) untracked, ignored or modified importable files at research/alpha top level could shadow an '
+                   f'import: {shadow[:6]} — commit every top-level .py and package (016 included) before 015 runs')
+    out += module_origin_failures()
+    if not sys.pycache_prefix or Path(sys.pycache_prefix).resolve().is_relative_to(REAL_REPO):
+        out.append('(v) sys.pycache_prefix must be a fresh directory outside the repository')
     return out
 
 
 # ------------------------------------------------------------------ the guard
-def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_rel='results.jsonl', toplevel=None,
-                   anchor=None, env_check=False):
-    """([reasons], registration commit). The run may start only when the list is empty."""
-    root = Path(root)
-    reg = root / reg_rel
+def flag_failures(root, files):
+    """assume-unchanged (lowercase tag) / skip-worktree (S) flags and filter attributes on guarded paths."""
     out = []
-    text = reg.read_text() if reg.exists() else ''
+    for line in _git(root, 'ls-files', '-v', '--', *files).stdout.splitlines():
+        tag, name = line[:1], line[2:]
+        if tag == 'S' or tag.islower():
+            out.append(f'(d) {name} carries an index flag ({tag}) that hides working-tree changes')
+    for line in _git(root, 'check-attr', 'filter', '--', *files).stdout.splitlines():
+        if not line.rstrip().endswith(': unspecified'):
+            out.append(f'(d) a filter attribute applies: {line.strip()}')
+    return out
+
+
+def registered_commit(root, reg_rel):
+    """reg0: the first commit on HEAD's first-parent history whose registration says **Status: REGISTERED."""
+    for c in _git(root, 'log', '--first-parent', '--reverse', '--format=%H', '--', reg_rel).stdout.split():
+        m = STATUS.search(_git(root, 'show', '--no-textconv', revpath(c, reg_rel)).stdout or '')
+        if m and m.group(1) == 'REGISTERED':
+            return c
+    return None
+
+
+def restart_allowed(root, rows, results_rel):
+    if len(rows) != 1:
+        return False
+    line, row = rows[0]
+    if row.get('mode') != 'started' or row.get('data_opened') is not False or line not in head_lines(root, results_rel):
+        return False
+    c = first_commit_containing(root, results_rel, line)
+    if not c:
+        return False
+    author = _git(root, 'show', '-s', '--format=%an', c).stdout.strip()
+    return author != RUNNER_NAME
+
+
+def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_rel='results.jsonl', real_repo=None,
+                   anchor=None, env_check=False):
+    """([reasons], registration commit, table). The run may start only when the list is empty."""
+    root = Path(root)
+    out = []
+    text = head_text(root, reg_rel) or ''
     m = STATUS.search(text)
     if not m or m.group(1) != 'REGISTERED':
-        out.append(f'(s) {reg.name} is not REGISTERED — refusing to compute any outcome.')
+        out.append(f'(s) {Path(reg_rel).name} is not REGISTERED in HEAD — refusing to compute any outcome.')
     if _git(root, 'ls-files', '--error-unmatch', '--', reg_rel).returncode:
-        out.append(f'(a) {reg.name} is not tracked by git')
-    if _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', 'HEAD', '--', reg_rel).returncode:
-        out.append(f'(b) {reg.name} differs from the committed version')
+        out.append(f'(a) {Path(reg_rel).name} is not tracked by git')
+    if not same_as_head(root, reg_rel):
+        out.append(f'(b) {Path(reg_rel).name}: the working-tree bytes differ from the committed version')
     commit = _git(root, 'log', '-1', '--format=%H', '--', reg_rel).stdout.strip()
     if not commit:
-        out.append(f'(c) {reg.name} has no commit')
-    dirty = _git(root, 'status', '--porcelain', '--', *code).stdout.strip() if code else ''
-    if dirty:
-        out.append(f'(d) guarded code not clean: {dirty.splitlines()}')
+        out.append(f'(c) {Path(reg_rel).name} has no commit')
+    reg0 = registered_commit(root, reg_rel)
+    if reg0 is None:
+        if m and m.group(1) == 'REGISTERED':
+            out.append('(r) no commit on the first-parent history of HEAD registers 015')
+    elif _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', reg0, 'HEAD', '--', reg_rel, *code).returncode:
+        out.append(f'(r) the registration or guarded code changed since the REGISTERED commit {reg0[:12]} — '
+                   'an amendment is a new registration')
+    commit = reg0 or commit
+    for f in code:
+        if not same_as_head(root, f):
+            out.append(f'(d) guarded code {f}: the working-tree bytes differ from HEAD (or it is not committed)')
+    out += flag_failures(root, [reg_rel, *code, results_rel])
     rows_tbl = HASH_ROW.findall(text)
     table = dict(rows_tbl)
     dup = sorted({f for f, _ in rows_tbl if sum(1 for g, _ in rows_tbl if g == f) > 1})
@@ -219,50 +385,85 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
             out.append(f'(e) {f} missing from the registration hash table')
         elif not (root / f).is_file() or sha256(root / f) != want:
             out.append(f'(e) {f} does not match its registered SHA-256')
-    if _git(root, 'ls-files', '--error-unmatch', '--', results_rel).returncode or \
-            _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', 'HEAD', '--', results_rel).returncode:
+    res = root / results_rel
+    if not same_as_head(root, results_rel):
         out.append(f'(k) {results_rel} is untracked or differs from HEAD — every row is committed when written')
-    if toplevel is not None:
+    elif res.stat().st_size and not res.read_bytes().endswith(b'\n'):
+        out.append(f'(k) {results_rel} does not end with a newline — a row appended now would merge into another')
+    if real_repo is not None:
+        real_repo = Path(real_repo).resolve()
         top = _git(root, 'rev-parse', '--show-toplevel').stdout.strip()
-        if not top or Path(top).resolve() != Path(toplevel).resolve():
-            out.append(f'(w) git top level is {top!r}, not {toplevel}')
+        if not top or Path(top).resolve() != real_repo:
+            out.append(f'(w) git top level is {top!r}, not the real repository {real_repo}')
+        gd = _git(root, 'rev-parse', '--git-dir').stdout.strip()
+        gc = _git(root, 'rev-parse', '--git-common-dir').stdout.strip()
+        if not gd or (root / gd).resolve() != (root / gc).resolve() or (root / gd).resolve() != real_repo / '.git':
+            out.append('(w) not the main worktree of the real repository (a linked worktree or another .git)')
+        if _git(root, 'symbolic-ref', '-q', 'HEAD').returncode:
+            out.append('(w) HEAD is detached — run on a named branch of the real repository')
     if anchor is not None and not is_ancestor(root, anchor):
         out.append(f'(w) the anchor commit {anchor} is not an ancestor of HEAD')
     if env_check:
         out += environment_failures(root)
-    if result_rows(root, results_rel):
-        out.append('(f) a 015 row exists (working tree, any branch, reflog, merge or stash) — 015 runs once')
-    return out, commit
+    rows, problems = result_rows(root, results_rel)
+    out += [f'(f) {p}' for p in problems]
+    if rows and not restart_allowed(root, rows, results_rel):
+        out.append('(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once')
+    return out, commit, table
+
+
+_GUARD_FAILURES = guard_failures                               # captured at import (review B m2)
 
 
 def guard():
-    """The ONLY way to open the real data: this file's own repository, default arguments, every check."""
+    """The ONLY way to open the real data: this file's own repository, which must be the pinned real one; constants
+    captured at import; every check."""
     global _GATE
     _GATE = None
-    failures, commit = guard_failures(HERE, str(REG.relative_to(HERE)), toplevel=REPO, anchor=ANCHOR, env_check=True)
+    if REPO.resolve() != REAL_REPO or HERE != _HERE0:
+        raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+    failures, commit, _table = _GUARD_FAILURES(_HERE0, REG_REL, GUARDED_CODE, GUARDED_DATA, 'results.jsonl',
+                                               real_repo=REAL_REPO, anchor=ANCHOR, env_check=True)
     if failures:
         raise Refused('\n'.join(failures))
-    _GATE = (str(HERE.resolve()), commit)
+    _GATE = (str(_HERE0.resolve()), commit)
     return commit
 
 
 _REAL_GUARD = guard
+_REG_HASHES = {}
 
 
-def _gate(path):
-    """Refuse any read under the real data tree unless the real guard passed in this process."""
+def registered_real_hashes():
+    """SHA-256s of the real registered data files, from the REAL repository's HEAD registration (cached)."""
+    if 'v' not in _REG_HASHES:
+        t = head_text(REAL_REPO / 'research' / 'alpha', REG_REL) if (REAL_REPO / 'research' / 'alpha').is_dir() else None
+        tbl = dict(HASH_ROW.findall(t or ''))
+        _REG_HASHES['v'] = {h for f, h in tbl.items() if f.startswith('data/')}
+    return _REG_HASHES['v']
+
+
+def _gate_ok():
+    return (_GATE is not None and _GATE[0] == str(_HERE0.resolve()) and guard is _REAL_GUARD
+            and _GUARD_FAILURES is guard_failures)
+
+
+def _gate(path, digest=None):
+    """Refuse any read under the real data tree, or of any byte copy of a registered real data file, unless the real
+    guard passed in this process."""
     p = Path(path).resolve()
-    if p == DATA_REAL or p.is_relative_to(DATA_REAL):
-        if _GATE is None or _GATE[0] != str(HERE.resolve()) or guard is not _REAL_GUARD:
-            raise Refused('the real 015 data opens only after the real guard() passed in this process')
+    real = (p == DATA_REAL or p.is_relative_to(DATA_REAL) or p.is_relative_to(REAL_REPO)
+            or (digest is not None and digest in registered_real_hashes()))
+    if real and not _gate_ok():
+        raise Refused('the real 015 data opens only after the real guard() passed in this process')
 
 
-# ------------------------------------------------------------------ loaders
-def _csv_lines(zip_path):
-    with zipfile.ZipFile(zip_path) as z:
+# ------------------------------------------------------------------ loaders (hash the bytes that are parsed)
+def _csv_lines_from(b, label):
+    with zipfile.ZipFile(io.BytesIO(b)) as z:
         names = [n for n in z.namelist() if n.lower().endswith('.csv')]
         if len(names) != 1:
-            raise Refused(f'{zip_path}: expected one csv, found {names}')
+            raise Refused(f'{label}: expected one csv, found {names}')
         return z.read(names[0]).decode('latin-1').splitlines()
 
 
@@ -273,10 +474,11 @@ def _date8(s):
 def read_dates_only(zip_path, want_sha):
     """Trading dates in [DATA_START, DATA_END) — only the first field of each line is read; no value is parsed.
     Ungated by design (the calendar is a pre-registration fact); verified against the pinned hash."""
-    if sha256(zip_path) != want_sha:
+    b = Path(zip_path).read_bytes()
+    if hashlib.sha256(b).hexdigest() != want_sha:
         raise Refused(f'{zip_path} does not match its pinned SHA-256')
     out = []
-    for line in _csv_lines(zip_path):
+    for line in _csv_lines_from(b, zip_path):
         head = line.split(',', 1)[0].strip()
         if len(head) == 8 and head.isdigit():
             d = _date8(head)
@@ -289,9 +491,13 @@ def load_french(zip_path, want_sha, cols=('Mkt-RF', 'RF')):
     """(dates, {col: [fraction]}) for rows dated in [DATA_START, DATA_END). Rows outside are skipped on their date
     BEFORE any value is parsed. Gated; refuses a hash mismatch, a missing value (-99.99) or a non-increasing date."""
     _gate(zip_path)
-    if sha256(zip_path) != want_sha:
+    b = Path(zip_path).read_bytes()
+    digest = hashlib.sha256(b).hexdigest()
+    _gate(zip_path, digest)
+    if digest != want_sha:
         raise Refused(f'{zip_path} does not match its pinned SHA-256')
-    lines = _csv_lines(zip_path)
+    _STATE['data_opened'] = True
+    lines = _csv_lines_from(b, zip_path)
     hdr = next((l for l in lines if l.replace(' ', '').startswith(',Mkt-RF')), None)
     if hdr is None:
         raise Refused(f'{zip_path}: no header line')
@@ -317,135 +523,110 @@ def load_french(zip_path, want_sha, cols=('Mkt-RF', 'RF')):
     return dates, vals
 
 
-def load_treasury(paths, want):
-    """{date: 10-year par yield (fraction)} for dates < DATA_END. Gated; every file hash-checked."""
-    import csv
-    out = {}
-    for p in paths:
-        _gate(p)
-        if sha256(p) != want[p]:
-            raise Refused(f'{p} does not match its pinned SHA-256')
-        with open(p, newline='') as f:
-            rows = list(csv.reader(f))
-        hdr = rows[0]
-        if '10 Yr' not in hdr or hdr[0] != 'Date':
-            raise Refused(f'{p}: unexpected header')
-        k = hdr.index('10 Yr')
-        for r in rows[1:]:
-            mth, day, yr = r[0].split('/')
-            d = dt.date(int(yr), int(mth), int(day))
-            if d < C.DATA_START or d >= C.DATA_END:
-                continue
-            if r[k].strip():
-                out[d] = float(r[k]) / 100.0
-    return out
-
-
 # ------------------------------------------------------------------ results: append, commit, verify
-def append_row(row, results=None):
+def append_row(row, results):
+    results = Path(results)
+    if results.exists() and results.stat().st_size and not results.read_bytes().endswith(b'\n'):
+        raise Refused(f'{results.name} does not end with a newline — refusing to append (review B m3)')
     line = json.dumps(row, default=str, sort_keys=True)
-    with open(results or RESULTS, 'a') as f:
+    with open(results, 'a') as f:
         f.write(line + '\n')
     return line
 
 
-def commit_results(msg):
-    """Commit results.jsonl ALONE, immediately. Never pushes: the owner pushes."""
-    r = _git(RESULTS.parent, 'commit', '--only', '-m', msg, '--', RESULTS.name)
-    if r.returncode:
-        raise Refused(f'could not commit {RESULTS.name}: {r.stderr.strip()[:300]} — stop; commit the row BY HAND, as '
-                      'it is; (k) refuses every later run until it is committed')
+def commit_results(msg, results, retries=3, wait=1.0):
+    """Commit results.jsonl ALONE, as the runner (author r015_run), no hooks; retried on a transient lock. Never pushes."""
+    results = Path(results)
+    for attempt in range(retries + 1):
+        r = _git(results.parent, '-c', f'user.name={RUNNER_NAME}', '-c', f'user.email={RUNNER_EMAIL}', 'commit',
+                 '--no-verify', '--only', '-m', msg, '--', results.name)
+        if not r.returncode:
+            return
+        if attempt < retries:
+            time.sleep(wait)
+    raise Refused(f'could not commit {results.name}: {r.stderr.strip()[:300]} — stop; commit the row BY HAND, as it '
+                  'is; (k) refuses every later run until it is committed')
 
 
 HOOKS = {'commit': commit_results}
 
 
-def real_tree_failures():
-    """The real results file and the real data tree are used only together, only with the default commit hook, and
-    only with the real guard."""
+def real_tree_failures(root=None):
+    """The real results file, the real data tree and the real directory are used only together, only with the default
+    commit hook, and only with the real guard."""
+    root_real = Path(root or _HERE0).resolve() == _HERE0.resolve()
     real_r, real_d = Path(RESULTS).resolve() == REAL_RESULTS, Path(DATA).resolve() == DATA_REAL
     out = []
-    if real_r != real_d:
-        out.append('(M4) the real results.jsonl and the real data tree are used only together')
-    if (real_r or real_d) and HOOKS.get('commit') is not commit_results:
-        out.append('(M4) a non-default commit hook is never used on the real results file or data tree')
-    if (real_r or real_d) and guard is not _REAL_GUARD:
-        out.append('(M4) the real tree is opened only by the real guard')
+    if not (real_r == real_d == root_real):
+        out.append('(M1) the real directory, the real results.jsonl and the real data tree are used only together')
+    if (real_r or real_d or root_real) and HOOKS.get('commit') is not commit_results:
+        out.append('(M1) a non-default commit hook is never used on the real tree')
+    if (real_r or real_d or root_real) and (guard is not _REAL_GUARD or _GUARD_FAILURES is not guard_failures):
+        out.append('(M1) the real tree is opened only by the real guard')
     return out
 
 
-def _refuse_real_tree():
-    f = real_tree_failures()
-    if f:
-        raise Refused('; '.join(f))
-
-
 def record(row, msg):
-    """Append, commit through the hook, then REFUSE unless the line is in HEAD:results.jsonl (checked with git)."""
-    line = append_row(row)
-    HOOKS['commit'](msg)
+    """Append, commit through the hook, then REFUSE unless the line is in HEAD:./results.jsonl (checked with git)."""
+    res = Path(RESULTS).resolve()
+    if (res.is_relative_to(REAL_REPO) or res == REAL_RESULTS) and (
+            not _gate_ok() or HOOKS.get('commit') is not commit_results or res != REAL_RESULTS):
+        raise Refused('(M1) rows are written into the real repository only by the real run, after the real guard, '
+                      'with the default commit hook')
+    line = append_row(row, RESULTS)
+    HOOKS['commit'](msg, RESULTS)
     if line not in head_lines(RESULTS.parent, RESULTS.name):
-        raise Refused(f'the {row.get("mode")} row is not in HEAD:{RESULTS.name} after the commit — stop')
+        raise Refused(f'the {row.get("mode")} row is not in HEAD:./{RESULTS.name} after the commit — stop')
     return line
 
 
-def hashes(files, root=None):
-    root = Path(root or HERE)
+def hashes(files, root):
+    root = Path(root)
     return {f: sha256(root / f) for f in files if (root / f).is_file()}
 
 
-def reg_table(root=None):
-    root = Path(root or HERE)
-    return dict(HASH_ROW.findall((root / REG.relative_to(HERE)).read_text()))
-
-
 # ------------------------------------------------------------------ the computation (after the guard)
-def pinned_calendar(root=None):
-    return json.loads((Path(root or HERE) / CALENDAR).read_text())
-
-
-def primary(commit, root=None, table=None):
+def primary(commit, root, table):
     """The decision. Pure function of the US file and the pinned calendar (deterministic)."""
-    root = Path(root or HERE)
-    table = table or reg_table(root)
+    root = Path(root)
     dates, v = load_french(root / US_ZIP, table[US_ZIP])
-    pin = pinned_calendar(root)
+    pin = json.loads((root / CALENDAR).read_text())
     if [d.isoformat() for d in dates] != pin['dates']:
         raise Refused('the loaded trading dates differ from the pinned calendar.json')
     cal = C.build_calendar(dates)
     fails = C.calendar_failures(cal)
     if fails:
         raise Refused('; '.join(fails))
-    if C.calendar_summary(cal, dates)['rows'] != pin['summary']['rows']:
+    summ = C.calendar_summary(cal, dates)
+    if summ['rows'] != pin['summary']['rows']:
         raise Refused('the rebuilt calendar differs from the pinned calendar.json')
-    print('counts before the decision:', json.dumps({k: v_ for k, v_ in C.calendar_summary(cal, dates).items() if k != 'rows'}))
+    print('counts before the decision:', json.dumps({k: v_ for k, v_ in summ.items() if k != 'rows'}))
     x = v['Mkt-RF']
-    y, mu = C.y_series(x, cal)
+    z, y, sig, mu = C.z_series(x, cal)
     vv = C.v_series(x, cal)
-    z = C.rebound_sums(x, cal, mu)
-    ex = C.existence(y)
-    econ = C.economic(vv)
-    months = [{'month': c['month'], 'T': c['T'], 's': c['s'], 'friday': c['weekday'] == 4, 'y': a, 'v': b, 'z': cz}
-              for c, a, b, cz in zip(cal, y, vv, z)]
-    row = {'registration': REG.name, 'mode': 'result', 'registration_commit': commit,
-           'run_at': dt.datetime.now(dt.UTC).isoformat(), 'env': env_fingerprint(),
-           'code_hashes': hashes(GUARDED_CODE, root), 'data_hashes': {f: table.get(f) for f in GUARDED_DATA},
+    ex = C.existence(z)
+    econ = C.economic(y, vv, cal, mu)
+    months = [{'month': c['month'], 'T': c['T'], 's': c['s'], 'friday': c['weekday'] == 4, 'y': a, 'v': b, 'sigma': sg,
+               'z': zz} for c, a, b, sg, zz in zip(cal, y, vv, sig, z)]
+    row = {'registration': REG_NAME, 'mode': 'result', 'registration_commit': commit,
+           'run_at': dt.datetime.now(dt.UTC).isoformat(),
+           'code_hashes': hashes(GUARDED_CODE, root), 'data_hashes': {f: sha256(root / f) for f in GUARDED_DATA},
            'params': {'data_start': C.DATA_START.isoformat(), 'data_end_exclusive': C.DATA_END.isoformat(),
-                      'cal_crit': C.CAL_CRIT, 'q': C.Q, 'shrink': C.SHRINK, 'cost_month': C.COST_MONTH,
-                      'l_cap': C.L_CAP, 'bar': C.BAR, 'us_t2': C.US_T2.isoformat(), 'us_t1': C.US_T1.isoformat()},
+                      'cal_crit': C.CAL_CRIT, 'q': C.Q, 'vol_days': C.VOL_DAYS, 'vol_end': C.VOL_END,
+                      'vol_floor': C.VOL_FLOOR, 'shrink': C.SHRINK, 'cost_month': C.COST_MONTH, 'l_cap': C.L_CAP,
+                      'bar': C.BAR, 'us_t2': C.US_T2.isoformat(), 'us_t1': C.US_T1.isoformat()},
            'mu_by_era': {str(k): val for k, val in mu.items()}, 'existence': ex, 'economic': econ, 'months': months}
     row['decision'] = C.decide(ex, econ)
-    lab, rfails = C.recheck(row)
+    lab, rfails = C.recheck(row, table)
     if rfails or lab != row['decision']:
         row['recheck_failed'] = rfails
-    return row, (dates, x, v['RF'], cal, mu, y)
+    return row, (dates, x, cal, mu, y, z, vv)
 
 
-def reported(state, root=None, table=None):
-    """Reported blocks: decide nothing. Each block is computed independently; a failing block stores its error."""
-    root = Path(root or HERE)
-    table = table or reg_table(root)
-    dates, x, rf, cal, mu, y = state
+def reported(state):
+    """Reported blocks: decide nothing. Each block is computed independently; a failing block stores its error.
+    Revision 1: no Europe block (held back for the confirmation, §8) and no HMM block (dropped; review A M4)."""
+    dates, x, cal, mu, y, z, vv = state
     out = {}
 
     def blk(name, fn):
@@ -453,64 +634,81 @@ def reported(state, root=None, table=None):
             out[name] = fn()
         except Exception as e:  # noqa: BLE001 - a reported block never stops the run
             out[name] = {'error': repr(e)[:300]}
-    blk('long_only_rebound_abnormal', lambda: C.summary(C.rebound_sums(x, cal, mu)))
-    blk('long_short_raw_v', lambda: C.summary(C.v_series(x, cal)))
-    blk('by_era', lambda: C.by_era(y, cal))
-    blk('friday_T_vs_other', lambda: C.friday(y, cal))
+    blk('raw_y_equal_weight (the draft primary)', lambda: C.existence(y, C.crit(len(y))))
+    blk('long_only_rebound_era_mu_corrected', lambda: C.long_only_corrected(x, cal, mu))
+    blk('long_short_raw_v', lambda: C.summary(vv))
+    blk('by_era_z', lambda: C.by_era(z, cal))
+    blk('by_era_y', lambda: C.by_era(y, cal))
+    blk('recent_2021_01_on_z', lambda: C.recent(z, cal))
+    blk('recent_2021_01_on_y', lambda: C.recent(y, cal))
+    blk('decomposition_by_era', lambda: C.decomposition(x, cal, mu))
+    blk('friday_T_vs_other_z', lambda: C.friday(z, cal))
+    blk('without_quarter_end_months_z', lambda: C.without_quarter_ends(z, cal))
     blk('mechanism_contrast', lambda: C.mechanism_contrast(x, cal, mu))
     blk('placebo_T_minus_12', lambda: C.placebo(x, cal, mu))
-    blk('xyz_net', lambda: C.summary([b - C.xyz_cost_month(dates, c) for b, c in zip(C.v_series(x, cal), cal)]))
-    blk('mes_net', lambda: C.summary([b - C.COST_MONTH for b in C.v_series(x, cal)]))
-
-    def europe():
-        de, ve = load_french(root / EU_ZIP, table[EU_ZIP], cols=('Mkt-RF',))
-        ce = C.build_calendar(de, C.eu_lag)
-        xe = ve['Mkt-RF']
-        ye, mue = C.y_series(xe, ce)
-        return {'label': 'French Europe region (USD; weekday calendar, country holidays mixed); EU T+2 from 2014-10-06',
-                'months': len(ce), 'by_lag': C.calendar_summary(ce, de)['by_lag'], 'y': C.summary(ye),
-                'by_era': C.by_era(ye, ce), 'mechanism_contrast': C.mechanism_contrast(xe, ce, mue)}
-    blk('europe', europe)
-
-    def hmm():
-        ys = load_treasury([root / p for p in TREASURY], {root / p: table[p] for p in TREASURY})
-        return H.block(dates, x, rf, ys)
-    blk('hmm_replication', hmm)
+    blk('mes_net', lambda: C.summary([b - C.COST_MONTH for b in vv]))
+    blk('xyz_net', lambda: C.summary([b - C.xyz_cost_month(dates, c) for b, c in zip(vv, cal)]))
+    blk('traded_era_v', lambda: C.summary([b for b, c in zip(vv, cal) if c['s'] == C.TRADED_ERA]))
     return out
 
 
-def run(root=None):
-    """The read, once. `root` is this directory in production; tests pass a throwaway repository's directory (with a
-    stubbed guard bound to it), and real_tree_failures() refuses any mix with the real files."""
-    root = Path(root or HERE)
-    _refuse_real_tree()
-    commit = guard()
-    _refuse_real_tree()
-    record({'registration': REG.name, 'mode': 'started', 'registration_commit': commit, 'env': env_fingerprint(),
-            'code_hashes': hashes(GUARDED_CODE, root), 'run_at': dt.datetime.now(dt.UTC).isoformat()},
-           '015 started (r015_run.py)')
+def _run(root, guard_fn):
+    root = Path(root)
+    if RESULTS.resolve() != (root / 'results.jsonl').resolve() or Path(DATA).resolve() != (root / 'data' / 'r015').resolve():
+        raise Refused('(M1) results.jsonl and data/r015 must be those of the tree being run')
+    commit = guard_fn()
+    table = dict(HASH_ROW.findall(head_text(root, REG_REL) or ''))
+    _STATE['data_opened'] = False
+    stage = 'started'
+    record({'registration': REG_NAME, 'mode': 'started', 'registration_commit': commit, 'data_opened': False,
+            'env': env_fingerprint(), 'code_hashes': hashes(GUARDED_CODE, root),
+            'run_at': dt.datetime.now(dt.UTC).isoformat()}, '015 started (r015_run.py)')
     try:
-        row, state = primary(commit, root)
-    except Exception as e:
-        record({'registration': REG.name, 'mode': 'failed', 'registration_commit': commit, 'error': repr(e)[:500],
-                'run_at': dt.datetime.now(dt.UTC).isoformat()}, '015 failed (r015_run.py)')
+        stage = 'primary'
+        row, state = primary(commit, root, table)
+        stage = 'result_commit'
+        line = record(row, '015 result (r015_run.py)')
+    except BaseException as e:
+        try:
+            record({'registration': REG_NAME, 'mode': 'failed', 'registration_commit': commit, 'stage': stage,
+                    'data_opened': _STATE['data_opened'], 'error': repr(e)[:500],
+                    'run_at': dt.datetime.now(dt.UTC).isoformat()}, '015 failed (r015_run.py)')
+        except BaseException:  # noqa: BLE001 - the original error is what propagates
+            pass
         raise
-    line = record(row, '015 result (r015_run.py)')
     if row.get('recheck_failed'):
         raise Refused('internal: the decision does not recompute from its records; stored with recheck_failed, not printed')
     print(json.dumps({k: row['existence'][k] for k in ('G', 'mean', 'sd', 't', 'crit', 'mean_without_largest', 'criteria')},
                      indent=1, default=str))
     print('economic (applies only after an existence pass):', json.dumps(row['economic'], default=str))
     print('decision:', row['decision'])
-    rep = {'registration': REG.name, 'mode': 'reported', 'registration_commit': commit, 'result_row_sha256': line_sha(line),
-           'run_at': dt.datetime.now(dt.UTC).isoformat(), 'blocks': reported(state, root)}
+    rep = {'registration': REG_NAME, 'mode': 'reported', 'registration_commit': commit, 'result_row_sha256': line_sha(line),
+           'run_at': dt.datetime.now(dt.UTC).isoformat(), 'blocks': reported(state)}
     record(rep, '015 reported blocks (r015_run.py)')
     print(json.dumps(rep['blocks'], indent=1, default=str))
     return row, rep
 
 
+def run():
+    """The read, once, on the real tree only (no argument; review B M1)."""
+    f = real_tree_failures(_HERE0)
+    if f:
+        raise Refused('; '.join(f))
+    return _run(_HERE0, guard)
+
+
+def _run_in(root, guard_fn):
+    """TESTS ONLY: run on a throwaway tree with a guard bound to it. Refused unless the tree, RESULTS and DATA are all
+    outside the real repository and the real data tree."""
+    root = Path(root).resolve()
+    if root.is_relative_to(REAL_REPO) or root == _HERE0.resolve() or real_tree_failures(root) or \
+            Path(RESULTS).resolve().is_relative_to(REAL_REPO) or Path(DATA).resolve().is_relative_to(REAL_REPO):
+        raise Refused('(M1) _run_in() never touches the real repository, its results or its data')
+    return _run(root, guard_fn)
+
+
 def build_calendar_file(root=None, out=None):
-    """Pre-registration, DATES ONLY: the trading dates in [2014-01-01, 2026-06-10) and the month-end calendar."""
+    """Pre-registration, DATES ONLY: the trading dates in [DATA_START, DATA_END) and the month-end calendar."""
     root = Path(root or HERE)
     want = {l.split()[1]: l.split()[0] for l in (root / FRENCH_DIR / 'SHA256SUMS').read_text().splitlines() if l.strip()}
     dates = read_dates_only(root / US_ZIP, want[Path(US_ZIP).name])
@@ -532,8 +730,12 @@ def build_calendar_file(root=None, out=None):
 
 def main():
     if '--check' in sys.argv:
-        f, c = guard_failures(HERE, str(REG.relative_to(HERE)), toplevel=REPO, anchor=ANCHOR, env_check=True)
+        if REPO.resolve() != REAL_REPO:
+            print(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+        f, c, _ = guard_failures(HERE, REG_REL, real_repo=REAL_REPO, anchor=ANCHOR, env_check=True)
         print('\n'.join(f) if f else f'guard open (registration commit {c})')
+    elif '--fingerprint' in sys.argv:
+        print(json.dumps(env_fingerprint(), indent=1))
     elif '--calendar' in sys.argv:
         build_calendar_file()
     elif '--run' in sys.argv:

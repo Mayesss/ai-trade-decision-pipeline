@@ -1,4 +1,5 @@
-"""Registration 015 — synthetic size, calibration and power (no real return is read).
+"""Registration 015 — synthetic size, calibration and power (no real return is read). Revision 1: the primary is the
+vol-scaled z (review A M2); CAL_CRIT = the largest calibration-world q95 plus 2 Monte Carlo SE, rounded up.
 
     python3 -I r015_power.py                 # every world, SIMS draws each; writes data/r015/logs/power.json
     python3 -I r015_power.py --quick         # 200 draws per world (smoke test)
@@ -67,6 +68,11 @@ POWER_WORLDS = [
     *({'name': f'unshifted (T+3 windows in every era) effect x{k} iid', 'effect': k, 'effect_mode': 'unshifted'} for k in (1.0, 0.5)),
     *({'name': f'decayed: full in the T+3 era only, x{k} iid', 'effect': k, 'effect_mode': 'decayed'} for k in (1.0,)),
     {'name': 'shifted effect x0.75 iid normal', 'effect': 0.75},
+    *({'name': f'shifted effect x{k} proportional to trailing vol, garch t4', **GARCH_T, 'effect': k, 'effect_vol': True}
+      for k in (1.0, 0.5)),
+    {'name': 'died at publication: full to 2019-12, zero after, iid', 'effect': 1.0, 'effect_mode': 'died2019'},
+    {'name': 'linear decay: full 2014-01 -> zero 2026-05, iid', 'effect': 1.0, 'effect_mode': 'linear'},
+    {'name': 'turn of month only: T..T+3 +23 bp abnormal, iid', 'effect': 1.0, 'effect_mode': 'tom'},
     {'name': 'shifted effect x1.5 iid normal', 'effect': 1.5},
 ]
 
@@ -152,11 +158,26 @@ def draw(world, dates, cal, rng, day_era, day_year):
     k = world.get('effect')
     if k:
         mode = world.get('effect_mode', 'shifted')
-        for c in cal:
+        scale = [1.0] * len(cal)
+        if world.get('effect_vol'):
+            sig = C.sigma_series(x, cal)
+            mean_sig = sum(sig) / len(sig)
+            scale = [a / mean_sig for a in sig]
+        G = len(cal)
+        for j, c in enumerate(cal):
+            kk = k * scale[j]
             if mode == 'decayed' and c['s'] != 3:
                 continue
+            if mode == 'died2019' and c['month'] > '2019-12':
+                continue
+            if mode == 'linear':
+                kk *= 1 - j / (G - 1)
+            if mode == 'tom':
+                for i in c['tom']:
+                    x[i] += kk * 0.0023 / len(c['tom'])
+                continue
             pk, rk = ('P3', 'R3') if mode == 'unshifted' else ('P', 'R')
-            ap, ar = k * C.EFFECT_P / len(c[pk]), k * C.EFFECT_R / len(c[rk])
+            ap, ar = kk * C.EFFECT_P / len(c[pk]), kk * C.EFFECT_R / len(c[rk])
             for i in c[pk]:
                 x[i] += ap
             for i in c[rk]:
@@ -165,16 +186,19 @@ def draw(world, dates, cal, rng, day_era, day_year):
 
 
 def one(x, cal, c_reg):
-    y, mu = C.y_series(x, cal)
-    ex = C.existence(y, c_reg)
-    econ = C.economic(C.v_series(x, cal))
+    z, y, sig, mu = C.z_series(x, cal)
+    ex = C.existence(z, c_reg)
+    econ = C.economic(y, C.v_series(x, cal), cal, mu)
+    ty = C.mean_t(y)[2]
     lo = C.mean_t(C.rebound_sums(x, cal, mu))
     mc = C.mechanism_contrast(x, cal, mu)['paired_all_t2_t1']
     pl = C.placebo(x, cal, mu)
+    rz = C.mean_t([a for a, c in zip(z, cal) if c['month'] >= C.RECENT_FROM])[2]
     return {'t': ex['t'], 'mean': ex['mean'], 'pos': ex['criteria']['mean_positive'],
             'wo': ex['criteria']['mean_positive_without_largest_month'], 'exists': ex['exists'],
             'bar': econ['meets_bar'], 'size': econ.get('size_half_kelly_capped'), 'long_t': lo[2], 'contrast_t': mc['t'],
-            'placebo_t': pl['t']}
+            'placebo_t': pl['t'], 'raw_y_t': ty, 'raw_y_pos': statistics.fmean(y) > 0,
+            'raw_y_wo': statistics.fmean(sorted(y)[:-1]) > 0, 'recent_t': rz}
 
 
 def simulate(world, dates, cal, sims, seed, c_reg):
@@ -213,16 +237,58 @@ def rates(recs, c):
             'contrast_t_ge_t104': ge('contrast_t', t104), 'placebo_t_ge_t148': ge('placebo_t', t148),
             'mean_t': statistics.fmean(r['t'] for r in recs), 'sd_t': statistics.stdev(r['t'] for r in recs),
             'mean_contrast_t': statistics.fmean(r['contrast_t'] for r in recs),
-            'q95_gate_score': quantile([gate_score(r) for r in recs], 0.95)}
+            'q95_gate_score': quantile([gate_score(r) for r in recs], 0.95),
+            'q95_mc_se': q95_se([gate_score(r) for r in recs]),
+            'draft_raw_y_rule_at_1.91': sum(1 for r in recs if r['raw_y_pos'] and r['raw_y_wo'] and r['raw_y_t'] is not None
+                                            and r['raw_y_t'] >= 1.91) / n,
+            'recent_t_ge_1': ge('recent_t', 1.0)}
+
+
+def q95_se(scores, batches=10):
+    """Monte Carlo SE of the 95th percentile: SD of the batch q95s / sqrt(batches)."""
+    k = len(scores) // batches
+    if k < 20:
+        return None
+    qs = [quantile(scores[b * k:(b + 1) * k], 0.95) for b in range(batches)]
+    return statistics.stdev(qs) / math.sqrt(batches)
 
 
 def calibrate(null_results, stress=()):
-    """The registered rule: the smallest c >= t_148(0.95) at which the full existence rule passes <= 5 % in every
-    calibration world (stress worlds excluded), i.e. the largest 95th percentile of the gate score, rounded UP to 2
-    decimals."""
-    base = C.t_ppf(C.Q, C.G_EXPECTED - 1)
-    worst = max(quantile([gate_score(r) for r in recs], 0.95) for k, recs in null_results.items() if k not in stress)
-    return math.ceil(max(base, worst) * 100) / 100, worst
+    """The registered rule (Revision 1): CAL_CRIT = the largest 95th percentile of the gate score over the calibration
+    worlds (stress worlds excluded) PLUS 2 Monte Carlo SE of that percentile (the margin), rounded UP to 0.01, never
+    below t_148(0.95). Returns (crit, largest q95, its MC SE, the binding world)."""
+    best = None
+    for k, recs in null_results.items():
+        if k in stress:
+            continue
+        sc = [gate_score(r) for r in recs]
+        q = quantile(sc, 0.95)
+        if best is None or q > best[0]:
+            best = (q, q95_se(sc) or 0.0, k)
+    q, se, k = best
+    return math.ceil(max(C.T148, q + 2 * se) * 100 - 1e-9) / 100, q, se, k
+
+
+def placement_scan(shape_name, dates, cal, n_place=150, draws=200, c=None, seed=777):
+    """Reported (review A M3): the false-pass rate at c conditional on where one documented shape is placed, over
+    n_place evenly spaced starts on the real calendar, iid normal days otherwise."""
+    c = C.CAL_CRIT if c is None else c
+    shape = SHOCKS[shape_name]
+    n = len(dates)
+    starts = [round(i * (n - len(shape) - 1) / (n_place - 1)) for i in range(n_place)]
+    rng = random.Random(seed)
+    rates_ = []
+    for st in starts:
+        hit = 0
+        for _ in range(draws):
+            x = [SD * rng.gauss(0.0, 1.0) for _ in range(n)]
+            x[st:st + len(shape)] = shape
+            r = one(x, cal, c)
+            hit += gate_score(r) >= c
+        rates_.append(hit / draws)
+    return {'shape': shape_name, 'placements': n_place, 'draws_each': draws, 'mean_rate': statistics.fmean(rates_),
+            'max_rate': max(rates_), 'share_above_0.05': sum(1 for r in rates_ if r > 0.05) / n_place,
+            'note': 'each rate has MC SE about 0.015 at 200 draws'}
 
 
 def run(sims=SIMS, cal_path=None, out_path=None, worlds_null=None, worlds_power=None):
@@ -236,11 +302,12 @@ def run(sims=SIMS, cal_path=None, out_path=None, worlds_null=None, worlds_power=
         print(f"null {w['name']}: q95 gate score {quantile([gate_score(r) for r in null[w['name']]], 0.95):.3f} "
               f"({time.time() - t0:.0f}s)", flush=True)
     stress = {w['name'] for w in worlds_null if w.get('stress')}
-    c_star, worst = calibrate(null, stress)
-    c_stress, _ = calibrate(null)
-    print(f'calibrated critical value {c_star} (largest q95 {worst:.4f}; t_148(0.95) {C.t_ppf(C.Q, 148):.4f}); '
-          f'registered CAL_CRIT {C.CAL_CRIT}', flush=True)
-    out = {'sims': sims, 'months': len(cal), 'calibrated_crit': c_star, 'largest_q95': worst,
+    c_star, worst, se, wname = calibrate(null, stress)
+    c_stress = calibrate(null)[0]
+    print(f'calibrated critical value {c_star} (largest q95 {worst:.4f} +- {se:.4f} MC SE in {wname}; '
+          f't_148(0.95) {C.T148:.4f}); registered CAL_CRIT {C.CAL_CRIT}', flush=True)
+    out = {'sims': sims, 'months': len(cal), 'calibrated_crit': c_star, 'largest_q95': worst, 'largest_q95_mc_se': se,
+           'binding_world': wname,
            't148_95': C.t_ppf(C.Q, 148), 'registered_CAL_CRIT': C.CAL_CRIT,
            'calibrated_equals_registered': c_star == C.CAL_CRIT, 'rates_at': c_star, 'stress_worlds': sorted(stress),
            'crit_if_stress_calibrated': c_stress, 'null': {}, 'power': {}, 'power_at_stress_crit': {}}
@@ -252,6 +319,9 @@ def run(sims=SIMS, cal_path=None, out_path=None, worlds_null=None, worlds_power=
         out['power_at_stress_crit'][w['name']] = rates(recs, c_stress)['pass_at_crit']
         print(f"power {w['name']}: {json.dumps({k: round(v, 3) for k, v in out['power'][w['name']].items() if v is not None})}",
               flush=True)
+    out['placement_scan'] = [placement_scan(nm, dates, cal, c=c_star) for nm in (('2020', '2008', '2025') if sims >= 1000 else ())]
+    for p_ in out['placement_scan']:
+        print('placement', json.dumps(p_), flush=True)
     for name, r in out['null'].items():
         print(f"null {name}: {json.dumps({k: round(v, 3) for k, v in r.items() if v is not None})}", flush=True)
     if out_path:
