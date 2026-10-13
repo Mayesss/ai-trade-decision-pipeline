@@ -769,6 +769,12 @@ orchestrator re-read `tail_results.json`.)
   than 0.10. It is the programme's one priced, measured-tail premium, so it
   goes to two independent reviews, as decided in advance.
 
+**Session hand-off (2026-10-13).** Open jobs: **008** waits for fetch
+attempts 3 (≥ 2026-10-14 06:40 +0200) and 4 (≥ 24 h later), then the A1
+check, the approval line and the one read. Closed this round: 013 (fail),
+014 (parked), N1 (parked), N2(a), N4. The next session starts from
+`docs/edge-discovery-next-prompt-2026-10-13.md`.
+
 ## 4. Distance to goal
 
 **After round 3's results so far (2026-10-13):** no candidate has a
