@@ -1,0 +1,10 @@
+GJR t3 (registered) 0.0 0.399 beta 0.175 vol 0.127
+GJR t3 (registered) 0.04 0.657 beta 0.176 vol 0.124
+GJR t3 (registered) 0.065 1.057 beta 0.174 vol 0.124
+GJR t3 (registered) 0.09 1.54 beta 0.173 vol 0.124
+GJR t3 (registered) 0.12 2.173 beta 0.172 vol 0.125
+symmetric GARCH t4 0.0 0.148 beta 0.129 vol 0.111
+symmetric GARCH t4 0.04 0.362 beta 0.13 vol 0.114
+symmetric GARCH t4 0.065 0.658 beta 0.13 vol 0.114
+symmetric GARCH t4 0.09 1.037 beta 0.13 vol 0.115
+symmetric GARCH t4 0.12 1.542 beta 0.131 vol 0.116

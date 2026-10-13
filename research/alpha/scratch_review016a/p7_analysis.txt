@@ -1,0 +1,61 @@
+
+== end 2027-12-31  G 33  C2 (min q05, as-published GJR, drift 0) -1.22 (registered -1.26); max q95 over size worlds 1.89 (registered 1.75); C2 if as-published ~ SR 0.75 h60 (symmetric-GARCH Table-4 kappa) -0.45
+  SR1 h20                                alive: reg 0.649 | at end-cal 0.626 | pooled-wbar t_c 0.684 | t-only 0.769   decayed: C2 -1.26 0.000 | end-cal C2 0.000 | symmetric-cal C2 0.001
+  SR1 h60                                alive: reg 0.400 | at end-cal 0.383 | pooled-wbar t_c 0.507 | t-only 0.592   decayed: C2 -1.26 0.002 | end-cal C2 0.003 | symmetric-cal C2 0.014
+  SR1 h120                               alive: reg 0.303 | at end-cal 0.292 | pooled-wbar t_c 0.444 | t-only 0.526   decayed: C2 -1.26 0.004 | end-cal C2 0.004 | symmetric-cal C2 0.021
+  SR0.75 h60                             alive: reg 0.188 | at end-cal 0.171 | pooled-wbar t_c 0.266 | t-only 0.332   decayed: C2 -1.26 0.009 | end-cal C2 0.009 | symmetric-cal C2 0.050
+  pub h20                                alive: reg 0.237 | at end-cal 0.223 | pooled-wbar t_c 0.289 | t-only 0.353   decayed: C2 -1.26 0.007 | end-cal C2 0.007 | symmetric-cal C2 0.041
+  pub h60                                alive: reg 0.106 | at end-cal 0.097 | pooled-wbar t_c 0.159 | t-only 0.201   decayed: C2 -1.26 0.027 | end-cal C2 0.029 | symmetric-cal C2 0.099
+  pub h120                               alive: reg 0.074 | at end-cal 0.068 | pooled-wbar t_c 0.118 | t-only 0.140   decayed: C2 -1.26 0.047 | end-cal C2 0.050 | symmetric-cal C2 0.166
+  SR0 h60 (dead)                         alive: reg 0.012 | at end-cal 0.008 | pooled-wbar t_c 0.015 | t-only 0.017   decayed: C2 -1.26 0.159 | end-cal C2 0.166 | symmetric-cal C2 0.345
+  kappa0 (dead, no trend)                alive: reg 0.000 | at end-cal 0.000 | pooled-wbar t_c 0.001 | t-only 0.001   decayed: C2 -1.26 0.340 | end-cal C2 0.348 | symmetric-cal C2 0.583
+  VT vol timing sym (drafter binding)    alive: reg 0.016 | at end-cal 0.011 | pooled-wbar t_c 0.017 | t-only 0.024   decayed: C2 -1.26 0.093 | end-cal C2 0.102 | symmetric-cal C2 0.258
+  N6 vol timing asym GJR t3              alive: reg 0.015 | at end-cal 0.013 | pooled-wbar t_c 0.015 | t-only 0.018   decayed: C2 -1.26 0.093 | end-cal C2 0.103 | symmetric-cal C2 0.329
+
+== end 2028-12-31  G 45  C2 (min q05, as-published GJR, drift 0) -0.72 (registered -1.26); max q95 over size worlds 1.84 (registered 1.75); C2 if as-published ~ SR 0.75 h60 (symmetric-GARCH Table-4 kappa) -0.01
+  SR1 h20                                alive: reg 0.877 | at end-cal 0.873 | pooled-wbar t_c 0.890 | t-only 0.910   decayed: C2 -1.26 0.000 | end-cal C2 0.000 | symmetric-cal C2 0.002
+  SR1 h60                                alive: reg 0.678 | at end-cal 0.672 | pooled-wbar t_c 0.729 | t-only 0.779   decayed: C2 -1.26 0.000 | end-cal C2 0.003 | symmetric-cal C2 0.012
+  SR1 h120                               alive: reg 0.607 | at end-cal 0.598 | pooled-wbar t_c 0.697 | t-only 0.743   decayed: C2 -1.26 0.001 | end-cal C2 0.002 | symmetric-cal C2 0.013
+  SR0.75 h60                             alive: reg 0.439 | at end-cal 0.431 | pooled-wbar t_c 0.491 | t-only 0.540   decayed: C2 -1.26 0.004 | end-cal C2 0.011 | symmetric-cal C2 0.050
+  pub h20                                alive: reg 0.405 | at end-cal 0.392 | pooled-wbar t_c 0.430 | t-only 0.490   decayed: C2 -1.26 0.001 | end-cal C2 0.014 | symmetric-cal C2 0.049
+  pub h60                                alive: reg 0.228 | at end-cal 0.216 | pooled-wbar t_c 0.259 | t-only 0.298   decayed: C2 -1.26 0.010 | end-cal C2 0.039 | symmetric-cal C2 0.105
+  pub h120                               alive: reg 0.191 | at end-cal 0.182 | pooled-wbar t_c 0.221 | t-only 0.253   decayed: C2 -1.26 0.016 | end-cal C2 0.050 | symmetric-cal C2 0.154
+  SR0 h60 (dead)                         alive: reg 0.027 | at end-cal 0.025 | pooled-wbar t_c 0.031 | t-only 0.035   decayed: C2 -1.26 0.119 | end-cal C2 0.239 | symmetric-cal C2 0.476
+  kappa0 (dead, no trend)                alive: reg 0.002 | at end-cal 0.000 | pooled-wbar t_c 0.000 | t-only 0.002   decayed: C2 -1.26 0.307 | end-cal C2 0.495 | symmetric-cal C2 0.708
+  VT vol timing sym (drafter binding)    alive: reg 0.034 | at end-cal 0.030 | pooled-wbar t_c 0.037 | t-only 0.050   decayed: C2 -1.26 0.059 | end-cal C2 0.126 | symmetric-cal C2 0.350
+  N6 vol timing asym GJR t3              alive: reg 0.035 | at end-cal 0.028 | pooled-wbar t_c 0.025 | t-only 0.032   decayed: C2 -1.26 0.084 | end-cal C2 0.199 | symmetric-cal C2 0.426
+
+== end 2029-06-30  G 51  C2 (min q05, as-published GJR, drift 0) -0.54 (registered -1.26); max q95 over size worlds 2.03 (registered 1.75); C2 if as-published ~ SR 0.75 h60 (symmetric-GARCH Table-4 kappa) +0.25
+  SR1 h20                                alive: reg 0.911 | at end-cal 0.891 | pooled-wbar t_c 0.900 | t-only 0.909   decayed: C2 -1.26 0.000 | end-cal C2 0.000 | symmetric-cal C2 0.002
+  SR1 h60                                alive: reg 0.775 | at end-cal 0.737 | pooled-wbar t_c 0.763 | t-only 0.777   decayed: C2 -1.26 0.000 | end-cal C2 0.004 | symmetric-cal C2 0.018
+  SR1 h120                               alive: reg 0.725 | at end-cal 0.684 | pooled-wbar t_c 0.732 | t-only 0.752   decayed: C2 -1.26 0.000 | end-cal C2 0.003 | symmetric-cal C2 0.017
+  SR0.75 h60                             alive: reg 0.525 | at end-cal 0.461 | pooled-wbar t_c 0.498 | t-only 0.531   decayed: C2 -1.26 0.004 | end-cal C2 0.009 | symmetric-cal C2 0.050
+  pub h20                                alive: reg 0.493 | at end-cal 0.422 | pooled-wbar t_c 0.444 | t-only 0.468   decayed: C2 -1.26 0.002 | end-cal C2 0.018 | symmetric-cal C2 0.061
+  pub h60                                alive: reg 0.302 | at end-cal 0.244 | pooled-wbar t_c 0.275 | t-only 0.293   decayed: C2 -1.26 0.007 | end-cal C2 0.042 | symmetric-cal C2 0.121
+  pub h120                               alive: reg 0.254 | at end-cal 0.205 | pooled-wbar t_c 0.236 | t-only 0.252   decayed: C2 -1.26 0.009 | end-cal C2 0.050 | symmetric-cal C2 0.181
+  SR0 h60 (dead)                         alive: reg 0.030 | at end-cal 0.017 | pooled-wbar t_c 0.018 | t-only 0.019   decayed: C2 -1.26 0.100 | end-cal C2 0.259 | symmetric-cal C2 0.543
+  kappa0 (dead, no trend)                alive: reg 0.004 | at end-cal 0.001 | pooled-wbar t_c 0.001 | t-only 0.001   decayed: C2 -1.26 0.296 | end-cal C2 0.543 | symmetric-cal C2 0.786
+  VT vol timing sym (drafter binding)    alive: reg 0.054 | at end-cal 0.027 | pooled-wbar t_c 0.029 | t-only 0.030   decayed: C2 -1.26 0.047 | end-cal C2 0.162 | symmetric-cal C2 0.413
+  N6 vol timing asym GJR t3              alive: reg 0.037 | at end-cal 0.022 | pooled-wbar t_c 0.022 | t-only 0.026   decayed: C2 -1.26 0.068 | end-cal C2 0.215 | symmetric-cal C2 0.513
+
+== size / hindsight worlds (p7_size_records)
+  N1 flat GJR t3 | 2027-12-31                          q95 0.84  P(t>=1.75) 0.005  alive 0.003  alive(pooled-wbar t_c) 0.004  decayed 0.384
+  N2 bull +80 GJR t3 | 2027-12-31                      q95 0.94  P(t>=1.75) 0.004  alive 0.001  alive(pooled-wbar t_c) 0.003  decayed 0.265
+  B7 bull +80 GJR t3 crash (c) | 2027-12-31            q95 1.04  P(t>=1.75) 0.006  alive 0.004  alive(pooled-wbar t_c) 0.005  decayed 0.262
+  B4 bull +120 GJR t3 | 2027-12-31                     q95 0.97  P(t>=1.75) 0.002  alive 0.001  alive(pooled-wbar t_c) 0.002  decayed 0.192
+  N6 vol timing asym GJR t3 | 2027-12-31               q95 1.62  P(t>=1.75) 0.036  alive 0.022  alive(pooled-wbar t_c) 0.027  decayed 0.101
+  VT vol timing sym (drafter binding) | 2027-12-31     q95 1.63  P(t>=1.75) 0.037  alive 0.017  alive(pooled-wbar t_c) 0.024  decayed 0.093
+  N11 cells aligned t3 GJR | 2027-12-31                q95 1.71  P(t>=1.75) 0.045  alive 0.025  alive(pooled-wbar t_c) 0.028  decayed 0.116
+  N8 2025-26 path (a) alt bleed GJR t3 | 2027-12-31    q95 1.89  P(t>=1.75) 0.067  alive 0.007  alive(pooled-wbar t_c) 0.011  decayed 0.079
+  S1 (a) trend SR~1.5, (c) dead | 2027-12-31           q95 2.88  P(t>=1.75) 0.383  alive 0.009  alive(pooled-wbar t_c) 0.023  decayed 0.012
+  S2 (a) trend SR~2.5, (c) dead | 2027-12-31           q95 3.78  P(t>=1.75) 0.817  alive 0.018  alive(pooled-wbar t_c) 0.031  decayed 0.000
+  N1 flat GJR t3 | 2029-06-30                          q95 0.91  P(t>=1.75) 0.001  alive 0.001  alive(pooled-wbar t_c) 0.001  decayed 0.341
+  N2 bull +80 GJR t3 | 2029-06-30                      q95 1.10  P(t>=1.75) 0.005  alive 0.004  alive(pooled-wbar t_c) 0.005  decayed 0.235
+  B7 bull +80 GJR t3 crash (c) | 2029-06-30            q95 1.10  P(t>=1.75) 0.007  alive 0.006  alive(pooled-wbar t_c) 0.005  decayed 0.237
+  B4 bull +120 GJR t3 | 2029-06-30                     q95 1.09  P(t>=1.75) 0.004  alive 0.003  alive(pooled-wbar t_c) 0.002  decayed 0.195
+  N6 vol timing asym GJR t3 | 2029-06-30               q95 1.82  P(t>=1.75) 0.060  alive 0.045  alive(pooled-wbar t_c) 0.045  decayed 0.059
+  VT vol timing sym (drafter binding) | 2029-06-30     q95 2.03  P(t>=1.75) 0.083  alive 0.061  alive(pooled-wbar t_c) 0.069  decayed 0.049
+  N11 cells aligned t3 GJR | 2029-06-30                q95 1.64  P(t>=1.75) 0.035  alive 0.020  alive(pooled-wbar t_c) 0.022  decayed 0.137
+  N8 2025-26 path (a) alt bleed GJR t3 | 2029-06-30    q95 1.71  P(t>=1.75) 0.046  alive 0.009  alive(pooled-wbar t_c) 0.011  decayed 0.097
+  S1 (a) trend SR~1.5, (c) dead | 2029-06-30           q95 2.67  P(t>=1.75) 0.290  alive 0.013  alive(pooled-wbar t_c) 0.017  decayed 0.011
+  S2 (a) trend SR~2.5, (c) dead | 2029-06-30           q95 3.42  P(t>=1.75) 0.737  alive 0.029  alive(pooled-wbar t_c) 0.039  decayed 0.001

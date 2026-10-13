@@ -574,6 +574,27 @@ justify reopening the search: a different kind of edge (real
 market-making infrastructure, lawful data nobody else has, an execution
 advantage), not another public anomaly.
 
+**2026-10-13 22:45 — 016 Revision 1 rechecks: A says register (after an end
+date change), B one major (`-X pycache_prefix` loads forged bytecode).
+Revision 2 ordered: end date 2028-12-31.** A re-ran its worlds through the
+registered rule: leverage-bull alive 0.001–0.004; worst trend-free alive
+0.025 (CAL 1.75 holds); hindsight passes 0.009 / 0.018; decayed size ≤ 0.047.
+It confirms the low power (alive at SR 1 0.65 / 0.40 / 0.30 for h 20 / 60 /
+120; decayed for a dead book 0.16), caused mainly by the 18-month
+span-(c)-alone condition; no other clean statistic fixes it. **Its one major:
+end the forward span at 2028-12-31** (G 45; CAL ≈ 1.84, C2 ≈ −0.72): alive at
+SR 1 → **0.87 / 0.67 / 0.60**, at SR 0.75 → 0.43; decayed for a dead book →
+0.24; worst trend-free alive 0.03. 2029-06-30 adds only +0.02–0.08 for six
+more months. *Decision (orchestrator, per the threshold stated to the
+owner: take it only if power rises materially):* **accepted** — the read
+moves to January 2029; nothing changes before then. B's recheck: B1, M1–M4,
+the `--no-ff` attack refused, 26/26 mutants killed, a legitimate stand-in
+fetches and reads once with 015's rows in the ledger; R1-M1 `-X
+pycache_prefix` loads forged bytecode → refuse any `-X` and always use a
+fresh runner-made pycache; the squash-merge minor closes by procedure (tag
+`r016-registered`); two in-process/symlink residuals stated. One real
+listing request during B's probes is ledgered as `000u`.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -630,6 +651,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | **015 REGISTERED → run** | `89da896`; rows `380792c`/`95dc314`/`f4659c6` | 2026-10-13 | **terminal: not_demonstrated** |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
-| 016 Revision 1 | drafter | 2026-10-13 | committed `1555bf8` (205/205); probe rechecks A and B running |
+| 016 Revision 1 | drafter | 2026-10-13 | committed `1555bf8` (205/205); rechecks: A register after end-date change, B one major |
+| 016 Revision 2 | drafter | 2026-10-13 | running (end 2028-12-31; recalibration) |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
 | 008 attempt-3 timer | — | 2026-10-13 | **stopped 2026-10-13 22:15: 008 made optional (owner)** |

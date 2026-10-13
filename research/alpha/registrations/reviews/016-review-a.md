@@ -296,3 +296,96 @@ All under `research/alpha/scratch_review016a/`:
 
 Seeds are fixed, so every table above can be re-run. Nothing else in the repository was modified, and no
 `results.jsonl` was written.
+
+---
+
+## Appendix: Revision 1 recheck (2026-10-13, against `1555bf8`)
+
+Probe-only recheck, not a new review. I read the Revision 1 diff of `ct16/rule.py` and `ct16/stats.py`, and §4–§7,
+§9, §14 and §R1 of the registration. I re-ran my worlds through the **registered** statistic and ladder
+(`S.h1`, `S.ladder`, `S.timing_series`; my own world generator `common.make_world`). Synthetic only; real mode was
+never touched.
+
+**New files** (all in `scratch_review016a/`):
+- `p7_rev1.py`: 10 size and hindsight worlds × 1,500 draws at 2027-12-31 and 2029-06-30; 11 power worlds × 1,000
+  draws at three end dates. Raw records in `p7_*_records.json`.
+- `p7_analyse.py`, with output in `p7_analysis.txt` and the logs `p7_power_log.txt` and `p7_size_log.txt`.
+- `p8_table4_sensitivity.py`, with output in `p8_log.txt`: the registered `sim.table4_draw` run under GJR versus
+  symmetric GARCH, 40 decades per κ.
+
+### Verdict: register
+
+Every blocker and major is fixed as specified. Before the freeze I recommend one change that cannot be made later:
+**set the end date to 2028-12-31** (R1-M1 below).
+
+### The original findings
+
+| finding | status | evidence (my worlds, the registered rule) |
+|---|---|---|
+| **B1** CAL_H1 | **fixed** | In the leverage bulls (+80% with and without a crash, +120%, GJR t3), t_A has q95 0.94–1.04 and P(t_A ≥ 1.75) 0.002–0.006; `alive` is 0.001–0.004. The factor α gave 0.05–0.12 there. The trend-free worlds that bind are the drafter's symmetric vol timing (q95 1.63), asymmetric vol timing (1.62) and the cells-aligned t3 GJR world (1.71); `alive` is ≤ 0.025 in all. CAL 1.75 reproduces at 1,500 draws. The 2025–26 path world has a pooled q95 of 1.89 (that path is a regime, i.e. a trend), but its `alive` is 0.007 because of the (c) condition |
+| **B2** hindsight | **fixed** | Trend in (a) and none in (c): `alive` 0.009 (S1) and 0.018 (S2). Revision 0 gave 0.20–0.24. The pooled t alone would pass 0.38 and 0.82 |
+| **M1** decay | **fixed as specified** | I reproduce the ladder. Size of `decayed` at as-published: 0.007 / 0.027 / 0.047 (h 20/60/120), against C2 −1.22 recomputed here vs −1.26 registered. A dead book ends `decayed` 0.16 of the time (0.34 with κ = 0). The power is low; see the power check |
+| **M2** allocation | **fixed** | §14: the allocation ends unless the read says `alive` |
+| **M3** bar | **fixed in form** | The bar is now the Bayes-Kelly return of the shrunk timing Sharpe against 4%. Since t_A ≥ 1.75 over 2.78 years implies SR_A ≳ 1.05, SR_s ≳ 0.70 and a return of ≥ 36%, it clears on essentially every `alive`. §4.3 says so honestly ("a sanity floor"). Accepted |
+| minors m1–m4, m6–m10 | addressed | — |
+| **m5** (spot overlap, declined) | **accept the decline** | It decides nothing, the tilt is stated in §3, and it would need a second archive pull path |
+
+### The drafter's low power, checked independently (registered rule, end 2027-12-31)
+
+- **`alive` at SR 1:** 0.65 / 0.40 / 0.30 (h 20/60/120). The drafter reports 0.65 / 0.39 / 0.23.
+- **`alive` at SR 0.75 (h 60):** 0.19.
+- **`decayed` for a dead book (h 60):** 0.16. The drafter reports 0.12–0.18.
+
+The report is right. There are two causes:
+1. **Span (c) alone is 18 months**, and the timing statistic's per-coin w̄ absorbs a trend that lasts most of it.
+   The t-only rate at SR 1 is 0.81 / 0.64 / 0.57.
+2. **The "as published" calibration is conservative by assumption.** Under the registered Table-4 decade (GJR
+   γ = 0.10, t3: the stress setting I introduced in B1), the α/vol of the decade at κ = 0 is 0.40, a third of 1.2.
+   Under symmetric GARCH t4 it is 0.15 (`p8_log.txt`), and the h 60 κ that reproduces Table 4 rises from ≈ 0.065–0.07
+   to ≈ 0.10. With that κ, "as published" sits near SR 0.75 rather than ≈ 0.45, and a C2 calibrated there (−0.45)
+   gives `decayed` 0.35 for a dead book instead of 0.16.
+
+   Keeping the conservative C2 is defensible for a kill switch. But §6's "a third of the paper's α is a leverage
+   artefact" is **an assumption, not a finding**. It holds only if crypto has an equity-style leverage effect.
+   Reword it as such (minor, R1-m1).
+
+### Would another statistic, or a later end date, raise the power?
+
+`p7_analysis.txt`. "Recal" means CAL re-derived as max(1.75, the largest q95 over my trend-free worlds at that end)
+and C2 as the smallest q05 over the three as-published worlds at drift 0. Both are indicative only (1,000–1,500
+draws, drift 0 only).
+
+| end (G) | CAL / C2 (recal) | `alive` at SR 1, h 20/60/120 | `alive` at SR 0.75 | `alive` at as-published, h 20/60/120 | `decayed`, dead h 60 / κ 0 | size: worst trend-free `alive` |
+|---|---|---|---|---|---|---|
+| **2027-12-31** (33), registered | 1.75 / −1.26 | 0.65 / 0.40 / 0.30 | 0.19 | 0.24 / 0.11 / 0.07 | 0.16 / 0.34 | 0.025 |
+| **2028-12-31** (45) | ≈ 1.84 / ≈ −0.72 | **0.87 / 0.67 / 0.60** | **0.43** | 0.39 / 0.22 / 0.18 | **0.24 / 0.50** | 0.030 |
+| 2029-06-30 (51) | ≈ 2.03 / ≈ −0.54 | 0.89 / 0.74 / 0.68 | 0.46 | 0.42 / 0.24 / 0.21 | 0.26 / 0.54 | 0.027 |
+
+- **A later end date raises power materially, and the first year does most of it.** Moving to 2028-12-31 adds
+  +0.22 / +0.27 / +0.30 to `alive` at SR 1 and +0.24 at SR 0.75, and roughly 1.5× to `decayed` for a dead book.
+  The gain is more than √(45/33) because span (c) grows from 18 to 30 months. That makes t_A,c ≥ 1.282 attainable
+  and weakens w̄'s absorption of the trend.
+  - Going on to 2029-06-30 adds only +0.02 / +0.07 / +0.08 and +0.02, and the read moves another 6 months.
+  - Hindsight protection holds at the later end: S1 0.013, S2 0.029 at 2029-06-30.
+- **A cleaner alternative statistic gives less.** Here t_A,c is computed on (c)'s days of the *pooled* series (the
+  pooled w̄) instead of re-centring on (c).
+  - At 2027-12-31 it gives `alive` at SR 1 of 0.71 / 0.54 / 0.47 at CAL 1.75 (+0.06 / +0.14 / +0.17). At
+    2028-12-31 the gain shrinks to +0.02 / +0.06 / +0.10.
+  - Its hindsight protection weakens slightly: S1 0.023 and S2 0.031, against 0.009 and 0.018. Optional.
+- **No other statistic I tested is cleaner under the leverage-bull nulls.** The factor α fails size there, and
+  calendar cells cost more power than the timing statistic does.
+
+### Remaining items
+
+- **R1-M1 (major; do it before the freeze, because it is free only now): end date 2028-12-31.**
+  - Set the end date and the guard's not-before date (2029-01-07) now. Re-run the §5/§6 calibration at G = 45:
+    CAL over the 19 worlds and C2 over the nine Table-4 worlds × drift 0/±40%, at 3,000 draws.
+  - Re-baseline the fetch months; that is reviewer B's area.
+  - Cost: the read moves from 2028-01 to 2029-01. It buys roughly +0.25 of `alive` power at SR 0.75–1, and
+    `decayed` 0.24 instead of 0.16 for a dead book.
+  - 2029-06-30 is acceptable but buys little more.
+- **R1-m1:** state the leverage-artefact share of Table 4's α as conditional on the GJR t3 assumption. Under
+  symmetric GARCH it is ≈ 12%, not a third.
+- **R1-m2:** `paper_then_scale` scales "toward the Bayes-Kelly size" of the timing leg. At any `alive` that is
+  ≈ 50% vol or more, against §9's tail budget (k = 2.8 ≈ 25% average vol already means −30 to −40% weeks). Cap the
+  scale-to size at min(Bayes-Kelly, k = 2.8).
