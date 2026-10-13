@@ -23,19 +23,21 @@ The run refuses unless (every check is a refusal, never an assert):
        judged by blob equality, not by `git status`, and NO module at that level, tracked or not, whose name is a
        stdlib module name (research/alpha is appended to sys.path, after the stdlib) — **every top-level .py and package, 016's included, must be
        committed before 015 runs** (review B m7);
-  (r)  the registration commit is the FIRST commit on HEAD's first-parent history whose registration says REGISTERED
-       (reg0, stored in every row), and neither the registration nor any guarded code changed between reg0 and HEAD
-       (016 review B M4);
+  (r)  across the WHOLE history (`--all --reflog`, no first-parent restriction) exactly one REGISTERED content of the
+       registration exists; reg0 = the earliest commit carrying it (stored in every row); HEAD's registration and
+       every guarded code blob equal reg0's (016 review B M4; Revision 2, R1-M1: a --no-ff merge cannot re-register);
   (f)  no row of any registration whose name starts '015-' exists anywhere (working tree; `git log --all --reflog -m
        --root -p --text --no-textconv --no-ext-diff` with log.showRoot=true and no replace objects), and no unparseable
        added line mentions 015 — except the narrow restart below.
-Restart (review B m6): one restart is allowed only when the sole 015 row anywhere is a `started` row with
-data_opened false that is committed in HEAD by a commit NOT authored by the runner (the runner's own commit failed,
-so the row was committed by hand); nothing was read.
+Restart (review B m6; Revision 2, R1-M2): one restart is allowed only when the sole 015 row anywhere is a `started`
+row committed in HEAD and NO commit anywhere (`--all --reflog`) that adds a 015 line was authored or committed by the
+runner. The data gate token is issued only after the runner's own started commit is verified in HEAD of the real
+ledger, so "no runner commit" is the verifiable fact that no data was opened.
 git is called by absolute path with GIT_* stripped, no system or global config, no replace objects, no hooks.
 Every `<rev>:<path>` is `<rev>:./<path>`. The loaders hash the bytes they parse, refuse a hash differing from the
 HEAD table, drop rows dated outside [2013-11-01, 2026-06-04) on their date before parsing values, and open the real
-tree (or any byte copy of a registered real file) only after the real guard passed in this process. run() takes no
+tree (or any byte copy of a registered real file) only after the real guard passed AND the started row is committed
+in HEAD of the real ledger, in this process. run() takes no
 argument: guard, data, table and ledger are all the real tree's (review B M1). The runner never pushes.
 """
 import datetime as dt
@@ -87,7 +89,8 @@ GUARDED_DATA = (US_ZIP, f'{FRENCH_DIR}/SHA256SUMS', CALENDAR, POWER_LOG)
 ALLOWED_PROJECT_MODULES = ('r015_core.py', 'r015_run.py')
 HASH_ROW = re.compile(r'^\|\s*`([^`]+)`\s*\|\s*`([0-9a-f]{64})`\s*\|', re.M)
 STATUS = re.compile(r'^\*\*Status: (\w+)', re.M)
-_GATE = None                                                  # (dir, commit), set only by the real guard()
+_GATE = None                                                  # (dir, commit): issued by _run() after the started row
+_GUARD_PASSED = None                                          # (dir, commit): set only by the real guard()
 _STATE = {'data_opened': False}
 
 
@@ -275,6 +278,8 @@ def module_origin_failures(here=None):
             if not (p.is_relative_to(std) or p in allowed):
                 out.append(f'(v) module {name} is loaded from {p}, outside the pinned stdlib and the allowed r015 files')
         cached = getattr(mod, '__cached__', None)
+        if f and Path(f).resolve() in allowed and name != '__main__' and not cached:
+            out.append(f'(v) module {name} has no __cached__ record (tampered import state)')
         if cached and f and not Path(f).resolve().is_relative_to(std):
             if pyc is None or not Path(cached).resolve().is_relative_to(pyc):
                 out.append(f'(v) module {name} bytecode {cached} is not under the fresh pycache_prefix')
@@ -287,6 +292,11 @@ def environment_failures(root):
         out.append('(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load')
     if not sys.flags.no_site:
         out.append('(v) run with python -I -S (no site) — a site-packages .pth would execute at startup')
+    if 'site' in sys.modules or type(sys.flags).__name__ != 'flags' or not isinstance(sys.flags, tuple):
+        out.append('(v) the site module ran or sys.flags is not the interpreter\'s own struct (Revision 2, r1-m2)')
+    opts = [a for a in sys.orig_argv[1:] if a.startswith('-') and not a.startswith('--')]
+    if not (any('I' in a for a in opts) and any('S' in a for a in opts)):
+        out.append('(v) the command line does not carry -I and -S (sys.orig_argv)')
     extra_pth = [f for f in pth_files() if Path(f).name not in PTH_PINNED]
     if extra_pth:
         out.append(f'(v) .pth files in site-packages that are not pinned: {extra_pth[:4]}')
@@ -324,26 +334,76 @@ def flag_failures(root, files):
     return out
 
 
-def registered_commit(root, reg_rel):
-    """reg0: the first commit on HEAD's first-parent history whose registration says **Status: REGISTERED."""
-    for c in _git(root, 'log', '--first-parent', '--reverse', '--format=%H', '--', reg_rel).stdout.split():
+def registered_versions(root, reg_rel):
+    """Every commit anywhere (`--all --reflog`, no first-parent restriction) whose registration says REGISTERED, as
+    [(commit time, commit, registration blob)] sorted by time (Revision 2, R1-M1)."""
+    out = []
+    r = _git(root, 'log', '--all', '--reflog', '--format=%H %ct', '--', reg_rel)
+    for line in sorted(set(r.stdout.split('\n'))):
+        if not line.strip():
+            continue
+        c, t = line.split()
         m = STATUS.search(_git(root, 'show', '--no-textconv', revpath(c, reg_rel)).stdout or '')
         if m and m.group(1) == 'REGISTERED':
-            return c
-    return None
+            out.append((int(t), c, _git(root, 'rev-parse', revpath(c, reg_rel)).stdout.strip()))
+    return sorted(out)
+
+
+def reg0_failures(root, reg_rel, code):
+    """(reg0 or None, [failures]): exactly one REGISTERED content of the registration anywhere in history; reg0 is the
+    earliest commit carrying it; HEAD's registration and every guarded code blob equal reg0's."""
+    vers = registered_versions(root, reg_rel)
+    if not vers:
+        return None, []
+    blobs = sorted({b for _, _, b in vers})
+    reg0 = vers[0][1]
+    out = []
+    if len(blobs) != 1:
+        out.append(f'(r) {len(blobs)} different REGISTERED versions of the registration exist in the history '
+                   f'(first: {reg0[:12]}) — an amendment after REGISTERED is a new registration')
+    if head_blob(root, reg_rel) != vers[0][2]:
+        out.append(f'(r) HEAD\'s registration differs from the REGISTERED commit {reg0[:12]}')
+    for f in code:
+        a = _git(root, 'rev-parse', '--verify', '-q', revpath(reg0, f)).stdout.strip()
+        if not a or a != head_blob(root, f):
+            out.append(f'(r) {f} at HEAD differs from the REGISTERED commit {reg0[:12]}')
+    return reg0, out
+
+
+def runner_added_lines(root, results_rel):
+    """Lines added to results.jsonl by any commit anywhere (`--all --reflog -m --root`) whose author or committer is
+    the runner identity."""
+    r = _git(root, 'log', '--all', '--reflog', '-m', '--root', '-p', '--text', '--no-textconv', '--no-ext-diff',
+             '--no-color', '--format=@@COMMIT %an%x09%cn', '--', results_rel)
+    out, runner = set(), False
+    for l in r.stdout.splitlines():
+        if l.startswith('@@COMMIT '):
+            an, _, cn = l[9:].partition('\t')
+            runner = RUNNER_NAME in (an, cn)
+        elif runner and l.startswith('+') and not l.startswith('+++'):
+            out.add(l[1:])
+    return out
 
 
 def restart_allowed(root, rows, results_rel):
+    """One restart (Revision 2, R1-M2): the only 015 row anywhere is a `started` row committed in HEAD, and NO commit
+    anywhere in the history or reflog that adds a 015 line was authored or committed by the runner. The runner opens
+    data only after its own started commit is verified in HEAD (the gate is issued then), so the absence of any
+    runner commit is the verifiable fact that no data was opened."""
     if len(rows) != 1:
         return False
     line, row = rows[0]
-    if row.get('mode') != 'started' or row.get('data_opened') is not False or line not in head_lines(root, results_rel):
+    if row.get('mode') != 'started' or line not in head_lines(root, results_rel):
         return False
-    c = first_commit_containing(root, results_rel, line)
-    if not c:
-        return False
-    author = _git(root, 'show', '-s', '--format=%an', c).stdout.strip()
-    return author != RUNNER_NAME
+    added = runner_added_lines(root, results_rel)
+    return not any(is_015(_safe_json(l)) for l in added)
+
+
+def _safe_json(line):
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_rel='results.jsonl', real_repo=None,
@@ -362,13 +422,8 @@ def guard_failures(root, reg_rel, code=GUARDED_CODE, data=GUARDED_DATA, results_
     commit = _git(root, 'log', '-1', '--format=%H', '--', reg_rel).stdout.strip()
     if not commit:
         out.append(f'(c) {Path(reg_rel).name} has no commit')
-    reg0 = registered_commit(root, reg_rel)
-    if reg0 is None:
-        if m and m.group(1) == 'REGISTERED':
-            out.append('(r) no commit on the first-parent history of HEAD registers 015')
-    elif _git(root, 'diff', '--quiet', '--no-textconv', '--no-ext-diff', reg0, 'HEAD', '--', reg_rel, *code).returncode:
-        out.append(f'(r) the registration or guarded code changed since the REGISTERED commit {reg0[:12]} — '
-                   'an amendment is a new registration')
+    reg0, rf = reg0_failures(root, reg_rel, code)
+    out += rf
     commit = reg0 or commit
     for f in code:
         if not same_as_head(root, f):
@@ -416,17 +471,19 @@ _GUARD_FAILURES = guard_failures                               # captured at imp
 
 
 def guard():
-    """The ONLY way to open the real data: this file's own repository, which must be the pinned real one; constants
-    captured at import; every check."""
-    global _GATE
+    """The real guard: this file's own repository, which must be the pinned real one; constants captured at import;
+    every check. It does NOT open the data: the gate token is issued by _run() only after the started row is committed
+    and verified in HEAD:./results.jsonl of the real ledger (Revision 2, r1-m1)."""
+    global _GATE, _GUARD_PASSED
     _GATE = None
+    _GUARD_PASSED = None
     if REPO.resolve() != REAL_REPO or HERE != _HERE0:
         raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
     failures, commit, _table = _GUARD_FAILURES(_HERE0, REG_REL, GUARDED_CODE, GUARDED_DATA, 'results.jsonl',
                                                real_repo=REAL_REPO, anchor=ANCHOR, env_check=True)
     if failures:
         raise Refused('\n'.join(failures))
-    _GATE = (str(_HERE0.resolve()), commit)
+    _GUARD_PASSED = (str(_HERE0.resolve()), commit)
     return commit
 
 
@@ -443,9 +500,14 @@ def registered_real_hashes():
     return _REG_HASHES['v']
 
 
-def _gate_ok():
-    return (_GATE is not None and _GATE[0] == str(_HERE0.resolve()) and guard is _REAL_GUARD
+def _guard_ok():
+    return (_GUARD_PASSED is not None and _GUARD_PASSED[0] == str(_HERE0.resolve()) and guard is _REAL_GUARD
             and _GUARD_FAILURES is guard_failures)
+
+
+def _gate_ok():
+    return (_guard_ok() and _GATE is not None and _GATE == _GUARD_PASSED
+            and Path(RESULTS).resolve() == REAL_RESULTS and HOOKS.get('commit') is commit_results)
 
 
 def _gate(path, digest=None):
@@ -570,7 +632,7 @@ def record(row, msg):
     """Append, commit through the hook, then REFUSE unless the line is in HEAD:./results.jsonl (checked with git)."""
     res = Path(RESULTS).resolve()
     if (res.is_relative_to(REAL_REPO) or res == REAL_RESULTS) and (
-            not _gate_ok() or HOOKS.get('commit') is not commit_results or res != REAL_RESULTS):
+            not _guard_ok() or HOOKS.get('commit') is not commit_results or res != REAL_RESULTS):
         raise Refused('(M1) rows are written into the real repository only by the real run, after the real guard, '
                       'with the default commit hook')
     line = append_row(row, RESULTS)
@@ -605,7 +667,8 @@ def primary(commit, root, table):
     z, y, sig, mu = C.z_series(x, cal)
     vv = C.v_series(x, cal)
     ex = C.existence(z)
-    econ = C.economic(y, vv, cal, mu)
+    mu_all = C.pooled_mu(x, cal)
+    econ = C.economic(y, vv, cal, mu_all)
     months = [{'month': c['month'], 'T': c['T'], 's': c['s'], 'friday': c['weekday'] == 4, 'y': a, 'v': b, 'sigma': sg,
                'z': zz} for c, a, b, sg, zz in zip(cal, y, vv, sig, z)]
     row = {'registration': REG_NAME, 'mode': 'result', 'registration_commit': commit,
@@ -615,7 +678,7 @@ def primary(commit, root, table):
                       'cal_crit': C.CAL_CRIT, 'q': C.Q, 'vol_days': C.VOL_DAYS, 'vol_end': C.VOL_END,
                       'vol_floor': C.VOL_FLOOR, 'shrink': C.SHRINK, 'cost_month': C.COST_MONTH, 'l_cap': C.L_CAP,
                       'bar': C.BAR, 'us_t2': C.US_T2.isoformat(), 'us_t1': C.US_T1.isoformat()},
-           'mu_by_era': {str(k): val for k, val in mu.items()}, 'existence': ex, 'economic': econ, 'months': months}
+           'mu_by_era': {str(k): val for k, val in mu.items()}, 'mu_all': mu_all, 'existence': ex, 'economic': econ, 'months': months}
     row['decision'] = C.decide(ex, econ)
     lab, rfails = C.recheck(row, table)
     if rfails or lab != row['decision']:
@@ -656,13 +719,18 @@ def _run(root, guard_fn):
     root = Path(root)
     if RESULTS.resolve() != (root / 'results.jsonl').resolve() or Path(DATA).resolve() != (root / 'data' / 'r015').resolve():
         raise Refused('(M1) results.jsonl and data/r015 must be those of the tree being run')
+    global _GATE
+    _GATE = None
     commit = guard_fn()
     table = dict(HASH_ROW.findall(head_text(root, REG_REL) or ''))
     _STATE['data_opened'] = False
     stage = 'started'
-    record({'registration': REG_NAME, 'mode': 'started', 'registration_commit': commit, 'data_opened': False,
-            'env': env_fingerprint(), 'code_hashes': hashes(GUARDED_CODE, root),
-            'run_at': dt.datetime.now(dt.UTC).isoformat()}, '015 started (r015_run.py)')
+    sline = record({'registration': REG_NAME, 'mode': 'started', 'registration_commit': commit,
+                    'env': env_fingerprint(), 'code_hashes': hashes(GUARDED_CODE, root),
+                    'run_at': dt.datetime.now(dt.UTC).isoformat()}, '015 started (r015_run.py)')
+    if guard_fn is _REAL_GUARD and _guard_ok() and Path(RESULTS).resolve() == REAL_RESULTS \
+            and sline in head_lines(REAL_RESULTS.parent, REAL_RESULTS.name):
+        _GATE = _GUARD_PASSED                                   # the data gate opens only now (Revision 2, r1-m1)
     try:
         stage = 'primary'
         row, state = primary(commit, root, table)

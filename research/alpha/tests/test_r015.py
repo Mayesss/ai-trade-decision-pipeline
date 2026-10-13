@@ -197,11 +197,13 @@ def statistic_checks():
     yv = [0.0085] * 149
     mu0 = {3: 0.0003, 2: 0.0003, 1: 0.0003}
     vv = [a + (2 * c['s'] - 4) * mu0[c['s']] + (0.039 if k % 2 else -0.039) for k, (a, c) in enumerate(zip(yv, cal))]
-    e1 = C.economic(yv, vv, cal, mu0)
-    check('bar: net = 1/2 mean(y) - 2 mu_1 - cost (T+1 tilt, review A m3); vol = sd of v over the 25 T+1 months',
+    e1 = C.economic(yv, vv, cal, 0.0003)
+    check('pooled mu: the mean over every era\'s out-of-window days (Revision 2, A-n1)',
+          abs(C.pooled_mu(x, cal) - sum(x[i] for c in cal for i in c['out']) / sum(len(c['out']) for c in cal)) < 1e-15)
+    check('bar: net = 1/2 mean(y) - 2 mu_all - cost (T+1 tilt with the pooled mu); vol = sd of v over the 25 T+1 months',
           abs(e1['net_shrunk_month'] - (0.5 * 0.0085 - 2 * 0.0003 - C.COST_MONTH)) < 1e-15 and e1['months_traded_era'] == 25)
     check('bar: 85 bp with 3.9 % T+1 vol meets 4 %/yr at min(1/2 Kelly, 1.2x)', e1['meets_bar'] and e1['size_half_kelly_capped'] <= C.L_CAP, e1)
-    e2 = C.economic([0.0060] * 149, vv, cal, mu0)
+    e2 = C.economic([0.0060] * 149, vv, cal, 0.0003)
     check('bar: 60 bp does not meet it', not e2['meets_bar'], e2)
     check('decide: labels', C.decide({'exists': False}, e1) == 'not_demonstrated' and C.decide({'exists': True}, e1) == 'exists_paper'
           and C.decide({'exists': True}, e2) == 'exists_below_bar')
@@ -214,8 +216,8 @@ def statistic_checks():
             for a, b, c in zip(yy, zz, cal)]
     table = {'r015_core.py': 'a' * 64, 'data/x': 'b' * 64}
     ex = C.existence(zz)
-    econ = C.economic(yy, [r['v'] for r in recs], cal, mu0)
-    row = json.loads(json.dumps({'months': recs, 'mu_by_era': {str(k): v_ for k, v_ in mu0.items()}, 'existence': ex,
+    econ = C.economic(yy, [r['v'] for r in recs], cal, 0.0003)
+    row = json.loads(json.dumps({'months': recs, 'mu_by_era': {str(k): v_ for k, v_ in mu0.items()}, 'mu_all': 0.0003, 'existence': ex,
                                  'economic': econ, 'decision': C.decide(ex, econ),
                                  'code_hashes': {'r015_core.py': 'a' * 64}, 'data_hashes': {'data/x': 'b' * 64}}))
     lab, fails = C.recheck(row, table)
@@ -301,6 +303,13 @@ def loader_checks():
     finally:
         R._gate = orig_gate
     check('mutation: with the gate deleted, the gate test above FAILS (it is not vacuous; review B m5)', mutant is False)
+    saved_gp = (R._GATE, R._GUARD_PASSED)
+    R._GUARD_PASSED, R._GATE = (str(R._HERE0.resolve()), 'c'), None
+    try:
+        check('r1-m1: a passed guard alone does not open the data; the token is issued only after the started row is '
+              'committed in the real ledger', raises(lambda: R._gate(R.HERE / R.US_ZIP), text='opens only after'))
+    finally:
+        R._GATE, R._GUARD_PASSED = saved_gp
     saved = (R._GATE, R._GUARD_FAILURES)
     R._GATE = (str(R._HERE0.resolve()), 'forged')
     R._GUARD_FAILURES = lambda *a, **k: ([], 'c', {})
@@ -421,6 +430,25 @@ def guard_checks(sub=''):
         check('(r) a committed revision of code + table after REGISTERED is refused, naming reg0 (016 review B M4)',
               any(x.startswith('(r)') and reg0[:12] in x for x in fr) and not any(x.startswith('(e)') for x in fr), fr)
         g(root, 'reset', '-q', '--hard', 'HEAD~1')
+        # R1-M1: a revision on a side branch, merged with --no-ff, must not re-register
+        g(root, 'checkout', '-q', '-b', 'side')
+        (root / 'r015_core.py').write_text('x = 8\n')
+        write_reg(root)
+        g(root, 'commit', '-q', '-am', 'post-REGISTERED revision on a side branch')
+        g(root, 'checkout', '-q', 'main')
+        g(root, 'checkout', '-q', '-b', 'merged', anchor + '~1')
+        g(root, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        fm = fails()
+        check('(r) R1-M1: a post-REGISTERED revision merged --no-ff from a side branch is refused, naming the original '
+              'REGISTERED commit', any(x.startswith('(r)') and reg0[:12] in x for x in fm), fm)
+        g(root, 'checkout', '-q', 'main')
+        g(root, 'branch', '-q', '-D', 'merged', 'side')
+        purge_reflog(root)
+        g(root, 'checkout', '-q', '-b', 'ff', anchor + '~1')
+        g(root, 'merge', '-q', '--ff-only', 'main')
+        check('(r) a fast-forward merge of the REGISTERED commit with no revision still opens', fails() == [], fails())
+        g(root, 'checkout', '-q', 'main')
+        g(root, 'branch', '-q', '-D', 'ff')
         (root / 'r015_core.py').write_text('x = 3\n')
         f4 = fails()
         check('(d) + (e) guarded code edited -> refused', any(x.startswith('(d)') for x in f4) and any(x.startswith('(e) r015_core') for x in f4))
@@ -548,6 +576,11 @@ def guard_checks(sub=''):
         restart_checks(root, top, fails)
 
 
+def purge_reflog(root):
+    subprocess.run([GIT, 'reflog', 'expire', '--expire=now', '--all'], cwd=root, capture_output=True)
+    subprocess.run([GIT, 'gc', '-q', '--prune=now'], cwd=root, capture_output=True)
+
+
 def purge(root):
     for b in g(root, 'for-each-ref', '--format=%(refname)', 'refs/replace').stdout.split():
         g(root, 'update-ref', '-d', b)
@@ -568,19 +601,27 @@ def purge(root):
 def restart_checks(root, top, fails):
     purge(root)
     check('restart: a clean history opens', fails() == [], fails())
-    started = {'registration': '015-month-end-liquidity-cycle.md', 'mode': 'started', 'data_opened': False}
+    started = {'registration': '015-month-end-liquidity-cycle.md', 'mode': 'started'}
+    runner = lambda *a: subprocess.run([GIT, '-c', f'user.name={R.RUNNER_NAME}', '-c', f'user.email={R.RUNNER_EMAIL}', *a],
+                                       cwd=root, capture_output=True, env=R.git_env())
     open(root / 'results.jsonl', 'a').write(json.dumps(started, sort_keys=True) + '\n')
     g(root, 'commit', '-q', '-am', 'started row committed by hand after the runner commit failed')
-    check('restart (review B m6): one hand-committed started row with data_opened false -> allowed', fails() == [], fails())
+    check('restart (R1-M2): one hand-committed started row, no runner commit anywhere -> one restart allowed', fails() == [], fails())
     purge(root)
     open(root / 'results.jsonl', 'a').write(json.dumps(started, sort_keys=True) + '\n')
-    subprocess.run([GIT, '-c', f'user.name={R.RUNNER_NAME}', '-c', f'user.email={R.RUNNER_EMAIL}', 'commit', '-q', '-am', 'runner'],
-                   cwd=root, capture_output=True, env=R.git_env())
-    check('restart: a started row committed BY THE RUNNER (it went on) -> refused', any(x.startswith('(f)') for x in fails()))
+    runner('commit', '-q', '-am', 'runner')
+    check('restart: a started row committed BY THE RUNNER -> refused', any(x.startswith('(f)') for x in fails()))
+    g(root, 'reset', '-q', '--hard', 'HEAD~1')
+    open(root / 'results.jsonl', 'a').write(json.dumps(started, sort_keys=True) + '\n')
+    g(root, 'commit', '-q', '-am', 'the same line re-committed by hand after reset --hard')
+    check('restart (R1-M2): runner commit, reset --hard, hand re-commit -> REFUSED (the runner commit is in the reflog)',
+          any(x.startswith('(f)') for x in fails()), fails())
     purge(root)
-    open(root / 'results.jsonl', 'a').write(json.dumps(dict(started, data_opened=True), sort_keys=True) + '\n')
+    open(root / 'results.jsonl', 'a').write(json.dumps(started, sort_keys=True) + '\n')
     g(root, 'commit', '-q', '-am', 'hand')
-    check('restart: data_opened true -> refused', any(x.startswith('(f)') for x in fails()))
+    subprocess.run([GIT, '-c', 'user.name=someone', '-c', 'user.email=s@s', 'commit', '-q', '--amend', '-m', 'amend',
+                    '--reset-author'], cwd=root, capture_output=True, env=R.git_env())
+    check('restart: a hand amend of a hand commit still allows the one restart', fails() == [], fails())
     purge(root)
     open(root / 'results.jsonl', 'a').write(json.dumps(started, sort_keys=True) + '\n' + json.dumps(dict(started, run_at=1), sort_keys=True) + '\n')
     g(root, 'commit', '-q', '-am', 'hand two')
@@ -692,7 +733,8 @@ def e2e_checks(sub='research/alpha'):
             modes = [json.loads(l)['mode'] for l in head]
             check('run: started, result and reported rows, each committed in HEAD in that order', modes == ['started', 'result', 'reported'], modes)
             st = json.loads(head[0])
-            check('run: the started row says data_opened false', st.get('data_opened') is False)
+            check('run: the started row carries the REGISTERED commit (reg0)',
+                  st.get('registration_commit') == R.guard_failures(root, REG_REL, real_repo=top)[1])
             table = dict(R.HASH_ROW.findall(R.head_text(root, REG_REL)))
             check('run: the result recomputes from its per-month records and its hashes equal the HEAD table',
                   C.recheck(json.loads(head[1]), table)[1] == [])
@@ -787,6 +829,18 @@ def shadow_checks():
                         'f = R.environment_failures(R.HERE); print(any("no site" in x or "isolated" in x for x in f))'],
                        capture_output=True, text=True)
     check('-I -S satisfies the isolation checks', o.stdout.strip() == 'False', (o.stdout, o.stderr[-300:]))
+    o = subprocess.run([sys.executable, '-I', '-c', f'import sys; sys.path.append({here!r}); import r015_run as R; '
+                        'print(any("site module ran" in x for x in R.environment_failures(R.HERE)))'], capture_output=True, text=True)
+    check('r1-m2: when site ran (no -S) the "site module ran" check fires as well', o.stdout.strip() == 'True', o.stderr[-300:])
+    o = subprocess.run([sys.executable, '-I', '-S', '-c', f'import sys; sys.path.append({here!r}); import r015_run as R; '
+                        'real = sys.flags\nclass F:\n    isolated = 1\n    no_site = 1\n    def __getattr__(self, k): return getattr(real, k)\nsys.flags = F()\n'
+                        'print(any("struct" in x for x in R.environment_failures(R.HERE)))'], capture_output=True, text=True)
+    check('r1-m2: a look-alike sys.flags object is refused (cheap hardening; a .pth tamper is a stated residual)',
+          o.stdout.strip() == 'True', o.stderr[-300:])
+    o = subprocess.run([sys.executable, '-I', '-S', '-c', f'import sys; sys.path.append({here!r}); import r015_run as R; '
+                        'sys.modules["r015_run"].__cached__ = None; '
+                        'print(any("no __cached__" in x for x in R.module_origin_failures()))'], capture_output=True, text=True)
+    check('r1-m1: a project module with __cached__ = None (tampered import state) is refused', o.stdout.strip() == 'True', o.stderr[-300:])
     orig = R.pth_files
     R.pth_files = lambda: ['/opt/x/site-packages/evil.pth']
     try:

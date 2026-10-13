@@ -305,25 +305,33 @@ def existence(z, c=None):
             'criteria': criteria, 'exists': all(criteria.values())}
 
 
-def economic(y, v, cal, mu, cost=COST_MONTH, shrink=SHRINK, l_cap=L_CAP, bar=BAR, era=TRADED_ERA):
+def pooled_mu(x, cal):
+    """mu over the out-of-window days of ALL months (all eras): the bar's tilt estimate (Revision 2, A-n1)."""
+    outs = [x[i] for c in cal for i in c['out']]
+    refuse_unless(len(outs) > 0, 'no out-of-window day')
+    return sum(outs) / len(outs)
+
+
+def economic(y, v, cal, mu_all, cost=COST_MONTH, shrink=SHRINK, l_cap=L_CAP, bar=BAR, era=TRADED_ERA):
     """The bar, applied only after an existence pass, in the TRADED regime (T+1; review A m3):
-    net_s = shrink * mean(y) + (2*era - 4) * mu_era - cost   (the shrunk effect plus the regime's equity-premium tilt,
-                                                              -2 days of mu_1 in T+1; mu not shrunk);
-    vol   = sd of v over the era's months;  full Kelly f = net_s / vol^2;  L = min(f / 2, l_cap);  annual = 12 L net_s.
-    Meets the bar iff net_s > 0 and annual >= bar."""
+    net_s = shrink * mean(y) + (2*era - 4) * mu_all - cost   (the shrunk effect plus the regime's equity-premium tilt,
+                                                              -2 days in T+1, with mu from ALL eras' out-of-window
+                                                              days for a lower SE (Revision 2, A-n1); mu not shrunk);
+    vol   = sd of v over the traded era's months;  full Kelly f = net_s / vol^2;  L = min(f / 2, l_cap);
+    annual = 12 L net_s.  Meets the bar iff net_s > 0 and annual >= bar."""
     ve = [b for b, c in zip(v, cal) if c['s'] == era]
-    if len(y) < 2 or len(ve) < 2 or era not in mu:
+    if len(y) < 2 or len(ve) < 2 or mu_all is None:
         return {'meets_bar': False, 'reason': 'undefined'}
     my = statistics.fmean(y)
     sd = statistics.stdev(ve)
-    tilt = (2 * era - 4) * mu[era]
+    tilt = (2 * era - 4) * mu_all
     net_s = shrink * my + tilt - cost
     if sd <= 0:
         return {'meets_bar': False, 'reason': 'zero vol'}
     kelly = net_s / (sd * sd)
     size = max(0.0, min(kelly / 2.0, l_cap))
     annual = MONTHS_PER_YEAR * size * net_s
-    return {'mean_y': my, 'tilt_traded_era': tilt, 'sd_v_traded_era': sd, 'months_traded_era': len(ve),
+    return {'mean_y': my, 'mu_all': mu_all, 'tilt_traded_era': tilt, 'sd_v_traded_era': sd, 'months_traded_era': len(ve),
             'net_shrunk_month': net_s, 'kelly_full': kelly, 'size_half_kelly_capped': size,
             'annual_net_at_size': annual, 'annual_net_at_plan_size': MONTHS_PER_YEAR * L_PLAN * net_s,
             'bar': bar, 'meets_bar': net_s > 0 and annual >= bar}
@@ -359,7 +367,7 @@ def recheck(row, table=None):
         z = [r['z'] for r in recs]
         cal = [{'s': r['s']} for r in recs]
         ex = existence(z, row['existence']['crit'])
-        econ = economic([r['y'] for r in recs], [r['v'] for r in recs], cal, mu)
+        econ = economic([r['y'] for r in recs], [r['v'] for r in recs], cal, row['mu_all'])
     except Exception as e:  # noqa: BLE001 - a malformed row recomputes nothing
         return None, [f'malformed row: {e!r}'[:200]]
     if abs(row['existence']['crit'] - crit(len(z))) > 1e-12:

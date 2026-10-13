@@ -188,7 +188,7 @@ def draw(world, dates, cal, rng, day_era, day_year):
 def one(x, cal, c_reg):
     z, y, sig, mu = C.z_series(x, cal)
     ex = C.existence(z, c_reg)
-    econ = C.economic(y, C.v_series(x, cal), cal, mu)
+    econ = C.economic(y, C.v_series(x, cal), cal, C.pooled_mu(x, cal))
     ty = C.mean_t(y)[2]
     lo = C.mean_t(C.rebound_sums(x, cal, mu))
     mc = C.mechanism_contrast(x, cal, mu)['paired_all_t2_t1']

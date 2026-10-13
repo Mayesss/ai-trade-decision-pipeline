@@ -1,10 +1,23 @@
 # 015 — The month-end liquidity cycle in US equities, with windows shifted by the settlement lag (B1 #1a)
 
-**Status: DRAFT — Revision 1, 2026-10-13** (drafter; after reviews `reviews/015-review-a.md` and
+**Status: DRAFT — Revision 2, 2026-10-13** (drafter; Revision 2 answers the Revision 1 rechecks appended to
+`reviews/015-review-a.md` and `reviews/015-review-b.md`; Revision 1 answered the first-round reviews `reviews/015-review-a.md` and
 `reviews/015-review-b.md` and the orchestrator's decisions on them; for a second-round recheck; not registered).
 Programme: round 4, `docs/alpha-discovery-2026-10-13.md` (B1). Scout: `research/alpha/scouts/b1-equities-flows.md`
 §3.1. Ledger entries read: `000s` (B1 exposure); `000p`–`000r` for context. Templates: `research/copytrade/r008_run.py`,
 `r013_run.py`, their registrations and reviews (008-a/b/r1, 013-a/b/r1, 014-b).
+
+## Revision 2 (2026-10-13): the Revision 1 rechecks' findings and their fixes
+
+| finding | fix (section) |
+|---|---|
+| **B R1-M1** reg0 was searched on first-parent history only; a `--no-ff` merge of a post-REGISTERED revision re-registered it | reg0 is searched over **every commit anywhere** (`--all --reflog`); **exactly one REGISTERED content** of the registration may exist; HEAD's registration and every guarded code blob must equal reg0's (the data are pinned by its table). Tested with the merge attack (refused, naming reg0) and a fast-forward (opens) (§10) |
+| **B R1-M2** the restart trusted HEAD's history; `data_opened: false` was a constant | a restart is refused if **any** commit anywhere (`--all --reflog -m --root`) that adds a 015 line was **authored or committed by the runner**; the constant `data_opened` is removed from the started row. Because the data gate opens only after the runner's own started commit (next row), "no runner commit anywhere" is the verifiable fact that no data was read. Tested with runner commit → `reset --hard` → hand re-commit (refused) and the persistent-lock hand commit (allowed once) (§4.3) |
+| **B r1-m1** the gate opened when the guard passed | `guard()` no longer issues the data token; **`_run()` issues it only after the started row is committed and verified in `HEAD:./results.jsonl` of the real ledger**, and the gate also requires the real results path and the default hook; a project module with `__cached__ = None` is refused (§10) |
+| **B r1-m2** a one-shot `.pth` can replace `sys.flags` | cheap hardening added: refuse if `site` is in `sys.modules`, if `sys.flags` is not the interpreter's own struct, or if `sys.orig_argv` lacks -I and -S. **Stated residual** (§9): an attacker who can write into the interpreter's site-packages can still forge the process state, as with 008's forged-`.pyc` residual. The fresh-subprocess check was not added: a clean subprocess proves nothing about the running process |
+| **A n1** the T+1 bar's −2·μ̂₁ was noisy (SE ≈ 15 bp on the tilt) | the tilt uses **μ pooled over every era's out-of-window days** (SE ≈ 6 bp); the T+1 vol is kept (§4.2). Critical value, size and power unchanged; only "pass and bar" moves (§5) |
+| **A n3** the Europe zip pin | §8 states the rule: the Europe confirmation pins the Europe zip's SHA-256 at its registration — the bytes already on disk (`89b84ff3…`, identical to B1's pull), or a fresh pull pinned when pulled |
+| **A n2** test count | stated from the run (§10) |
 
 ## Revision 1 (2026-10-13): every finding and its fix
 
@@ -210,8 +223,8 @@ y, v, s, σ̂ and μ):
 
 ### 4.2 The economic bar (after EXISTS only; it routes between paper and no paper)
 
-In the **traded regime, T+1** (A-m3): net_s = ½·ȳ − 2·μ̂₁ − 1.6 bp (the shrunk effect, the T+1 era's two-day short
-tilt with μ̂₁ unshrunk, two MES round trips); vol = SD of v over the 25 T+1 months; Kelly f = net_s / vol²; size
+In the **traded regime, T+1** (A-m3): net_s = ½·ȳ − 2·μ̂ − 1.6 bp (the shrunk effect; the T+1 era's two-day short
+tilt with μ̂ **pooled over every era's out-of-window days** (Revision 2, A-n1), unshrunk; two MES round trips); vol = SD of v over the 25 T+1 months; Kelly f = net_s / vol²; size
 L = min(f/2, 1.2×); annual = 12·L·net_s. **Meets the bar iff net_s > 0 and annual ≥ 4 %/yr** (HLP calm).
 
 | label | condition | what follows |
@@ -224,11 +237,13 @@ L = min(f/2, 1.2×); annual = 12·L·net_s. **Meets the bar iff net_s > 0 and an
 
 ### 4.3 Run once, and the one narrow restart (B-m6)
 
-Any 015 row anywhere refuses every later run, except one case: the **only** 015 row anywhere is a `started` row with
-`data_opened: false`, committed in HEAD by a commit **not authored by the runner** (the runner commits as `r015_run`
-and stops at once if its own commit fails, so such a row was committed by hand after a failed runner commit, before
-any data was opened). Then one restart is allowed. A crash after the started row is committed by the runner is
-terminal; the `failed` row records the stage and whether data had been opened.
+Any 015 row anywhere refuses every later run, except one case (Revision 2, R1-M2): the **only** 015 row anywhere is a
+`started` row committed in HEAD, and **no commit anywhere in the history or reflog that adds a 015 line was authored
+or committed by the runner** (`r015_run`). The runner opens the data only after its own started commit is verified in
+HEAD (the data gate is issued then), and stops at once if that commit fails; so a started row that only a human ever
+committed proves that no data was read. Then one restart is allowed. A runner-committed started row is terminal even
+if the commit is later reset away and re-committed by hand; the `failed` row records the stage and whether data had
+been opened.
 
 ## 5. Calibration, size and power (synthetic only; `r015_power.py`; `data/r015/logs/power.json`)
 
@@ -266,45 +281,45 @@ documented sequence falls (150 evenly spaced placements × 200 draws, iid days o
 
 | null world | q95 of the gate t (± MC SE) | **false pass at c\* = 1.92** | at t_148 = 1.655 | pass and bar | draft raw-y rule at 1.91 | long-only t ≥ t_148 | placebo t ≥ t_148 |
 |---|---|---|---|---|---|---|---|
-| crash aligned: 2008 down-leg ends on a P window end, garch t4 | 1.862 ± 0.026 | **0.045** | 0.075 | 0.010 | 0.028 | 0.085 | 0.022 |
+| crash aligned: 2008 down-leg ends on a P window end, garch t4 | 1.862 ± 0.026 | **0.045** | 0.075 | 0.009 | 0.028 | 0.085 | 0.022 |
 | crash aligned: 2020 down-leg ends on a P window end, garch t4 | 1.815 ± 0.018 | **0.041** | 0.068 | 0.011 | 0.050 | 0.068 | 0.014 |
-| drift by era (+8 / 0 / -8 bp/day) garch | 1.655 ± 0.022 | **0.030** | 0.050 | 0.023 | 0.028 | 0.100 | 0.037 |
-| drift by year (+-10 bp/day, random sign) garch | 1.650 ± 0.023 | **0.028** | 0.049 | 0.012 | 0.029 | 0.096 | 0.036 |
-| garch normal (a .10 b .88) | 1.646 ± 0.024 | **0.028** | 0.049 | 0.013 | 0.028 | 0.096 | 0.040 |
-| garch t4 (a .12 b .87) | 1.698 ± 0.020 | **0.032** | 0.054 | 0.008 | 0.032 | 0.103 | 0.036 |
-| iid normal | 1.692 ± 0.025 | **0.032** | 0.054 | 0.016 | 0.033 | 0.100 | 0.037 |
-| iid t3 | 1.634 ± 0.023 | **0.027** | 0.048 | 0.012 | 0.028 | 0.098 | 0.039 |
-| reversal structure without mean (k .33), iid normal | 1.644 ± 0.024 | **0.027** | 0.049 | 0.013 | 0.028 | 0.097 | 0.039 |
-| shocks 2008/2020/2025 anywhere, garch | 1.633 ± 0.026 | **0.029** | 0.048 | 0.014 | 0.027 | 0.103 | 0.037 |
-| shocks 2008/2020/2025 inside random month windows, garch | 1.591 ± 0.020 | **0.024** | 0.043 | 0.012 | 0.029 | 0.112 | 0.031 |
-| slow AR drift (phi .995, sd 8 bp/day) garch | 1.681 ± 0.031 | **0.030** | 0.053 | 0.013 | 0.029 | 0.098 | 0.036 |
-| window-day vol x1.3, garch t4 | 1.630 ± 0.014 | **0.028** | 0.047 | 0.014 | 0.031 | 0.083 | 0.038 |
+| drift by era (+8 / 0 / -8 bp/day) garch | 1.655 ± 0.022 | **0.030** | 0.050 | 0.013 | 0.028 | 0.100 | 0.037 |
+| drift by year (+-10 bp/day, random sign) garch | 1.650 ± 0.023 | **0.028** | 0.049 | 0.015 | 0.029 | 0.096 | 0.036 |
+| garch normal (a .10 b .88) | 1.646 ± 0.024 | **0.028** | 0.049 | 0.014 | 0.028 | 0.096 | 0.040 |
+| garch t4 (a .12 b .87) | 1.698 ± 0.020 | **0.032** | 0.054 | 0.009 | 0.032 | 0.103 | 0.036 |
+| iid normal | 1.692 ± 0.025 | **0.032** | 0.054 | 0.018 | 0.033 | 0.100 | 0.037 |
+| iid t3 | 1.634 ± 0.023 | **0.027** | 0.048 | 0.016 | 0.028 | 0.098 | 0.039 |
+| reversal structure without mean (k .33), iid normal | 1.644 ± 0.024 | **0.027** | 0.049 | 0.015 | 0.028 | 0.097 | 0.039 |
+| shocks 2008/2020/2025 anywhere, garch | 1.633 ± 0.026 | **0.029** | 0.048 | 0.017 | 0.027 | 0.103 | 0.037 |
+| shocks 2008/2020/2025 inside random month windows, garch | 1.591 ± 0.020 | **0.024** | 0.043 | 0.014 | 0.029 | 0.112 | 0.031 |
+| slow AR drift (phi .995, sd 8 bp/day) garch | 1.681 ± 0.031 | **0.030** | 0.053 | 0.015 | 0.029 | 0.098 | 0.036 |
+| window-day vol x1.3, garch t4 | 1.630 ± 0.014 | **0.028** | 0.047 | 0.013 | 0.031 | 0.083 | 0.038 |
 | STRESS two crashes aligned: 2020 and 2025 down-legs end on P window ends, garch t4 | 2.066 ± 0.014 | **0.070** | 0.121 | 0.025 | 0.091 | 0.093 | 0.018 |
 
-**Power at c\*:**
+**Power at c\*** (Revision 2: "pass and bar" uses the pooled-μ tilt; every other column is unchanged):
 
 | alternative world | mean t(z) | **power at c\* = 1.92** | draft raw-y rule at 1.91 | pass and bar | recent (2021-01 →) t ≥ 1 | contrast t ≥ t_104 (mean contrast t) |
 |---|---|---|---|---|---|---|
-| shifted effect x1.0 garch normal | 3.03 | **0.858** | 0.776 | 0.626 | 0.833 | 0.165 (0.60) |
-| shifted effect x1.0 garch t4 | 4.46 | **0.986** | 0.882 | 0.744 | 0.962 | 0.224 (0.81) |
-| shifted effect x1.0 garch, shocks anywhere | 2.75 | **0.787** | 0.701 | 0.583 | 0.793 | 0.145 (0.54) |
-| shifted effect x1.0 iid normal | 2.66 | **0.769** | 0.780 | 0.597 | 0.772 | 0.167 (0.59) |
-| shifted effect x1.0 proportional to trailing vol, garch t4 | 3.59 | **0.914** | 0.888 | 0.720 | 0.892 | 0.221 (0.79) |
-| shifted effect x1.0 with reversal correlation (k .33) iid | 2.25 | **0.626** | 0.638 | 0.469 | 0.676 | 0.159 (0.57) |
-| shifted effect x0.5 garch normal | 1.51 | **0.342** | 0.291 | 0.189 | 0.500 | 0.103 (0.31) |
-| shifted effect x0.5 garch t4 | 2.25 | **0.620** | 0.443 | 0.243 | 0.685 | 0.127 (0.40) |
-| shifted effect x0.5 garch, shocks anywhere | 1.37 | **0.293** | 0.247 | 0.172 | 0.467 | 0.101 (0.28) |
-| shifted effect x0.5 iid normal | 1.32 | **0.278** | 0.288 | 0.175 | 0.445 | 0.106 (0.30) |
-| shifted effect x0.5 proportional to trailing vol, garch t4 | 1.80 | **0.457** | 0.442 | 0.207 | 0.579 | 0.132 (0.42) |
-| shifted effect x0.5 with reversal correlation (k .33) iid | 1.14 | **0.217** | 0.228 | 0.132 | 0.403 | 0.105 (0.30) |
-| shifted effect x0.75 iid normal | 1.98 | **0.521** | 0.536 | 0.362 | 0.619 | 0.128 (0.44) |
-| shifted effect x1.5 iid normal | 3.96 | **0.975** | 0.978 | 0.907 | 0.944 | 0.237 (0.88) |
-| unshifted (T+3 windows in every era) effect x0.5 iid | 1.14 | **0.221** | 0.227 | 0.132 | 0.381 | 0.034 (-0.34) |
-| unshifted (T+3 windows in every era) effect x1.0 iid | 2.28 | **0.634** | 0.649 | 0.468 | 0.638 | 0.016 (-0.68) |
-| died at publication: full to 2019-12, zero after, iid | 1.29 | **0.266** | 0.276 | 0.167 | 0.162 | 0.083 (0.15) |
-| linear decay: full 2014-01 -> zero 2026-05, iid | 1.32 | **0.271** | 0.284 | 0.170 | 0.263 | 0.086 (0.18) |
-| decayed: full in the T+3 era only, x1.0 iid | 0.80 | **0.127** | 0.132 | 0.073 | 0.161 | 0.065 (0.02) |
-| turn of month only: T..T+3 +23 bp abnormal, iid | 0.71 | **0.120** | 0.121 | 0.068 | 0.298 | 0.066 (0.00) |
+| shifted effect x1.0 garch normal | 3.03 | **0.858** | 0.776 | 0.671 | 0.833 | 0.165 (0.60) |
+| shifted effect x1.0 garch t4 | 4.46 | **0.986** | 0.882 | 0.770 | 0.962 | 0.224 (0.81) |
+| shifted effect x1.0 garch, shocks anywhere | 2.75 | **0.787** | 0.701 | 0.620 | 0.793 | 0.145 (0.54) |
+| shifted effect x1.0 iid normal | 2.66 | **0.769** | 0.780 | 0.672 | 0.772 | 0.167 (0.59) |
+| shifted effect x1.0 proportional to trailing vol, garch t4 | 3.59 | **0.914** | 0.888 | 0.758 | 0.892 | 0.221 (0.79) |
+| shifted effect x1.0 with reversal correlation (k .33) iid | 2.25 | **0.626** | 0.638 | 0.519 | 0.676 | 0.159 (0.57) |
+| shifted effect x0.5 garch normal | 1.51 | **0.342** | 0.291 | 0.205 | 0.500 | 0.103 (0.31) |
+| shifted effect x0.5 garch t4 | 2.25 | **0.620** | 0.443 | 0.225 | 0.685 | 0.127 (0.40) |
+| shifted effect x0.5 garch, shocks anywhere | 1.37 | **0.293** | 0.247 | 0.195 | 0.467 | 0.101 (0.28) |
+| shifted effect x0.5 iid normal | 1.32 | **0.278** | 0.288 | 0.204 | 0.445 | 0.106 (0.30) |
+| shifted effect x0.5 proportional to trailing vol, garch t4 | 1.80 | **0.457** | 0.442 | 0.205 | 0.579 | 0.132 (0.42) |
+| shifted effect x0.5 with reversal correlation (k .33) iid | 1.14 | **0.217** | 0.228 | 0.156 | 0.403 | 0.105 (0.30) |
+| shifted effect x0.75 iid normal | 1.98 | **0.521** | 0.536 | 0.420 | 0.619 | 0.128 (0.44) |
+| shifted effect x1.5 iid normal | 3.96 | **0.975** | 0.978 | 0.949 | 0.944 | 0.237 (0.88) |
+| unshifted (T+3 windows in every era) effect x0.5 iid | 1.14 | **0.221** | 0.227 | 0.160 | 0.381 | 0.034 (-0.34) |
+| unshifted (T+3 windows in every era) effect x1.0 iid | 2.28 | **0.634** | 0.649 | 0.530 | 0.638 | 0.016 (-0.68) |
+| died at publication: full to 2019-12, zero after, iid | 1.29 | **0.266** | 0.276 | 0.195 | 0.162 | 0.083 (0.15) |
+| linear decay: full 2014-01 -> zero 2026-05, iid | 1.32 | **0.271** | 0.284 | 0.197 | 0.263 | 0.086 (0.18) |
+| decayed: full in the T+3 era only, x1.0 iid | 0.80 | **0.127** | 0.132 | 0.088 | 0.161 | 0.065 (0.02) |
+| turn of month only: T..T+3 +23 bp abnormal, iid | 0.71 | **0.120** | 0.121 | 0.078 | 0.298 | 0.066 (0.00) |
 
 **Reading.**
 - **Size.** At c\* = 1.92 every calibration world is at or below 5 %: **0.024–0.045**. The binding world is "crash aligned: 2008 down-leg ends on a P window end, garch t4" (q95 1.862 ± 0.026); c\* adds 2 MC SE. The uniform-placement shock worlds are at 0.029 and 0.024. The double-alignment stress world: 0.070 (reported; c would be 2.10 if calibrated on it, at a cost of 0.01–0.06 of power: iid 0.769 → 0.709 full, 0.278 → 0.222 half).
@@ -312,7 +327,7 @@ documented sequence falls (150 evenly spaced placements × 200 draws, iid days o
 - **Effect proportional to vol** (Etula: volatility amplifies the cycle), GARCH t₄: 0.914 / 0.457 (full / half); the raw rule 0.888 / 0.442.
 - **Decayed worlds pass:** died at publication 0.266; linear decay 0.271; T+3 era only 0.127; turn-of-month only 0.120. Hence paper only after a pass (§8).
 - **The primary does not test the shift:** the unshifted world passes 0.634 at full effect; the contrast's power is 0.17 (shifted) against 0.02 (unshifted).
-- **Existence and the bar** (T+1 regime): full iid 0.597, half iid 0.175. The bar now uses only 25 months of vol and the T+1 tilt, so it binds more than in the draft.
+- **Existence and the bar** (T+1 regime, pooled-μ tilt, Revision 2): full iid 0.672, half iid 0.204 (Revision 1, T+1 μ: 0.597 / 0.175). The bar uses 25 months of T+1 vol, so it binds more than in the draft.
 - **Long-only at t_148** stays anti-conservative (0.08–0.11 in the nulls); its corrected t is what §7 reports. **The placebo** is at 0.01–0.04 everywhere.
 - **Placement scan:** averaged over placements the false-pass rate is 0.029–0.033 (the honest null); 8–15 % of single placements exceed 0.05, the worst at 0.08–0.085 (each with a MC SE ≈ 0.015 and an upward selection bias). That is the residual crash-placement risk, stated (§9).
 
@@ -370,7 +385,10 @@ No reported block may become a primary. **Europe and HMM are not computed.**
      treatment group; other dates only if verified from a primary source). Its critical value is calibrated on null
      worlds that include the **US–Europe correlation of daily returns under the null** (global shocks hit both books),
      so the confirmation is not a re-read of the US pass. Read once, after a US pass. Expected power ≈ 0.9 at full
-     effect (review A).
+     effect (review A). **Data pin (Revision 2, A-n3):** the Europe zip's SHA-256 is pinned in that registration —
+     the bytes already on disk (`french_20261013T093725Z/Europe_3_Factors_Daily_CSV.zip`, `89b84ff3…`, identical to the
+     B1 pull), or a fresh pull pinned when it is pulled; its loader drops every row outside its calendar before
+     parsing, as 015's does.
   2. **015F, forward** (A-M1, A-m6): months **2026-06 → 2028-12** (≥ 31 months; the first window uses 2026-06-17 →
      2026-07-06), the same statistic, read once after **2029-03-01**. **A live step needs forward t ≥ 1** (P ≈ 0.59 /
      0.35 / 0.16 at full / half / zero effect), plus a passed Europe confirmation, plus paper net > 0 over the same
@@ -388,6 +406,10 @@ No reported block may become a primary. **Europe and HMM are not computed.**
 - **Transition months** (2017-08/09, 2024-05) are rule-assigned.
 - **Crash placement:** some placements of a documented crash raise the false-pass rate above 5 % (§5 scan); the
   honest null integrates over placement; vol scaling reduces the sensitivity.
+- **A forged interpreter state** (Revision 2, B r1-m2): someone able to write into the interpreter's site-packages
+  can plant a one-shot `.pth` that rewrites `sys.flags` and hides itself. The guard refuses a ran `site`, a
+  look-alike `sys.flags` and a command line without -I -S, which raises the bar; it cannot close it. Like 008's
+  forged-`.pyc` residual, this needs deliberate tampering outside the repository and is stated, not fixed.
 - **The French factor is the CRSP total market,** not the S&P 500 traded through MES.
 - **The 0.4 % floor and the 20-day window** are conventions.
 
@@ -409,15 +431,18 @@ No reported block may become a primary. **Europe and HMM are not computed.**
     **main worktree** only (`--git-dir` = `--git-common-dir` = REAL_REPO/.git); **a detached HEAD is refused**; the
     anchor `15c6421…` must be an ancestor. A clone of the real repository at any other path, with the data copied or
     symlinked, and a linked worktree, are refused (tested).
-  - **(r), 016-B M4:** reg0 = the first commit on HEAD's first-parent history whose registration says REGISTERED; it
-    is the `registration_commit` of every row; the registration and every guarded code file must be unchanged between
-    reg0 and HEAD (`git diff --quiet reg0 HEAD`). Any amendment after REGISTERED is a new registration.
+  - **(r), 016-B M4 and R1-M1:** every commit anywhere (`git log --all --reflog`, no first-parent restriction) whose
+    registration says REGISTERED is collected; **exactly one REGISTERED content** may exist; reg0 = the earliest
+    commit carrying it, and it is the `registration_commit` of every row; HEAD's registration blob and every guarded
+    code blob must equal reg0's. A revision after REGISTERED, on any branch and merged in any way, refuses. Any
+    amendment after REGISTERED is a new registration.
   - **(v), M2:** `sys.flags.isolated` **and `sys.flags.no_site`** (python **-I -S**) required, and no `.pth` file in
     site-packages outside a pinned (empty) list; no -O; **pins:** Python 3.14.8, interpreter binary
     SHA-256 `7ebde552…`, stdlib-tree fingerprint `c99bbd75…` (every .py / .so under the stdlib, tests and GUI
     packages excluded). **Every loaded module** must come from the pinned stdlib or be r015_core / r015_run in this
     directory; **every cached bytecode** from the fresh `sys.pycache_prefix`. research/alpha is **appended** to
-    `sys.path`, after the stdlib. Shadow scan of research/alpha's top level by blob comparison, **plus a refusal of any
+    `sys.path`, after the stdlib. **Revision 2:** refused also if `site` is in `sys.modules`, if `sys.flags` is not the
+    interpreter's own struct, if `sys.orig_argv` lacks -I and -S, or if a project module has `__cached__ = None`. Shadow scan of research/alpha's top level by blob comparison, **plus a refusal of any
     top-level module or package named like a stdlib module, committed or not.** **Recovery** after an interpreter change: reinstall Python 3.14.8 until `--fingerprint` equals
     the pins; the pins are never edited after REGISTERED.
   - **(f):** no 015 row anywhere (working tree; `git log --all --reflog -m --root -p --text --no-textconv
@@ -426,20 +451,21 @@ No reported block may become a primary. **Europe and HMM are not computed.**
   - **git** is called as `/usr/bin/git` with GIT_* stripped, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
     `GIT_NO_REPLACE_OBJECTS=1`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`. The runner commits as
     `r015_run <r015_run@localhost>` with `--no-verify`, retries a locked index 3 × 1 s, and never pushes.
-  - **M1:** `run()` takes no argument; guard, data, HEAD table and ledger are the real tree's; the started row says
-    `data_opened: false`; `primary()` stores code and data hashes that `recheck` compares with the HEAD table.
+  - **M1:** `run()` takes no argument; guard, data, HEAD table and ledger are the real tree's; `primary()` stores code and data hashes that `recheck` compares with the HEAD table.
     `_run_in()` exists for tests only and refuses anything under the real repository. **`record()` refuses to write
     into the real repository unless the real guard passed in this process and the default commit hook is in place,
     whatever the caller passes (016-B M1).**
   - **Gate:** the loader refuses any path inside the real repository, the real data tree, or a byte copy of any registered real data file anywhere, unless
-    the real `guard()` (constants captured at import, `guard_failures` captured at import) passed in this process.
+    the real `guard()` (constants captured at import, `guard_failures` captured at import) passed in this process
+    **and the started row is committed and verified in `HEAD:./results.jsonl` of the real ledger** (the token is issued
+    by `_run()` at that point, never by `guard()`; Revision 2, r1-m1).
     The one ungated read is `read_dates_only` (`--calendar`): the first field of each line only; the run refuses
     unless the dates it loads equal the pinned `calendar.json`.
   - Nothing is printed before the calendar counts; the decision only after the result row is committed in HEAD.
 - **016 coupling (B-m7).** The shadow scan refuses while any top-level `.py` or package in `research/alpha` (016's
   included) differs from HEAD. **016's draft and every revision of it must be committed before 015's `--check`;** the
   refusal message names this remedy. Neither runner blocks the other once both are committed.
-- [x] `tests/test_r015.py`: **200 checks pass** in the working tree (and 199 in the synthetic
+- [x] `tests/test_r015.py`: **211 checks pass** in the working tree (Revision 2; and 210 in the synthetic
   clones below). New in Revision 1: σ̂ / z (no look-ahead, floor), the T+1 bar, `recheck` (forged z, inconsistent y,
   lowered c, hashes); DATA_END; the vol-window refusal; **(b)/(d) with skip-worktree and assume-unchanged; a filter
   attribute; status read from HEAD; (k) no newline; append refused without a newline; (w) a clone with copied data, a
@@ -453,12 +479,15 @@ No reported block may become a primary. **Europe and HMM are not computed.**
   the real results.jsonl with a mock hook or without the guard refused, the file byte-unchanged; the gate refuses any
   path in the real repository; (r) a committed revision after REGISTERED refused naming reg0, and the returned commit
   is reg0;** a forged `statistics` named; r015_core bytecode from an existing `__pycache__` caught; the interpreter
-  matches the pins.** Both layouts (top level and `research/alpha/`) for the
+  matches the pins.** **New in Revision 2:** the `--no-ff` merge attack refused naming reg0 and a fast-forward
+  opening; the restart refused after runner commit → `reset --hard` → hand re-commit, allowed after a hand commit
+  (and after a hand amend of it); a passed guard alone not opening the data gate; a ran `site`, a look-alike
+  `sys.flags`, a project module with `__cached__ = None` refused; the pooled μ and the bar's tilt. Both layouts (top level and `research/alpha/`) for the
   guard, `record()` (the unfixed `HEAD:results.jsonl` refuses in the subdirectory layout) and the end-to-end run.
 - **Commit-state simulation, synthetic data only** (`scratchpad/commit_sim_rev1.sh`; no real data is copied, B-B1):
   a `git clone --local` of the real repository with a synthetic data tree
   (`build_synthetic_tree`; marker `data/r015/SYNTHETIC`) and the hash table rewritten to the synthetic files. Committed
-  at **DRAFT: 199 of 199 pass**; status changed to REGISTERED and committed: **199 of 199 pass** (the two real-byte
+  at **DRAFT: 210 of 210 pass** (Revision 2); status changed to REGISTERED and committed: **210 of 210 pass** (the two real-byte
   identity checks are skipped on a synthetic tree; one committed-state check is added). The real guard (`python3 -I -S
   r015_run.py --check`) in the REGISTERED clone refuses with **(w) only** (the runner is not in REAL_REPO; git's top
   level is not REAL_REPO; not the main worktree of REAL_REPO). The clone was deleted. A first attempt showed that the
@@ -470,13 +499,13 @@ No reported block may become a primary. **Europe and HMM are not computed.**
 
 | file | sha256 |
 |---|---|
-| `r015_core.py` | `6c416217edb16820c188f9f1dc2facf021d98dbf3df142b2e9a43d3e51d2f82c` |
-| `r015_power.py` | `4f7d3e1551bcd4e27a5f358d6145cd5bf060f853ea2ab28731ffcd5e95ce5095` |
-| `r015_run.py` | `79f94c650b316facb2e52a112bb4677ee476288f1b35e71f5b4daed45caef66f` |
+| `r015_core.py` | `0c309f4a9012f79438d89e8da6900eecad75a91e08bfeeeef0f32f3107724b27` |
+| `r015_power.py` | `1767122b8b848b7247fc5bd3e8f253123a8a6c98bd34c7b4405f3249293a2882` |
+| `r015_run.py` | `e6852046922983e81b9d20e4cddcac536ac73ba5a1a616fd6db64e1069eca90a` |
 | `data/r015/french_20261013T093725Z/F-F_Research_Data_Factors_daily_CSV.zip` | `2f29e22546069914890a712680a6f81f3680ebc3543b52864484d209ca13a7db` |
 | `data/r015/french_20261013T093725Z/SHA256SUMS` | `d6d8d44be6b8952952d4ec26fae46f69d3bccaa5d0de6c567fba7426bfa0afc7` |
 | `data/r015/calendar.json` | `48b2db397845d2e9951de46fa329a74769a869fd18d94d344f0f3f3f70d09113` |
-| `data/r015/logs/power.json` | `4df6e43e01a886d2131e0c4efe19eb741bfc4a4cf50026cb421addfaee7b68b9` |
+| `data/r015/logs/power.json` | `a8a1534c246e103fcee455874fdf1ea9cbd023755f33b10dbe50290f4a80ed52` |
 
 **Procedure.** (1) Recheck of this revision; REGISTERED (orchestrator), committed with the code; 016's files
 committed too. (2) `python3 -I -S research/alpha/r015_run.py --check` in the real repository, on a named branch, in the
@@ -524,6 +553,8 @@ main worktree. (3) `python3 -I -S research/alpha/r015_run.py --run`, once. (4) T
   clone simulation holds synthetic data only.
 - **Power runs:** draft (CAL 1.91 for the raw y; superseded). Revision 1: pass 1 at the placeholder 1.99, stopped
   after its calibration (1.92) and early power worlds; the registered pass 2 at 1.92 (same seeds, same calibration);
-  logs `logs/power_rev1_pass1.txt` (partial) and `logs/power_rev1_pass2.txt`.
+  logs `logs/power_rev1_pass1.txt` (partial) and `logs/power_rev1_pass2.txt`. Revision 2: one re-run at 1.92 (same
+  seeds) after the bar's tilt changed to the pooled μ (`logs/power_rev2.txt`, the pinned `power.json`): calibration,
+  size and power identical; only "pass and bar" changed.
 - **Literature:** Etula et al. (2020); Harvey–Mazzoleni–Melone (2026-01 draft; now irrelevant to 015's read).
 - **Seen, beyond hashes, counts and dates: nothing.**
