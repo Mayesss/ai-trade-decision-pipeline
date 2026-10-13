@@ -1,0 +1,6 @@
+guard() -> b9bd6a08e2cd | _GATE None
+N1a guard() then load_french(): the real 015 data opens only after the real guard() passed in this process
+N1b _run(throwaway ledger, real guard): the real 015 data opens only after the real guard() passed in this process
+   throwaway ledger rows: ['{"code_hashes": {}, "env": {"executable"', '{"data_opened": false, "error": "Refused']
+in-process forgery R._GATE = R._GUARD_PASSED: opened, 3251 rows (stated residual)
+real ledger rows: 0

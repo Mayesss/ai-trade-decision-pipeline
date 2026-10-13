@@ -1,0 +1,3 @@
+-- venv python -I (no -S), full one-shot .pth:
+guard open (registration commit 45f0ebde7be15713668a1d0cf1f4bedc6155e142)
+-- .pth left behind: 0

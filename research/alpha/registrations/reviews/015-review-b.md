@@ -481,3 +481,77 @@ Persistent lock, then a hand commit: one restart allowed. Both cases exist in th
 - the real `--check`: hashes only, `(s)`;
 - `--fingerprint`: no data.
 - Everything else was synthetic.
+
+---
+
+## Appendix: Revision 2 recheck (`e2a01b8`, probe-only)
+
+**Method.**
+- Same as the Revision 1 recheck, with the stand-in at `R015_REV=e2a01b8`. `make_standin_r1.py` now also takes
+  `--draft`.
+- The output of every `probe_r1_*` rerun is in `probe_r2_rerun_r1.out`.
+- The new probes are `probe_r2.sh`, `probe_r2_gate.sh` and `probe_r2_pth_full.sh`, each with a `.out` file.
+- The real history was read once to list the registration's statuses (`probe_r2_real_reg_versions.out`). It holds
+  three DRAFT versions and no REGISTERED version.
+
+### Verdict: register
+
+R1-M1 and R1-M2 are closed, and so is the gate finding (r1-m1). A legitimate REGISTERED commit in the real layout
+still opens the guard and runs end to end. One new minor remains; it needs the registration committed outside the
+main worktree. The residuals are as stated.
+
+| check | result |
+|---|---|
+| Legitimate REGISTERED stand-in | `guard open`; started, result and reported rows (`r015_run`); a second run is refused (f) |
+| Every round-1 and Revision 1 attack (B1, M1, M2, M3, minors, 016-B) | all refused, as before (`probe_r2_rerun_r1.out`); stand-in suite 210/0; the gate mutant fails 2 gate checks |
+| **R1-M1** `--no-ff` merge of a post-REGISTERED revision | refused on both branches: "(r) 2 different REGISTERED versions … (first: 897f8b4…)", HEAD and `r015_core.py` differ from reg0; `--run` refused |
+| **R1-M2** runner started commit → data read → result commit fails (lock) → checkout + `reset --hard` + hand re-commit | refused (f). The working-tree result row carried t = −1.80, and no restart is possible |
+| r1-m1 `__cached__ = None` | refused "(v) module r015_run has no `__cached__` record" |
+| r1-m1 with `__cached__` forged under the prefix: `guard()` then `load_french()`; `_run(throwaway ledger, real guard)` with symlinked data | both refused by the gate (`_GATE` stays `None`; the started row is not in HEAD of the real ledger); real ledger 0 rows |
+| r1-m2 one-shot `.pth` swapping `sys.flags` (the Revision 1 probe) | refused: "site module ran or sys.flags is not the interpreter's own struct", "command line does not carry -I and -S" |
+| reg0: two REGISTERED commits with identical content on different branches | `guard open` (one content), as intended |
+| reg0: rebase/squash of REGISTERED + revision in the main worktree | refused (2 versions, both in the reflog) |
+
+### r2-m1 (minor). A REGISTERED version made only in a linked worktree can vanish
+
+**Attack** (`probe_r2.sh` D).
+1. In a linked worktree on branch `reg`, commit REGISTERED, then a revision (the core edited, the table updated).
+2. In the main worktree, run `git merge --squash reg` and commit.
+3. Run `git worktree remove` and `git branch -D reg`.
+
+Removing the worktree deletes its HEAD reflog, and `branch -D` deletes the branch's reflog. The original REGISTERED
+commit is left dangling and invisible to `--all --reflog`. No gc and no reflog expiry was needed.
+
+```
+main worktree: guard open
+--run (NULL synthetic data): "t": 1.7787   (the registered code gives t -1.80 on this tree)
+```
+
+This is not the documented procedure: the orchestrator commits REGISTERED in the main worktree, and that leaves the
+commit in HEAD's reflog. Agent worktrees that are later squash-merged are routine in this programme, though.
+
+**Fix (cheap; either one).**
+- At registration the orchestrator creates the tag `r015-registered` on reg0. The guard requires the tag to exist and
+  to point at the earliest REGISTERED commit, with identical registration and code blobs. Deleting a tag is an
+  explicit act.
+- Or pin reg0 in the programme ledger (016-B M4).
+
+**Procedure line.** "REGISTERED is committed in the main worktree of the real repository, never in a worktree or on a
+branch that is later squashed."
+
+### Liveness note
+
+A REGISTERED commit with a typo that is then reset away stays in the reflog. Until reflog expiry, every run is refused
+with "(r) 2 different REGISTERED versions" (`probe_r2.sh` C). This fails closed, as intended. Two consequences:
+- The orchestrator must get the REGISTERED commit right the first time.
+- No REGISTERED simulation may ever be committed in the real repository, on any branch. The commit-state simulation
+  stays in clones.
+
+### Residuals, confirmed as stated
+
+- **History purge.** `git reflog expire --expire-unreachable=now --all` after `reset --hard` reopens both run-once
+  and the restart (`probe_r2.sh` A, E). This is the round-1 accepted residual.
+- **A hostile site-packages.** A full one-shot `.pth` defeats the checks: it swaps in a tuple subclass named `flags`,
+  rewrites `orig_argv` to carry `-I -S`, installs a meta-path hook that drops `sys.modules['site']`, and deletes
+  itself. The guard then opens without `-S` (`probe_r2_pth_full.out`).
+- **In-process forgery.** `R._GATE = R._GUARD_PASSED` opens the gate in-process (`probe_r2_gate.out`).

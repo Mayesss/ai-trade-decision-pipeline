@@ -1,0 +1,32 @@
+### A. restart abuse: the runner commits its started row, reads the data, then its result commit fails (lock)
+  run ended: r015_core.Refused: could not commit results.jsonl: fatal: Unable to create '/private/tmp/c
+  HEAD: r015_run | 015 started (r015_run.py)
+  working tree rows: ['started', 'result', 'failed'] | uncommitted result row carries t = [-1.8]
+  after checkout + reset --hard HEAD~1 + hand re-commit of the started line:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+  ... then 'git reflog expire --expire-unreachable=now --all' (no gc; a history purge):
+guard open (registration commit a1bbcd0f3d9dba90ee13b34cd2da1524d0712421)
+
+### B. two REGISTERED commits with IDENTICAL content on different branches
+guard open (registration commit de7c22cd62f6dd84887d7d4d6227058a4af592a3)
+
+### C. a REGISTERED commit with a typo, reset, corrected REGISTERED commit (liveness)
+  REGISTERED commit, a typo'd REGISTERED commit reset away (still in the reflog):
+(r) 2 different REGISTERED versions of the registration exist in the history (first: 21a3dd41dc85) — an amendment after REGISTERED is a new 
+
+### D. REGISTERED + revision made in a LINKED WORKTREE, squash-merged, worktree removed, branch deleted
+Squash commit -- not updating HEAD
+  main worktree:
+guard open (registration commit c6f2c533bc623f26d2777c9e4a378087c00339b9)
+  --run (NULL synthetic data; the registered code gives t -1.80 on this tree):
+ "t": 1.7786730116129912,
+decision: not_demonstrated
+  original REGISTERED commit still in the object store: 9 dangling objects
+
+### E. rebase/squash of REGISTERED + revision in the main worktree
+  after the squash (originals in the reflog):
+(r) 2 different REGISTERED versions of the registration exist in the history (first: 96c075d381d7) — an amendment after REGISTERED is a new 
+(r) HEAD's registration differs from the REGISTERED commit 96c075d381d7
+(r) r015_core.py at HEAD differs from the REGISTERED commit 96c075d381d7
+  after 'git reflog expire --expire=now --all' (history purge):
+guard open (registration commit d11da425d2d618cde920f4c392559a9a3fe11b31)

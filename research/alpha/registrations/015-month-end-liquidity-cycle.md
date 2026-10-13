@@ -1,8 +1,12 @@
 # 015 — The month-end liquidity cycle in US equities, with windows shifted by the settlement lag (B1 #1a)
 
-**Status: DRAFT — Revision 2, 2026-10-13** (drafter; Revision 2 answers the Revision 1 rechecks appended to
-`reviews/015-review-a.md` and `reviews/015-review-b.md`; Revision 1 answered the first-round reviews `reviews/015-review-a.md` and
-`reviews/015-review-b.md` and the orchestrator's decisions on them; for a second-round recheck; not registered).
+**Status: REGISTERED 2026-10-13** (orchestrator, under the owner's delegation of 2026-10-12: "you are allowed to
+register yourself and take decision as you would recommend as long as they take us nearer towards the goal"). Previously
+DRAFT — Revision 2. Review A: register (Revision 1 recheck); review B: register (Revision 2 recheck). Registration
+procedure (review B, Revision 2 recheck, minor): this commit is made in the main worktree and tagged `r015-registered`,
+so it stays reachable from `--all`; no REGISTERED simulation is ever committed in the real repository. Revision 2
+answered the Revision 1 rechecks appended to `reviews/015-review-a.md` and `reviews/015-review-b.md`; Revision 1
+answered the first-round reviews and the orchestrator's decisions on them.
 Programme: round 4, `docs/alpha-discovery-2026-10-13.md` (B1). Scout: `research/alpha/scouts/b1-equities-flows.md`
 §3.1. Ledger entries read: `000s` (B1 exposure); `000p`–`000r` for context. Templates: `research/copytrade/r008_run.py`,
 `r013_run.py`, their registrations and reviews (008-a/b/r1, 013-a/b/r1, 014-b).

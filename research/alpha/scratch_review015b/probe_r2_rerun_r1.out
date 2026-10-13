@@ -1,0 +1,210 @@
+######## probe_r1_b1 (Revision 2)
+== legit REGISTERED stand-in: --check
+guard open (registration commit b0ebe804022b604547b81cce2a7fa4c3fae71289)
+== legit --run
+decision: not_demonstrated
+r015_run | 015 reported blocks (r015_run.py)
+r015_run | 015 result (r015_run.py)
+r015_run | 015 started (r015_run.py)
+== second --run:
+    raise Refused('\n'.join(failures))
+r015_core.Refused: (f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+== clone (copy data) --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_copy, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_copy', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+== clone (copy data) --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows in clone: 0
+== clone (symlink data) --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_symlink, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_symlink', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+== clone (symlink data) --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows in clone: 0
+== linked worktree --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+(w) HEAD is detached — run on a named branch of the real repository
+== linked worktree --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows: 0
+== detached HEAD in the main worktree --check:
+(w) HEAD is detached — run on a named branch of the real repository
+== back on the branch --check:
+guard open (registration commit 0bb80fb2ce0b0a31d8fa3d638e92053866dbbe9f)
+######## probe_r1_m1 (Revision 2)
+### from a script
+M1a run(other) (no argument accepted): refused (TypeError: run() takes 0 positional arguments but 1 was given)
+M1b run() with a mock commit hook: refused (Refused: (M1) a non-default commit hook is never used on the real tree)
+M1c run() with a stubbed guard: refused (Refused: (M1) the real tree is opened only by the real guard)
+M1d _run(real, stub guard): refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+M1e _run_in(real, real guard): refused (Refused: (M1) _run_in() never touches the real repository, its results or its data)
+M1f record() into the real ledger without the gate: refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+real ledger rows after M1a-f: 0 | HEAD unchanged: True
+N1 guard() from a foreign script: refused (Refused: (v) module __main__ is loaded from /Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline/researc)
+### via -c (deliberate: no __main__ file, r015_run.__cached__ nulled)
+    raise Refused('\n'.join(failures))
+r015_core.Refused: (v) module r015_run has no __cached__ record (tampered import state)
+M1a run(other) (no argument accepted): refused (TypeError: run() takes 0 positional arguments but 1 was given)
+M1b run() with a mock commit hook: refused (Refused: (M1) a non-default commit hook is never used on the real tree)
+M1c run() with a stubbed guard: refused (Refused: (M1) the real tree is opened only by the real guard)
+M1d _run(real, stub guard): refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+M1e _run_in(real, real guard): refused (Refused: (M1) _run_in() never touches the real repository, its results or its data)
+M1f record() into the real ledger without the gate: refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+######## probe_r1_m2 (Revision 2)
+== baseline -I -S:
+guard open (registration commit 598a210419ecc2fe5ff92ef9655cfc4a8b94b496)
+== no flags:
+(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct (Revision 2, r1-m2)
+(v) the command line does not carry -I and -S (sys.orig_argv)
+== -I only (no -S):
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct (Revision 2, r1-m2)
+(v) the command line does not carry -I and -S (sys.orig_argv)
+== no -I, PYTHONPATH=forged statistics:
+(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(v) module statistics is loaded from /private/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmp.wPOsitrjaB/statistics.py, outside the pinn
+== -I -S, forged statistics put first on sys.path by a -c entry, then the runner's main():
+(v) module r015_run bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-
+(v) module statistics is loaded from /private/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmp.wPOsitrjaB/statistics.py, outside the pinn
+== -I -S, forged __pycache__ r015_core (CAL_CRIT 9.99, mtime/size kept) imported before r015_run:
+CAL_CRIT in use 9.99
+(v) module r015_core bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0
+(v) module r015_run bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-
+== -O:
+(v) python -O / -OO is refused
+== committed top-level csv.py (stdlib name):
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['csv.py (stdlib name)'] — commit ev
+  import csv resolves to /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/csv.py
+== committed top-level statistics.py (stdlib name):
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['statistics.py (stdlib name)'] — co
+  import statistics resolves to /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/statistics.py
+== after removing them (registration and code unchanged since reg0):
+guard open (registration commit 598a210419ecc2fe5ff92ef9655cfc4a8b94b496)
+== a .pth in site-packages (throwaway venv; the .pth runs code at startup unless -S):
+-- venv python -I (no -S):
+PTH EXECUTED
+PTH EXECUTED
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct (Revision 2, r1-m2)
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pi
+-- venv python -I -S:
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pi
+-- venv python -I -S, .pth removed:
+guard open (registration commit 598a210419ecc2fe5ff92ef9655cfc4a8b94b496)
+######## probe_r1_m3 (Revision 2)
+== edited core + table, git update-index --skip-worktree:
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(d) guarded code r015_core.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) r015_core.py carries an index flag (S) that hides working-tree changes
+(d) registrations/015-month-end-liquidity-cycle.md carries an index flag (S) that hides working-tree changes
+(e) r015_core.py does not match its registered SHA-256
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['r015_core.py'] — commit 
+   --run:
+r015_core.Refused: (b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+   rows: 0
+== edited core + table, git update-index --assume-unchanged:
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(d) guarded code r015_core.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) r015_core.py carries an index flag (h) that hides working-tree changes
+(d) registrations/015-month-end-liquidity-cycle.md carries an index flag (h) that hides working-tree changes
+(e) r015_core.py does not match its registered SHA-256
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['r015_core.py'] — commit 
+   --run:
+r015_core.Refused: (b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+   rows: 0
+== a committed filter attribute on r015_core.py (no edit):
+(d) a filter attribute applies: r015_core.py: filter: rb
+== HEAD says DRAFT, working tree says REGISTERED:
+(s) 015-month-end-liquidity-cycle.md is not REGISTERED in HEAD — refusing to compute any outcome.
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(r) HEAD's registration differs from the REGISTERED commit 9066211e022a
+== 016-B M4: a committed revision after REGISTERED (core edited, table updated, both committed):
+(r) 2 different REGISTERED versions of the registration exist in the history (first: 8b9cf5cb33f1) — an amendment after REGISTERED
+   --run:
+r015_core.Refused: (r) 2 different REGISTERED versions of the registration exist in the history (first: 8b9cf5cb33f1) — 
+######## probe_r1_minors (Revision 2)
+### m3 trailing newline
+(k) results.jsonl does not end with a newline — a row appended now would merge into another
+r015_core.Refused: (k) results.jsonl does not end with a newline — a row appended now would merge into another
+HEAD:results.jsonl lines: 0 (unchanged: the 016 row only)
+
+### m4 showRoot=false + orphan root row; git replace
+showRoot=false:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+git replace <row commit> <decoy>:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+
+### m6 index lock: transient (1.5 s) and persistent
+decision: not_demonstrated
+  r015_run | 015 reported blocks (r015_run.py)
+  r015_run | 015 result (r015_run.py)
+  r015_run | 015 started (r015_run.py)
+r015_core.Refused: could not commit results.jsonl: fatal: Unable to create '/private/tmp/claude-502/-Users-mayess-sammou
+  working tree rows: 1
+(k) results.jsonl is untracked or differs from HEAD — every row is committed when written
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+-- the owner commits the started row by hand (restart clause):
+guard open (registration commit 7233401ed8d9995cefa8332d4729f640ad3e227a)
+-- restart --run:
+decision: not_demonstrated
+-- third --run:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+
+### restart clause abuse: runner-authored started row, data read, then reset + re-commit by hand
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+    c = R.guard(); R.record({'registration': R.REG_NAME, 'mode': 'started', 'registration_commit': c, 'data_opened': False}, '015 started (r015_run.py)')
+  File "/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/n5/research/alpha/r015_run.py", line 485, in guard
+    raise Refused('\n'.join(failures))
+r015_core.Refused: (v) module r015_run has no __cached__ record (tampered import state)
+  --check now:
+guard open (registration commit eb3569d6621779f9dd2e9b7c34cf4dc802d462d2)
+  after 'git reset --hard HEAD~1' and re-committing the same line as the owner:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a
+(s) 015-month-end-liquidity-cycle.md is not REGISTERED in HEAD — refusing to compute any outcome.
+(r) HEAD's registration differs from the REGISTERED commit eb3569d66217
+(r) r015_run.py at HEAD differs from the REGISTERED commit eb3569d66217
+(e) data/r015/french_20261013T093725Z/F-F_Research_Data_Factors_daily_CSV.zip does not match its registered SHA-256
+(e) data/r015/french_20261013T093725Z/SHA256SUMS does not match its registered SHA-256
+(e) data/r015/calendar.json does not match its registered SHA-256
+(e) data/r015/logs/power.json does not match its registered SHA-256
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4f
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+  runner-authored commit still in the reflog: 
+
+### m5 the loader-gate test against a mutant without _gate() in load_french
+210 passed, 0 failed
+  FAILED: every guarded file matches its registered SHA-256
+  failures only in the mutant:
+>   FAILED: the gate: a byte copy of a registered real data file outside data/r015 is refused (review B m2)
+>   FAILED: the gate: load_french on the real US file without the guard is refused BY THE GATE, before any hashing
+>   FAILED: every guarded file matches its registered SHA-256
+######## probe_r1_reg0_merge (Revision 2)
+== on alpha-discovery (REGISTERED at 897f8b4, then a revision):
+(r) 2 different REGISTERED versions of the registration exist in the history (first: 897f8b42613f) — an amendment after 
+(r) HEAD's registration differs from the REGISTERED commit 897f8b42613f
+(r) r015_core.py at HEAD differs from the REGISTERED commit 897f8b42613f
+== on a branch from main after 'git merge --no-ff alpha-discovery':
+(r) 2 different REGISTERED versions of the registration exist in the history (first: 897f8b42613f) — an amendment after 
+(r) HEAD's registration differs from the REGISTERED commit 897f8b42613f
+(r) r015_core.py at HEAD differs from the REGISTERED commit 897f8b42613f
+== --run there (NULL synthetic data):
+    raise Refused('\n'.join(failures))
+r015_core.Refused: (r) 2 different REGISTERED versions of the registration exist in the history (first: 897f8b42613f) — 
+row registration_commit None
+######## probe_r1_pth_selfdelete (Revision 2)
+-- venv python -I (no -S), one-shot .pth replacing sys.flags:
+(v) the site module ran or sys.flags is not the interpreter's own struct (Revision 2, r1-m2)
+(v) the command line does not carry -I and -S (sys.orig_argv)
+-- .pth left behind:        0

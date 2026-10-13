@@ -14,7 +14,9 @@ real, dest = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 effect = float(sys.argv[3]) if len(sys.argv) > 3 and not sys.argv[3].startswith('--') else 0.0
 patch = '--no-pin-patch' not in sys.argv
 subprocess.run(['git', 'clone', '-q', '--local', str(real), str(dest)], check=True)
-subprocess.run(['git', '-c', 'advice.detachedHead=false', 'checkout', '-q', '-B', 'alpha-discovery', '7b265d8'], cwd=dest, check=True)
+import os
+REV = os.environ.get('R015_REV', '7b265d8')          # Revision 2 recheck: R015_REV=e2a01b8
+subprocess.run(['git', '-c', 'advice.detachedHead=false', 'checkout', '-q', '-B', 'alpha-discovery', REV], cwd=dest, check=True)
 A = dest / 'research' / 'alpha'
 if patch:
     src = (A / 'r015_run.py').read_text()
@@ -34,7 +36,8 @@ for f in (*R.GUARDED_DATA, 'r015_run.py'):
     text, n = re.subn(r'(\|\s*`' + re.escape(f) + r'`\s*\|\s*`)[0-9a-f]{64}(`)',
                       lambda m: m.group(1) + R.sha256(A / f) + m.group(2), text)
     assert n == 1, f
-text = re.sub(r'^\*\*Status: DRAFT', '**Status: REGISTERED', text, count=1, flags=re.M)
+if '--draft' not in sys.argv:                          # --draft: hashes rewritten, status left DRAFT (R2 recheck)
+    text = re.sub(r'^\*\*Status: DRAFT', '**Status: REGISTERED', text, count=1, flags=re.M)
 reg.write_text(text)
 g = lambda *a: subprocess.run(['git', '-c', 'user.name=owner', '-c', 'user.email=owner@x', *a], cwd=A, capture_output=True, text=True)
 g('add', 'r015_run.py', 'registrations/015-month-end-liquidity-cycle.md')
