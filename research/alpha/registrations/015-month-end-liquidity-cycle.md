@@ -562,3 +562,43 @@ main worktree. (3) `python3 -I -S research/alpha/r015_run.py --run`, once. (4) T
   size and power identical; only "pass and bar" changed.
 - **Literature:** Etula et al. (2020); Harvey–Mazzoleni–Melone (2026-01 draft; now irrelevant to 015's read).
 - **Seen, beyond hashes, counts and dates: nothing.**
+
+## Result — 2026-10-13 (run of commit `89da896`, tag `r015-registered`; `research/alpha/results.jsonl` lines 1–3)
+
+One trial, one read. Rows committed by the runner: `started` (`380792c`), `result` (`95dc314`), `reported`
+(`f4659c6`); the reported row cites the result row's SHA-256 `7bd98147…`. Guard state before the run: `guard open
+(registration commit 89da896…)`, in the main worktree, after 016 Revision 1 was committed. 149 months
+(2014-01 → 2026-05; T+3 44, T+2 80, T+1 25).
+
+| criterion | result | verdict |
+|---|---|---|
+| mean z > 0 | **+0.037** (vol units; SD 1.315) | holds |
+| t ≥ 1.92 (month-clustered, G 149) | **t 0.34** | **fails** |
+| mean z > 0 without the largest month | **−0.009** | **fails** |
+
+**Decision: `not_demonstrated`.** The settlement-shifted month-end liquidity cycle is not detected in US equities
+after 2013. **Paper trading is not triggered; the Europe confirmation is not run, and the Europe month-end calendar
+stays unread; 015F is not registered.** Family "US equity calendar flows": 1 trial, no pass.
+
+**Reported blocks (pre-stated; they decide nothing).**
+- **Raw y** (the draft's equal-weight statistic): **+27 bp a month, t 0.85** (median −12 bp), against the published
+  long/short abnormal **85 bp**. The published magnitude sits about 1.8 standard errors (SE ≈ 32 bp) above this
+  estimate: if the effect survives, it is about a third of its published size or less.
+- **By settlement era (raw y):** T+3 (2014-01 → 2017-08, Etula's own windows) **+5 bp, t 0.09**; T+2 **+58 bp,
+  t 1.18**; T+1 **−32 bp, t −0.57**. The cycle is absent even in the era whose windows are exactly the paper's.
+- **Mechanism contrast** (shifted minus unshifted windows, T+2 and T+1 eras): −7 bp, t −0.27. The unshifted windows
+  over all months: +32 bp, t 1.03. No sign that the window moved with the settlement lag.
+- **Placebo** (same shapes at T−12): −15 bp, t −0.59. **Friday-T months** minus others (z): +0.30, t 1.48.
+- **Recent window** (2021-01 →): raw +29 bp, t 0.61; z t 0.22. **Without quarter-end months** (z): t −0.05.
+- **Long-only rebound**, era-μ corrected: t 0.02.
+- **Deployable nets:** MES +24 bp a month (t 0.76, median −14 bp); `xyz` +22 bp (t 0.67). **T+1-era v** (the regime
+  one would trade now): −56 bp a month, t −0.99. Economic bar: Kelly at the shrunk estimate is negative, so the size
+  is 0 and the bar (≥ 4%/yr) is not met.
+
+**What it means.** The month-end liquidity cycle that Etula et al. measured to 2013 (+77 bp raw, +48 bp abnormal over
+T−3…T+3) is not visible in 2014-01 → 2026-05: neither in the vol-scaled primary, nor in the raw statistic, nor in the
+paper's own T+3 windows before the settlement change. The settlement-shift prediction, the mechanism's sharpest
+implication, shows nothing either. A small residual (≈ +27 bp a month, not significant) cannot be excluded, but at
+that size and at MES costs it does not clear the bar at any Kelly-consistent leverage. **Not a rejection of the
+historical effect; the test saw nothing like its published size after publication** — consistent with the decay
+pattern of other documented calendar anomalies (pre-FOMC drift, index inclusion).
