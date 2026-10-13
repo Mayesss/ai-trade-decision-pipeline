@@ -1,0 +1,8 @@
+== on alpha-discovery (REGISTERED at cb274bb, then a revision):
+(r) the registration or guarded code changed since the REGISTERED commit cb274bbe1907 — an amendment is a new registrati
+== on a branch from main after 'git merge --no-ff alpha-discovery':
+guard open (registration commit 4e7ca93e3edd97fcc853a09267093cfca4384f71)
+== --run there (NULL synthetic data):
+ "t": 1.7786730116129912,
+decision: not_demonstrated
+row registration_commit 4e7ca93e3edd

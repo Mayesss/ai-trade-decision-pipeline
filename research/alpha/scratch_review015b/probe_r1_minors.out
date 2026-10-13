@@ -1,0 +1,42 @@
+### m3 trailing newline
+(k) results.jsonl does not end with a newline — a row appended now would merge into another
+r015_core.Refused: (k) results.jsonl does not end with a newline — a row appended now would merge into another
+HEAD:results.jsonl lines: 0 (unchanged: the 016 row only)
+
+### m4 showRoot=false + orphan root row; git replace
+showRoot=false:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+git replace <row commit> <decoy>:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+
+### m6 index lock: transient (1.5 s) and persistent
+decision: not_demonstrated
+  r015_run | 015 reported blocks (r015_run.py)
+  r015_run | 015 result (r015_run.py)
+  r015_run | 015 started (r015_run.py)
+r015_core.Refused: could not commit results.jsonl: fatal: Unable to create '/private/tmp/claude-502/-Users-mayess-sammou
+  working tree rows: 1
+(k) results.jsonl is untracked or differs from HEAD — every row is committed when written
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+-- the owner commits the started row by hand (restart clause):
+guard open (registration commit dfdf1874c1ea96631dd5cb830fa6465f914624cf)
+-- restart --run:
+decision: not_demonstrated
+-- third --run:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+
+### restart clause abuse: runner-authored started row, data read, then reset + re-commit by hand
+  started committed by r015_run | data rows read: 3251 | process dies here
+  --check now:
+(f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+  after 'git reset --hard HEAD~1' and re-committing the same line as the owner:
+guard open (registration commit 56ac6091b9e33a629bca96261cf9b5b30d10c523)
+  runner-authored commit still in the reflog: 0b9d4b8
+
+### m5 the loader-gate test against a mutant without _gate() in load_french
+199 passed, 0 failed
+  FAILED: every guarded file matches its registered SHA-256
+  failures only in the mutant:
+>   FAILED: the gate: a byte copy of a registered real data file outside data/r015 is refused (review B m2)
+>   FAILED: the gate: load_french on the real US file without the guard is refused BY THE GATE, before any hashing
+>   FAILED: every guarded file matches its registered SHA-256

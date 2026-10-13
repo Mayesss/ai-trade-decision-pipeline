@@ -1,0 +1,3 @@
+-- venv python -I (no -S), one-shot .pth replacing sys.flags:
+guard open (registration commit d331070e9fdca98e066ba9b626cdd9cf0a826763)
+-- .pth left behind:        0

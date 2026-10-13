@@ -1,0 +1,21 @@
+### from a script
+M1a run(other) (no argument accepted): refused (TypeError: run() takes 0 positional arguments but 1 was given)
+M1b run() with a mock commit hook: refused (Refused: (M1) a non-default commit hook is never used on the real tree)
+M1c run() with a stubbed guard: refused (Refused: (M1) the real tree is opened only by the real guard)
+M1d _run(real, stub guard): refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+M1e _run_in(real, real guard): refused (Refused: (M1) _run_in() never touches the real repository, its results or its data)
+M1f record() into the real ledger without the gate: refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+real ledger rows after M1a-f: 0 | HEAD unchanged: True
+N1 guard() from a foreign script: refused (Refused: (v) module __main__ is loaded from /Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline/researc)
+### via -c (deliberate: no __main__ file, r015_run.__cached__ nulled)
+M1a run(other) (no argument accepted): refused (TypeError: run() takes 0 positional arguments but 1 was given)
+M1b run() with a mock commit hook: refused (Refused: (M1) a non-default commit hook is never used on the real tree)
+M1c run() with a stubbed guard: refused (Refused: (M1) the real tree is opened only by the real guard)
+M1d _run(real, stub guard): refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+M1e _run_in(real, real guard): refused (Refused: (M1) _run_in() never touches the real repository, its results or its data)
+M1f record() into the real ledger without the gate: refused (Refused: (M1) rows are written into the real repository only by the real run, after the real guard, with the default co)
+N1a guard() then load_french(): 3251 rows of the guarded file read; real ledger rows: 0
+N1b refused: internal: the decision does not recompute from its records; stored with recheck_failed, not printed
+real --check afterwards: guard open (registration commit b0542cb06197651ba25650a4a03bab41ac139c79)
+started   
+result {'t': -1.7995311552289128, 'exists': False} ['code hashes in the row differ from the registered table'] 1fec4431b32a

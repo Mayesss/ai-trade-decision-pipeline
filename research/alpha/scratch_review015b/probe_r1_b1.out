@@ -1,0 +1,39 @@
+== legit REGISTERED stand-in: --check
+guard open (registration commit 0848c4601a09309a10458056a729cda07a520b8b)
+== legit --run
+decision: not_demonstrated
+r015_run | 015 reported blocks (r015_run.py)
+r015_run | 015 result (r015_run.py)
+r015_run | 015 started (r015_run.py)
+== second --run:
+    raise Refused('\n'.join(failures))
+r015_core.Refused: (f) a 015 row exists (working tree, any branch, reflog, merge, stash or root commit) — 015 runs once
+== clone (copy data) --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_copy, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_copy', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+== clone (copy data) --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows in clone: 0
+== clone (symlink data) --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_symlink, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/cl_symlink', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+== clone (symlink data) --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows in clone: 0
+== linked worktree --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015r1/origin
+(w) not the main worktree of the real repository (a linked worktree or another .git)
+(w) HEAD is detached — run on a named branch of the real repository
+== linked worktree --run:
+    raise Refused(f'(w) this runner lives in {REPO}, not in the real repository {REAL_REPO}')
+r015_core.Refused: (w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-
+rows: 0
+== detached HEAD in the main worktree --check:
+(w) HEAD is detached — run on a named branch of the real repository
+== back on the branch --check:
+guard open (registration commit bcf8f2a23816ad46a991b7441861b2b912a05cbe)

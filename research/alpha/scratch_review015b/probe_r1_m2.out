@@ -1,0 +1,37 @@
+== baseline -I -S:
+guard open (registration commit b36404342e548701f1c06de17afff987bc86feab)
+== no flags:
+(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+== -I only (no -S):
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+== no -I, PYTHONPATH=forged statistics:
+(v) run with python -I (isolated mode) — PYTHONPATH, user site and the script directory must not load
+(v) module statistics is loaded from /private/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmp.LLQHbzS8w1/statistics.py, outside the pinn
+== -I -S, forged statistics put first on sys.path by a -c entry, then the runner's main():
+(v) module r015_run bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-
+(v) module statistics is loaded from /private/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmp.LLQHbzS8w1/statistics.py, outside the pinn
+== -I -S, forged __pycache__ r015_core (CAL_CRIT 9.99, mtime/size kept) imported before r015_run:
+CAL_CRIT in use 9.99
+(v) module r015_core bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0
+(v) module r015_run bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-
+== -O:
+(v) python -O / -OO is refused
+== committed top-level csv.py (stdlib name):
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['csv.py (stdlib name)'] — commit ev
+  import csv resolves to /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/csv.py
+== committed top-level statistics.py (stdlib name):
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['statistics.py (stdlib name)'] — co
+  import statistics resolves to /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/statistics.py
+== after removing them (registration and code unchanged since reg0):
+guard open (registration commit b36404342e548701f1c06de17afff987bc86feab)
+== a .pth in site-packages (throwaway venv; the .pth runs code at startup unless -S):
+-- venv python -I (no -S):
+PTH EXECUTED
+PTH EXECUTED
+(v) run with python -I -S (no site) — a site-packages .pth would execute at startup
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pi
+-- venv python -I -S:
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pi
+-- venv python -I -S, .pth removed:
+guard open (registration commit b36404342e548701f1c06de17afff987bc86feab)

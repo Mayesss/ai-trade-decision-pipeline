@@ -1,0 +1,30 @@
+== edited core + table, git update-index --skip-worktree:
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(d) guarded code r015_core.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) r015_core.py carries an index flag (S) that hides working-tree changes
+(d) registrations/015-month-end-liquidity-cycle.md carries an index flag (S) that hides working-tree changes
+(e) r015_core.py does not match its registered SHA-256
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['r015_core.py'] — commit 
+   --run:
+r015_core.Refused: (b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+   rows: 0
+== edited core + table, git update-index --assume-unchanged:
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(d) guarded code r015_core.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) r015_core.py carries an index flag (h) that hides working-tree changes
+(d) registrations/015-month-end-liquidity-cycle.md carries an index flag (h) that hides working-tree changes
+(e) r015_core.py does not match its registered SHA-256
+(v) untracked, ignored or modified importable files at research/alpha top level could shadow an import: ['r015_core.py'] — commit 
+   --run:
+r015_core.Refused: (b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+   rows: 0
+== a committed filter attribute on r015_core.py (no edit):
+(d) a filter attribute applies: r015_core.py: filter: rb
+== HEAD says DRAFT, working tree says REGISTERED:
+(s) 015-month-end-liquidity-cycle.md is not REGISTERED in HEAD — refusing to compute any outcome.
+(b) 015-month-end-liquidity-cycle.md: the working-tree bytes differ from the committed version
+(r) the registration or guarded code changed since the REGISTERED commit 0bde65e722f8 — an amendment is a new registration
+== 016-B M4: a committed revision after REGISTERED (core edited, table updated, both committed):
+(r) the registration or guarded code changed since the REGISTERED commit ec8776bcf1ba — an amendment is a new registration
+   --run:
+r015_core.Refused: (r) the registration or guarded code changed since the REGISTERED commit ec8776bcf1ba — an amendment 

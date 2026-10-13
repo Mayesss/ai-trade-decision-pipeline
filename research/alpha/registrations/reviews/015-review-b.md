@@ -339,3 +339,145 @@ filtered content.
 - `r015_run.py --check` was run in that clone: hashes only, computes nothing.
 - `shadow_modules()` was run on the real `research/alpha`: a file listing.
 - **No value column was parsed; no return, mean or statistic of any real file was computed or seen.**
+
+---
+
+## Appendix: Revision 1 recheck (`7b265d8`, probe-only)
+
+**Method.**
+- `scratch_review015b/make_standin_r1.py` builds a synthetic stand-in for the real repository:
+  - a `git clone --local` of the real repository at `7b265d8`, on branch `alpha-discovery`;
+  - synthetic data from the suite's own `build_synthetic_tree()`;
+  - the one line `REAL_REPO = Path('…')` pointed at the stand-in;
+  - the HEAD hash rows rewritten, and REGISTERED committed.
+- Nothing was copied or symlinked from the real data tree.
+- In the real repository only `python3 -I -S r015_run.py --check` was run. It computes nothing and printed `(s)` only
+  (`probe_r1_real_check.out`).
+- Shared helpers are in `r1_lib.sh`. Each probe has a `.out` file.
+
+### Verdict: register after two small fixes (R1-M1, R1-M2)
+
+Every round-1 attack is now refused. A legitimate REGISTERED commit in the real layout opens the guard and runs
+end to end. Two of the newly ported mechanisms can still be bypassed by ordinary git operations:
+- the reg0 binding, through a merge;
+- the restart clause, through a reset followed by a re-commit by hand.
+
+Both fixes are a few lines each. No blocker remains.
+
+### Round-1 attacks: all refused
+
+| attack | probe | Revision 1 |
+|---|---|---|
+| **Legitimate open**: REGISTERED stand-in in the real layout | `probe_r1_b1.out` | `guard open`; `--run` gives started, result and reported rows, all authored by `r015_run`; a second run is refused by (f) |
+| B1 clone, data copied / symlinked: `--check` and `--run` | `probe_r1_b1.out` | (w) ×3; `--run` refused, 0 rows in the clone |
+| B1 linked worktree; detached HEAD | `probe_r1_b1.out` | (w) ×4; detached: (w) "HEAD is detached"; back on the branch: open |
+| M1 `run(other)`, mock hook, stubbed guard, `_run(real, stub)`, `_run_in(real)`, `record()` into the real ledger | `probe_r1_m1.out` | all refused (TypeError or the (M1) messages); real ledger 0 rows, HEAD unchanged |
+| M2 no flags / `-I` without `-S` / `PYTHONPATH` with a forged `statistics` / a forged `statistics` first on `sys.path` / `-O` | `probe_r1_m2.out` | refused with the matching (v) lines (isolated, no_site, module origin, `__cached__`, optimize) |
+| m1 forged `__pycache__` r015_core imported first | `probe_r1_m2.out` | loads (CAL_CRIT 9.99) but is refused: "bytecode … not under the fresh pycache_prefix" |
+| 016-B committed top-level `csv.py` / `statistics.py` | `probe_r1_m2.out` | refused "(stdlib name)"; the import resolves to the stdlib anyway (`sys.path.append`) |
+| 016-B a site-packages `.pth` (throwaway venv) | `probe_r1_m2.out` | without `-S`: refused (no_site and unpinned `.pth`); with `-I -S`: refused (unpinned `.pth`); removed: open |
+| M3 skip-worktree / assume-unchanged on the edited core and table | `probe_r1_m3.out` | (b), (d) ×3 (flag `S` / `h`), (e), (v); `--run` refused, 0 rows |
+| M3 a committed filter attribute | `probe_r1_m3.out` | (d) "a filter attribute applies" |
+| status REGISTERED in the working tree only (HEAD says DRAFT) | `probe_r1_m3.out` | (s) not REGISTERED in HEAD, (b), (r) |
+| 016-B M4 a revision committed after REGISTERED, same branch | `probe_r1_m3.out` | (r) names reg0; `--run` refused |
+| m3 no trailing newline (016 row) | `probe_r1_minors.out` | (k), and `--run` is refused before appending; HEAD unchanged |
+| m4 `log.showRoot=false` with an orphan root row; `git replace` | `probe_r1_minors.out` | (f) in both cases |
+| m5 gate tests against a mutant without `_gate()` in `load_french` | `probe_r1_minors.out` | two gate checks now FAIL (non-vacuous); unmutated: 199/0 |
+| m6 `index.lock` for 1.5 s; persistent | `probe_r1_minors.out` | transient: the retry succeeds and all three rows are committed. Persistent: refused with one uncommitted started row, then (k)+(f); after a hand commit the restart opens once, and a third run is refused by (f) |
+| DATA_END | code and suite | `C.DATA_END = 2026-06-04`; the synthetic non-numeric rows from 06-04 are never parsed |
+| pins on this machine | `--fingerprint`, real `--check` | 3.14.8, exe `7ebde552…`, stdlib `c99bbd75…`, no `.pth`: all equal to the pins. The real repository passes (w), (v) and the shadow scan today (016 is committed) and refuses only on (s) |
+
+### R1-M1. reg0 is searched on the first-parent history only, so a `--no-ff` merge re-registers a revised registration
+
+**Attack** (`probe_r1_reg0_merge.out`).
+1. In the stand-in, REGISTERED `cb274bb` is committed on `alpha-discovery`.
+2. A revision is then committed on the same branch: the core mean is changed and the table updated. (r) refuses
+   there, correctly.
+3. `git checkout -b main-merge <main>` and `git merge --no-ff alpha-discovery`. On this branch's first-parent history
+   the merge commit is the first commit whose registration says REGISTERED, so it becomes reg0.
+
+```
+on alpha-discovery:   (r) the registration or guarded code changed since the REGISTERED commit cb274bbe1907
+on the merged branch: guard open (registration commit 4e7ca93e3edd…)
+--run (NULL synthetic data): "t": 1.7787  (the registered code gives t -1.80 on this tree: probe_r1_m1.out N1b)
+```
+
+Merging `alpha-discovery` into main is this programme's normal practice. A rebase, squash or cherry-pick onto
+another branch does the same.
+
+**Fix.**
+- Find reg0 over the whole history: `git log --all --reflog --format=%H -- <reg>`, keeping every commit whose
+  registration says REGISTERED.
+- Require every such REGISTERED version to have the same registration blob as HEAD and the same blobs for every
+  guarded code file.
+- Optionally pin reg0 in the programme ledger, as 016-B M4 proposed.
+
+**Test.** In a throwaway repository, run the merge sequence above. The guard must refuse with (r) naming the original
+REGISTERED commit. A fast-forward merge with no revision must still open.
+
+### R1-M2. The restart clause trusts authorship in HEAD's history, and its `data_opened` condition is always true
+
+**Attack** (`probe_r1_minors.out`, "restart clause abuse").
+1. A run commits its `started` row (author `r015_run`), opens the data (3,251 synthetic rows read) and dies without a
+   `failed` row. (f) refuses, correctly.
+2. The operator runs `git reset --hard HEAD~1` and re-commits the same line by hand.
+
+```
+after 'git reset --hard HEAD~1' and re-committing the same line as the owner: guard open
+runner-authored commit still in the reflog: 0b9d4b8
+```
+
+- `restart_allowed()` takes the first commit containing the line from `git log -- results.jsonl` on HEAD only.
+- It never looks at `--all --reflog`, where the runner-authored commit is still visible.
+- `data_opened: false` is written into every `started` row before any data is opened, so the condition holds by
+  construction and protects nothing.
+- In the persistent-lock case that the clause exists for, a legitimate restart works (shown above).
+
+**Fix.**
+- Allow a restart only if **no** commit anywhere (`git log --all --reflog -p -- results.jsonl`) that adds the
+  started line is authored by `r015_run`. The runner's commit failed exactly when no such commit exists.
+- Drop or rename the `data_opened` condition. The commit-authorship fact is the evidence that no data was opened,
+  because the runner opens data only after its own started commit has been verified in HEAD.
+
+**Test.** Runner-authored started commit, then `reset --hard HEAD~1`, then a hand re-commit: refused by (f).
+Persistent lock, then a hand commit: one restart allowed. Both cases exist in the probe.
+
+### New minors (deliberate in-process or outside-the-repo tampering; fix if cheap)
+
+- **r1-m1. The gate opens when the guard passes, not when the started row is committed** (`probe_r1_m1.out`, N1).
+  - From a script, `guard()` is now refused by the module-origin check. That is good.
+  - With `python -I -S -c` (no `__main__` file) and `r015_run.__cached__ = None`, the sequence `guard()` then
+    `load_french()` reads the guarded file (3,251 rows) with **no row anywhere**.
+  - The private `_run(throwaway, R.guard)`, with `RESULTS`/`DATA` pointing at a throwaway ledger whose `data/r015` is
+    a symlink to the guarded tree, records the guarded data's result **outside** the real repository (N1b; stored
+    with `recheck_failed`, not printed).
+  - Fix:
+    - Issue `_GATE` only inside `_run`, after the `started` row is verified in `HEAD:./results.jsonl` of
+      `REAL_RESULTS`.
+    - Have `_gate_ok()` also require `Path(RESULTS).resolve() == REAL_RESULTS`.
+    - Have `module_origin_failures` refuse a project module whose `__cached__` is `None`.
+- **r1-m2. A one-shot `.pth` replaces `sys.flags`** (`probe_r1_pth_selfdelete.out`, throwaway venv).
+  - A `.pth` that deletes itself and sets `sys.flags` to a look-alike with `isolated=1, no_site=1` opens the guard
+    without `-S`. `sys.flags` is a reassignable attribute.
+  - The attack needs a write into the interpreter's site-packages, which is outside the threat model.
+  - Cheap hardening, which raises the bar but cannot close it:
+    - require `'site' not in sys.modules`;
+    - require `sys.flags` to be the C struct sequence (`type(sys.flags).__name__ == 'flags'` and
+      `isinstance(sys.flags, tuple)`);
+    - cross-check `'-S' in sys.orig_argv`.
+  - Otherwise accept the attack and state it as residual.
+
+### Checked and sound in Revision 1
+
+- **(w).** `REAL_REPO` is canonical: `realpath` equals the pinned path.
+- **(v).** The pins match this machine. The CLI entry loads only stdlib modules plus `r015_core` and `r015_run`.
+- **(f).** It scans `research/copytrade/results.jsonl` too.
+- **Git invocation.** `record()` refuses every write into the real repository without the real gate and the default
+  hook. git runs as `/usr/bin/git` with global and system config, hooks and replace objects all neutralised.
+- **Commits.** Commits are authored `r015_run` with `--no-verify`.
+- **The loader.** It hashes the bytes it parses, and the gate also covers byte copies of registered files (m2a fixed).
+
+**Reviewer's reads in this recheck:**
+- the real `--check`: hashes only, `(s)`;
+- `--fingerprint`: no data.
+- Everything else was synthetic.
