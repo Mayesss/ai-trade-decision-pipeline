@@ -44,6 +44,10 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 - **Deribit options:** 0 trials (014 parked); both calendars unread.
 - **Binance 2021–23:** 1 trial (009). **L2 carry:** 3, closed.
 - **HL `xyz` dex:** 0 trials; shares account-scoring selection with 001.
+- **US equity calendar flows (round 4):** 1 trial (015), no pass. The
+  Europe month-end calendar 2014 → 2026-05 stays unread.
+- **Crypto time-series trend (round 4):** 016 drafting; forward span
+  2026-07-01 → 2027-12-31 claimed openly.
 - **2026-07-01 → is held back for every new light,** unless a registration
   claims it openly. The 2026-07 → 2026-09 crypto market was looked at by
   other studies (`000l`); any registration on those months states it.
@@ -523,6 +527,34 @@ re-armed (fires 2026-10-14 06:45 +0200); the 016 drafter was resumed and
 asked to make the power run resumable (skip completed worlds with identical
 specs and seeds; verify by re-running one) before relaunching it.
 
+**2026-10-13 — 016 Revision 1 committed (`1555bf8`, 205/205 re-run by the
+orchestrator; 26/26 mutants killed per the drafter); 015 run: NOT
+DEMONSTRATED.**
+- **016 Revision 1.** Primary: the book's timing return per Lo (2008), t_A,
+  month-clustered (G 33). *alive* iff t_A ≥ **1.75** (largest q95 + 2 MC SE
+  over 19 regime worlds at 3,000 draws, leverage bulls included; binding:
+  vol timing 1.691 ± 0.028) **and** span (c) alone ≥ 1.282; *decayed* iff
+  t_A < −1.26; otherwise *not_demonstrated*. False pass 0.001–0.021
+  (leverage bulls 0.001–0.006, from 0.05–0.12). **Power is low:** alive at
+  SR 1.0 0.23–0.65, SR 1.5 0.59–0.88; decayed at SR 0 only 0.12–0.18 (a third
+  of the paper's α is a leverage artefact, so a dead rule's t_A sits near the
+  published one). Kept: it costs nothing until 2028 and fixes the rule before
+  its forward data exist; the likeliest verdict is *not_demonstrated*. The
+  power run is now resumable and bit-reproducible across processes.
+- **015 run** (guard open at `89da896`; rows `380792c` / `95dc314` /
+  `f4659c6`): **z t 0.34** (crit 1.92), mean without the largest month
+  negative → **`not_demonstrated`**. Raw y **+27 bp a month, t 0.85** against
+  the published 85 bp (about 1.8 SE above our estimate). T+3 era (Etula's own
+  windows) +5 bp, t 0.09; T+2 +58 bp, t 1.18; T+1 −32 bp. Mechanism contrast
+  t −0.27; placebo t −0.59; MES net +24 bp, t 0.76; T+1-era v −56 bp. Kelly at
+  the shrunk estimate negative. **Paper is not triggered; the Europe calendar
+  stays unread; 015F is not registered.** Family "US equity calendar flows":
+  1 trial, no pass.
+- **Reading.** Another documented calendar anomaly gone after publication.
+  The test had power 0.77–0.99 at the published size, so this is a
+  meaningful "not at that size": at most about a third survives, below costs
+  at any sane leverage.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -543,6 +575,10 @@ supported result: 010 T2, +2.96%/yr (the lending rate).
   - **016, crypto trend verbatim**: if alive at half strength ≈ +16–18%/yr
     at 25% vol, month tail −30 to −40%. Decided 2028-01; decay verdict is
     the likely answer.
+- **After 015 (2026-10-13):** the month-end cycle is not demonstrated
+  (≈ +27 bp a month at most, not significant; nothing at MES cost and a
+  Kelly-consistent size). Still nothing beats HLP. 016 is the round's
+  remaining registered-to-be light, with a 2028 verdict and low power.
 - **The honest picture.** The 30–100% zone needs leverage on an edge that
   survives out of sample. Only 015 (at near-full effect, 2–2.6×) and 016
   (alive, 25%+ vol) reach 20%+, each with a 30–40% drawdown budget; the two
@@ -572,9 +608,9 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
 | 015 Revision 1 | drafter | 2026-10-13 | done (200/200); recheck A register, B two majors |
 | 015 Revision 2 | drafter | 2026-10-13 | committed `e2a01b8` (211/211); B recheck: register |
-| **015 REGISTERED** | `89da896`, tag `r015-registered` | 2026-10-13 | run waits for 016 Revision 1 commit (guard (v)) |
+| **015 REGISTERED → run** | `89da896`; rows `380792c`/`95dc314`/`f4659c6` | 2026-10-13 | **terminal: not_demonstrated** |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
-| 016 Revision 1 | drafter | 2026-10-13 | running |
+| 016 Revision 1 | drafter | 2026-10-13 | committed `1555bf8` (205/205); probe rechecks A and B running |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
