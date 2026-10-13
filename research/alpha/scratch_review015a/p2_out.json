@@ -1,0 +1,101 @@
+{
+ "bank": 3000,
+ "crits": [
+  1.6552142020438552,
+  1.91,
+  2.13
+ ],
+ "2020": {
+  "placements": 3087,
+  "unique": 260,
+  "uniform_avg_rates": [
+   0.048224273836518734,
+   0.02806694741388619,
+   0.016748731238527156
+  ],
+  "worst_placement_rates": [
+   0.097,
+   0.06133333333333333,
+   0.037333333333333336
+  ],
+  "worst_start_date": "2014-07-07",
+  "worst_max_month_contribution_pct": 24.099999999999998,
+  "max_single_month_contribution_pct_any_placement": 30.699999999999996,
+  "draft_aligned_avg_rates": [
+   0.08026845637583892,
+   0.048982102908277404,
+   0.029720357941834454
+  ],
+  "share_placements_cond_rate_gt_0.10_at_1.91": 0.0,
+  "share_placements_cond_rate_gt_0.05_at_1.91": 0.11467444120505345
+ },
+ "2025": {
+  "placements": 3101,
+  "unique": 73,
+  "uniform_avg_rates": [
+   0.05052434698484359,
+   0.029554767279372243,
+   0.018201977856605395
+  ],
+  "worst_placement_rates": [
+   0.08566666666666667,
+   0.052,
+   0.030666666666666665
+  ],
+  "worst_start_date": "2014-01-22",
+  "worst_max_month_contribution_pct": 18.4,
+  "max_single_month_contribution_pct_any_placement": 20.599999999999998,
+  "draft_aligned_avg_rates": [
+   0.08328187919463088,
+   0.05071812080536913,
+   0.03097315436241611
+  ],
+  "share_placements_cond_rate_gt_0.10_at_1.91": 0.0,
+  "share_placements_cond_rate_gt_0.05_at_1.91": 0.061915511125443405
+ },
+ "2008": {
+  "placements": 3088,
+  "unique": 245,
+  "uniform_avg_rates": [
+   0.04772927461139897,
+   0.027816062176165803,
+   0.016447646804835923
+  ],
+  "worst_placement_rates": [
+   0.098,
+   0.059666666666666666,
+   0.03333333333333333
+  ],
+  "worst_start_date": "2014-02-13",
+  "worst_max_month_contribution_pct": 29.099999999999998,
+  "max_single_month_contribution_pct_any_placement": 31.5,
+  "draft_aligned_avg_rates": [
+   0.054483221476510066,
+   0.03203131991051454,
+   0.019306487695749438
+  ],
+  "share_placements_cond_rate_gt_0.10_at_1.91": 0.0,
+  "share_placements_cond_rate_gt_0.05_at_1.91": 0.09455958549222798
+ },
+ "pair_uniform_avg_rates": [
+  0.048691567628749294,
+  0.028135823429541594,
+  0.01663497453310696
+ ],
+ "pair_draft_double_aligned_avg_rates": [
+  0.1255340022296544,
+  0.07846488294314381,
+  0.05007023411371238
+ ],
+ "pair_worst_rates": [
+  0.15833333333333333,
+  0.099,
+  0.061
+ ],
+ "P_both_placements_cond_rate_gt_0.05": 0.007100126640235492,
+ "no_crash_rates": [
+  0.052,
+  0.030333333333333334,
+  0.018333333333333333
+ ]
+}

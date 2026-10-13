@@ -305,6 +305,37 @@ full effect, +4.9% at half; worst week −20%, month −23 to −25%. Reviews: A
 calendar; including the sequencing with 016's untracked files, which 015's
 shadow-module check refuses on).
 
+**2026-10-13 — 015 review A: register after fixes (no blocker, four
+majors); decisions taken, Revision 1 waits for review B.**
+(`research/alpha/registrations/reviews/015-review-a.md`; independent
+simulator reproduces size and power: 0.772 / 0.290 iid, 0.878 / 0.444 GARCH
+t4.)
+- **M1 — a pass means "existed after 2013", not "alive now"** (a dead-at-
+  publication or decaying effect still passes 0.13–0.29). *Decision:* after
+  a pass, paper only; real money needs the Europe confirmation (M4) and a
+  forward span of ≥ 31 months with forward t ≥ 1; recent-window and per-era
+  blocks are reported.
+- **M2 — scale each month by trailing vol** (RMS of the 20 days ending T−9,
+  known at entry; floor 0.4%/day). Power at half effect under GARCH t4
+  0.44 → 0.65, never lower elsewhere, and less crash-driven. *Decision:*
+  accept as the primary (a variance normalisation fixed by convention, not
+  by data); recalibrate (reviewer's estimate ≈ 1.82–1.85).
+- **M3 — D8:** under the honest null (crash timing independent of
+  month-ends) 1.91 has size 0.028 even with two crashes; the "aligned"
+  world is not the worst case, and 2.13 still fails the worst pair while
+  costing 0.07 power. *Decision:* no extra margin for double alignment;
+  calibrate as before; report the Monte Carlo SE.
+- **M4 — reported blocks spend fresh samples.** Europe 2014-01 → 2026-05 is
+  the only independent replication sample (power ≈ 0.9 at full effect).
+  *Decision:* Europe is **held back unread as 015's pre-stated
+  confirmation** (same statistic, its own settlement lag, null calibrated
+  with the US–Europe correlation), read only after a US pass. The HMM block
+  is **dropped** from 015 (its post-publication months stay unread for a
+  registration of its own).
+- Minors accepted: soften the "fluke cannot fake" wording; `xyz` trails MES
+  by ≈ 3.9%/yr (unpaid collateral); the bar uses the T+1-regime volatility;
+  the worst 5 days at 1× is −22.0%; rename "016-forward".
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -350,7 +381,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | D1 scout (listings squeeze) | `research/alpha/scouts/d1-listings-squeeze.md` | 2026-10-13 | done; `000q` |
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
 | 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | DRAFT committed `012eff7` (137/137) |
-| 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | running |
+| 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
 | 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
