@@ -565,6 +565,26 @@ rediscover the hard way. Newest last.
   sample resets here — `R_SAMPLE_SINCE_MS` default moved 2026-09-24 →
   2026-10-08T00:00Z, midnight after the 2026-10-07 deploy
   (`SWING_R_SAMPLE_SINCE` overrides with the exact deploy time).
+- **2026-10-07** — New workstream: copy-trade research,
+  `docs/copy-trade-plan-2026-10-07.md`. Owner intends to retire the AI trade
+  picker (no positive R); switching the live trader off is a separate act
+  (invariant 6). Monitoring is Hyperliquid wallets, tested point-in-time on
+  third-party archive data (Hydromancer, complete from 2025-07-28); execution
+  stays Bitget/Capital. Runs locally — zero Neon/KV load. Proposes two
+  deviations from §3, not yet locked: research ledger in git instead of Neon,
+  and Vercel Blob instead of R2.
+- **2026-10-10** — H7 benchmark measured (not a trial): `docs/hlp-benchmark-2026-10-10.md`.
+  HLP +19% over the archive year, 17 points of it in two spiral hours, ~2%/yr otherwise; its
+  money is the backstop (long the spiral tail resting providers are short), its MM ≈ 0. Bar for
+  a home-built provider: ≥ 25 bp net per major fill, realisable.
+- **2026-10-10** — Registration 005 (H4, post-cascade drift entered after the flow ends, majors,
+  2 h): FAIL, −10 bp net, t −0.80; fourteen trials on the discovery year, no pass; holdout not
+  spent. H11 (lending liquidations) closed on size; H2 folded into H3 (Binance publishes no
+  USDⓈ-M liquidation history). See the §8 direction log of the forced-flow horizons doc.
+- **2026-10-11** — Forced-flow capture programme closed (owner). 006 (H3, cross-venue gap at
+  seconds) withdrawn before registration: the executable gap at forced prints is ~0 by
+  behaviour. Fourteen trials on the HL discovery year, no pass, holdout unread. Next programme:
+  `docs/edge-discovery-orchestrator-prompt-2026-10-11.md`.
 
 - **2026-10-10** — **The AI lab experiment is ended by the owner** (invariant
   6, the separate deliberate act). The copy-trade and forced-flow research

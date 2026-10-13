@@ -1,0 +1,12 @@
+revised confirm vs independent per-cell (k 10) fit over 40 draws: max |diff| 1.33e-15; k = [10]
+base, effect 0                                                           revised confirm 0.048
+power full (7.46 bp/day)                                                 revised confirm 0.275
+power half                                                               revised confirm 0.134
+N10 combined                                                             revised confirm 0.047
+N11 alt A 0 / B 0.5; U drift Aug-Sep +0.2 %/day            [r1: 0.082]   revised confirm 0.050
+N11c alt A -0.2 / B 0.3; U drift Jul -0.2 / Aug-Sep +0.2   [r1: 0.140]   revised confirm 0.047
+N12 rev A 0 / B 1.0; REV drift Aug-Sep +0.10               [r1: 0.084]   revised confirm 0.049
+N14 alt Jul 0 / Aug 0.4 / Sep 0; U drift +0.3 in Aug       [r1: 0.095]   revised confirm 0.048
+N15 rev Jul 0 / Aug 1.0 / Sep 0; REV drift +0.15 in Aug    [r1: 0.110]   revised confirm 0.046
+N13 BTC t3, residual SD ~ |BTC|                                          revised confirm 0.049
+N8 persistence 5 %, rho 0.9                                              revised confirm 0.082

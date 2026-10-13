@@ -1,0 +1,74 @@
+# 000f — 010 drafting: spread persistence read, in discovery and in L2's holdout
+
+Ledger entry, not a hypothesis. Written 2026-10-11 by the orchestrator,
+from the independent review of registration 010
+(`registrations/reviews/010-review.md`, B1). Confirmed by the orchestrator
+in the draft's own §3 decision funnel.
+
+## What happened
+
+The 010 drafter counted, for every 8-hour decision time, whether a coin had
+a qualifying pair (|trailing-24 h spread| ≥ θ), and separately whether the
+coin was already held. The orchestrator's brief allowed "counts of
+qualifying entries" in both periods. It did not foresee that splitting
+those counts by "already held" turns them into a persistence statistic.
+
+- **Discovery (2023-06 → 2024-12).** Of 133,225 qualifying coin-decisions,
+  125,799 fell while the coin was held. Read as the reviewer did: about
+  **51% of in-hold decision times still qualify, against about 1.9%
+  outside holds.**
+- **L2 holdout (2025-01-15 → 2026-06-30, CEX–CEX only).** About **36%
+  against 0.6%** (`data/carry/logs/describe.json`).
+- The figures were printed by `r010_run.py --events` and
+  `r010_describe.py` before any guard. The orchestrator and the reviewer
+  have both seen them.
+
+## What was seen
+
+A conditional, forward statistic of the payoff series: given an entry at
+|s| ≥ θ, the spread stays beyond θ for about half of the next 13–18 days in
+discovery, and about a third in the L2 holdout. That is most of the answer
+to "does the funding leg of the carry persist". No P&L, no funding accrual,
+no price gap and no cost was computed.
+
+## What must not follow from it
+
+- The L2 holdout (2025-01 → 2026-06) **can no longer decide 010.** It is
+  exposed on the payoff's main component. It may be read only as a further
+  discovery-grade block, labelled as such.
+- No 010 parameter (θ, H, the window, the exit rule) may change because of
+  these numbers. θ and H stay set by cost arithmetic. An open question
+  about the hold length closes at the drafted value.
+- The decisive holdout for 010 must be data nobody has read: funding from
+  **2026-07-01 onward**, on every venue, with an end date fixed before any
+  of it is fetched. The owner rules on this.
+
+## Mitigation
+
+- Briefs that allow counts must name the forbidden conditionings: no count
+  split by position state, or by any future of the signal.
+- `--events` modes print only unconditional counts before the guard.
+
+## Addendum (2026-10-11, 010 Revision 1)
+
+Further reads while drafting 010. All are end-bounded, and 0 rows dated on
+or after 2026-07-01 were received.
+- HL 8h candles for 213 coins to 2026-06-30 (`candleSnapshot`), plus 6
+  bounded probes.
+- HL funding 2025-01 → 2026-06 for the 80 coins whose own HL volume meets
+  the floor.
+- Bybit timestamp and existence metadata on the panel.
+- The two scout name lists, snapshotted into `data/carry/inputs/`.
+- **Printed once before removal:** "edge" counts of 1,118 (discovery) and
+  614 (exposed block). These are qualifying decisions on coins not held,
+  near a span end. They are unconditional on position state, and they set
+  nothing.
+- **Residual trace (drafter's note).** Yearly "opened" counts carry a faint
+  persistence signal through re-entry after exit. Counts only. Accepted
+  and disclosed; nothing is set from them.
+
+**Second-review note (N7).** The yearly "opened" counts are a weak
+persistence trace: a synthetic probe confirms a small dependence of the
+opened count on spread persistence through re-entry after exit. They stay,
+disclosed. The counting scripts refuse the fresh holdout panel, so no such
+trace can ever be taken from 2026-07 data before its read.

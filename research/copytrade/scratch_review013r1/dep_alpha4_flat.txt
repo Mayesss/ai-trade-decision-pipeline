@@ -1,0 +1,1 @@
+alpha4_flat 1500 {"confirm": 0.9413333333333334, "deploy_registered": 0.468, "deploy_given_confirm": 0.4971671388101983, "deploy_adjusted_series": 0.6886666666666666, "deploy_adj_given_confirm": 0.7315864022662889}

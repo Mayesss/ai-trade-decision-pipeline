@@ -1,0 +1,1 @@
+decayed_b2_cdrift2_alpha3 1500 {"conf_alone_T1": 0.7767, "disc": 0.7093, "conf_given": 0.7632, "confirmed_raw_ge_100bp_share_of_confirms": 0.9002, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 0.7931, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.5369, "joint": 0.5413}

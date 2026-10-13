@@ -1,0 +1,6 @@
+P1 -diff via .git/info/attributes: r013 rows before 1, after 0; r008-style scan 1; git status shows: ''
+P2 textconv driver: r013 rows 0; r008-style scan 1
+P3 r013 (v) untracked-file failures: NONE
+P3 r008 shadow_modules on the same tree: ['ct/listings013.cpython-314-darwin.so', 'email/__init__.py', 'ipaddress.pyc', 'quopri.py']
+P3 effect: SHADOWED: email package from the research directory | duckdb import error ModuleNotFoundError | ct.listings013 import error: ImportError dlopen(/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r013r1_7b_szn8p/ct/listings013.cpy 
+P4 mock hook: computed=True, started row committed in HEAD=False, rows visible after `git checkout -- results.jsonl` = 0; nothing in run_discovery verifies HEAD after the hook

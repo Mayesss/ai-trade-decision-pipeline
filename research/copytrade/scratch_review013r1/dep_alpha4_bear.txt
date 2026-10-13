@@ -1,0 +1,1 @@
+alpha4_bear 1500 {"confirm": 0.9393333333333334, "deploy_registered": 0.7606666666666667, "deploy_given_confirm": 0.8097941802696949, "deploy_adjusted_series": 0.6813333333333333, "deploy_adj_given_confirm": 0.7253371185237757}

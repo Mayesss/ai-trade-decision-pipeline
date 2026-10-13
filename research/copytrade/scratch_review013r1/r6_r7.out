@@ -1,0 +1,9 @@
+r6_regime_registered_path.py 1000 (registered L.trial_stats + L.confirm):
+registered path: beta in/out 2.5/1.0, crash drift 0.03/wk, k 1.5: CONFIRM rate 0.147 (1000 draws)
+registered path: beta in/out 2.0/1.25, crash drift 0.02/wk, k 1.5: CONFIRM rate 0.076 (1000 draws)
+registered path: beta in/out 2.0/1.25, crash drift 0.03/wk, k 1.5: CONFIRM rate 0.094 (1000 draws)
+r7_regime_misaligned.py 800:
+beta 2.5/1.0 drift 0.04 mu 0.0 k 1.5 crash 11-15..01-15: registered 0.064 quarter-beta 0.070 month-beta 0.040
+beta 2.0/1.25 drift 0.03 mu 0.0 k 1.5 crash 11-15..01-15: registered 0.043 quarter-beta 0.046 month-beta 0.043
+beta 1.5/1.5 drift 0.0 mu 0.04 k 2.0 crash 11-15..01-15: registered 0.806 quarter-beta 0.780 month-beta 0.705
+beta 1.5/1.5 drift 0.0 mu 0.03 k 1.5 crash 11-15..01-15: registered 0.802 quarter-beta 0.779 month-beta 0.703

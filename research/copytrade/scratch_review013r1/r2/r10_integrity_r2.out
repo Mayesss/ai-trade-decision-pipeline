@@ -1,0 +1,8 @@
+P1/P2 'results.jsonl -diff': erased rows still seen = 1 (want 1)
+P1/P2 'results.jsonl diff=hide': erased rows still seen = 1 (want 1)
+P3 (v) shadow failures: ["(v) untracked, ignored or modified importable files could shadow an import: ['ct/listings013.cpython-314-darwin.so', 'email/__init__.py', 'ipaddress.pyc', 'quopri.py']"]
+P3 loaded_from_source in this process: [] | pycache_prefix: /var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r013-pyc-ctv6dn81
+P4a record() with a no-op hook: refused: the discovery_started row is not in HEAD:results.jsonl after the commit — stop
+P4b real tree + mock hook: ['(M4) a non-default commit hook is never used on the real results file or data tree']
+P4c real tree + default hook: []
+P4d synthetic results + real data tree: ['(M4) the real results.jsonl and the real data tree are used only together']

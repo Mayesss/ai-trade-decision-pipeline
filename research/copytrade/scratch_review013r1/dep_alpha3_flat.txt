@@ -1,0 +1,1 @@
+alpha3_flat 1500 {"confirm": 0.784, "deploy_registered": 0.3, "deploy_given_confirm": 0.3826530612244898, "deploy_adjusted_series": 0.4066666666666667, "deploy_adj_given_confirm": 0.5187074829931972}

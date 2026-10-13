@@ -1,0 +1,2 @@
+offset 0.04 m_calm 1.092 m_stress 0.916 rates {'windows': 1000, 'c1': 0.018, 'all5': 0.018, 'plain_t_student': 0.073} disc q975 of skew t 2.48 hold q95 2.03 hold q975 2.49
+offset 0.08 m_calm 1.132 m_stress 0.78 rates {'windows': 1000, 'c1': 0.047, 'all5': 0.047, 'plain_t_student': 0.124} disc q975 of skew t 3.16 hold q95 2.46 hold q975 3.11

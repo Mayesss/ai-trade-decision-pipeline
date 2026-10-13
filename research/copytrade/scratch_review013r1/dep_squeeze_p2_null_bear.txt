@@ -1,0 +1,1 @@
+squeeze_p2_null_bear 1500 {"confirm": 0.06666666666666667, "deploy_registered": 0.043333333333333335, "deploy_given_confirm": 0.65, "deploy_adjusted_series": 0.004, "deploy_adj_given_confirm": 0.06}

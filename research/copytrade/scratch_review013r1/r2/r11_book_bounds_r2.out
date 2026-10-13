@@ -1,0 +1,9 @@
+week  exit_late allowed=False: exits in week 7, worst_week -0.175 (bound -0.17500000000000002)
+week  exit_late allowed=True: exits in week 7, worst_week -0.175 (bound -0.17500000000000002)
+month exit_late allowed=False: exits in month 14, worst_month -0.350 (bound -0.47500000000000003)
+month exit_late allowed=True: exits in month 14, worst_month -0.350 (bound -0.47500000000000003)
+-- entries start exactly 9 d before the target (exit_late reach) --
+week  exit_late allowed=False: exits in week 7, worst_week -0.175 (bound -0.175)
+month exit_late allowed=False: exits in month 19, worst_month -0.475 (bound -0.475)
+week  exit_late allowed=True: exits in week 6, worst_week -0.150 (bound -0.175)
+month exit_late allowed=True: exits in month 18, worst_month -0.450 (bound -0.475)

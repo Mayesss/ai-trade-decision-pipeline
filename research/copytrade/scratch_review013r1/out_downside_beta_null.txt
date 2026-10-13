@@ -1,0 +1,1 @@
+downside_beta_null 1500 {"conf_alone_T1": 0.8987, "disc": 0.8233, "conf_given": 0.8915, "confirmed_raw_ge_100bp_share_of_confirms": 0.7993, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 0.5513, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.7629, "joint": 0.734}

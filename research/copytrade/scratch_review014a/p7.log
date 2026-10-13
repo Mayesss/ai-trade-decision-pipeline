@@ -1,0 +1,6 @@
+base 0.05 mean/wk -0.005 tail Kelly (a,b,c) [0.01, 0.01, 0.01] quarter [0.003, 0.003, 0.003]
+base 0.075 mean/wk 0.195 tail Kelly (a,b,c) [0.12, 0.01, 0.01] quarter [0.03, 0.003, 0.003]
+base 0.1 mean/wk 0.415 tail Kelly (a,b,c) [1.78, 0.58, 0.01] quarter [0.445, 0.145, 0.003]
+fat 0.05 mean/wk -0.015 tail Kelly (a,b,c) [0.01, 0.01, 0.01] quarter [0.003, 0.003, 0.003]
+fat 0.075 mean/wk 0.187 tail Kelly (a,b,c) [0.05, 0.01, 0.01] quarter [0.013, 0.003, 0.003]
+fat 0.1 mean/wk 0.394 tail Kelly (a,b,c) [1.6500000000000001, 0.51, 0.01] quarter [0.413, 0.128, 0.003]

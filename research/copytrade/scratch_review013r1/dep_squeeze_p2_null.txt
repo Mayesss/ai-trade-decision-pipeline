@@ -1,0 +1,1 @@
+squeeze_p2_null 1500 {"confirm": 0.07533333333333334, "deploy_registered": 0.017333333333333333, "deploy_given_confirm": 0.23008849557522124, "deploy_adjusted_series": 0.007333333333333333, "deploy_adj_given_confirm": 0.09734513274336283}

@@ -1,0 +1,33 @@
+PROBE abuse: code change WITHOUT an amendment line -> fetch guard ['(f) the existing holdout_fetch_started row has another registration commit or end']
+PROBE abuse: valid Amendment 1 -> fetch guard OPEN
+PROBE abuse: a later commit swaps guarded code again (line kept) -> fetch guard OPEN
+PROBE abuse: a later commit edits criteria text (line kept) -> fetch guard OPEN
+PROBE abuse: fetched row commit = post-swap commit: False | run guard -> OPEN
+PROBE abuse: abbreviated sha -> ['(m) 1 lines start "008 amendment"; at most one amendment, written exactly as "008 amendment 1: APPRO', '(f) the existing holdout_fetch_started row has another registration commit or end']
+PROBE abuse: forged 40-hex sha -> ['(m) the prior commit is not a commit of the registration', '(m) the prior commit is not an ancestor of HEAD']
+PROBE abuse: amendment 2 line -> ['(m) 1 lines start "008 amendment"; at most one amendment, written exactly as "008 amendment 1: APPRO', '(f) the existing holdout_fetch_started row has another registration commit or end']
+PROBE abuse: two amendment lines -> ['(m) 2 lines start "008 amendment"; at most one amendment, written exactly as "008 amendment 1: APPRO', '(f) the existing holdout_fetch_started row has another registration commit or end']
+PROBE abuse: amendment after the fetched row (code swapped) -> run guard ['(g2) the guarded code changed since the fetch', '(r) the registration changed since the fetch beyond added approval or ', '(g2) the code hashes stored in the fetched row differ from the code on']
+PROBE carry: attempts [1, 2] | attempt-1 bytes 3.223 GiB | fetched row bytes 3.223 GiB (= attempt 1 + attempt 2: 3.223 )
+PROBE carry: started row commit == prior: [True] | fetched row commit == amendment commit: 5c13ddcd75e2b60d1c519e09925fa2eeca3490b3
+PROBE carry: run guard after approval -> OPEN
+PROBE carry: amendment that also changes the owner end -> fetch guard ['(t) the holdout ends 2026-11-23; nothing is fetched or read before end + 7 days', '(f) the existing holdout_fetch_started row has another registration commit or end']
+Traceback (most recent call last):
+  File "/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline/research/copytrade/scratch_review008r1/probe_amend1.py", line 191, in <module>
+    PROBES[name]()
+    ~~~~~~~~~~~~^^
+  File "/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline/research/copytrade/scratch_review008r1/probe_amend1.py", line 142, in probe_fills
+    root, data, fills, prior = started_under_prior(tmp, patch_day_file=True)
+                               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline/research/copytrade/scratch_review008r1/probe_amend1.py", line 35, in started_under_prior
+    assert r[0] == 'FetchError', r
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('FileNotFoundError', '/nonexistent/2026-07-01')
+PROBE fills probe error: AssertionError ('FileNotFoundError', '/nonexistent/2026-07-01')
+PROBE boundary: exclusive         coverage refusals 0, missing hours 0
+PROBE boundary: inclusive         coverage refusals 0, missing hours 0
+PROBE boundary: newest            coverage refusals 0, missing hours 0
+PROBE boundary: inclusive_newest  coverage refusals 28, missing hours 28
+PROBE fills: attempt 1 end row records fill hashes: False
+PROBE fills: attempt 2 after swapping 2026-07-15 -> returned | G1/G2 re-run on reused days: False
+PROBE fills: with hashes recorded, a swapped day -> FetchError coverage refused (no fetched row; re-run later):   fills_changed:2026-07-15: a holdout fill day on disk differ

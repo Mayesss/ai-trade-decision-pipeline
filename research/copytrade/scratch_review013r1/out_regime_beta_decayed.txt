@@ -1,0 +1,1 @@
+regime_beta_decayed 1500 {"conf_alone_T1": 0.136, "disc": 0.8073, "conf_given": 0.1313, "confirmed_raw_ge_100bp_share_of_confirms": 0.9308, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 0.7233, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.7107, "joint": 0.106}

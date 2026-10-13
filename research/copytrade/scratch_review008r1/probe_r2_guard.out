@@ -1,0 +1,28 @@
+PROBE mockreal: fetch(real root, real data, complete mocks, no override) -> ('SystemExit', '(B1) mock network hooks are never used on the real data tree')
+PROBE mockreal: fetch(throwaway root, real data, complete mocks) -> ('SystemExit', '(B1) the real data tree is read only by the guard of the real repository (root is not it)\n(B1) mock network hooks are never used on the real data tree')
+PROBE mockreal: rows in the stand-in real results.jsonl: [] | fill days written: 0
+PROBE shadow: duckdb.py                      flagged: True
+PROBE shadow: duckdb/__init__.py             flagged: True
+PROBE shadow: ct/stats/__init__.py           flagged: True
+PROBE shadow: pyarrow.pyc                    flagged: True
+PROBE shadow: duckdb.cpython-314-darwin.so   flagged: True
+PROBE shadow: ct/_x.abi3.so                  flagged: True
+PROBE shadow: ignored_mod.py                 flagged: True
+PROBE shadow: ct/tool/__init__.py            flagged: True
+PROBE shadow: modified tracked ct/stats.py flagged: True
+PROBE shadow: guard (d) -> ["(d) untracked, ignored or modified importable files could shadow an import: ['ct/_x.abi3.s"]
+PROBE attempts: after a transfer-then-raise: RuntimeError | spent from history 14.502 GiB, true 14.502 | results.jsonl clean: True
+PROBE attempts: after editing the end row to bytes 0: spent 14.502 GiB
+PROBE attempts: + a killed attempt reserving 3 GiB: spent 17.502 GiB
+PROBE persist: two earlier attempts committed seconds ago, back-dated "at" fields -> persistent: False
+PROBE persist: two forged rows committed with GIT_COMMITTER_DATE back-dated 1 and 2 days -> persistent: True
+PROBE ceiling: 9 symbols Bitget no longer lists -> FetchError coverage refused (no fetched row; re-run later):
+PROBE ceiling: a second attempt (permanent removals) -> FetchError coverage refused (no fetched row; re-run later):
+PROBE ceiling: 8 symbols gone -> returned ['C0USDT', 'C1USDT', 'C2USDT', 'C3USDT', 'C4USDT', 'C5USDT', 'C6USDT', 'C7USDT']
+PROBE env: {'python': '3.14.8', 'duckdb': {'version': '1.5.6', 'files': 56}, 'pyarrow': {'version': '25.0.1', 'files': 755}} | 0.1 s | stable: True
+PROBE survflag: 1 long vs 0 short (1 coin) -> {'flag': False, 'why': []}
+PROBE survflag: 6 coins ranked, 12 long vs 4 short -> {'flag': True, 'why': ['2026-08-03: >= 5 dropped coins ranked, long >= 2.0 x short']}
+PROBE survflag: crowd share 11 % -> {'flag': True, 'why': ['2026-08-03: crowd_gross_share_in_dropped >= 0.1']}
+PROBE commitfail: run -> SystemExit STOP: could not commit results.jsonl (). Commit it by hand, AS IT IS (git commit --only -- results.jsonl); do not discard or edit the row. Every later fetch or 
+PROBE commitfail: guard while uncommitted -> ['(k) results.jsonl is untracked or differs from HEAD — every ', '(f) a 008 holdout row exists (tree, history or reflog) — the', '(f) a holdout_started row exists without a committed, later ']
+PROBE attr: with an uncommitted `results.jsonl -diff`, after reset --hard HEAD~2 -> ['(f) a 008 holdout row exists (tree, history or reflog) — the', '(f) a holdout_started row exists without a committed, later ']
