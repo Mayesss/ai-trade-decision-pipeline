@@ -188,6 +188,10 @@ replay-results/
 # (docs/copy-trade-plan-2026-10-07.md §4).
 research/copytrade/data/
 research/copytrade/.venv/
+
+# Alpha-discovery research (round 4): data stays local
+# (docs/alpha-discovery-orchestrator-prompt-2026-10-13.md).
+research/alpha/data/
 __pycache__/
 
 # Claude Code personal settings
