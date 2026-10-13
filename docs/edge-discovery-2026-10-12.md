@@ -519,6 +519,96 @@ running; 008 fetch started.**
   so the guarded requester-pays fetch is running (log in the session
   scratchpad).
 
+**2026-10-13 — 008 fetch stopped on a mechanical fault; Amendment 1
+approved.** The guarded fetch downloaded the 33 holdout fill days
+(3.34 GiB, G1/G2 gates clean), then refused on Bitget close coverage:
+every 200-hour block of every symbol was missing exactly one hour. No
+fetched row, no outcome. **Cause (orchestrator's probe on a
+discovery-period block, timestamps only):** Bitget's `endTime` is
+exclusive; the frozen code asks `[b, b + 199 h]` and gets 199 candles;
+`[b, b + 200 h]` gives 200. Deterministic: re-runs fail identically, and
+after three attempts the persistence rule would push every symbol past the
+8-name ceiling and close 008 unread *because of a bug*. **Decision:**
+Amendment 1 under the delegation, following 007's Amendment 1 (mechanical
+fault, no outcome seen, amend openly, run once): fix the boundary (and any
+other paged source with the same assumption), and a narrowly bounded guard
+change that accepts the existing started row through one anchored
+amendment line. Spent bytes and attempts carry over; the cap stays
+cumulative. A probe-only recheck by the second-round reviewer follows,
+then the fetch and the read.
+- 013 Revision 2 runs in parallel (disjoint files); commits are sequenced
+  so 008's guard sees a clean tree.
+
+**2026-10-13 — 008 Amendment 1 committed (`963dcc8`); probe recheck
+running; programme erratum on Bitget candles.**
+- **Amendment 1.** Blocks requested as `[b, b + 200 h)`; the guard accepts
+  the pre-amendment started row (commit `2bd855a`) only through one anchored
+  line, `008 amendment 1: APPROVED 2026-10-13 prior-commit 2bd855a…`, in a
+  descendant commit. Attempt 1's bytes (3.59 GB) still count against the
+  cap; fill hashes are recorded from attempt 2. 143/143 tests (orchestrator
+  re-ran). HL `fundingHistory` is inclusive at both ends, so 008's funding
+  paging needed no change.
+- **Housekeeping.** The 168 Bitget blocks stored by attempt 1 (one per
+  symbol, from the old request) were deleted, so attempt 2 asks every block
+  the same way.
+- **Exposure (`000o`).** A drafter probe of HL's page cap returned about 138
+  BTC funding rows dated 2026-07-01 → 07-05 into memory (count and span
+  printed only). It is a series 008 itself claims, and nothing was set from
+  it.
+- **Erratum (`000o`).** `ct/bitget.py` (`candle_1h`, 1-minute `_block`) has
+  the same exclusive-end off-by-one: about 1 bar in 200 was missing for 001
+  and the forced-flow registrations that read Bitget candles. They are
+  closed and stand as registered; the file is left frozen for
+  reproducibility. Any new Bitget fetcher is tested against an
+  exclusive-end mock.
+
+**2026-10-13 — Amendment 1 recheck: proceed, with two procedural
+conditions, both now in `000o`.** (`reviews/008-review-r1.md`, appendix.)
+Every abuse of the amendment line is refused; the accepted started row is
+bound to `2bd855a` and the end 2026-09-28; the cap stays cumulative; the
+boundary fix passes exclusive-end, inclusive-end and newest-200 mocks.
+- **A1 (major).** Until a fetched row exists, the fetch gate would accept any
+  later commit that keeps the amendment line. **Procedural fix chosen (no
+  re-hash):** before writing the read's approval line, the orchestrator
+  verifies that the fetched row's `registration_commit` is `963dcc8` and
+  that `2bd855a..963dcc8` touches only the two declared guarded files, and
+  records both in `000o`.
+- **A2 (minor).** Reused fills were never hashed. The orchestrator listed
+  all 33 files: every mtime precedes attempt 1's end commit (max 1791858951
+  vs 1791861876; 2.74 GB). The list is in `000o`. `p3_gates.json` is
+  deleted so G1–G3 re-run.
+
+**2026-10-13 — 013 second-round review: not ready (1 blocker, 4 majors);
+Revision 2 decided, held until 008's fetch ends.** (`reviews/013-review-r1.md`;
+size and power cells reproduced: 0.037 vs 0.029, 0.759 vs 0.772.)
+- **B1 (the 008 lesson again).** One pooled β: if listings in the
+  2025-10 → 2026-02 crash carry a different β, the confirm passes
+  0.08–0.15 with no edge (run through the registered code). Fix: β per
+  calendar quarter of the first trade, in both stages; recalibrate with the
+  regime worlds (size 0.039–0.043, power −0.02 to −0.03).
+- **M1.** The deploy bar and discovery criteria 5–6 use the raw net, so a
+  bear market turns a false confirm into a paper deployment 56% of the
+  time. **Decision:** feed them min(raw, market-adjusted net).
+- **M2.** Squeeze atoms still over-reject (0.077–0.105). Fix: a
+  tail-adjusted α inside the confirmation (size 0.019–0.032; power
+  0.66 → 0.60 only when liquidations occur).
+- **M3.** Continuation rule (c) is ad hoc and applied inconsistently
+  (VANRY, AEVO; ASTER removed though it is a known rally against the short).
+  **Decision:** one rule — the token or its predecessor had a Binance
+  USDⓈ-M perp before d0 — plus the gold-token rule; LUMIA, SYRUP, CFG,
+  ASTER and BEAMX return (239 / 121 events).
+- **M4.** A mocked commit hook computes the outcome with rows uncommitted.
+  Fix: refuse unless the row is in `HEAD:results.jsonl` after each hook;
+  refuse mocks on the real file.
+- **Minors** include a stale "untracked" test assertion that fails once the
+  draft is committed (the "125 pass" was pre-commit), missing
+  `--text --no-textconv --no-ext-diff`, and shadow-scan gaps r008 already
+  closes.
+- **A residual shared with registered 008:** a forged `.pyc` in
+  `__pycache__` with matching source size and mtime loads instead of the
+  source. That needs deliberate tampering. 008's code is frozen, so it is
+  recorded as a known limitation, not fixed there; 013 closes it.
+
 **2026-10-13 — 014 review A; 014 PARKED (no trial spent).**
 (`reviews/014-review-a.md`.) Sound: calendars, no look-ahead in hedge
 timing, fee and inverse-contract USD accounting, Black-76 hedge, settlement,
@@ -638,7 +728,8 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 013 review A (design) | `registrations/reviews/013-review-a.md` | 2026-10-13 | done: 1 blocker, 4 majors |
 | 013 review B (guard/data) | `registrations/reviews/013-review-b.md` | 2026-10-13 | done: 5 majors; `000n` |
 | 013 Revision 1 | committed `02fbd1d` | 2026-10-13 | done (125/125) |
-| 013 re-review | `reviews/013-review-r1.md` | 2026-10-13 | running |
+| 013 re-review | `reviews/013-review-r1.md` | 2026-10-13 | done: 1 blocker, 4 majors |
+| 013 Revision 2 | drafter, resumed | 2026-10-13 | running |
 | 008 drafter | `registrations/008-inverted-positioning-holdout.md` | 2026-10-12 | drafted; reviews next |
 | 008 review A (design) | `registrations/reviews/008-review-a.md` | 2026-10-12 | done: 1 blocker, 4 majors; `000l` |
 | 008 review B (guard/data) | `registrations/reviews/008-review-b.md` | 2026-10-12 | done: 2 blockers, 4 majors |
@@ -646,4 +737,4 @@ Everything in round 2 §5, plus what this round's scouts add (each under
 | 008 re-review | `registrations/reviews/008-review-r1.md` | 2026-10-13 | done: register after 1 blocker + 1 major |
 | 008 Revision 2 | drafter | 2026-10-13 | done (132/132) |
 | 008 Revision 2 recheck | `reviews/008-review-r1.md` (appendix) | 2026-10-13 | done: register |
-| **008 REGISTERED** | commit `2bd855a` | 2026-10-13 | fetch running |
+| **008 REGISTERED** | `2bd855a`; Amendment 1 `963dcc8` | 2026-10-13 | probe recheck, then fetch attempt 2 (after 013 Rev 2 is committed) |

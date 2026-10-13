@@ -414,3 +414,76 @@ against the revised files. This is not a full third review.
 
 **Verdict: register.** Add the one-sentence ceiling end state to §2/§11 when the status is set to
 REGISTERED. It needs no code change and no re-hash.
+
+---
+
+## Amendment 1 recheck (2026-10-13)
+
+**Scope.** Amendment 1 only, at `963dcc8` (§16; `r008_fetch.py` `cf559a32…`, `r008_run.py` `eb2ed60d…`).
+- Tests: **143 of 143 pass**.
+- Probe: `scratch_review008r1/probe_amend1.py`, output in `probe_amend1.out`. It uses throwaway repos and
+  mocks only. Attempt 1 of the fill probe runs the REGISTERED `2bd855a` `r008_fetch.py`, taken from git.
+
+**Reads.** Repository metadata only:
+- `git diff 2bd855a 963dcc8`: the only guarded code that changed is `r008_fetch.py` and `r008_run.py`. The
+  registration's diff is the status line, the two hash rows and §16.
+- The started row `5fe7930` carries `registration_commit 2bd855a…` and `owner {'end_date': '2026-09-28'}`.
+- No commit touches the registration or guarded code after `963dcc8`.
+- The existence of `data/r008/` sub-directory names, from a listing.
+
+No price, fill content or hash of a holdout file was read. Nothing was fetched or run against real data,
+and nothing was committed.
+
+| question | result |
+|---|---|
+| 1a. A second amendment line, an `amendment 2` line, an abbreviated sha, a forged 40-hex sha | **Refused** by (m), plus (f). |
+| 1b. An amendment added **after** the fetched row, to swap code before the read | **Refused** by (g2) (code changed and code hashes differ) and (r) (the registration changed beyond approval lines). |
+| 1c. An amendment that also moves the owner end | **Refused** by (t) and (f). |
+| **1d. Edits to criteria, parameters or §12 text, or to guarded code, after the amendment commit and before the fetched row** | **Accepted (MAJOR A1).** See below. |
+| 2. Binding of the started row | `accepted = {current commit, prior}`. The prior is whatever the single valid line names, and it must be an ancestor commit of the registration. In the real file it names `2bd855a…`, which is exactly the started row's commit. The owner end must still match. Sound. |
+| 3. Cap and attempt numbering | Attempts continue as [1, 2]. The bytes of the pre-amendment attempt count toward the cap, and the fetched row's total is the sum across the amendment. The run guard opens after the approval. Real attempt 1's 3,594,315,926 bytes are in committed rows, so they count. |
+| 4. Fill reuse | **Gap (minor A2).** With attempt 1 as it ran (no `fill_hashes`), a fill day halved on disk before attempt 2 is **accepted**. P3 G1/G2 are **not re-run** on reused days, because `p3_gates.json` exists and nothing new was pulled. The fetched row then pins the altered file. Once hashes are recorded, a later swap is refused with `fills_changed:` (verified). |
+| 5. Boundary fix | Exclusive end: 0 refusals. Inclusive end: 0. Exclusive end with only the newest 200 rows: 0. An inclusive end combined with newest-200 truncation (not Bitget's verified behaviour) gives 28 refusals: the fix **fails closed**, it does not silently accept. |
+
+**A1 (MAJOR): the amendment opens the fetch gate to any later edit until the fetched row.**
+- **What the guard does now.**
+  - Fetch-mode (f) now accepts the started row whenever its commit is the named prior. The current
+    registration commit can be *any* later commit that keeps the one valid line.
+  - In the probe, after a valid Amendment 1, a further commit that swaps guarded code (with its hash
+    row) passed the fetch guard, and so did a commit that rewrote criteria text. The fetch completed, and
+    the run guard opened after the approval.
+  - The fetched row carries the latest commit, so (r) and (g2) never compare back to the amendment.
+  - Before the amendment, any such edit was refused, because the started row's commit had to equal the
+    current one.
+- **The actual amendment is clean.** The diff `2bd855a..963dcc8` is limited to the two declared files and
+  §16, and nothing has been committed since. So the hole only matters if something is committed before
+  the fetched row.
+- **Fix, either of:**
+  - **Procedural, no re-hash.** Before writing the read approval line, the orchestrator checks that the
+    fetched row's `registration_commit` equals `963dcc8…`. It ledgers that check, together with the
+    verified diff scope `2bd855a..963dcc8`. If they differ, the read is not approved.
+  - **In code** (needs a re-hash, and re-committing the amendment line so that it first appears in that
+    commit). Accept the prior only when the current registration commit (fetch mode), or the fetched row's
+    commit (run mode), is the commit that first holds the amendment line. Also require that
+    `git diff prior..that commit` touches no guarded file other than `r008_fetch.py` and `r008_run.py`.
+
+**A2 (minor): reused fills were never hashed.**
+- **Before attempt 2,** do both of these (no code change):
+  - delete `data/r008/p3_gates.json`, so that the fetch re-runs G1/G2 and the G3 sample on all 33 reused
+    days;
+  - have the orchestrator ledger each holdout fill file's size and mtime, and check that every mtime is at
+    or before attempt 1's end commit `e069efb` (committer time 1791861876).
+- **Attempt 2 then records the hashes,** and from then on the existing `fills_changed:` refusal and the
+  manifest pin cover them.
+- **The stronger option is a re-download.** It costs about 3.3 GiB, against 3.35 GiB spent of the 15 GiB
+  cap, and needs a code change. It is not required.
+
+**Verdict: proceed, on two conditions.** These are A1's procedural check of `registration_commit ==
+963dcc8` before the approval line, and A2's two pre-attempt-2 steps. No blocker. If the orchestrator
+prefers not to rely on the procedural check, fix A1 in code first and then proceed.
+
+**Operational note.** As of this recheck, the working tree has uncommitted edits to `ct/listings013.py`,
+`r013_build.py` and `r013_run.py` (013's drafter; not 008 files, and not made by this reviewer).
+- 008's shadow scan (d) flags modified files in the top level and in `ct/`, so attempt 2 will refuse until
+  they are committed or stashed.
+- That refusal is correct behaviour, not a fault.
