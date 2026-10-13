@@ -70,6 +70,8 @@ END_LINE = re.compile(r'^008 holdout end \(owner\): (\S+)\s*$', re.M)
 APPROVAL = re.compile(r'^008 holdout read: APPROVED (\d{4}-\d{2}-\d{2}) row ([0-9a-f]{64})\s*$', re.M)
 RESTART = re.compile(r'^008 holdout restart: APPROVED (\d{4}-\d{2}-\d{2}) started-row ([0-9a-f]{64})\s*$', re.M)
 STATUS = re.compile(r'^\*\*Status: (\w+)', re.M)
+AMEND_PREFIX = re.compile(r'^008 amendment \d+:', re.M)
+AMEND_LINE = re.compile(r'^008 amendment 1: APPROVED (\d{4}-\d{2}-\d{2}) prior-commit ([0-9a-f]{40})\s*$', re.M)
 _GATE = {'pair': None}             # (root, data_dir) that passed the guard inside run(); None otherwise
 
 
@@ -233,6 +235,32 @@ def real_tree_failures(root, data_dir, overrides, hooks=None):
     return out
 
 
+def amendment_prior(root, text, reg_rel=REG_REL):
+    """Amendment 1 (2026-10-13): (accepted prior registration commit or None, [failures]).
+    At most one amendment. When a line starts with `008 amendment`, there must be exactly one, of the form
+    `008 amendment 1: APPROVED <date> prior-commit <40-hex sha>`; the prior commit must be a commit of the
+    registration file and an ancestor of HEAD, and the commit that first holds the line must strictly descend
+    from it. Then fetch rows written under the prior commit (before the amendment) are accepted; nothing else
+    changes."""
+    n = len(AMEND_PREFIX.findall(text))
+    if n == 0:
+        return None, []
+    found = list(AMEND_LINE.finditer(text))
+    if n != 1 or len(found) != 1:
+        return None, [f'(m) {n} lines start "008 amendment"; at most one amendment, written exactly as '
+                      '"008 amendment 1: APPROVED <date> prior-commit <full sha>"']
+    prior, line = found[0].group(2), found[0].group(0).rstrip()
+    fails = []
+    if prior not in _git(root, 'log', '--format=%H', '--', reg_rel).stdout.split():
+        fails.append('(m) the prior commit is not a commit of the registration')
+    if not is_ancestor(root, prior):
+        fails.append('(m) the prior commit is not an ancestor of HEAD')
+    a_c = first_commit_containing(root, reg_rel, line)
+    if not a_c or a_c == prior or _git(root, 'merge-base', '--is-ancestor', prior, a_c).returncode:
+        fails.append('(m) the amendment line must be committed in a commit that strictly descends from the prior commit')
+    return (None if fails else prior), fails
+
+
 # ------------------------------------------------------------------ the guard (fetch and run)
 def guard_failures(root=HERE, mode='run', now_ms=None, code=GUARDED_CODE, data=GUARDED_DATA,
                    reg_rel=REG_REL, results_rel=RESULTS_REL, pre_manifest_rel=PRE_MANIFEST_REL,
@@ -277,6 +305,9 @@ def guard_failures(root=HERE, mode='run', now_ms=None, code=GUARDED_CODE, data=G
             out.append(f'(e) {len(bad)} pre-registration manifest files do not match, e.g. {bad[:3]}')
     end, n = owner_end(text)
     out += n
+    prior, am = amendment_prior(root, text, reg_rel)
+    out += am
+    accepted = {commit} | ({prior} if prior else set())
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if end is not None and now_ms < c8.ms(end) + 7 * DAY:
         out.append(f'(t) the holdout ends {end}; nothing is fetched or read before end + 7 days')
@@ -305,7 +336,7 @@ def guard_failures(root=HERE, mode='run', now_ms=None, code=GUARDED_CODE, data=G
         if len(started) > 1:
             out.append(f'(f) {len(started)} holdout_fetch_started rows; at most one is allowed')
         for l, r in started:
-            if r.get('registration_commit') != commit or r.get('owner') != {'end_date': ctx['end_date']}:
+            if r.get('registration_commit') not in accepted or r.get('owner') != {'end_date': ctx['end_date']}:
                 out.append('(f) the existing holdout_fetch_started row has another registration commit or end')
             if l not in heads:
                 out.append('(f) the existing holdout_fetch_started row is not committed')
@@ -320,8 +351,8 @@ def guard_failures(root=HERE, mode='run', now_ms=None, code=GUARDED_CODE, data=G
     if sl not in heads or fl not in heads:
         out.append('(g1) the fetch rows are not committed in HEAD:results.jsonl')
     rc = fr.get('registration_commit') or ''
-    if sr.get('registration_commit') != rc:
-        out.append('(g1) the two fetch rows carry different registration commits')
+    if sr.get('registration_commit') != rc and not (prior and sr.get('registration_commit') == prior):
+        out.append('(g1) the two fetch rows carry different registration commits (and no valid Amendment 1 links them)')
     if not is_ancestor(root, rc):
         out.append("(g1) the fetched row's registration commit is not an ancestor of HEAD")
     else:

@@ -18,7 +18,8 @@ What it pulls (and nothing else):
 2. Hyperliquid daily snapshots, requester-pays, only for signal dates not already on disk (none for
    2026-09-28), whole objects, inside the same cap.
 3. Bitget 1H candles (public), every mapped symbol, 2026-05-28 -> the read bound (end + 2 h), 200-hour
-   blocks paged FORWARD, rows at or after the bound dropped before writing.
+   blocks paged FORWARD, rows at or after the bound dropped before writing. Amendment 1: each block is
+   requested as [b, b + 200 h) because Bitget's endTime is exclusive (verified on discovery dates).
 4. Hyperliquid funding (public), 2026-06-30 -> the read bound, paged forward; HL `meta` and Bitget's
    contract list (liveness).
 
@@ -301,14 +302,16 @@ def fetch_closes(data_dir, end, hooks, symbols, listed, live):
             if f.exists() or b + HOUR_BLOCK <= first:
                 continue
             try:
-                rows = hooks['bg_candles'](sym, b, b + HOUR_BLOCK - HOUR)
+                # Amendment 1: Bitget's history-candles endTime is EXCLUSIVE (startTime inclusive; a window wider
+                # than `limit` returns the NEWEST rows). [b, b + HOUR_BLOCK) is exactly the block's 200 hours.
+                rows = hooks['bg_candles'](sym, b, b + HOUR_BLOCK)
             except FetchError as err:
                 if sym not in live:
                     unavailable.append(sym)
                 else:
                     refusals[f'closes_error:{sym}' if sym != 'BTCUSDT' else 'btc_error'] = str(err)[:200]
                 break
-            rows = [r for r in (rows or []) if PRICE_START <= int(r[0]) < p_end]
+            rows = [r for r in (rows or []) if PRICE_START <= int(r[0]) < p_end and b <= int(r[0]) < b + HOUR_BLOCK]
             if not rows:
                 empty.setdefault(sym, []).append(b)
                 continue
@@ -453,6 +456,17 @@ def attempt_history(root, results_rel='results.jsonl'):
     return att
 
 
+def recorded_fill_hashes(root, results_rel='results.jsonl'):
+    """{day: {sha256, ...}} from every committed attempt end row (Amendment 1): a holdout fill day already on disk
+    is reused only while its hash equals every hash recorded for it."""
+    out = {}
+    for _, r in run008.result_rows(root, results_rel):
+        if r.get('mode') == 'holdout_fetch_attempt' and r.get('phase') == 'end':
+            for day, h in (r.get('fill_hashes') or {}).items():
+                out.setdefault(day, set()).add(h)
+    return out
+
+
 def spent_bytes(att):
     return sum(a['bytes'] if a['bytes'] is not None else a['reserved'] for a in att.values())
 
@@ -526,8 +540,9 @@ def fetch(root=HERE, data_dir=None, now_ms=None, hooks=None, now=None, **guard_k
                                  'run_at': dt.datetime.now(dt.UTC).isoformat()})
         run008.commit_results(root, '008: holdout_fetch_started (automatic, r008_fetch.py)')
     store.mkdir(parents=True, exist_ok=True)
-    att = attempt_history(root)
+    att = attempt_history(root)                 # Amendment 1: attempts and bytes carry over across the amendment
     spent = spent_bytes(att)
+    recorded = recorded_fill_hashes(root)
     n_att = max(att, default=0) + 1
     now = now or dt.datetime.now(dt.UTC)
     end_row = {'registration': run008.REG_NAME, 'mode': 'holdout_fetch_attempt', 'attempt': n_att, 'phase': 'end',
@@ -552,6 +567,11 @@ def fetch(root=HERE, data_dir=None, now_ms=None, hooks=None, now=None, **guard_k
             _write_json(store / 'p3_gates.json', gates)
         gates = json.loads((store / 'p3_gates.json').read_text())
         sentinel(data_dir, end)
+        from ct.archive_fills import day_file
+        fill_hashes = {d.isoformat(): run008.sha256(day_file('hyperliquid', d.isoformat()))
+                       for d in c8.holdout_fill_days(end) if day_file('hyperliquid', d.isoformat()).exists()}
+        end_row['fill_hashes'] = fill_hashes
+        changed = {d for d, h in fill_hashes.items() if recorded.get(d) and recorded[d] != {h}}
         coins = sorted(mapped(data_dir))
         symbols = sorted(set(mapped(data_dir).values()) | {'BTCUSDT'})
         listed = json.loads((data_dir / 'derived/bitget_listing.json').read_text())
@@ -566,6 +586,8 @@ def fetch(root=HERE, data_dir=None, now_ms=None, hooks=None, now=None, **guard_k
         if not gates['g1_g2_pass']:
             r3['p3_g1_g2'] = 'P3 G1/G2 failed on a holdout fill day'
         refusals = {**r0, **r0f, **r1, **r2, **r3}
+        for d in sorted(changed):               # never persistable: a reused file must equal what was recorded
+            refusals[f'fills_changed:{d}'] = 'a holdout fill day on disk differs from the hash a committed attempt recorded'
         end_row['refusals'] = sorted(refusals)
         blocking, persistent = apply_persistence(refusals, att, now.timestamp())
         unavailable = {'bitget_not_listed_now': sorted(set(unav_bg)), 'hl_not_listed_now': sorted(set(unav_hl)),

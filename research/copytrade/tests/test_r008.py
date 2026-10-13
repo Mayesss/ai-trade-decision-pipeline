@@ -1058,6 +1058,88 @@ def real_file_checks():
     check('the code hashes in §11 equal the files on disk', not code_ok, code_ok)
 
 
+def endpoint_checks():
+    print('\n13. Amendment 1: Bitget endTime semantics — 200 hours land per block whatever the boundary rule')
+    import r008_fetch as F
+    mk = Market(['AAAUSDT'], F.PRICE_START, c8.ms(END) + 5 * D, seed=3)
+
+    def mock(kind):
+        def bg(sym, start, end):
+            hs = range(start, end + 1 if kind == 'inclusive' else end, H)
+            rows = [mk.candle_1h(sym, h) for h in hs if mk.candle_1h(sym, h)]
+            if kind == 'bitget':                 # exclusive end, and only the NEWEST `limit` (200) rows
+                rows = rows[-200:]
+            return rows
+        return bg
+    for kind in ('exclusive', 'inclusive', 'bitget'):
+        with tempfile.TemporaryDirectory() as tmp:
+            hooks = {'bg_candles': mock(kind)}
+            F.fetch_closes(Path(tmp), END, hooks, ['AAAUSDT'], {'AAAUSDT': 0}, {'AAAUSDT'})
+            rep, cnt, _ = F.closes_coverage(Path(tmp), END, ['AAAUSDT'], {'AAAUSDT'}, {'AAAUSDT': 0})
+            files = sorted((Path(tmp) / 'r008/bitget_1h/AAAUSDT').glob('*.json'))
+            full = [len(json.loads(f.read_text())) for f in files[1:-1]]
+            check(f'{kind} endTime mock: every interior block holds exactly 200 hours; no coverage refusal',
+                  full and all(n == 200 for n in full) and not rep and cnt['missing_hours_live'] == 0, (set(full), list(rep)[:2]))
+    with tempfile.TemporaryDirectory() as tmp:
+        old = lambda sym, start, end: mock('bitget')(sym, start, end - H)   # the pre-amendment request [b, b+199h]
+        F.fetch_closes(Path(tmp), END, {'bg_candles': old}, ['AAAUSDT'], {'AAAUSDT': 0}, {'AAAUSDT'})
+        rep, _, _ = F.closes_coverage(Path(tmp), END, ['AAAUSDT'], {'AAAUSDT'}, {'AAAUSDT': 0})
+        check('the pre-amendment request against the real semantics reproduces run note 1 (1 hour missing per block)',
+              rep and all(k.startswith('closes_partial:') and v.startswith('1 hours missing') for k, v in rep.items()), len(rep))
+
+
+def amendment_checks():
+    print('\n14. Amendment 1: the guard accepts the pre-amendment fetch rows only under one valid amendment line')
+    import r008_run as R
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        prior = git(root, 'rev-parse', 'HEAD').strip()
+        R.append_row(root, {'registration': R.REG_NAME, 'mode': 'holdout_fetch_started', 'registration_commit': prior,
+                            'owner': {'end_date': '2026-09-28'}})
+        R.commit_results(root, 'started row under the prior commit')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('before any amendment the fetch resumes under the same registration commit', f == [], f)
+        reg = root / 'registrations' / '008-inverted-positioning-holdout.md'
+        base = reg.read_text()
+        reg.write_text(base + '\nAmendment 1 prose.\n')
+        git(root, 'commit', '-qam', 'amendment without the line')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('an amended registration without the line refuses the old started row (f)',
+              any('another registration commit' in x for x in f))
+        line = f'008 amendment 1: APPROVED 2026-10-13 prior-commit {prior}'
+        reg.write_text(base + '\nAmendment 1 prose.\n' + line.replace(prior, 'a' * 40) + '\n')
+        git(root, 'commit', '-qam', 'forged sha')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('the amendment line with a wrong sha -> refused (m)', any(x.startswith('(m)') for x in f))
+        reg.write_text(base + '\nAmendment 1 prose.\n' + line + '\n' + line + '\n')
+        git(root, 'commit', '-qam', 'two lines')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('two amendment lines -> refused (m)', any(x.startswith('(m)') for x in f))
+        reg.write_text(base + '\nAmendment 1 prose.\n' + line + '\n008 amendment 2: APPROVED 2026-10-14 prior-commit ' + prior + '\n')
+        git(root, 'commit', '-qam', 'second amendment')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('a second amendment -> refused (m)', any(x.startswith('(m)') for x in f))
+        reg.write_text(base + '\nAmendment 1 prose.\n' + line + '\n')
+        git(root, 'commit', '-qam', 'amendment 1, valid')
+        f, ctx = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('one valid amendment line descending from the prior commit -> the old started row is accepted; fetch resumes',
+              f == [] and ctx['resume'], f)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        git(root, 'checkout', '-qb', 'side')
+        reg = root / 'registrations' / '008-inverted-positioning-holdout.md'
+        reg.write_text(reg.read_text().replace('Some prose.', 'Some prose, side.'))
+        git(root, 'commit', '-qam', 'side commit of the registration')
+        side = git(root, 'rev-parse', 'HEAD').strip()
+        git(root, 'checkout', '-q', '-')
+        reg.write_text(reg.read_text() + f'\n008 amendment 1: APPROVED 2026-10-13 prior-commit {side}\n')
+        git(root, 'commit', '-qam', 'amendment naming a commit it does not descend from')
+        git(root, 'merge', '-q', '--no-edit', 'side')
+        f, _ = R.guard_failures(root, 'fetch', now_ms=NOW, **GK)
+        check('an amendment commit that does not descend from the named prior commit -> refused (m)',
+              any('strictly descends' in x for x in f), [x for x in f if x.startswith('(m)')])
+
+
 if __name__ == '__main__':
     calendar_checks()
     stats_checks()
@@ -1071,5 +1153,7 @@ if __name__ == '__main__':
     bypass_checks()
     fetch_and_e2e_checks()
     recheck_failure_check()
+    endpoint_checks()
+    amendment_checks()
     real_file_checks()
     print(f'\nall checks passed ({N_CHECKS[0]})')

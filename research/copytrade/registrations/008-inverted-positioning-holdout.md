@@ -1,6 +1,6 @@
 # 008 — Inverted positioning (L3): 001 T3's book with the sign flipped, a new existence test, decided on the Hyperliquid holdout only
 
-**Status: REGISTERED 2026-10-13** (orchestrator, under the owner's delegation of 2026-10-12: "you are
+**Status: REGISTERED 2026-10-13; Amendment 1 (2026-10-13), §16** (orchestrator, under the owner's delegation of 2026-10-12: "you are
 allowed to register yourself and take decision as you would recommend as long as they take us nearer
 towards the goal"). Revision 2 after two independent first-round reviews (`reviews/008-review-a.md`,
 `008-review-b.md`), a second-round review and its Revision 2 recheck (`reviews/008-review-r1.md`, verdict:
@@ -768,8 +768,8 @@ No other edit to this file is allowed after the fetch (r).
 | `p3_checks.py` | `b82581211a490ce88172bf41fa87d16ff5f71ec0287f20ce98f78eca8e238eaa` |
 | `p4_features.py` | `cbfff6122678f52dd78fd811f9b985fada49ac8eee99ef6e6bed90fc3c69b4b9` |
 | `p5_population.py` | `26716a1b9e8acdae2cd8493c2f0ef6116aa26472cd10054de2b926da3c2cac7a` |
-| `r008_run.py` | `bf9e702a565332b053444adf7bd81f42d120de89c72f4fe42a92afcaa7d3d5fc` |
-| `r008_fetch.py` | `979a7acff6e5bc8c89d10869a4833e879aaff974b5e22422ad32d4075fa4fc97` |
+| `r008_run.py` | `eb2ed60de5866d1caf505012a79e2f0056f411791fc7df494e122cbfc4e8ac3d` |
+| `r008_fetch.py` | `cf559a32fc2aabbc806541208bb0ec0d9c1068cacbb53c2275ac047b9a0a5545` |
 | `data/p0/2026-10-07/symbols.json` | `02f0aaebd71be99ba0d49c7d7afbdfae5be41272979fb23eb71619c6033d010f` |
 | `data/p0/2026-10-07/report.json` | `0aeb2042ce128d3f248570e950779e594865fe0c0c4c3f12224f0788b2aac3a6` |
 | `data/derived/bitget_listing.json` | `f7334060966b962b40dcf95e812352dfd5e5f43a82719d2da1321639d2100153` |
@@ -975,3 +975,139 @@ From `reviews/008-review-r1.md`, verdict "register after the listed fixes". Line
 
 **Real-data reads in Revision 2:** none. The environment fingerprint hashes the venv's own package files,
 which are code, not data.
+
+## 16. Run note 1 and Amendment 1 (2026-10-13)
+
+### Run note 1 (2026-10-13, orchestrator): the fetch stopped at its coverage check; no outcome seen
+
+`r008_fetch.py` ran once under the REGISTERED commit `2bd855a`. It wrote these rows, all committed:
+- `holdout_fetch_started` (`5fe7930`);
+- attempt 1 start (`dc2a567`);
+- attempt 1 end (`e069efb`): 3,594,315,926 bytes, 2,341 refusal keys, all `closes_partial` or
+  `btc_partial`.
+
+It did the following:
+- **Fills.** Listed and planned 33 fill days (3.34 GiB, plus 2.1 MiB of footers) and downloaded them. P3
+  G1 passed (33/33 UTC partitions clean) and so did G2 (one dex value, `hyperliquid`).
+- **Closes and funding.** Fetched Bitget 1H closes and HL funding. The coverage check then refused with
+  "closes_partial:<symbol>:<block>: 1 hours missing in block <block>": **every block of every symbol,
+  exactly one hour missing**. Exit 1, no fetched row.
+
+**Cause: a mechanical fault, not a rule.**
+- `fetch_closes` requested each 200-hour block as `[b, b + 199 h]`, which assumed an inclusive `endTime`.
+- Bitget's history-candles `endTime` is **exclusive**, so every block came back with 199 hours, missing
+  b + 199 h.
+- It is deterministic: every re-run fails the same way.
+- `closes_partial:` is persistable, so three attempts 24 h apart would push more than 8 names to
+  "unavailable" and close 008 unread on a bug.
+
+**What was and was not seen.**
+- **Seen:**
+  - the P3 partition and dex gates on the fills (pass / fail counts);
+  - the number of bytes;
+  - block timestamps and the count of missing hours, in the refusal messages.
+- **Not seen:**
+  - no price, return, funding value, position, tilt, cohort, signal or outcome was printed, saved outside
+    the guarded store, or computed;
+  - no `holdout_fetched`, `holdout_started` or `holdout` row exists.
+- **Left on disk:**
+  - the 33 holdout fill days;
+  - 168 funding files;
+  - one stored close block per symbol (the last, partly beyond the read bound). The refused blocks were
+    deleted by the fetch, as designed.
+
+### Endpoint semantics, verified for every paged source
+
+The probes used only dates before 2026-07-01, except where noted under the HL page cap below. Only
+timestamps and counts were printed.
+
+- **Bitget `history-candles`** (BTCUSDT 1H, block starting 2026-05-10 16:00 UTC):
+  - `startTime` is inclusive and **`endTime` is exclusive**.
+  - `[b, b + 199 h]` gives 199 rows (b … b + 198 h); `[b, b + 200 h]` gives 200 rows (b … b + 199 h).
+  - `[b, b + 201 h]` gives 200 rows, b + 1 h … b + 200 h: a window wider than `limit` (200) returns the
+    **newest** rows and drops the start.
+  - The orchestrator's own probe (block 1779840000000) agrees.
+- **HL `fundingHistory`** (BTC, 2026-06-15):
+  - `startTime` and **`endTime` are both inclusive**: a row at exactly `endTime` is returned.
+  - Pages are capped at 500 rows, sorted ascending.
+  - 008's paging (next start = last + 1 ms, rows kept only below the read bound, stop on a short page)
+    neither skips nor duplicates a row, and no row at or after the bound is kept. **No change is needed.**
+    Attempt 1's 168 funding files passed the tail check.
+- **Other sources:**
+  - S3 `list-objects-v2`: the AWS CLI paginates forward itself.
+  - Parquet column ranges: inclusive `bytes=s-(e−1)`, checked by length.
+  - Bitget contracts and HL `meta`: not paged.
+- **Shared code (`ct/bitget.py`, frozen, outside 008's request path):**
+  - `candle_1h` and `_block` (1m) use the same `start + BLOCK − step` request, so they too drop the last
+    step of each block.
+  - 008 does not call them, and the tests use them only as 001's oracle with a mock.
+  - It is a finding for the programme: 001's T3 and replay read through them. 001 is closed and is not
+    touched here.
+
+### Amendment 1 (2026-10-13; orchestrator-approved under the owner's 2026-10-12 delegation)
+
+**The change** (`r008_fetch.py` and `r008_run.py` only; no other file):
+1. **The block request.**
+   - `fetch_closes` requests `[b, b + 200 h)`: `endTime = b + HOUR_BLOCK`.
+   - It keeps rows with b ≤ t < b + 200 h, and below the read bound as before.
+   - With Bitget's exclusive end this is exactly the block's 200 hours. With an inclusive end, the extra row
+     is filtered out.
+   - Tests use three mocks (exclusive; inclusive; exclusive with only the newest 200 rows). Each puts 200
+     hours in every interior block with no coverage refusal. The pre-amendment request against the real
+     semantics reproduces run note 1.
+2. **Fetch rows written before the amendment are accepted, explicitly.**
+   - One anchored line, below, names the prior registration commit.
+   - The guard accepts a `holdout_fetch_started` row carrying that commit, in check (f) at the fetch and
+     check (g1) at the run, only when all of these hold:
+     - the line exists exactly once;
+     - no other line starts with "008 amendment" (at most one amendment);
+     - the named commit is a commit of this file and an ancestor of HEAD;
+     - the commit that first holds the line strictly descends from it.
+   - Everything else in the guard is unchanged.
+   - Tests refuse each of these: a forged sha, two lines, a second amendment, a line committed in a commit
+     that does not descend from the named commit, an amended file without the line. With one valid line,
+     the fetch resumes.
+3. **Bytes and attempts carry over.**
+   - Spent bytes and the attempt count are still read from every committed attempt row, so attempt 1's
+     3.59 GB count toward the 15 GiB cap.
+   - The next attempt is numbered 2.
+4. **Fills already on disk are reused, not re-downloaded.**
+   - They exist only after `download_columns`' footer row-count check and an atomic rename, and they
+     passed G1 and G2.
+   - From attempt 2 on, every end row records each holdout fill day's SHA-256. Any later attempt refuses
+     (non-persistable `fills_changed:<day>`) if a file on disk differs from a recorded hash.
+   - The manifest pins them at the fetched row, as before.
+
+**Why this is an amendment and not a re-tuning.**
+- No outcome exists or has been seen (run note 1).
+- The change fixes a transport boundary so that the registered data (every hour of every block,
+  2026-05-28 → the read bound) are actually fetched.
+- It changes no rule, criterion, calendar, parameter, universe, cap, ceiling or persistence rule, and no
+  decision code (`ct/crowd008.py` is unchanged).
+- The precedent is 007's Amendment 1 (a wiring fault found when the frozen code first ran, fixed before
+  any outcome existed, with only that hash moving).
+
+**Hashes in §11.**
+- `r008_fetch.py`: `979a7acf…` → `cf559a32…`.
+- `r008_run.py`: `bf9e702a…` → `eb2ed60d…` (the amendment check in the guard).
+- Every other hash, the manifest and the environment are unchanged.
+
+**Tests.** `tests/test_r008.py`: **143 checks pass**, 11 of them new (endpoint mocks and amendment guard).
+
+**Drafter's real-data reads for this amendment** (ledger):
+- **Bitget** `history-candles`, BTCUSDT 1H: three requests, 2026-05-10 16:00 → 2026-05-19 01:00 UTC.
+  Printed: row counts, first and last offsets.
+- **HL `fundingHistory`**, BTC: four requests inside 2026-06-14 23:00 → 2026-06-15 03:00 UTC. Printed:
+  counts and millisecond offsets.
+- **HL page cap — an error, disclosed.**
+  - To measure the page cap I requested `startTime` 2026-06-15, `endTime` 2026-07-15.
+  - HL returned 500 rows covering 2026-06-15 00:00 → about 2026-07-05 18:00 UTC: about 138 hourly BTC
+    funding rows dated on or after 2026-07-01, held in process memory.
+  - **Only the row count (500), the span in hours (498) and sortedness were printed. No funding value was
+    printed, saved or computed.**
+  - The same series sits in 008's own guarded store from attempt 1, and is read by the run.
+- **Metadata:** `git log` and `git show` of the three attempt-1 rows (refusal-key kinds, byte count); the
+  fetch log's refusal lines (keys and block timestamps); file counts in `data/r008/` (168 closes, 168
+  funding).
+
+008 amendment 1: APPROVED 2026-10-13 prior-commit 2bd855abe1cbacc3d5e45d2563d25b19a7faa9cb
