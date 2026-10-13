@@ -1,0 +1,32 @@
+### m1: the witness refuses before any row or file (gate-open stand-in, witness without the 2027-12 key)
+  refused (keys to 2026-09, server date 2028-01-09): (t) witness: the archive does not list BTCUSDT 2027-12 yet | store files: 0
+  refused (all keys, server date 2026-09-15, before the stand-in gate 2026-10-01): (t) witness: the server date 2026-09-15 00:00:00+00:00 is before 2026-10-01 | store files: 0
+  ledger lines        3 ->        3
+### m2: the read gate
+  a byte copy of the pull: refused: the real 016 data (or a byte copy of it) open only after the real guar
+  _GATE assigned by hand: refused
+  _GATE and _GUARD_PASSED both assigned by hand: OPENED (in-process residual)
+  guard() with a stubbed _GUARD_FAILURES: passed, _guard_ok = False
+### m2b (new): the fetcher's network hooks are module globals: replaced in process, the REAL fetch() fills the REAL store
+  (probe_r1_legit.out: r1_fetch_harness.py.txt replaces REAL_HOOKS and _real_witness_hooks, then calls fetch():
+   fetched: 1251 files in the manifest after 1 attempt(s)
+### m3: rows
+  results.jsonl without a trailing newline:
+(k) results.jsonl does not end with a newline — a row appended now would merge into another
+  orphan-root read row with log.showRoot=false in the repository config:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog, merge, stash or root) — once
+  git replace <row commit> <decoy>:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog, merge, stash or root) — once
+### m6, m7, m9, m10, m11: text and code (grep of the real repository's committed files)
+137:  live symbols were first archived between 2024-04 and 2025-06, and token migrations restart both the age and the
+138:  Donchian history at the new ticker: MATIC→POL (2024-09), FTM→S (2025-01), RNDR→RENDER (2024-07), EOS→A (2025-05),
+748:        non_coin, known_2026 = set(), set()
+750:            known_2026.add(x.get('symbol'))
+392:`--fingerprint`), `r016_fetch.py` (the guarded fetch), `tests/test_r016.py`, `tests/test_r016_mutants.py`.
+397:`brew upgrade`), the recovery is to install CPython 3.14.8 until `--fingerprint` equals the pins; **the pins are never
+597:| **B-B1** the guard binds to any clone or worktree | REAL_REPO pinned; main worktree; named branch; repo-path recovery line only when REAL_REPO no longer exists; tes
+410:  commit every top-level `.py` and package, of any study, before the fetch and before the read (m10);
+registrations/016-crypto-trend-verbatim.md:20:The runner refuses any fetch or read before **2028-01-08** (the registered end 2027-12-31 + 8 
+registrations/016-crypto-trend-verbatim.md:87:**One read only**, on or after 2028-01-08 (2027-12-31 + 8 days). There is no interim look and 
+registrations/016-crypto-trend-verbatim.md:612:| B-m11 nits | END + 8 days; `guard_failures` captured; the failed-commit note | §1, §11 |
+r016_run.py:23:  (t)  today (UTC) >= 2028-01-08 (the registered end 2027-12-31 + 8 days); a `now` argument is refused whenever the

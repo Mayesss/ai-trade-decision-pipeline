@@ -1,0 +1,44 @@
+NOTE (reviewer): the FIRST run of this probe was not network-sandboxed; its fetch-CLI step passed the gate-open stand-in's guard and the fetcher's witness sent ONE real GET for the S3 listing of data/futures/um/monthly/klines/BTCUSDT/1d/ (key names and the HTTP Date only; no file downloaded, no row or file written: it refused because no 2027-12 key exists). This output is the re-run with the network denied (sandbox-exec).
+== baseline -I -S:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== no flags:
+(v) run with python3 -I -S (isolated mode): PYTHONPATH, user site and the script directory must not load
+(v) run with python3 -I -S (no site): a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -I only:
+(v) run with python3 -I -S (no site): a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -I -S with PYTHONPATH=<forged datetime> (ignored):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== throwaway venv, same 3.14.8, a .pth in its site-packages, run with -I -S:
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   same venv with -I only (the .pth runs):
+(v) run with python3 -I -S (no site): a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(v) .pth files in site-packages that are not pinned: ['/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2
+(v) module _rb016clock is loaded from /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b
+(v) module _rb016clock bytecode /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== forged __pycache__/r016_run pyc, fetch CLI (network denied):
+fetch stopped: https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?prefix=data%2Ffutures%2Fum%2Fmonthly%2Fklines%2FBTCUSDT%2F1d: URLError(gaie
+== ATTACK: -X pycache_prefix=<tmp>/r016f-pyc-evil (the name r016_run keeps), forged ct16/stats bytecode there:
+forged /var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r016f-pyc-rbevil/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/m2/research/alpha/ct16/stats.cpython-314.pyc
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   ct16.stats forged: True | stats __cached__ under _zsw0000gp/T/r016f-pyc-rbevil/ | module_origin_failures: []
+== committed top-level csv.py:
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['csv.py (stdlib name)'] — commit every top
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== committed top-level tokenize/ package:
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['tokenize/__init__.py (stdlib name)'] — co
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== git: absolute path and neutral config (grep):
+86:GIT_BIN = '/usr/bin/git'
+128:    env.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_NO_REPLACE_OBJECTS': '1',
+134:    return subprocess.run([GIT_BIN, '-c', 'core.hooksPath=' + os.devnull, '-c', 'log.showRoot=true', '-c',
+135:                           'core.fsmonitor=false', '--no-replace-objects', *a],

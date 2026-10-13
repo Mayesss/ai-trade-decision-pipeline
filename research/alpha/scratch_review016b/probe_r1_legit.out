@@ -1,0 +1,18 @@
+== ledger before:        3 lines, registrations:    3 "registration": "015- 
+== fetch:
+fetched: 1251 files in the manifest after 1 attempt(s)
+== commits by the runner: r016_run|016: fetched (automatic, r016_fetch.py) r016_run|016: fetch attempt 1 end (automatic) r016_run|016: fetch_started (automatic, r016_fetch.py) owner|STANDIN: 016 REGISTERED (synthetic data; REAL_REPO -> this path) Mayess|Programme doc: 015 not_demonstrated; 016 Revision 1; family counts and distance to goal 
+== --check before approval:
+(h') no committed line '016 read: APPROVED <date> row <sha256 of the fetched row>'
+== --check after approval:
+guard open: REGISTERED commit b78df90d1705ba1d36ec26e033b8071483a0ac1f
+== --run:
+coverage before the read: {"a_files": 816, "f_files": 432, "funding_files": 816, "symbols": 24}
+outcome: alive route: paper_then_scale
+== ledger modes now: "mode": "started" "mode": "result" "mode": "reported" "mode": "fetch_started" "mode": "fetch_attempt" "mode": "fetched" "mode": "read_started" "mode": "read" 
+== second --run:
+ct16.rule.Refused: (i) a 016 read or read_failed row exists (tree, any branch, reflog, merge, stash or root) — once
+(i) a read_started row exists and the runner committed a read row, or no committed, later '016 read restart: APPROVED <date> started-row <sha256>' line names it
+== fetch again:
+(f) the fetch has completed (a fetched row exists) — it runs once
+(f) a read_started row exists — the fetch is closed

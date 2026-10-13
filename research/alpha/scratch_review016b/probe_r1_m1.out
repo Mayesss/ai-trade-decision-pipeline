@@ -1,0 +1,10 @@
+  refused _fetch_in(root=REAL, store=tmp, mocks, now) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused _fetch_in(root=tmp, store=REAL store, mocks, now) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused _fetch_in(root=REAL/research, ...) (a parent) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused fetch(now=...) (the real fetch takes no argument) -> fetch() got an unexpected keyword argument 'now'
+  refused fetch(hooks=...) -> fetch() got an unexpected keyword argument 'hooks'
+  guard_failures(REAL, now=2028): ['(t) a `now` override is never accepted on the real repository (review B M1)']
+  refused record() into the real ledger without the real guard -> (M1) rows are written into the real repository only by the real run, after the real guard, with the default co
+  refused run() (real guard: today < gate) -> (t) the forward span ends 2027-12-31; nothing is fetched or read before 2028-01-08 (UTC)
+  refused Panel(run) on the real pull -> the real 016 data (or a byte copy of it) open only after the real guard passed and the started row is committe
+== ledger lines        3 ->        3; HEAD moved: no; store exists: no

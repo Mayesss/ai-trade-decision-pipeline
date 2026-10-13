@@ -1,0 +1,24 @@
+== --skip-worktree: git status: []
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) ct16/stats.py carries an index flag (S) that hides working-tree changes
+(d) registrations/016-crypto-trend-verbatim.md carries an index flag (S) that hides working-tree changes
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== --assume-unchanged: git status: []
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) ct16/stats.py carries an index flag (h) that hides working-tree changes
+(d) registrations/016-crypto-trend-verbatim.md carries an index flag (h) that hides working-tree changes
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== filter: git status: [ M research/alpha/ct16/stats.py  M research/alpha/registrations/016-crypto-trend-verbatim.md ]
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) a filter attribute applies: registrations/016-crypto-trend-verbatim.md: filter: rb
+(d) a filter attribute applies: ct16/stats.py: filter: rb
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)

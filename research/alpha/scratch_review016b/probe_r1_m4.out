@@ -1,0 +1,29 @@
+### E1: a committed revision after REGISTERED
+(r) 2 different REGISTERED versions of the registration exist in the history (first 6f342c4c2e07) — an amendment after REGISTERED is a new registratio
+(r) HEAD's registration differs from the REGISTERED commit 6f342c4c2e07 beyond approval, restart and repo-path lines
+(r) ct16/stats.py at HEAD differs from the REGISTERED commit 6f342c4c2e07
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### E2: --no-ff merge of REGISTERED + revision into another branch
+  on main-merge:
+(r) 2 different REGISTERED versions of the registration exist in the history (first 45c2c25740f2) — an amendment after REGISTERED is a new registratio
+(r) HEAD's registration differs from the REGISTERED commit 45c2c25740f2 beyond approval, restart and repo-path lines
+(r) ct16/stats.py at HEAD differs from the REGISTERED commit 45c2c25740f2
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### E3: REGISTERED + revision only in a linked worktree, squash-merged into main, worktree removed, branch deleted
+Squash commit -- not updating HEAD
+  original REGISTERED commit bd086a01f820 reachable via --all --reflog? 0
+  main --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+  ct16.stats forged: True
+### E4: the data gate opens only after the started row is in HEAD
+fetched: 1251 files in the manifest after 1 attempt(s)
+  guard(run) passed; _GATE = None
+  Panel refused: the real 016 data (or a byte copy of it) open only after the real guard passed and the started row i
+### E5: restart after a RUNNER-committed read_started (data opened, then a hard crash): reset, re-commit by hand, restart line
+  after a runner-committed read_started:
+(i) a read_started row exists and the runner committed a read row, or no committed, later '016 read restart: APPROVED <date> started-row <sha256>' lin
+  after reset + hand re-commit + restart line:
+(i) a read_started row exists and the runner committed a read row, or no committed, later '016 read restart: APPROVED <date> started-row <sha256>' lin
+### E6: control - a hand-committed read_started (the runner never committed one) + restart line
+fetched: 1251 files in the manifest after 1 attempt(s)
+guard open: REGISTERED commit 1639faa82bd76d7d40035e530ebd23a4dae9c5b0

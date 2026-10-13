@@ -1,0 +1,41 @@
+== origin --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== clone, data SYMLINKED, --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== clone, fetch CLI:
+(w) the fetcher runs only from the real repository
+== clone, fetch via in-process mock harness:
+fetch refused/stopped: (w) the fetcher runs only from the real repository
+== clone, data COPIED, --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== linked worktree (detached):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+(w) HEAD is detached — run on a named branch of the real repository
+== linked worktree (named branch):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== main worktree, detached HEAD:
+(w) HEAD is detached — run on a named branch of the real repository
+== recovery line while the pinned path EXISTS (in the clone, line names the clone):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r1/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== ABUSE 1: the pinned path moved away (mv origin origin.away); the clone's self-issued repo-path line:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   fetch (mock harness) + approval + --run in the CLONE:
+fetched: 1251 files in the manifest after 1 attempt(s)
+outcome: alive route: paper_then_scale
+   clone ledger 016 modes: ['result', 'fetch_started', 'fetch_attempt', 'fetched', 'read_started', 'read']
+   origin back in place, origin --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   origin ledger 016 modes: ['result']
+== ABUSE 2: a SYMLINK at the pinned path pointing at a fresh clone (no repo-path line needed):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)

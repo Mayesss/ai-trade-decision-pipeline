@@ -1,0 +1,28 @@
+# Reviewer B, 016 R1: run the REAL fetch() of a stand-in with its network hooks replaced IN PROCESS by the suite's
+# mocks (synthetic objects). Executed as `python3 -I -S -c "$(cat r1_fetch_harness.py.txt)" <alpha> <objs.pickle>`
+# so that __main__ has no file. The suite module is dropped from sys.modules after the mocks are built (its socket
+# patch stays: no network). The only liberties: REAL_HOOKS / _real_witness_hooks replaced; r016_fetch.__cached__
+# re-pointed under the prefix it set itself (it was imported, not run as __main__).
+import sys, pickle, tempfile, contextlib, io
+from pathlib import Path
+A = Path(sys.argv[1])
+assert not str(A).startswith('/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline'), 'stand-ins only'
+sys.pycache_prefix = tempfile.mkdtemp(prefix='r016f-pyc-'); sys.dont_write_bytecode = True
+sys.path.append(str(A)); sys.path.append(str(A / 'tests'))
+with contextlib.redirect_stdout(io.StringIO()):
+    import test_r016 as T
+F = T.F
+objs = pickle.loads(Path(sys.argv[2]).read_bytes())
+syms = sorted({k.split('/')[5] for k in objs if '/klines/' in k})
+ex = {'symbols': [{'symbol': s, 'contractType': 'PERPETUAL', 'underlyingType': 'COIN', 'onboardDate': 1577836800000}
+                  for s in syms]}
+h = T._mock_hooks(objs, page=50, ex=ex); h.pop('calls')
+for m in [m for m in sys.modules if m in ('test_r016',) or m.startswith('ct16.sim')]:
+    del sys.modules[m]
+F.REAL_HOOKS = {k: h[k] for k in F.HOOK_NAMES}
+F._real_witness_hooks = lambda: {'witness': h['witness']}
+F.__cached__ = str(Path(sys.pycache_prefix) / 'r016_fetch.pyc')
+try:
+    F.fetch()
+except BaseException as e:
+    print('fetch refused/stopped:', str(e)[:600])

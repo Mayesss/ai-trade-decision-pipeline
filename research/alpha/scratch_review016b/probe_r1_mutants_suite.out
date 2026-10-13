@@ -1,0 +1,35 @@
+  PASS  baseline (unmutated sandbox): section binding passes
+  PASS  baseline (unmutated sandbox): section env passes
+  PASS  baseline (unmutated sandbox): section fetch passes
+  PASS  baseline (unmutated sandbox): section gate passes
+  PASS  baseline (unmutated sandbox): section guard passes
+  PASS  baseline (unmutated sandbox): section history passes
+  PASS  baseline (unmutated sandbox): section panel passes
+  PASS  baseline (unmutated sandbox): section restart passes
+  PASS  B-m4.1 (Panel: real data (or a copy) only behind the gate) removed -> section gate fails on: Panel refuses the real data without the gate (before any file is opened)
+  PASS  B-m4.2 (fetch: mock hooks / `now` never touch the real repository) removed -> section gate fails on: mock hooks and `now` with root = the real directory are refused before anything is written (review B M1)  (t) witn
+  PASS  B-m4.3 (fetch: the real path runs only from the real repository) removed -> section binding fails on: the fetcher in a clone refuses: it runs only from the real repository  ) this runner lives in {REPO}, not in the r
+  PASS  B-m4.4 (Panel: the span-(a) month cap) removed -> section panel fails on: a pull listing a 2026-07 file is refused (the month cap)
+  PASS  B-m4.5 (Panel: the span-(a) row cut at 2026-07-01) removed -> section panel fails on: a 2026-06 file holding a 2026-07 row: the row is cut, the forward value is used (the row cut)  refused: overlappin
+  PASS  B-m4.6 (fetch: the 2026-06 / 2026-07 seam) removed -> section fetch fails on: coverage: traded at the end of 2026-06 in the pinned pull but no 2026-07 file (the seam)  {'funding_missing:SOLUSD
+  PASS  B-m4.7 (fetch: BTCUSDT keys are never persistable) removed -> section fetch fails on: persistence: 3 attempts >= 24 h apart make a key unavailable; a BTCUSDT key never
+  PASS  B-m4.8 ((t) the date gate) removed -> section guard fails on: (t) the date gate refuses before 2028-01-08 (UTC)
+  PASS  B-m4.9 ((f) the fetch runs once) removed -> section guard fails on: (f) the fetch runs once: a fetched row closes it
+  PASS  B-m4.10 (fetch: the .CHECKSUM verification) removed -> section fetch fails on: a checksum mismatch raises and writes nothing
+  PASS  B-M1 (`now` is refused on the real repository) removed -> section gate fails on: `now` is refused on the real repository (it never opens the date gate there)
+  PASS  B-M4.a ((r) one REGISTERED content anywhere) removed -> section history fails on: a second REGISTERED content anywhere (a --no-ff merge) refuses  []
+  PASS  B-M4.b ((r) guarded code at HEAD equals the REGISTERED commit) removed -> section history fails on: a committed revision of code + hash table after REGISTERED refuses, naming the REGISTERED commit  ['(r) 2 differen
+  PASS  B-M3 ((d) skip-worktree / assume-unchanged flags) removed -> section history fails on: (d) skip-worktree on guarded code refuses (review B M3)
+  PASS  B-m3.a ((k) results.jsonl ends with a newline) removed -> section guard fails on: (k) results.jsonl without a final newline (a row would merge into another; review B m3)
+  PASS  B-m3.b ((f) an unparseable 016 line refuses) removed -> section history fails on: (f) an unparseable added line that mentions a 016 registration refuses
+  PASS  B-M4.c ((i) no restart after a runner-committed read row) removed -> section restart fails on: (i) a runner-committed read_started row is never restarted
+  PASS  B-M2.a ((v) python -I) removed -> section env fails on: without -I: (v) refuses (isolation)
+  PASS  B-M2.b ((d) a stdlib-named module at the top level) removed -> section env fails on: (d) a COMMITTED stdlib-named module beside the runner is refused
+  PASS  B-m2 (Panel: a byte copy of a registered pull listing) removed -> section gate fails on: a byte copy of a registered pull listing outside the real tree is refused (review B m2)
+  PASS  B-m5.a (fetch: funding coverage) removed -> section fetch fails on: coverage: a traded kline month without a funding file refuses (review B m5a)
+  PASS  B-m5.b (fetch: the 2027-11 / 2027-12 seam) removed -> section fetch fails on: coverage: traded at the end of 2027-11 but no 2027-12 file (the second seam; review B m5b)
+  PASS  B-m5.c (fetch: the exchangeInfo listing cross-check) removed -> section fetch fails on: coverage: a live COIN perp of the exchangeInfo with no forward klines refuses (review B m5c)
+  PASS  B-m5.d (fetch: resume re-verifies stored files) removed -> section fetch fails on: resume: a stored file is re-checked against .CHECKSUM and re-fetched when it differs (review B m5d)
+  PASS  B-m1 (fetch: the witness (archive holds 2027-12)) removed -> section fetch fails on: witness: the archive must list BTCUSDT 2027-12
+  PASS  B-B1 ((w) no detached HEAD) removed -> section binding fails on: a detached HEAD in the real repository refuses with (w)  (t) the forward span ends 2027-12-31; nothing is fetched 
+mutants killed: 26 of 26; baselines passing: 8 of 8

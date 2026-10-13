@@ -511,3 +511,139 @@ git diff REGISTERED..HEAD: ct16/stats.py 2 +-, registration 4 +++-
   key and returned no data.
 - **No price, volume, trade count or funding value of any real file was read or computed.** No network request for
   any date on or after 2026-07-01 was made.
+
+---
+
+## Appendix: Revision 1 recheck (2026-10-13, probes only)
+
+**Scope.** Revision 1 is at `1555bf8`; real HEAD was `64cbffe` when this ran. Every round-1 attack was re-run against
+the revised runner and fetcher.
+
+**Stand-ins and procedure.**
+- `make_standin016_r1.py` builds the stand-ins.
+  - It runs `git clone --local` of the real repository. The real history, the anchor and **015's three committed
+    ledger rows** are present, and the Revision 1 code is byte-identical.
+  - It writes synthetic data with the suite's `_synthetic_tree()`.
+  - It changes one line, `REAL_REPO`, to point at the stand-in, so that the stand-in plays the real repository.
+  - With `--gate-open`, it also changes one line, `READ_NOT_BEFORE`, to 2026-10-01. Now that `-I -S` closes the `.pth`
+    route, this is the only stand-in for "after 2028-01-08".
+- Mock fetches use `r1_fetch_harness.py.txt`. It calls the stand-in's own no-argument `fetch()` with the network hooks
+  replaced in process.
+- Every probe after the first `probe_r1_m2.sh` run ran under `sandbox-exec` with the network denied. The incident in
+  that first run is listed under "Reviewer's reads" below.
+- Probe files: `r1_lib.sh`, `probe_r1_*.sh`, `.out`.
+
+### Verdict: register after R1-M1, a one-line fix plus a test
+
+B1, M1, M2 (as attacked in round 1), M3 and M4 are fixed. The 015 merge attack is refused. A legitimate stand-in run
+works with another registration's rows already in the ledger. The suite kills all 26 mutants.
+
+One new major remains, R1-M1: a command-line `-X pycache_prefix` brings back forged decision bytecode under `-I -S`.
+Four minors follow. r1-m1, the squash-from-worktree attack, was carried as a minor in 015 too. It should get the cheap
+tag pin, because 016 has 15 months in which a worktree squash can happen.
+
+### Round-1 attacks: results
+
+| attack | probe | result |
+|---|---|---|
+| Legitimate REGISTERED stand-in (015's 3 rows in the ledger) | `probe_r1_legit.out` | fetch (runner-committed `fetch_started`, `fetch_attempt`, `fetched`) → (h') → approval → `guard open` → `--run`: `outcome: alive`. A second `--run` is refused (i); a second fetch is refused (f) |
+| B1: clone with data symlinked or copied; fetch CLI and mock harness in the clone; linked worktree (detached and on a branch); detached main HEAD | `probe_r1_b1.out` | (w) every time; the fetcher refuses with "(w) the fetcher runs only from the real repository" |
+| B1: repo-path line in a clone while the pinned path exists | `probe_r1_b1.out` | ignored; (w) |
+| M1: `_fetch_in` with root, store or a parent in the real tree; `fetch(now=)` / `fetch(hooks=)`; `guard_failures(real, now=2028)`; `record()` without the guard; `run()` today; `Panel` | `probe_r1_m1.out` | all refused; ledger 3 → 3 lines, HEAD unchanged, no store |
+| M2: no flags; `-I` alone; `PYTHONPATH` with a forged `datetime`; a venv `.pth` under `-I -S` and under `-I`; a forged `__pycache__/r016_run` pyc on the fetch CLI; a committed `csv.py`; a committed `tokenize/` package | `probe_r1_m2.out` | refused by (v) or (d). The forged pyc is not loaded: the genuine guard runs |
+| M3: `--skip-worktree`, `--assume-unchanged`, a filter attribute | `probe_r1_m3.out` | (b), (d) flag `S`/`h`/filter, (e) |
+| M4: a committed revision; a `--no-ff` merge of REGISTERED + revision into another branch | `probe_r1_m4.out` E1, E2 | "(r) 2 different REGISTERED versions …", plus HEAD and `ct16/stats.py` differing from reg0 |
+| M4: data gate | `probe_r1_m4.out` E4 | `guard('run')` passes with `_GATE = None`, and `Panel` refuses until `run()` has the started row in HEAD |
+| M4: restart | `probe_r1_m4.out` E5, E6 | after a runner-committed `read_started` it is refused (i), also after `reset --hard`, a hand re-commit and a restart line, because the runner commit survives in the reflog. A hand-only `read_started` plus a restart line opens, as intended |
+| m1: witness | `probe_r1_minors.out` | without the 2027-12 key, or with a server date before the gate, it is refused before any row or file (store 0 files, ledger 3 → 3) |
+| m2: byte copy of the pull; `_GATE` by hand; stubbed `_GUARD_FAILURES` | `probe_r1_minors.out` | refused; the stub gives `_guard_ok = False` |
+| m3: no trailing newline; orphan-root row with `log.showRoot=false` in repo config; `git replace` | `probe_r1_minors.out` | (k); (i); (i) |
+| m4: mutants | `probe_r1_mutants_suite.out` | **26 of 26 killed; 8 of 8 baselines pass**. `tests/test_r016.py` passes 202/202 in a clone without data (the 205 count includes real-data-conditional checks) |
+| m5–m11 | code and registration text (`probe_r1_minors.out`) | funding coverage, the second seam, the listing cross-check and resume re-verification (all mutant-tested); the 2028 snapshot classifies only symbols the 2026 snapshot lacks; migrations stated (§3); the pin recovery is `--fingerprint` with "pins never edited"; the approval check is conditional; the procedure says to commit every top-level `.py`; END + 8 |
+| Real repository, read-only `--check` | `probe_r1_real_check.out` | only (s), (t) and (g1). (w), (v), (d) and the reg0 scan pass, with 015's rows in the ledger |
+
+### MAJOR
+
+**R1-M1. `-X pycache_prefix` restores forged decision bytecode under `-I -S`** (`probe_r1_m2.out`, "ATTACK").
+
+`r016_run.py` keeps a pre-existing `sys.pycache_prefix` whenever its directory name starts with `r016f-pyc-` and it
+lies in the temp directory. That rule exists so the fetcher's own prefix survives.
+
+The attack:
+1. Forge `ct16/stats.py`'s bytecode, stamped with the source's mtime and size, under
+   `$TMPDIR/r016f-pyc-rbevil/<abs path>/ct16/`.
+2. Run `python3 -I -S -X pycache_prefix=$TMPDIR/r016f-pyc-rbevil r016_run.py --check`.
+
+```
+(g1) 0 fetch_started and 0 fetched rows …          (no (v) refusal)
+ct16.stats forged: True | stats __cached__ under …/T/r016f-pyc-rbevil/ | module_origin_failures: []
+```
+
+Why every check passes:
+- `-I` and `-S` are both on the command line.
+- `__cached__` lies under the current prefix.
+- The source hashes match.
+
+The same command with `--run` decides with the forged statistics.
+
+**Fix.**
+- Refuse if `sys._xoptions` is non-empty, or at least if it contains `pycache_prefix`.
+- Keep a pre-existing prefix only when `__main__` is `r016_fetch.py` and the prefix equals the one the fetcher recorded
+  (`r016_fetch._PREFIX`).
+- Otherwise always call `mkdtemp`.
+
+**Test.** The forged-stats case above refuses with (v).
+
+### MINOR
+
+- **r1-m1. reg0 can still be lost through a worktree squash** (015 r2-m1, unported). `probe_r1_m4.out` E3:
+  1. In a linked worktree on branch `reg`, commit REGISTERED, then a revision.
+  2. In main, run `git merge --squash` and commit.
+  3. Run `worktree remove` and `branch -D reg`.
+  - The original REGISTERED commit is reachable 0 times through `--all --reflog`. Main's `--check` shows only (g1),
+    and `ct16.stats` is the forged one.
+  - **Fix:**
+    - the orchestrator creates the tag `r016-registered` on reg0, or pins reg0 in the programme ledger (round-1 M4's
+      second pin);
+    - the guard requires that pin and requires its blobs to equal HEAD's;
+    - procedure line: "REGISTERED is committed in the main worktree".
+- **r1-m2. The repo-path recovery is self-issued** (`probe_r1_b1.out`, ABUSE 1 and 2). Both need the real repository
+  moved away, so they are deliberate.
+  - (1) Run `mv` on the pinned path. A clone commits its own `016 repo-path: APPROVED … <clone>` line and runs fetch →
+    approval → read. Once the origin is moved back, it shows no 016 row.
+  - (2) Place a symlink at the pinned path pointing to a fresh clone. The guard opens in the clone with no line at all,
+    because `resolve()` follows the link.
+  - **Fix:**
+    - refuse when `REAL_REPO` or any parent is a symlink;
+    - accept a repo-path line only when the new location's `.git` holds a nonce file whose SHA-256 is pinned in the
+      registration. `git clone` does not copy it, and a moved repository carries it.
+- **r1-m3. The fetcher's network hooks are swappable module globals.**
+  - The legitimate-run harness replaces `REAL_HOOKS` and `_real_witness_hooks`, and the real `fetch()` then fills the
+    real store with mock data and commits a real `fetched` row (`probe_r1_legit.out`).
+  - That needs in-process patching after 2028, but `guard`, `_GUARD_FAILURES` and `HOOKS['commit']` are already
+    identity-checked.
+  - **Fix:** capture the hook dict and the witness function at import, and refuse in `fetch()` unless they are
+    identical.
+- **r1-m4. Accepted in-process residuals.**
+  - Assigning both `_GATE` and `_GUARD_PASSED` by hand opens `Panel`.
+  - `module_origin_failures` accepts anything under the stdlib directory, which includes `site-packages`. That is
+    unreachable under `-S`.
+  - The stdlib fingerprint hashes `.py` and `.so` but not the stdlib's own `__pycache__`. That is a machine-level
+    tamper, like the system clock.
+  - No change is needed beyond a sentence in §11.
+
+### Reviewer's reads in this recheck (for the ledger)
+
+- **One real network request.**
+  - The first, unsandboxed run of `probe_r1_m2.sh` ran the fetch CLI in a gate-open stand-in. Its guard passed, and the
+    witness sent one `GET https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?prefix=data/futures/um/monthly/klines/BTCUSDT/1d`.
+  - The answer holds key names: the months of existing BTCUSDT monthly files, through the latest published one, and
+    the server's HTTP `Date`. No file was downloaded, nothing was parsed beyond key names, and no row or file was
+    written. The fetch refused because no 2027-12 key exists.
+  - It is a listing of span-(c) month names, not values. Every later probe ran with the network denied.
+- **The real repository.**
+  - `python3 -I -S r016_run.py --fingerprint` and `--check`: interpreter and stdlib hashes, the registration, the two
+    data-file hashes, and git.
+  - The first 80 characters of `results.jsonl` lines 1–3, which are 015's committed and already reported rows, seen
+    while checking that the stand-in carries them.
+- **No price, volume, trade count or funding value of any real file was read or computed.**
