@@ -1,0 +1,1 @@
+power_mu4_k15 1500 {"conf_alone_T1": 0.9473, "disc": 0.8073, "conf_given": 0.9397, "confirmed_raw_ge_100bp_share_of_confirms": 0.7742, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 0.5316, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.7583, "joint": 0.7587}

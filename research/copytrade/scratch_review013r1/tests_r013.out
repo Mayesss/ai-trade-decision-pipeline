@@ -1,0 +1,189 @@
+statistics
+  PASS  t quantiles match the printed table for df 1..30 (0.95 and 0.975)
+  PASS  clustered t: CR1 with G/(G-1), hand-computed
+  PASS  OLS alpha and beta equal the closed form
+  PASS  OLS alpha CR1 t equals the brute-force sandwich
+  PASS  halves by listing week order
+  PASS  without the largest positive week
+  PASS  trimmed mean drops 5 % each tail (a token-switch jump cannot move the index)
+  PASS  alpha critical value = max(t_{G-2}(q), the registered calibrated value)
+the trade (simulate)
+  PASS  flat price: net = -(2 fees + entry slip + exit slip one tier worse); exit at entry + 7 d
+  PASS  slippage tiers by the average hourly quote volume of the first 24 h; exit one tier worse; worst exit 50 bp
+  PASS  price 100 -> 80: net = 0.2 - fees - slippage (exit legs scaled by 0.8)
+  PASS  funding +0.1 %/4 h: 42 settlements in (entry, exit]
+  PASS  a settlement in the entry minute is not counted; one in the exit minute is
+  PASS  funding paid at the settlement price
+  PASS  stress: pay x2, receive x0.5
+  PASS  stress: capped at 2 % per settlement
+  PASS  liquidation just above 1.904x (net -1), not just below
+  PASS  liquidated components add up to the net
+  PASS  funding paid out of the isolated margin lowers the liquidation price
+  PASS  no traded bar within 60 min of first trade + 24 h -> no_entry
+  PASS  entry at the first TRADED bar (zero-trade bars are not fills)
+  PASS  a listing whose archive keeps flat ZERO-TRADE rows after its last trade (delisting) exits at its last TRADED close: exit_last_trade, not exit (review B M1)
+  PASS  a halt at the exit target: exit at the first traded bar within 6 h
+  PASS  a data hole across the exit window with trading after it: exit_late at the first traded bar (review A m9)
+  PASS  the calendar's data end bounds every read
+  PASS  daily marks at each UTC midnight while open (entry costs paid, price mark to the last traded close)
+  PASS  T2's feature: rates settled in (first trade, entry]
+calendars, embargo, events, continuations, later segments
+  PASS  calendar boundaries and embargoes
+  PASS  every byte an event needs lies before its calendar's DATA_END
+  PASS  events: the first file of each universe symbol; censored at the archive start; excluded and non-USDT out
+  PASS  later trading segments: a run after >= 7 days without trades is found; hours before not_before are ignored
+  PASS  continuations: the fixed list (names) covers the four categories, every id keyed (symbol@d0)
+  PASS  pre-market flag only from 2025
+  PASS  months_between spans month boundaries
+the book (rolling caps, exact tail bounds, MTM, Kelly, deploy)
+  PASS  rolling week cap: 10 entries within hours -> 7 taken
+  PASS  structural bounds hold on an adversarial dense schedule (every exit a liquidation): worst exit week >= -0.175, worst exit month >= -0.475  -0.1500 -0.3500
+  PASS  the pre-registered plausible month is inside the -30 % line
+  PASS  daily mark-to-market drawdown sees an open loss the realised series cannot (-40 % mark, +20 % exit)
+  PASS  Kelly finite; quarter Kelly = Kelly / 4
+  PASS  squeeze months: exit months at or below half the plausible month
+  PASS  deploy: a liquidation-free confirmation is charged the pooled liquidation rate (peso problem)
+  PASS  deploy: one definition; the economic bar is evaluated at c*, after the charges
+  PASS  deploy: a pooled worst month beyond -30 % scales c* down to the -30 % size
+criteria, decision, recheck from per-event records
+  PASS  a clean pass: all seven criteria; crit = max(t_56(0.975), CAL_D)
+  PASS  each criterion alone fails the trial  []
+  PASS  the raw t is NOT a criterion (raw net feeds the economic bars only; orchestrator decision 1)
+  PASS  decision: T1 precedence
+  PASS  recheck of a consistent row (statistics recomputed from its per-event records): no failures, a carry  []
+  PASS  a tampered per-event record is caught (stored aggregates no longer match the records; review B m8)
+  PASS  a forged alpha t under pass labels is caught
+  PASS  recheck of an empty row fails
+  PASS  confirmation = existence test on alpha: alpha > 0, t >= max(t_{G-2}(0.95), CAL_C), alpha > 0 without the best week
+  PASS  confirmation fails at alpha t just below crit, alpha <= 0, < 5 weeks, or alpha <= 0 without the best week
+  PASS  decision after CONFIRM only: deploy -> paper; not deploy -> below bar; no CONFIRM -> not confirmed
+placebo and simulation (synthetic)
+  PASS  placebo: calendar-month sign flips, costs kept  {"seeds": 200, "pass_share_net_t": 0.015, "abs_t_share_gross": 0.03, "gross_t_sd": 1.0143560930120556}
+  PASS  simulated events sit at the given first-trade times with overlapping 7-day holds and a continuous market
+  PASS  a large true edge passes discovery and confirmation (rates from the stored draws)  {"disc_T1": 1.0, "disc_T2": 1.0, "disc": 1.0, "joint": 1.0, "conf_alone": 1.0, "conf_alone_no_wo": 1.0, "conf_given": 1.0}
+  PASS  world_rates re-evaluates the same draws at any critical value (an infinite one passes nothing)
+fetch (fixture HTTP: forward paging, errors never cached, cutoff refused)
+  PASS  listing pages FORWARD by marker, every key once, in order
+  PASS  a truncated empty page raises FetchError
+  PASS  a 404 is retried, then raises (never "absent")
+  PASS  cutoff: daily 2026-07-01 and monthly 2026-07 refused (a refusal, not an assert)
+  PASS  cutoff: 2026-06-30 daily and 2026-06 monthly pass
+  PASS  listing results: later keys and CHECKSUM files dropped in memory
+  PASS  a persistent checksum mismatch raises and writes nothing
+  PASS  a verified file is written
+  PASS  fetch_one refuses a post-cutoff key before any request
+build (synthetic archive zips; pre-entry coverage only)
+  PASS  first trade = the first 1m bar with trades
+  PASS  per-event coverage is PRE-ENTRY only (rows in [d0, first trade + 25 h)); no hold-window count stored (000n)
+  PASS  calendar counts hold no window-level total
+  PASS  confirmation listing: microsecond stamps read as ms; nothing on or after 2026-07-01
+  PASS  market_1h keeps close and trade count (dead rows are recognisable)
+  PASS  later segments come from TRADE COUNTS, not file existence: trading again after a > 7-day absence of trades starts one (here every symbol resumes on 2026-06-01 after the synthetic 27-month gap); dead zero-trade rows do not
+  PASS  an embargoed listing day is never assembled
+  PASS  a plan row whose calendar disagrees with the event's first trade is refused (a refusal, not an assert)
+  PASS  END TO END (zips -> build writer -> Panel -> evaluate): one T1 event; robust market return +10 % from 24 seasoned traded symbols (the dead-row symbol is absent)  {"events": 1, "premarket": 0, "continuation": 0, "no_first_trade": 0, "no_entry_primary": 0, "no_entry_other": 0, "liquidated": 0, "exit_late": 0, "exit_last_trade": 0, "t2_undefined": 0, "partial_funding": 0, "no_funding_rows": 0, "market_missing": 0}
+  PASS  end to end: trial statistics compute (1 event -> fails criterion 0)
+  PASS  the panel writer refuses rows out of order
+the read gate (review B M4)
+  PASS  the real panels refuse without the gate (no guard has passed in this process)
+  PASS  a stubbed guard + the real DATA still refuses
+  PASS  pointing data_root at the real data directory refuses too
+  PASS  ... and a parent of it
+  PASS  a gate for discovery does not open confirmation mode
+  PASS  discovery mode may not open the confirmation panel (synthetic root)
+  PASS  confirmation mode may open discovery (pooled tail charge; already read) on a synthetic root
+  PASS  r013_run.py names no data directory but data/r013 (static scan)
+  PASS  every parquet read in r013_run.py sits under the panel's own directory
+  PASS  no `assert` remains in the decision path (r013_run, r013_build, r013_fetch, ct/listings013)
+the full runs end to end (synthetic panels, guard and commit stubbed, temp results file)
+counts before the decision: {"events": 90, "premarket": 6, "continuation": 1, "no_first_trade": 0, "no_entry_primary": 0, "no_entry_other": 0, "liquidated": 0, "exit_late": 0, "exit_last_trade": 0, "t2_undefined": 0, "partial_funding": 0, "no_funding_rows": 0, "market_missing": 0}
+{
+ "T1": {
+  "n": 83,
+  "G": 30,
+  "mean": 0.05679586896482301,
+  "t": 4.83453606370653,
+  "alpha": 0.05913462932150105,
+  "alpha_beta": -0.9407232560779164,
+  "alpha_t": 7.768249741268203,
+  "alpha_crit": 2.048407,
+  "criteria": {
+   "0_enough_events_and_weeks": true,
+   "1_alpha_pos_t_ge_crit": true,
+   "2_adj_median_pos": true,
+   "3_adj_both_halves_pos": true,
+   "4_alpha_without_largest_positive_week_pos": true,
+   "5_econ_raw_mean_ge_100bp": true,
+   "6_econ_book_ge_3pct_yr": true
+  },
+  "pass": true
+ },
+ "T2": {
+  "n": 59,
+  "G": 29,
+  "mean": 0.05074864080020969,
+  "t": 3.729334501630764,
+  "alpha": 0.0586112190252435,
+  "alpha_beta": -0.8553498029122514,
+  "alpha_t": 6.195452039100248,
+  "alpha_crit": 2.051831,
+  "criteria": {
+   "0_enough_events_and_weeks": true,
+   "1_alpha_pos_t_ge_crit": true,
+   "2_adj_median_pos": true,
+   "3_adj_both_halves_pos": true,
+   "4_alpha_without_largest_positive_week_pos": true,
+   "5_econ_raw_mean_ge_100bp": true,
+   "6_econ_book_ge_3pct_yr": true
+  },
+  "pass": true
+ }
+}
+decision ['read_confirmation', 'T1']
+  PASS  discovery: started row, committed; then one result row, committed
+  PASS  discovery row: the decision recomputed from its per-event records equals the stored one  []
+  PASS  discovery row: the pre-market and continuation events are out of T1, in their strata
+counts before the decision: {"events": 42, "premarket": 3, "continuation": 1, "no_first_trade": 0, "no_entry_primary": 0, "no_entry_other": 0, "liquidated": 0, "exit_late": 0, "exit_last_trade": 0, "t2_undefined": 0, "partial_funding": 0, "no_funding_rows": 0, "market_missing": 0}
+{
+ "alpha_n": 38,
+ "alpha_G": 14,
+ "alpha": 0.05581420424060647,
+ "alpha_t": 5.759984553865228,
+ "alpha_crit": 1.9,
+ "mean": 0.046248987860152795,
+ "t": 3.1085809382996072
+}
+confirm True deploy {"c_star": 0.025, "worst_month_pooled_at_c0": -0.001653595803311948, "quarter_kelly_conf": 0.9485657159785934, "pi_pool": 0.0, "pi_conf": 0.0, "mu_conf": 0.046248987860152795, "mu_tail": 0.046248987860152795, "squeeze_months_pool": 0, "f_eff_per_year": 0.15575692963752666, "f_conf_per_year": 0.0, "annual_at_c_star": 0.04877757044110872, "tail_charge_per_year": 0.046240338486140724, "annual_charged": 0.0025372319549679945, "bars": {"mean_tail_ge_100bp": true, "book_charged_ge_3pct_yr": false, "size_positive": true}, "deploy": false} decision confirm_below_bar
+  PASS  confirmation: started row bound to the discovery row, then one decided row with the deploy block; each committed  confirm_below_bar
+  PASS  a crash after the started row writes and commits a discovery_failed row (a terminal state)
+guard (throwaway git repos): status, (a)-(f), (h), (k), the confirmation gate
+  PASS  DRAFT, untracked, no 009 terminal state: each refuses
+  PASS  (h)+(k): an UNCOMMITTED 009 close unlocks nothing, and results.jsonl is dirty
+  PASS  a committed 009 close recomputed by its own recheck unlocks; discovery may run  []
+  PASS  (b) registration modified after commit
+  PASS  (d)+(e) guarded code edited
+  PASS  (f) keyed on the 013- prefix: a row under another 013 file name blocks (review B m10)
+  PASS  (g1) confirmation without a discovery row
+  PASS  (g2)+(s)+(k): uncommitted rows are refused
+  PASS  (h') no approval line
+  PASS  everything in order: the confirmation gate opens  []
+  PASS  (r) prose added after the discovery run
+  PASS  (i) a confirmation_failed row is terminal: no second read
+  PASS  a genuine pass row, approval later: open  []
+  PASS  (g4) ALONE: tampered per-event records under the stored aggregates, clean history  ['(g4) T1: stored statistics differ from those recomputed from the per-event records', '(g4) T2: stored statistics differ from those recomputed from the per-event records', "(g4) stored decision ['read_confirmation', 'T1'] differs from the recomputed ['close', None]", "(g4) the decision recomputed from the records and numbers is ['close', None], not read_confirmation"]
+  PASS  (h') approval in the same commit as the row  ["(h') the approval must be committed strictly after the commit that added the discovery row"]
+bypasses the reviewers used (review B M3, m4, m5, m6)
+  PASS  (1) a row written and not committed: (k) and (f) refuse
+  PASS  (2) row committed then `reset --hard`: the reflog still blocks (f)
+  PASS  (3) a row removed with `commit --amend`: blocked
+  PASS  (4) a row stashed (a merge commit): blocked by -m
+  PASS  (5) a nested `git init` hiding the outer history: (w) refuses (top level differs)  ['(h) D17: no committed, recomputed 009 terminal state in HEAD — 013 may not read 009 holdout-A data', '(a) 013-x.md is not tracked by git', '(b) 013-x.md differs from the committed version']
+  PASS  (6) GIT_DIR pointing at another repository is stripped: the real history still blocks (f)
+  PASS  (7) an anchor commit that is not an ancestor refuses (w)
+  PASS  (8) an untracked duckdb.py next to the runner is refused (v)
+  PASS  (9) `python -O` is refused by (v)
+  PASS  (10) the pinned versions match this interpreter (python 3.14.8, duckdb 1.5.6, pyarrow 25.0.1)
+the real registration (DRAFT) and its hash table
+  PASS  the status line says DRAFT
+  PASS  no line starts with the approval phrase
+  FAIL  the real guard refuses discovery today (not REGISTERED, untracked)

@@ -1,0 +1,224 @@
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 3.22 GiB requester-pays in total
+PROBE split: run(root=throwaway open gate, data_dir=stand-in real tree) -> ('SystemExit', '(B1) the real data tree is read only by the guard of the real repository (root is not it)\n(B1) the real data tree is read only with the default guard arguments ')
+PROBE split: compute(stand-in real tree) outside run -> ('SystemExit', 'read lock: compute() on the real data tree runs only inside run(), after the real guard')
+coverage before the read: {"universe_symbol_days": 1079, "with_both_closes": 1079, "btc_days_missing": 0, "vault_files": 1}
+{
+ "counts": {
+  "windows": [
+   {
+    "selection": "2026-06-08",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12.0,
+    "excluded": false
+   },
+   {
+    "selection": "2026-08-03",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12,
+    "excluded": false
+   }
+  ],
+  "signal_days_planned": 83,
+  "unavailable": {
+   "bitget_not_listed_now": 0,
+   "hl_not_listed_now": 0,
+   "persistent_after_3_attempts": 0
+  },
+  "signal_days": 83,
+  "signal_symbol_days": 996,
+  "signal_symbol_days_without_return": 0,
+  "alt_index_missing_days": 0,
+  "reversal_factor_zero_days": 0
+ },
+ "confirm": {
+  "n": 83,
+  "G": 13,
+  "k": 6,
+  "alpha": -0.0004685106642067084,
+  "t_alpha": -0.6782274919417974,
+  "se_alpha": 0.0006907868963927431,
+  "coef": {
+   "alpha": -0.0004685106642067084,
+   "btc[0:2026-07]": 0.004356457329261572,
+   "btc[1:2026-08]": 0.021762611225457126,
+   "btc[1:2026-09]": 0.03343536719808113,
+   "alt_ew": 0.1733272004432078,
+   "rev_1d": 0.026696953882369305
+  },
+  "cells": [
+   "0:2026-07",
+   "1:2026-08",
+   "1:2026-09"
+  ],
+  "crit": 1.7822875556493174,
+  "median_adj": -0.0007526243004015583,
+  "halves_adj": [
+   -0.00032635683851992106,
+   -0.0006072798749961918
+  ],
+  "criteria": {
+   "C1": false,
+   "C2": false,
+   "C3": false
+  }
+ },
+ "economic": {
+  "alpha_gross": -0.0004685106642067084,
+  "mean_cost_per_day": 0.0007244979919678717,
+  "shrunk_net_annualised": -0.34994496328599745,
+  "point_net_annualised": -0.43544815950372173,
+  "bar": 0.03,
+  "meets_bar": false
+ },
+ "decision": "not_demonstrated"
+}
+PROBE split: run(root=throwaway, data_dir=<dir of symlinks into the stand-in real tree>) -> returned not_demonstrated
+PROBE mockreal: real_tree_failures(real root, real data, no override) = []
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 3.22 GiB requester-pays in total
+PROBE mockreal: fetch(real root, real data, hooks=<complete mock dict>, no override) -> returned holdout_fetched
+PROBE mockreal: rows now in the stand-in real results.jsonl: ['holdout_fetch_started', 'holdout_fetched'] | git status results.jsonl: ''
+PROBE mockreal: synthetic fill days written into the stand-in real tree: 31
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 430 files in the manifest, 3.22 GiB requester-pays in total
+PROBE delisted: attempt 1 -> returned {'bitget_not_listed_now': ['C9USDT'], 'hl_not_listed_now': [], 'persistent_after_3_attempts': []}
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 3.22 GiB requester-pays in total
+PROBE inject: unlisted-directory snapshot -> guard ['(g3) the snapshot files selected from the tree (84) are not exactly th']
+PROBE inject: second file in a listed date -> guard ['(g3) the snapshot files selected from the tree (84) are not exactly th', '(g3) snapshot date 2026-08-10: 2 files, exactly one required']
+plan: 33 fill days, 0 snapshot days, 14.50 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+PROBE bytes: attempt 1 RuntimeError | logged 14.502 GiB, true 14.502
+plan: 1 fill days, 0 snapshot days, 0.44 GiB (+0.0 MiB footers); spent before: 14.50 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 14.94 GiB requester-pays in total
+PROBE bytes: attempt 2 returned | row bytes 14.942 GiB, true 14.942
+PROBE bytes: fetch_log.json is under data/ (gitignored): data/r008/fetch_log.json
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 3.22 GiB requester-pays in total
+coverage before the read: {"universe_symbol_days": 1079, "with_both_closes": 1079, "btc_days_missing": 0, "vault_files": 1}
+{
+ "counts": {
+  "windows": [
+   {
+    "selection": "2026-06-08",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12.0,
+    "excluded": false
+   },
+   {
+    "selection": "2026-08-03",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12,
+    "excluded": false
+   }
+  ],
+  "signal_days_planned": 83,
+  "unavailable": {
+   "bitget_not_listed_now": 0,
+   "hl_not_listed_now": 0,
+   "persistent_after_3_attempts": 0
+  },
+  "signal_days": 83,
+  "signal_symbol_days": 996,
+  "signal_symbol_days_without_return": 0,
+  "alt_index_missing_days": 0,
+  "reversal_factor_zero_days": 0
+ },
+ "confirm": {
+  "n": 83,
+  "G": 13,
+  "k": 6,
+  "alpha": 0.0004701976112400124,
+  "t_alpha": 0.6502498831686335,
+  "se_alpha": 0.0007231029538194826,
+  "coef": {
+   "alpha": 0.0004701976112400124,
+   "btc[0:2026-07]": -0.005777656895354445,
+   "btc[1:2026-08]": 0.006640750222116598,
+   "btc[1:2026-09]": 0.002202475286176619,
+   "alt_ew": 0.15407519604540595,
+   "rev_1d": -0.07404501902885975
+  },
+  "cells": [
+   "0:2026-07",
+   "1:2026-08",
+   "1:2026-09"
+  ],
+  "crit": 1.7822875556493174,
+  "median_adj": 0.0003039544703636037,
+  "halves_adj": [
+   -9.971594103265613e-05,
+   0.0010265417932204739
+  ],
+  "criteria": {
+   "C1": false,
+   "C2": true,
+   "C3": false
+  }
+ },
+ "economic": {
+  "alpha_gross": 0.0004701976112400124,
+  "mean_cost_per_day": 0.0007244979919678717,
+  "shrunk_net_annualised": -0.1786307030169709,
+  "point_net_annualised": -0.09281963896566867,
+  "bar": 0.03,
+  "meets_bar": false
+ },
+ "decision": "not_demonstrated"
+}
+PROBE erase: after run, modes ['holdout_fetch_started', 'holdout_fetched', 'holdout_started', 'holdout'] | dirty: ''
+PROBE erase: after reset --hard HEAD~2 -> ['(f) a 008 holdout row exists (tree, history or reflog) — the', '(f) a holdout_started row exists without a committed, later ']
+PROBE erase: after reflog expire --all + gc --prune=now -> GATE OPEN (second read possible)
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+fetched: 445 files in the manifest, 3.22 GiB requester-pays in total
+coverage before the read: {"universe_symbol_days": 1079, "with_both_closes": 1079, "btc_days_missing": 0, "vault_files": 1}
+PROBE commitfail: run -> SystemExit refusing to continue: could not commit results.jsonl: 
+PROBE commitfail: committed modes ['holdout_fetch_started', 'holdout_fetched', 'holdout_started'] | working-tree modes ['holdout_fetch_started', 'holdout_fetched', 'holdout_started', 'holdout']
+PROBE commitfail: the uncommitted holdout row carries the decision in plain text: True
+PROBE commitfail: after discarding it, guard -> ["(f) a holdout_started row exists without a committed, later '008 holdo"]
+PROBE only: files in the automatic commit: ['results.jsonl'] | still staged: ['notes.txt']
+PROBE shadow: top-level module                              duckdb.py              flagged by (d): True
+PROBE shadow: top-level PACKAGE                             duckdb/__init__.py     flagged by (d): False
+PROBE shadow: package shadowing the hashed ct/stats.py      ct/stats/__init__.py   flagged by (d): False
+PROBE shadow: sourceless .pyc                               pyarrow.pyc            flagged by (d): False
+PROBE shadow: `import ct.stats` resolves to -> shadow /var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmpj28hfcrl/repo/ct/stats/__init__.py
+PROBE persist: 3 attempts within 5 h -> ({'closes_error:C3USDT': 'e'}, {})
+PROBE persist: same attempts with edited "at" fields in fetch_log.json -> ({}, {'closes_error:C3USDT': 'e'})
+PROBE persist: BTC keys are never persistable -> ({'btc_error': 'e'}, {})
+PROBE persist: a systematic per-symbol failure on 3 attempts -> 12 of 12 symbols unavailable, 0 still blocking (no ceiling on how many names may drop)
+PROBE env: stable across calls True | 0.2 s for two calls | python 3.14.8 | venv interpreter -> /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/bin/python3.14
+PROBE env: what it covers: {'python': '3.14.8', 'duckdb': {'version': '1.5.6', 'binaries': 1}, 'pyarrow': {'version': '25.0.1', 'binaries': 37}}

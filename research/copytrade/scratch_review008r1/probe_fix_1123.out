@@ -1,0 +1,5 @@
+2026-11-23: n 136, G 21, cells ['0:2026-07', '1:2026-08', '1:2026-09', '2:2026-10', '2:2026-11'], crit 1.725
+base effect 0                                                registered 0.043  per-cell 0.043
+power full                                                   registered 0.424  per-cell 0.404
+power half                                                   registered 0.162  per-cell 0.162
+alt loading A 0 / B,C 0.5; U drift from Aug +0.2 %/day       registered 0.081  per-cell 0.045

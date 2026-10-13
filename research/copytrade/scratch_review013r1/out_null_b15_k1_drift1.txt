@@ -1,0 +1,1 @@
+null_b15_k1_drift1 1500 {"conf_alone_T1": 0.038, "disc": 0.024, "conf_given": 0.0833, "confirmed_raw_ge_100bp_share_of_confirms": 1.0, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 1.0, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.0, "joint": 0.002}

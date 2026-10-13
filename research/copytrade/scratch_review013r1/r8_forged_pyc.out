@@ -1,0 +1,2 @@
+loaded: FORGED bytecode | source on disk says: VALUE = "hashed source"
+with sys.pycache_prefix set to a fresh empty dir first: hashed source

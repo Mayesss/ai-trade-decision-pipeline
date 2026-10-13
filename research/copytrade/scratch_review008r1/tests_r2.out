@@ -1,0 +1,264 @@
+
+1. calendar
+  PASS  end 2026-09-28: windows S = 2026-06-08 and 2026-08-03 (001 grid continued)
+  PASS  end 2026-11-23 adds S = 2026-09-28
+  PASS  holdout fill days 2026-07-01 .. 2026-08-02 (33)
+  PASS  end 2026-11-23: 2026-07-01 .. 2026-09-27 (89)
+  PASS  every 001 discovery window lies before the holdout (no overlap with 008 windows)
+  PASS  signal filter: pre-holdout and the last 72 h of each hold are excluded  [1782864011000, 1785427200000, 1785715205000, 1790290800000]
+  PASS  entry = first full hour >= snapshot + 1 h
+  PASS  planned book days 83 in 13 ISO weeks
+
+2. statistics
+  PASS  t quantiles match the table (3 dp)  {1: 6.3138, 5: 2.015, 12: 1.7823, 20: 1.7247, 30: 1.6973}
+  PASS  t_{G-1}: df < 1 -> inf
+  PASS  cluster_mean_t == ct.eventstudy.cluster_t
+  PASS  OLS recovers a planted intercept and beta  (0.00185, 0.509)
+  PASS  OLS alpha == stats.alpha (001 T2 helper)
+
+3. 008's data path equals 001's p5_run T3 path (synthetic), and the inversion is exact
+  PASS  Closes.ret / vol == p5_run.b_returns over bg.candle_1h
+  PASS  Funding.fund (bisect) == p5_run lambda
+  PASS  the pre-holdout snapshot is not in 008's plan
+  PASS  signals equal 001's (same entries, same values)
+  PASS  008's book on 001's days == p5_run.finish_t3 (mean, median, halves)
+  PASS  008's IC on 001's days == p5_run's ic3 mean
+  PASS  inverted gross == -(001 gross), day by day
+  PASS  inverted net == -(001 net) - 2 x cost, day by day
+  PASS  the cost is the same for both signs (turnover unchanged)
+  PASS  inversion swaps the long and short quintiles
+  PASS  C11USDT (listed 2026-07-10) never enters before 31 days
+   steady-state book cost per day: 7.333 bp (2 x 11 bp / 3 = 7.333)
+  PASS  book cost is 2 x B_COST / 3 per day in steady state
+
+4. cohort rule == p5_run.score_wallet + finish_copy_window's quintiles
+  PASS  same scored wallets and scores  20 scored
+  PASS  same top / bottom quintiles  k=4
+
+5. factors of the confirm regression, BTC-slope cells, multi-regressor OLS
+  PASS  2026-09-28: cells (A, Jul) 30, (B, Aug) 29, (B, Sep) 24 — one BTC slope per month  Counter({'0:2026-07': 30, '1:2026-08': 29, '1:2026-09': 24})
+  PASS  2026-11-23: window C's 3 September days merge into (B, Sep): 5 cells, none under 10 days  Counter({'2:2026-10': 31, '0:2026-07': 30, '1:2026-08': 29, '1:2026-09': 27, '2:2026-11': 19})
+  PASS  ols_multi recovers a planted intercept and three slopes  [0.51, 0.99, -2.03, 0.27]
+  PASS  ols_multi with one regressor == ols_cluster
+  PASS  rank-deficient design -> None
+  PASS  alt = equal-weight universe return, BTCUSDT excluded; btc = BTCUSDT return
+  PASS  rev = 0.5 x losers - 0.5 x winners of the PREVIOUS 24 h (point-in-time, odd middle name left out)  (-0.016054, -0.016054)
+  PASS  rev is 0 with fewer than 4 names (flagged)
+  PASS  the day's universe is the live tranches' coins (this and the two previous signal days)
+
+6. existence test, economic bar (half-shrunk), recheck
+  PASS  a planted strong edge confirms (k = 1 + 3 cells x (BTC, alt, rev) = 10)  11.38
+  PASS  recheck reproduces the decision; 40 bp/day gross clears the half-shrunk bar  ('confirm_gross_and_shrunk_net', [])
+  PASS  a forged t under a confirm label is caught, and the failure text names no label  ['stored criteria differ from the recomputed ones']
+  PASS  cohort-specific beta with month drifts, no alpha (60 draws): one pooled slope biases alpha by > 5 bp/day; the per-month slopes are unbiased (< 2.5 bp, ~4 se of the 60-draw mean)  (7.96, 0.998)
+  PASS  a book that is pure short-term reversal (drifting +10 bp/day) does not confirm  -2.09
+  PASS  labels: a 1 bp/day gross confirm is confirm_gross_only (shrunk net negative)
+  PASS  the half-shrunk bar sits at 2 x (cost + 3 %/yr) = 16.2 bp/day gross  16.22
+  PASS  a negative second half blocks a confirm (C3)
+
+7b. the survivorship reading rule (reported; r1 m4)
+  PASS  1 dropped coin ranked long, 0 short -> NOT flagged (minimum 5 coins)
+  PASS  5 coins ranked, long 10 >= 2 x short 4 -> flagged
+  PASS  cohort notional share 12 % in dropped coins -> flagged
+  PASS  recheck catches a stored survivorship reading that does not recompute
+
+7. null calibration and power on synthetic series (registered rule)
+  PASS  null false-confirm rate within 0.03 .. 0.07  0.051333333333333335
+  PASS  combined null (cohort betas + alt trend + reversal): registered rule <= 0.07, the draft rule is not  (0.044, 0.49933333333333335)
+  PASS  power at the full inverted discovery magnitude is ~0.3 (stated in §3)  0.29933333333333334
+  PASS  simulation is deterministic for a seed
+
+8. guard (throwaway git repo)
+  PASS  DRAFT -> fetch refused
+  PASS  DRAFT -> run refused
+  PASS  REGISTERED, committed, hashes match -> fetch gate open  []
+  PASS  (t) before end + 7 days -> refused
+  PASS  run without fetch rows -> (g1) refused
+  PASS  changed code -> (d) and (e) refused
+  PASS  B-m11 / r1 m1: an untracked duckdb.py -> (d) refused
+  PASS  B-m11 / r1 m1: a top-level package duckdb/ -> (d) refused
+  PASS  B-m11 / r1 m1: a ct/stats/ package (beats ct/stats.py) -> (d) refused
+  PASS  B-m11 / r1 m1: sourceless pyarrow.pyc -> (d) refused
+  PASS  B-m11 / r1 m1: a git-IGNORED json.py -> (d) refused
+  PASS  B-m1: results.jsonl differing from HEAD -> (k) refused
+  PASS  two owner lines -> (n) and (b) refused
+  PASS  an end that is not offered -> (n) refused
+  PASS  B-m12: a file listed twice in the hash table -> (e) refused
+  PASS  (f) a holdout_started row deleted but in history still blocks
+  PASS  B-m1: a holdout row removed with reset --hard is still found through the reflog
+  PASS  (f) a holdout row on another branch blocks
+  PASS  pre-registration manifest matches -> open  []
+  PASS  a manifest file changed -> (e) refused
+
+9. B-B1: the real data tree and the real network cannot be reached through a throwaway repo
+  PASS  run(root=<throwaway, gate open>, data_dir=<real tree>) refuses before any read  (B1) the real data tree is read only by the guard of the real repository (root i
+  PASS  run(root=<real repo>, data_dir=<real tree>, an overridden guard argument) refuses
+  PASS  fetch with the real hooks on a throwaway repo refuses before any request
+  PASS  a partial mock dict refuses (no fallback to a real requester-pays hook)
+  PASS  mock hooks writing into the real tree from a throwaway repo refuse
+  PASS  compute() on the real tree refuses when the gate passed for another (root, data) pair
+  PASS  r1 M1: mock hooks on the real tree refuse even from the real repository (stand-in), before any row
+  PASS  a real hook called directly (outside the guarded fetch) refuses
+  PASS  the archive data-directory check is a refusal, not an assert (survives -O)
+
+10. fetch (mocked network) and the end-to-end read (throwaway repo, synthetic data tree)
+  PASS  DRAFT: the fetch refuses before any request, and writes no row
+  PASS  DRAFT: the run refuses and writes no row (no outcome)
+  PASS  a fill day missing from the listing -> FetchError, no download; the started row is COMMITTED at once
+plan: 33 fill days, 0 snapshot days, 19.34 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  PASS  33 days x 600 MiB > 15 GiB -> refused before any download
+plan: 33 fill days, 0 snapshot days, 3.22 GiB (+0.1 MiB footers); spent before: 0.00 GiB; cap 15 GiB
+  PASS  B-M2 / r1 m2: a transfer that raises still counts: its COMMITTED end row holds footers + 10 days of bytes  1048711168
+  PASS  r1 m2: editing committed attempt rows cannot lower the cumulative bytes (the history keeps the originals)  (1048846336, 1048846336)
+  PASS  r1 m2: an attempt killed before its end row counts its reservation
+plan: 24 fill days, 0 snapshot days, 2.34 GiB (+0.1 MiB footers); spent before: 0.98 GiB; cap 15 GiB
+  G1 UTC partitions: 33/33 days clean
+  G2 dex values seen: ['hyperliquid']; days with mixed values: 0
+  PASS  a Bitget error on a LIVE symbol: keyed refusal, the attempt continues, nothing cached for the block
+  PASS  the remaining 24 holdout fill days were pulled (resume skips the 9 complete days; 07-10 is re-asked)  24
+  PASS  P3 G1-G2 ran on the 33 pulled days and G3 on a sample (mechanics only)
+  PASS  a sentinel README marks the holdout days in the shared partition root
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  an empty interior block for a live symbol -> not cached, coverage refuses (re-fetch)
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  an HL funding error on a listed coin: keyed refusal, nothing cached
+  PASS  funding is paged forward (start times strictly increase)  5
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  tail: a live symbol whose closes stop before the end -> refused, its partial last block deleted
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  a silent short funding answer -> refused and not kept
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  r1 m2: a back-dated clock does not make a refusal persistent (the chain uses commit times)
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+  PASS  r1 m2: more than 8 names (~5 % of 168) becoming unavailable stops the fetch for the orchestrator
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+plan: 0 fill days, 0 snapshot days, 0.00 GiB (+0.0 MiB footers); spent before: 3.32 GiB; cap 15 GiB
+fetched: 430 files in the manifest, 3.32 GiB requester-pays in total
+  PASS  B-B2: a partial block on a live symbol refuses while the committed chain is short (re-asked: not kept)  ['coverage refused (no fetched row; re-run later):\n  closes_pa', None]
+  PASS  ... and once 3 attempts are COMMITTED >= 24 h apart it is recorded unavailable (persistent); the fetch completes
+  PASS  B-B2: a symbol Bitget no longer lists (errors) is recorded, never a stop
+  PASS  B-M2: the fetched row reports every requester-pays byte of every attempt (footers, reservations included)  3565527047
+  PASS  a second fetch after the fetched row is refused
+  PASS  every fetch row was committed as it was written (results.jsonl clean)
+  PASS  run with no approval -> (h') refused
+  PASS  an approval quoting another row's sha -> (h') refused
+  PASS  (r) prose added after the fetch -> refused
+  PASS  approval committed after the fetched row -> run gate open  []
+  PASS  (g3) a fetched file changed after the fetch -> refused
+  PASS  B-M1: an injected snapshot (unlisted directory, in-range timestamp) -> (g3) refused
+  PASS  B-M1: a second file in a needed date directory -> (g3) refused
+  PASS  a holdout_started row without a restart line -> (f) refused
+  PASS  a restart line committed after the started row -> gate open; (r) accepts it  []
+coverage before the read: {"universe_symbol_days": 1079, "with_both_closes": 996, "btc_days_missing": 0, "vault_files": 1}
+{
+ "counts": {
+  "windows": [
+   {
+    "selection": "2026-06-08",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12.0,
+    "excluded": false
+   },
+   {
+    "selection": "2026-08-03",
+    "features": 100,
+    "slow": 100,
+    "slow_both_regimes": 100,
+    "scored": 100,
+    "cohort": 20,
+    "crowd": 20,
+    "median_signal_coins": 12,
+    "excluded": false
+   }
+  ],
+  "signal_days_planned": 83,
+  "unavailable": {
+   "bitget_not_listed_now": 1,
+   "hl_not_listed_now": 0,
+   "persistent_after_3_attempts": 1
+  },
+  "signal_days": 83,
+  "signal_symbol_days": 996,
+  "signal_symbol_days_without_return": 83,
+  "alt_index_missing_days": 0,
+  "reversal_factor_zero_days": 0
+ },
+ "confirm": {
+  "n": 83,
+  "G": 13,
+  "k": 10,
+  "alpha": 0.00043588678501182895,
+  "t_alpha": 0.42267891064194313,
+  "se_alpha": 0.0010312480089196463,
+  "coef": {
+   "alpha": 0.00043588678501182895,
+   "btc[0:2026-07]": 0.021577221385449766,
+   "btc[1:2026-08]": 0.009778954179388104,
+   "btc[1:2026-09]": 0.025189444165563193,
+   "alt_ew[0:2026-07]": 0.2715293086598207,
+   "alt_ew[1:2026-08]": 0.15246095619039005,
+   "alt_ew[1:2026-09]": 0.06941010915272934,
+   "rev_1d[0:2026-07]": 0.09845042258885241,
+   "rev_1d[1:2026-08]": 0.028693323185027677,
+   "rev_1d[1:2026-09]": 0.025500018338606253
+  },
+  "cells": [
+   "0:2026-07",
+   "1:2026-08",
+   "1:2026-09"
+  ],
+  "crit": 1.7822875556493174,
+  "median_adj": -0.0008510348347615508,
+  "halves_adj": [
+   -8.091564877102295e-05,
+   0.000940384398942709
+  ],
+  "criteria": {
+   "C1": false,
+   "C2": false,
+   "C3": false
+  }
+ },
+ "economic": {
+  "alpha_gross": 0.00043588678501182895,
+  "mean_cost_per_day": 0.0007244979919678714,
+  "shrunk_net_annualised": -0.18489242880361428,
+  "point_net_annualised": -0.10534309053895549,
+  "bar": 0.03,
+  "meets_bar": false
+ }
+}
+survivorship reading (§5, reported): {"flag": false, "why": []}
+persistence-sensitive (reported): False
+decision: not_demonstrated
+  PASS  the read commits holdout_started, then exactly one holdout row (restart counted)  ['holdout_fetch_started', 'holdout_fetched', 'holdout_started', 'holdout_started', 'holdout']
+  PASS  the read ran offline (lock active) and produced a recomputable decision
+  PASS  cohorts of 20 in both windows (100 scored wallets), no window excluded; 83 signal days, June excluded  [(20, 12.0), (20, 12)]
+  PASS  the confirm regression has 3 cells x (BTC, alt, reversal) loadings (k = 10)  ['0:2026-07', '1:2026-08', '1:2026-09']
+  PASS  survivorship (reported): DX (delisted_on_hl) counted by status, its ranking and the groups' notional share
+  PASS  P0 (reported): count and gross-notional share per cohort, and the confirm without P0 wallets
+  PASS  row carries env fingerprint and the economic bar on the half-shrunk alpha
+  PASS  determinism: a second computation on the same files gives the same numbers
+  PASS  A-m6: windows under the cohort floor are excluded and the decision is not_demonstrated
+  PASS  a second read is refused (f)
+  PASS  B-m1: the holdout row removed by reset --hard still blocks (reflog)
+
+11. a decision that does not recompute is stored, not printed
+  PASS  a wrong stored critical value is caught by recheck
+  PASS  run(): on a recheck failure the row is appended with recheck_failed and the exit text prints no decision
+
+12. the read lock and the real registration text (parse only; nothing that goes stale at REGISTERED)
+  PASS  compute() refuses the real data tree outside run() (before opening any file)
+  PASS  exactly one anchored owner line with an offered end  2026-09-28
+  PASS  no line starts with an approval or restart phrase
+  PASS  every guarded file has exactly one row in the §11 hash table  []
+  PASS  the code hashes in §11 equal the files on disk  []
+
+all checks passed (132)

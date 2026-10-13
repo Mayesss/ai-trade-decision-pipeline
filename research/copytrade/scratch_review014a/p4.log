@@ -1,0 +1,12 @@
+stress share 0.12902797202797203
+BTC weekly sd 0.0914 kurt 6.46
+Null A m 1.0515 mean 1.6820437379768518e-14 sd 0.03263468678527001 worst -0.5635326946103154
+ contiguous {'windows': 1000, 'c1': 0.004, 'all5': 0.004, 'plain_t_student': 0.037}
+ block13 {'windows': 3000, 'c1': 0.0087, 'all5': 0.0087, 'plain_t_student': 0.0413}
+Null B m_calm 1.1315 m_stress 0.7803 mean -6.553283056434015e-15
+ contiguous {'windows': 1000, 'c1': 0.047, 'all5': 0.047, 'plain_t_student': 0.124}
+ block13 {'windows': 3000, 'c1': 0.0383, 'all5': 0.038, 'plain_t_student': 0.1157}
+Power m 1.108 net/prem 0.05 mean/wk 0.004273698366611758
+ contiguous {'windows': 1000, 'c1': 0.162, 'all5': 0.162, 'plain_t_student': 0.392}
+ block13 {'windows': 3000, 'c1': 0.1717, 'all5': 0.1713, 'plain_t_student': 0.4023}
+done

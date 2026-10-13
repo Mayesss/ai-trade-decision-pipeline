@@ -1,0 +1,1 @@
+alpha3_flat 1500 {"conf_alone_T1": 0.7847, "disc": 0.7093, "conf_given": 0.7726, "confirmed_raw_ge_100bp_share_of_confirms": 0.6496, "confirmed_alpha_ge_100bp_share_of_confirms": 1.0, "confirmed_rawbook_minus_floor_ge_3_share_of_confirms": 0.4404, "confirmed_alphabook_minus_floor_ge_3_share_of_confirms": 0.5231, "joint": 0.548}

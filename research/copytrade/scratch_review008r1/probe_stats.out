@@ -1,0 +1,20 @@
+2026-09-28: n 83, G 13, cells ['0:2026-07', '1:2026-08', '1:2026-09'], crit 1.7823, sims 8000
+agreement with crowd008.confirm over 40 draws: max |diff| 8.88e-16; decisions identical
+base, effect 0 (iid)                                                           reg 0.053
+base, effect full (7.46 bp/day), iid  [draft: 0.295]                           reg 0.287
+base, effect half, iid                 [draft: 0.139]                          reg 0.137
+N10 combined N1+N4+N6                   [draft: 0.047]                         reg 0.054
+N8 persistence 5 %, rho 0.9              [draft: 0.081]                        reg 0.084
+N11 alt loading by cohort A 0 / B 0.5; U drift Jul 0, Aug-Sep +0.2 %/day       reg 0.087
+N11b alt loading A 0.5 / B 0; U drift Jul -0.3 %/day, Aug-Sep 0                reg 0.020
+N11c alt loading A -0.2 / B 0.3; U drift Jul -0.2, Aug-Sep +0.2 %/day          reg 0.142
+N12 rev loading by cohort A 0 / B 1.0; REV drift Jul 0, Aug-Sep +0.10 %/day    reg 0.085
+N12b rev loading A 1.0 / B 0; REV drift Jul -0.10, Aug-Sep +0.10 %/day         reg 0.014
+N13 heavy tails: BTC t3, residual sd ~ |BTC| (constant beta 0.3)               reg 0.051
+M base effect 0                                                                reg 0.048  reg+win 0.046  reg+month 0.041  nw2 0.071
+M N8 persistence 5 %, rho 0.9                                                  reg 0.083  reg+win 0.080  reg+month 0.071  nw2 0.098
+M N9 persistence 3 %, rho 0.97                                                 reg 0.099  reg+win 0.096  reg+month 0.088  nw2 0.121
+M N8b persistence 10 %, rho 0.9                                                reg 0.109  reg+win 0.104  reg+month 0.092  nw2 0.116
+M power full, iid                                                              reg 0.278  reg+win 0.272  reg+month 0.252  nw2 0.343
+M power half, iid                                                              reg 0.135  reg+win 0.131  reg+month 0.118  nw2 0.179
+M power full under N8                                                          reg 0.299  reg+win 0.289  reg+month 0.262  nw2 0.331

@@ -1,0 +1,10 @@
+2026-09-28: n 83, G 13, cells ['0:2026-07', '1:2026-08', '1:2026-09'], crit 1.7823, sims 8000
+F base effect 0                                                        registered(k6) 0.052  alt+rev by window(k8) 0.051  alt+rev by cell(k10) 0.051
+F N10 combined                                                         registered(k6) 0.048  alt+rev by window(k8) 0.047  alt+rev by cell(k10) 0.049
+F N11 alt A 0 / B 0.5, U drift Aug-Sep +0.2                            registered(k6) 0.082  alt+rev by window(k8) 0.049  alt+rev by cell(k10) 0.050
+F N11c alt A -0.2 / B 0.3, U drift Jul -0.2 / Aug-Sep +0.2             registered(k6) 0.140  alt+rev by window(k8) 0.050  alt+rev by cell(k10) 0.047
+F N12 rev A 0 / B 1.0, REV drift Aug-Sep +0.10                         registered(k6) 0.084  alt+rev by window(k8) 0.049  alt+rev by cell(k10) 0.049
+F N8 persistence 5 %, rho 0.9                                          registered(k6) 0.084  alt+rev by window(k8) 0.084  alt+rev by cell(k10) 0.082
+F N13 heavy tails + hetero                                             registered(k6) 0.054  alt+rev by window(k8) 0.053  alt+rev by cell(k10) 0.055
+F power full iid                                                       registered(k6) 0.293  alt+rev by window(k8) 0.290  alt+rev by cell(k10) 0.280
+F power half iid                                                       registered(k6) 0.138  alt+rev by window(k8) 0.133  alt+rev by cell(k10) 0.130

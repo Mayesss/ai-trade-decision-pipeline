@@ -1,0 +1,6 @@
+real guard failures today: ['013-new-perp-listings.md is not REGISTERED — refusing to compute any outcome.']
+missing from table []
+wrong hash []
+extra table rows not guarded []
+013 rows anywhere 0
+events.json keys ['calendar', 'continuation', 'cov_pre_entry', 'd0', 'daily_files_d0_d1', 'first_trade', 'first_trade_on_d0', 'funding_months_missing', 'funding_rows', 'id', 'premarket', 'rows_1m', 'rows_zero_trades', 'spot_first', 'symbol']
