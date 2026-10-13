@@ -1,0 +1,1 @@
+200 draws: existence decisions identical; max |t(z) difference| 1.33e-15; T+1 bar net identical; crit 1.92

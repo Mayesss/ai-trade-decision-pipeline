@@ -24,6 +24,8 @@ WORLDS = [
                                                  'shocks': [('2020', 'aligned'), ('2025', 'aligned')]}),
     ('N garch t4 + 2020&2025 anywhere', {'garch': (0.12, 0.87), 'kind': 't4',
                                          'shocks': [('2020', 'anywhere'), ('2025', 'anywhere')]}),
+    ('N garch t4 + 2008 aligned', {'garch': (0.12, 0.87), 'kind': 't4', 'shocks': [('2008', 'aligned')]}),
+    ('N gjr t4 + 2008 aligned', {'gjr': (0.03, 0.15, 0.88), 'kind': 't4', 'shocks': [('2008', 'aligned')]}),
     ('N gjr t4 + 2020 aligned', {'gjr': (0.03, 0.15, 0.88), 'kind': 't4', 'shocks': [('2020', 'aligned')]}),
     ('A full iid', {'effect': 1.0}),
     ('A half iid', {'effect': 0.5}),
@@ -92,13 +94,13 @@ if __name__ == '__main__':
     t0 = time.time()
     with mp.Pool(min(len(WORLDS), mp.cpu_count())) as pool:
         res = dict(pool.map(sim_world, [(i, sims) for i in range(len(WORLDS))]))
-    crits = {'z': [1.70, 1.75, 1.80, 1.85, 1.91], 'trim': [1.70, 1.75, 1.80, 1.91]}
+    crits = {'z': [1.70, 1.75, 1.80, 1.85, 1.91, 1.92, 2.10], 'trim': [1.70, 1.75, 1.80, 1.91]}
     out = {name: summarise(name, recs, crits) for name, recs in res.items()}
-    (K.HERE / 'p3_out.json').write_text(json.dumps(out, indent=1))
+    (K.HERE / ('p3_out_rev1.json' if len(sys.argv) > 2 else 'p3_out.json')).write_text(json.dumps(out, indent=1))
     for name, o in out.items():
         print(f"{name:52s} q95 {o['q95_gate']:.3f} z {o['q95_gate_z']:.3f} trim {o['q95_gate_trim2']:.3f} | "
               f"t148 {o['pass_t148']:.3f} 1.91 {o['pass_191']:.3f} 2.13 {o['pass_213']:.3f} "
               f"1.91+post {o['pass_191_post']:.3f} | z1.75 {o['pass_z_at']['1.75']:.3f} z1.80 {o['pass_z_at']['1.8']:.3f} "
-              f"z1.85 {o['pass_z_at']['1.85']:.3f} | trim1.80 {o['pass_trim_at']['1.8']:.3f} | meanT {o['mean_t']:.2f} "
+              f"z1.85 {o['pass_z_at']['1.85']:.3f} z1.92 {o['pass_z_at']['1.92']:.3f} | trim1.80 {o['pass_trim_at']['1.8']:.3f} | meanT {o['mean_t']:.2f} "
               f"Ppost>0 {o['P_post_mean_pos']:.3f}", flush=True)
     print(f'{time.time() - t0:.0f}s')

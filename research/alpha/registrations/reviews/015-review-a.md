@@ -296,3 +296,88 @@ block at 2023-03-17 (pure in-sample replication, zero information cost, still us
 
 *Scratch files:* `research/alpha/scratch_review015a/` (no `__init__.py`, no top-level `.py`). Delete or ignore it
 before 015's guard runs.
+
+---
+
+## Appendix: Revision 1 recheck (7b265d8, 2026-10-13)
+
+This is a probe-only recheck, not a new full review. The rules were as before: synthetic only, `r015_run.py` never
+run, and no real-data statistic computed. The registration and the code hashes match the Revision 1 table, and
+`python3 -I research/alpha/tests/test_r015.py` prints **201 passed, 0 failed**. (The registration and the commit
+message say 200, a count nit.)
+
+**Probes re-run against the revised calendar (3,164 dates).**
+- `p1_calendar.py` → `p1_log_rev1.txt`.
+- `p3_worlds.py` (10,000 draws; two new worlds: 2008 aligned under GARCH t₄ and under GJR t₄) → `p3_log_rev1.txt`
+  and `p3_out_rev1.json`.
+- New: `p6_crosscheck_rev1.py` (my estimator against the revised `r015_core`) and `p7_zplacement_rev1.py` (a
+  placement scan of the registered z rule with daily simulation).
+- `common.py` now starts the months at 2014-01, since the calendar now loads from 2013-11.
+
+**Verdict: register. No blocker, no major remains.** Every A finding is fixed as specified.
+
+| finding | status | evidence |
+|---|---|---|
+| **M1** | **fixed** | §0 and §4.1 say "existed 2014-01 → 2026-05"; a pass leads to paper only. Real money needs the Europe confirmation, plus 015F (2026-06 → 2028-12, 31 months, read after 2029-03-01) with forward t ≥ 1, plus paper net > 0 (§8, D13). Recent-window (2021-01 →, 65 months), per-era and decomposition blocks are in `r015_core.recent / by_era / decomposition` (§7). The written expectation now includes decayed worlds (§0) |
+| **M2** | **fixed, reproduced** | z = y/(√12·σ̂), σ̂ = max(0.4 %, RMS over T−28 … T−9). My rebuild matches every month's vol window (`p1`: 0 mismatches, vol included). `p6`: on 200 GARCH draws my estimator and `r015_core` agree (max \|Δt\| 1.3e-15; identical existence decisions at 1.92; identical T+1 bar net); `crit(149)` = 1.92 |
+| **M3** | **fixed** | §5 "D8 restated" and D8: the placement-averaged null is the honest one; deterministic and double alignments are reported only, with no margin beyond 2 MC SE |
+| **M4** | **fixed** | The Europe block is gone: no Europe code in `r015_core` / `r015_run`; the Europe zip is not in GUARDED_DATA nor the table and is never opened. The confirmation is pre-stated in §8 with a null calibrated on the US–Europe correlation. HMM is dropped: `r015_hmm.py` deleted, Treasury copies deleted and out of the guard |
+| m1–m10 | fixed | m1 wording withdrawn (§0.5, §9); m2 −3.9 %/yr; m3 T+1 bar; m4 −22.0 % / −24.5 %; m5 0.32 / 0.61 Kelly; m6 015F; m7 corrected long-only t (formula as specified); m8 decomposition and quarter-ends (FOMC and Russell exclusions not added; acceptable for a minor); m9 MC SE per world; m10 rewritten |
+
+**Size at 1.92 in my worlds** (10,000 draws, my own generator):
+
+| null world | z q95 | false pass at 1.92 |
+|---|---|---|
+| iid / GARCH t₄ / GJR t₄ / AR −0.08 | 1.68 / 1.68 / 1.67 / 1.69 | 0.030 / 0.030 / 0.028 / 0.028 |
+| 2020 + 2025 anywhere | 1.61 | 0.026 |
+| 2020 aligned (GARCH t₄ / GJR t₄) | 1.81 / 1.78 | 0.039 / 0.035 |
+| **2008 aligned, GARCH t₄ (binding)** | **1.913** (drafter: 1.862 ± 0.026) | **0.049** |
+| 2008 aligned, GJR t₄ | 1.81 | 0.041 |
+| stress, 2020 & 2025 both aligned (reported) | 2.04 | 0.066 (drafter 0.070) |
+
+My binding q95 sits about 2 SE above the drafter's, so 1.92 holds 5 % in every calibration world with no spare
+margin. That is acceptable: under the placement-averaged null the rate is 0.028 (next table).
+
+**Placement scan of the registered z rule** (`p7`):
+- 120 evenly spaced placements × 1,000 iid draws per shape. The two worst placements were re-run at 5,000 draws to
+  remove the selection bias.
+- **2020:** placement-averaged false pass 0.028; worst placements on re-run 0.049 and 0.039.
+- **2008:** placement-averaged 0.028; worst on re-run 0.053 and 0.050.
+- The registration's "worst 0.080–0.085" (200 draws per placement) is selection-inflated. The true worst single
+  placement is about 0.05. This is better than the registration states, and the stated text is conservative.
+
+**Power at 1.92** (mine against the registration):
+
+| world | mine | registration |
+|---|---|---|
+| full, iid | 0.760 | 0.769 |
+| full, GARCH t₄ | 0.988 | 0.986 |
+| half, iid | 0.269 | 0.278 |
+| half, GARCH t₄ | 0.628 | 0.620 |
+| effect ∝ vol, GARCH t₄, full / half | 0.742 / 0.272 | 0.914 / 0.457 |
+| died at publication / linear decay / T+3 only / TOM only / unshifted | 0.268 / 0.280 / 0.122 / 0.116 / 0.632 | 0.266 / 0.271 / 0.127 / 0.120 / 0.634 |
+
+All agree within MC error (SE ≈ 0.005), except the effect-∝-vol rows. My "∝ vol" scales by the **conditional**
+GARCH σ_t; the drafter's scales by the **trailing** σ̂. These are different worlds, not a discrepancy, and both
+favour z over raw y.
+
+**New in Revision 1 (all minor; none blocks):**
+- **n1. The T+1 bar is noisy.**
+  - net_s uses −2·μ̂₁, with μ̂₁ from the 25 T+1 months' out-of-window days (about 223 days). Its SE is ≈ 7.5 bp/day,
+    i.e. ≈ 15 bp on the tilt, against a shrunk net of ≈ 41 bp at full effect. The vol is also the SD of v over 25
+    months (relative SE ≈ 14 %).
+  - Consequence: "pass and bar" at full effect (iid) falls from about 0.72 to 0.60, so about 22 % of true
+    full-effect passes would get no paper trading.
+  - It only routes paper versus no paper. Optional fix: the tilt from the all-era out-of-window μ (SE ≈ 3 bp/day);
+    the T+1 vol is fine as is.
+- **n2. Test count:** 201 checks pass, but the registration and the commit message say 200.
+- **n3. Europe zip pin.** The Europe zip stays on disk, unguarded and unread; its hash `89b84ff3…` is recorded in
+  `SHA256SUMS`. The Europe confirmation should pin those same bytes, or a re-pull, explicitly.
+
+**Open questions of Revision 1.**
+- **Q1 (floor):** keep 0.4 %/day.
+  - It binds only on very calm tapes (≈ 6.3 %/yr realised).
+  - It caps a calm month's weight at about 2.8× an average month's.
+  - 0.3 % would raise that cap to about 3.7× for a few months. I did not simulate 0.3 %, and see no reason to change.
+- **Q2 (EU T+1, 2027-10-11):** irrelevant to a 2014-01 → 2026-05 calendar. Only the verified 2014-10-06 date is
+  needed.

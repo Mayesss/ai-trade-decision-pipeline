@@ -35,7 +35,7 @@ def load():
         by_m.setdefault((d.year, d.month), []).append(i)
     rows = []
     for (y, m), idx in by_m.items():
-        if (y, m) > (2026, 5):
+        if (y, m) > (2026, 5) or (y, m) < (2014, 1):
             continue
         iT = idx[-1]
         s = [s for s in (3, 2, 1) if lag(dates[iT - s - 1]) == s][0]

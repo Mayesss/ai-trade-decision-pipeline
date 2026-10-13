@@ -28,7 +28,7 @@ for i, d in enumerate(dates):
     by_m.setdefault((d.year, d.month), []).append(i)
 rows = []
 for (y, m), idx in by_m.items():
-    if (y, m) > (2026, 5):
+    if (y, m) > (2026, 5) or (y, m) < (2014, 1):
         continue
     iT = idx[-1]
     ss = [s for s in (3, 2, 1) if lag(dates[iT - s - 1]) == s]
@@ -42,6 +42,8 @@ for r, p in zip(rows, cal_j['summary']['rows']):
     got = {'month': r['month'], 'T': r['T'].isoformat(), 's': r['s'],
            'P': [dates[r['P'][0]].isoformat(), dates[r['P'][-1]].isoformat()],
            'R': [dates[r['R'][0]].isoformat(), dates[r['R'][-1]].isoformat()], 'n_out': len(r['out'])}
+    if 'vol' in p:
+        got['vol'] = [dates[r['iT'] - 28].isoformat(), dates[r['iT'] - 9].isoformat()]
     mism += got != p
 print(f'independent rebuild: {len(rows)} months, mismatches vs calendar.json rows: {mism}')
 print('by lag', collections.Counter(r['s'] for r in rows), 'friday T', sum(r['T'].weekday() == 4 for r in rows))
