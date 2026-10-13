@@ -1,0 +1,5 @@
+2
+  ok   the gate: load_french on the real US file without the guard is refused
+  ok   the gate: load_treasury on a real Treasury file without the guard is refused
+  ok   the gate: a forged gate token with a stubbed guard is refused on the real tree
+131 passed, 5 failed

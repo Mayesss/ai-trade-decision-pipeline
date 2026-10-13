@@ -1,0 +1,18 @@
+### m3: results.jsonl (shared with 016) ends without a newline -> the 015 row is glued onto the previous line
+    raise Refused(f'the {row.get("mode")} row is not in HEAD:{RESULTS.name} after the commit — stop')
+r015_core.Refused: the started row is not in HEAD:results.jsonl after the commit — stop
+HEAD:results.jsonl line 1: {"registration": "016-crypto-trend-verbatim.md", "mode": "fetch_started"}{"code_hashes": {"r015_core.py": "123a977b37d0ac24245c045069e13f079
+--check now:
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+
+### m4a: log.showRoot=false hides a row committed as the root of an orphan branch
+default config:
+(f) a 015 row exists (working tree, any branch, reflog, merge or stash) — 015 ru
+log.showRoot=false:
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+
+### m4b: git replace hides the commit that added the row
+with the row committed:
+(f) a 015 row exists (working tree, any branch, reflog, merge or stash) — 015 ru
+after reset + 'git replace <row commit> <decoy>' (no gc, no reflog expiry):
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)

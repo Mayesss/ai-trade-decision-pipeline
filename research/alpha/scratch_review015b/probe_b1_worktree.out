@@ -1,0 +1,8 @@
+== worktree (detached) --check
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+== worktree --run
+decision: not_demonstrated
+== main worktree --check while the linked worktree exists:
+(f) a 015 row exists (working tree, any branch, reflog, merge or stash) — 015 runs once
+== main worktree --check after 'git worktree remove':
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)

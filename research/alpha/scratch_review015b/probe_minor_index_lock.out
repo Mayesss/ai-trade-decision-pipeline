@@ -1,0 +1,5 @@
+r015_core.Refused: could not commit results.jsonl: fatal: Unable to create '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-p
+rows in the working tree:        1 (mode: ['started'])
+--check after the lock is gone:
+(k) results.jsonl is untracked or differs from HEAD — every row is committed when written
+(f) a 015 row exists (working tree, any branch, reflog, merge or stash) — 015 runs once

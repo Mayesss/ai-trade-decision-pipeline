@@ -1,0 +1,8 @@
+015 shadow scan on the real research/alpha (read-only): ['ct16/__init__.py', 'r016_fetch.py', 'r016_run.py']
+?? research/alpha/ct16/
+?? research/alpha/r016_fetch.py
+?? research/alpha/r016_run.py
+?? research/alpha/registrations/016-crypto-trend-verbatim.md
+?? research/alpha/scratch_review015a/
+?? research/alpha/scratch_review015b/
+?? research/alpha/tests/test_r016.py

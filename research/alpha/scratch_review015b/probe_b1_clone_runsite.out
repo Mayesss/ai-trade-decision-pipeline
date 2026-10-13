@@ -1,0 +1,13 @@
+== CLONE --check
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+== CLONE --run (synthetic data)
+counts before the decision: {"months": 149, "first": "2014-01", "last": "2026-05", "by_lag": {"3": 44, "2": 80, "1": 25}
+decision: not_demonstrated
+== CLONE rows:
+41512d5 015 reported blocks (r015_run.py)
+aee7c7a 015 result (r015_run.py)
+7159c64 015 started (r015_run.py)
+== ORIGIN --check after the clone's run (run once should refuse here):
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+== ORIGIN sees the clone's result commit?
+fatal: git cat-file: could not get object info

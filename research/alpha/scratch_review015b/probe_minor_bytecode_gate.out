@@ -1,0 +1,6 @@
+m1: CAL_CRIT in use 9.99 | loaded_from_source() -> [] | r015_core.__cached__ = ['__pycache__', 'r015_core.cpython-314.pyc']
+m1 control (r015_run first): 1.91
+m2: control: the tree path is refused without the guard
+m2a: a byte copy outside data/r015 loads with no guard: 3213 rows (same SHA-256 as the guarded file)
+m2b: real guard() with guard_failures stubbed -> stub-commit | guard is _REAL_GUARD: True
+m2b: the guarded tree opens: 3213 rows

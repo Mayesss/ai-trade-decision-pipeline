@@ -1,0 +1,17 @@
+== with -I, PYTHONPATH is ignored:
+/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/statistics.py
+== without -I:
+/var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/tmp.5SBQimepYs/statistics.py
+== --check without -I, PYTHONPATH=evil:
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+== --run without -I, PYTHONPATH=evil (NULL synthetic data, effect 0):
+ "mean": 0.024827157834383082,
+ "t": 7.745933435999345,
+decision: exists_paper
+row env stdlib_files ['csv.py', 'statistics.py', '__init__.py'] stdlib_sha256 f8284a947bd0 False
+== the honest -I fingerprint for comparison:
+c0533ba7bb6c
+== honest -I run on the same null synthetic data:
+ "mean": -0.005172842165616917,
+ "t": -1.6138976260226037,
+decision: not_demonstrated

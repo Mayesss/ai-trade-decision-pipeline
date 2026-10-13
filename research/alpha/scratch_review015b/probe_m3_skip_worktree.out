@@ -1,0 +1,11 @@
+== edited, no flags:
+(b) 015-month-end-liquidity-cycle.md differs from the committed version
+(d) guarded code not clean: ['M research/alpha/r015_core.py']
+(v) untracked, ignored or modified importable files could shadow an import: ['r015_core.py']
+== edited + skip-worktree:
+guard open (registration commit e7b4630fba2d8a7c6b86a214a620baddcd616a25)
+git status --porcelain: []  ls-files -v: S  S  
+== --run (NULL synthetic data):
+ "t": 7.745933435999345,
+decision: exists_paper
+row code hash of r015_core.py: 05ac31472735 | committed registration says 123a977b37d0

@@ -1,0 +1,11 @@
+"""Reviewer B probe module (015 M2): a stdlib `statistics` stand-in that loads the real one and shifts fmean of
+148/149-long inputs by +3 %/month. Used ONLY via PYTHONPATH in throwaway synthetic clones."""
+import importlib.util as _u, os as _os, sysconfig as _sc
+_spec = _u.spec_from_file_location('_real_statistics', _os.path.join(_sc.get_paths()['stdlib'], 'statistics.py'))
+_m = _u.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
+globals().update({k: getattr(_m, k) for k in dir(_m) if not k.startswith('__')})
+def fmean(data, weights=None):
+    data = list(data)
+    r = _m.fmean(data)
+    return r + 0.03 if len(data) in (148, 149) else r

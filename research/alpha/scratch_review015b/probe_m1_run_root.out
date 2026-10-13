@@ -1,0 +1,5 @@
+real_tree_failures() before: []
+decision recorded in the REAL-standin ledger: exists_paper  t = 3.69
+REAL-standin HEAD:results.jsonl modes: ['started', 'result', 'reported']
+row data_hashes == REAL-standin registration table? False
+row US file hash == the hash in the REAL-standin table? False | actually read from /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb015/synthX/research/alpha/data/r015/french_20261013T093725Z/F-F_Research_Data_Factors_daily_CSV.zip 56fddc4f05ff vs real 3964ba2e6edf

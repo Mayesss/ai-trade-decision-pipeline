@@ -1,0 +1,6 @@
+== suite at DRAFT (committed):
+137 passed, 0 failed
+== suite at REGISTERED (committed):
+137 passed, 0 failed
+== real r015_run.py --check in this CLONE (outside the real repository; real data through a symlink):
+guard open (registration commit 207d0df9b8393f62b8ecfd5a3cc3b47f2912e9d1)

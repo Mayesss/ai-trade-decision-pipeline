@@ -336,6 +336,39 @@ t4.)
   by ≈ 3.9%/yr (unpaid collateral); the bar uses the T+1-regime volatility;
   the worst 5 days at 1× is −22.0%; rename "016-forward".
 
+**2026-10-13 — 015 review B: register after fixes (1 blocker, 3 majors,
+all in the guard); Revision 1 ordered with both reviews' fixes.**
+(`research/alpha/registrations/reviews/015-review-b.md`; probes in
+`research/alpha/scratch_review015b/`. Sound: 23 hashes, the loader drops
+rows ≥ 2026-06-10 before parsing, calendar 149 months / 64 Friday-T / SEC
+dates and boundary months, suite 137/137 in a clone at DRAFT and at
+REGISTERED.)
+- **B1 — the guard is not bound to the real repo.** In a clone with the
+  real data symlinked, the real `--check` printed "guard open"; a full run
+  in a clone or a linked worktree leaves the origin open (rows vanish with
+  the clone or `git worktree remove`). The drafter's own scratch script had
+  copied real data into a REGISTERED clone and run `--check`: one flag from
+  reading the outcome off the books. **No `--run` touched real data**
+  (orchestrator check: `research/alpha/results.jsonl` is empty; the
+  scratchpad's `explore_*` files are the 016 drafter's synthetic worlds).
+  Fix: pin the absolute repo path, require the main worktree, refuse a
+  detached HEAD; clone tests use synthetic trees only.
+- **M1** `run(root)` mixed trees (recorded `exists_paper` from another
+  tree's data); **M2** `-I` not enforced (a forged `statistics` on
+  `PYTHONPATH` turned a null t −1.61 into t 7.75); **M3** the guard trusted
+  git's view of the working tree (`--skip-worktree` hid edits). Fixes:
+  real tree only; require isolation, check module origins, pin the stdlib
+  fingerprint, absolute git with neutral config and no replace objects;
+  read the registration from `HEAD:./` and compare `hash-object
+  --no-filters` with HEAD blobs.
+- Minors all accepted (trailing newline, `showRoot`/`replace` row hiding,
+  vacuous loader-gate tests, a narrow restart clause, `DATA_END`, the
+  interpreter pin). **016 coupling:** each draft's shadow scan refuses on the
+  other's untracked files (correct); 016's draft is committed before 015
+  runs.
+- **Revision 1** goes to the 015 drafter with every A and B fix; then the
+  reviewers re-run their probes only.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -382,6 +415,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | E1 scout (structural payers) | `research/alpha/scouts/e1-structural-payers.md` | 2026-10-13 | done; `000r` |
 | 015 drafter | `research/alpha/registrations/015-month-end-liquidity-cycle.md` | 2026-10-13 | DRAFT committed `012eff7` (137/137) |
 | 015 review A (design) | `research/alpha/registrations/reviews/015-review-a.md` | 2026-10-13 | done: 0 blockers, 4 majors (all accepted) |
-| 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | running |
+| 015 review B (guard/data) | `research/alpha/registrations/reviews/015-review-b.md` | 2026-10-13 | done: 1 blocker, 3 majors (all accepted) |
+| 015 Revision 1 | drafter | 2026-10-13 | running |
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | running |
 | 008 attempt-3 timer | — | 2026-10-13 | fires 2026-10-14 06:45 +0200 |
