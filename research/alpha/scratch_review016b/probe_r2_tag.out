@@ -1,0 +1,9 @@
+Squash commit -- not updating HEAD
+== squash attack WITH the tag on reg0:
+(r) 2 different REGISTERED versions of the registration exist in the history (first 63446acaabfd) — an amendment after REGISTERED is a new r
+(r) HEAD's registration differs from the REGISTERED commit 63446acaabfd beyond approval, restart and repo-path lines
+(r) the REGISTERED commit 63446acaabfd is not an ancestor of HEAD
+(r) ct16/stats.py at HEAD differs from the REGISTERED commit 63446acaabfd
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== after 'git tag -d r016-registered' (an explicit act; the guard does not require the tag):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)

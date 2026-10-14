@@ -647,3 +647,75 @@ The same command with `--run` decides with the forged statistics.
   - The first 80 characters of `results.jsonl` lines 1–3, which are 015's committed and already reported rows, seen
     while checking that the stand-in carries them.
 - **No price, volume, trade count or funding value of any real file was read or computed.**
+
+---
+
+## Appendix: Revision 2 recheck (2026-10-14, probes only)
+
+**Scope.** Revision 2 is at `0e01814`: forward span to 2028-12-31, G = 45, gate 2029-01-08, `-X` refused, and a fresh
+pycache prefix kept only for the fetcher.
+
+**Setup.**
+- Every probe ran under `sandbox-exec` with the network denied (ledger `000u`).
+- Stand-ins come from `make_standin016_r1.py`. Its gate patch now matches any `READ_NOT_BEFORE` year, and stand-ins
+  live under `rb016r2`.
+- Mock fetches use `r2_fetch_harness.py.txt`. It executes `r016_fetch.py`'s source inside `__main__`, because Revision 2
+  keeps a prefix only for the fetcher run as the program. Its mocks are inline, since no test module may be loaded.
+- Files: `probe_r2_*.sh` / `.out`, plus `probe_r2_rerun_r1.*`, which re-runs every Revision-1 probe.
+
+### Verdict: register
+
+R1-M1 is fixed. Nothing new rises to a major. The end-date change is consistent in every place that decides anything.
+A legitimate stand-in fetches after the gate and reads once.
+
+### Results
+
+| check | probe | result |
+|---|---|---|
+| **R1-M1**: `-X pycache_prefix=<tmp>/r016f-pyc-…` with forged `ct16/stats` bytecode that writes a marker file when it executes | `probe_r2_x.out` | run CLI: refused by "(v) -X options are refused", and the marker is not written: the forged code never runs (the prefix is replaced). Fetch CLI: marker not written either |
+| `-X importtime`, `frozen_modules=off`, `dev`, `utf8`, `warn_default_encoding`, `int_max_str_digits=0`, `no_debug_ranges` | `probe_r2_x.out` | each refused by (v), named |
+| `PYTHONPYCACHEPREFIX=<forged>` with `-I -S` | `probe_r2_x.out` | ignored (`-E`): no refusal, no marker |
+| `PYTHONPYCACHEPREFIX=<forged>` without `-I -S` | `probe_r2_x.out` | refused by (v) (-I, -S, `site`, argv); no marker |
+| `PYTHONDONTWRITEBYTECODE` / `PYTHONSAFEPATH` / `PYTHONNODEBUGRANGES` with `-I -S` | `probe_r2_x.out` | ignored |
+| `PYTHONSAFEPATH` with `-S` only | `probe_r2_x.out` | refused by (v) |
+| A pre-created, forged fetcher-style prefix (`r016f-pyc-*`) in TMP before the run CLI | `probe_r2_x.out` | not used; no marker. A prefix cannot be pre-seeded before the process starts |
+| Legitimate gate-open stand-in, with 015's 3 rows in the ledger | `probe_r2_legit.out` | fetch writes 1,827 files: forward klines 720 = 24 × 30 months (2026-07 → 2028-12) and funding 1,104 = 24 × 46 months (2025-03 → 2028-12). Then (h') → approval → `guard open` → `--run`: `outcome: alive`. A second `--run` is refused (i); a second fetch is refused (f) |
+| Every Revision-1 probe re-run (B1, M1, M3, M4 E1–E3, minors) | `probe_r2_rerun_r1.out` | as at Revision 1: all refused. The residuals r1-m1 (squash, untagged), r1-m2 and r1-m4 behave as stated |
+| M4 E4–E6 (data gate after the started row; restart rules) | `probe_r2_m4_e456.out` | unchanged: `Panel` refused with `_GATE = None`; restart refused after a runner-committed `read_started`, also after reset and hand re-commit; the hand-only control opens |
+| r1-m1 with the Revision 2 procedure (annotated tag `r016-registered` on reg0, then the worktree squash) | `probe_r2_tag.out` | refused: "(r) 2 different REGISTERED versions", reg0 not an ancestor, `ct16/stats.py` differs. After `git tag -d` it opens again: the tag is procedure, not code. Accepted; deleting the tag is an explicit act |
+| Mutants | `probe_r2_mutants_suite.out` | **27 of 27 killed; 8 of 8 baselines pass**. `tests/test_r016.py`: 205/205 in a clone |
+| Real repository, read-only `--check` | `probe_r2_real_check.out` | (s), (t) "ends 2028-12-31 … before 2029-01-08", and (g1) only |
+| End-date consistency | grep of code, tests and registration | `SPAN_C` ends 2028-12-31; `READ_NOT_BEFORE` = 2029-01-08 (END + 8); `FWD_MONTHS` and `FUNDING_MONTHS` end 2028-12. The witness uses `FWD_MONTHS[1]` (it refused "does not list BTCUSDT 2028-12 yet"). HL presence and persistence use `R.END` and `READ_NOT_BEFORE`. `CELLS` and `YEAR_CELLS` extend to 2028. The suite asserts G = 45. The registration states 2029-01-08 nine times |
+
+### MINOR (new)
+
+- **r2-m1. A concurrent watcher can race the fresh prefix** (`probe_r2_x.out`, RACE).
+  - Setup: a same-user process polls TMP and plants forged `ct16/stats` bytecode into each new `r016*-pyc-*` directory
+    the moment it appears.
+  - Result: in 20 fetch-CLI runs, the forged code executed at least once (the marker was written). The window is the
+    compile of `r016_run` between the fetcher's `mkdtemp` and the `ct16` imports.
+  - In 20 run-CLI runs it never executed, because the window is far shorter there.
+  - **It still passes (v)**: `__cached__` lies under the program's own prefix.
+  - Like the stdlib `__pycache__` (r1-m4), this needs a deliberate, concurrent, same-user attacker, so it is a minor.
+  - **Cheap fix:** because `dont_write_bytecode` is set, a legitimate prefix is always empty. After the imports and again
+    in `guard()`, refuse if any file exists under `_PYC_OWN`, or if any 016 module's `__cached__` file exists.
+  - **Test:** plant a pyc in the program's prefix before the `ct16` import (an in-process hook); the run must refuse with
+    (v).
+- **r2-m2 (in-process, accepted class).** A `-c` program can dress `__main__` as `r016_fetch.py` with its own
+  `_R016_PREFIX`. Forged bytecode then loads, and (v) reports `[]`.
+  - This is the same class as the r1-m4 residuals. An in-process program can equally assign `R.S.CAL_H1`.
+  - The CLI cannot do it.
+- **r2-m3. Stale text** (nits; nothing that decides). These still say G = 33 or 2027-12:
+  - `ct16/rule.py:51` (comment "(G = 33)");
+  - `ct16/stats.py:9` (docstring "G = 33");
+  - `ct16/sim.py:225` ("33-month Sharpe": the κ pilot is from Revision 0; the achieved Sharpes are reported);
+  - the B-m1 mutant label "archive holds 2027-12";
+  - registration line 658, the response table for B-m1 ("2027-12 key"; the code checks 2028-12).
+
+### Reviewer's reads in this recheck
+
+- **Real repository:**
+  - `python3 -I -S r016_run.py --check`: the registration, the two data-file hashes and git;
+  - greps of the committed code, tests and registration.
+- **Network:** denied for every probe; no request was made.
+- **No real price, volume, trade count or funding value was read or computed.**

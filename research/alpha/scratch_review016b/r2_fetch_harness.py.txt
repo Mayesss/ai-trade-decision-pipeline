@@ -1,0 +1,53 @@
+# Reviewer B, 016 R2: run a stand-in's REAL fetch() with mock hooks. Revision 2 keeps a pycache prefix only when
+# __main__ IS r016_fetch.py and recorded it, so this harness executes r016_fetch.py's source INSIDE __main__ (with
+# __name__ held off '__main__' so its CLI block does not fire), then swaps REAL_HOOKS / _real_witness_hooks and calls
+# fetch(). Mocks are inline (no test module may be loaded: (v) checks module origins). Run as
+#   sandbox-exec ... python3 -I -S -c "$(cat r2_fetch_harness.py.txt)" <alpha> <objs.pickle>   (network denied)
+import sys, pickle, hashlib, datetime as dt
+from pathlib import Path
+A = Path(sys.argv[1]).resolve()
+assert not str(A).startswith('/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline'), 'stand-ins only'
+objs = pickle.loads(Path(sys.argv[2]).read_bytes())
+g = sys.modules['__main__'].__dict__
+src = (A / 'r016_fetch.py').read_text()
+g['__file__'] = str(A / 'r016_fetch.py'); g['__name__'] = 'r016_fetch_in_main'
+exec(compile(src, str(A / 'r016_fetch.py'), 'exec'), g)
+g['__name__'] = '__main__'
+keys = sorted(objs)
+def s3_list(prefix, delimiter=None):
+    out = []
+    for k in keys:
+        if not k.startswith(prefix):
+            continue
+        rest = k[len(prefix):]
+        if delimiter and delimiter in rest:
+            p = prefix + rest.split(delimiter)[0] + delimiter
+            if not out or out[-1] != ('pre', p):
+                out.append(('pre', p))
+        else:
+            out.append(('obj', k))
+    return out
+def get(key):
+    if key.endswith('.CHECKSUM'):
+        k = key[:-9]
+        return hashlib.sha256(objs[k]).hexdigest().encode() + b'  ' + k.rsplit('/', 1)[1].encode()
+    return objs[key]
+syms = sorted({k.split('/')[5] for k in keys if '/klines/' in k})
+ex = {'symbols': [{'symbol': s, 'contractType': 'PERPETUAL', 'underlyingType': 'COIN', 'onboardDate': 1577836800000}
+                  for s in syms]}
+HL0 = int(dt.datetime(2023, 6, 1, tzinfo=dt.UTC).timestamp() * 1000)
+def hl_funding(coin, start, end):
+    out, t = [], max(HL0, start - (start - HL0) % 3600000)
+    while t <= end and len(out) < 500:
+        if t >= start:
+            out.append({'coin': coin, 'time': t, 'fundingRate': '0.00001'})
+        t += 3600000
+    return out
+wit = ([k for k in keys if k.startswith(g['KLINES_BASE'] + 'BTCUSDT/1d/')], dt.datetime(2029, 1, 9, tzinfo=dt.UTC))
+g['REAL_HOOKS'] = {'witness': lambda: wit, 's3_list': s3_list, 'get': get, 'exchange_info': lambda: ex,
+                   'hl_meta': lambda: [{'name': 'BTC'}], 'hl_funding': hl_funding}
+g['_real_witness_hooks'] = lambda: {'witness': lambda: wit}
+try:
+    g['fetch']()
+except BaseException as e:
+    print('fetch refused/stopped:', str(e)[:600])

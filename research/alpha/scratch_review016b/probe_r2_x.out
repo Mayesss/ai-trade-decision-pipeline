@@ -1,0 +1,54 @@
+== R1-M1: run CLI, -X pycache_prefix=<forged>:
+(v) -X options are refused (review B R1-M1): ['pycache_prefix']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   marker: forged code not executed
+== R1-M1: fetch CLI, -X pycache_prefix=<forged>:
+   marker: forged code not executed
+== -X importtime:
+(v) -X options are refused (review B R1-M1): ['importtime']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X frozen_modules=off:
+(v) -X options are refused (review B R1-M1): ['frozen_modules']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X dev:
+(v) -X options are refused (review B R1-M1): ['dev']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X utf8:
+(v) -X options are refused (review B R1-M1): ['utf8']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X warn_default_encoding:
+(v) -X options are refused (review B R1-M1): ['warn_default_encoding']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X int_max_str_digits=0:
+(v) -X options are refused (review B R1-M1): ['int_max_str_digits']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== -X no_debug_ranges:
+(v) -X options are refused (review B R1-M1): ['no_debug_ranges']
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== PYTHONPYCACHEPREFIX=<forged> with -I -S (ignored by -E):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   marker: forged code not executed
+== PYTHONPYCACHEPREFIX=<forged> WITHOUT -I -S:
+(v) run with python3 -I -S (isolated mode): PYTHONPATH, user site and the script directory must not load
+(v) run with python3 -I -S (no site): a site-packages .pth would execute at startup
+(v) the site module ran or sys.flags is not the interpreter's own struct
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   marker: forged code not executed
+== PYTHONDONTWRITEBYTECODE=1 PYTHONSAFEPATH=1 PYTHONNODEBUGRANGES=1 with -I -S:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== PYTHONSAFEPATH=1 without -I (and -S only):
+(v) run with python3 -I -S (isolated mode): PYTHONPATH, user site and the script directory must not load
+(v) the command line does not carry -I and -S (sys.orig_argv)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== an OLD fetcher-style prefix pre-created in TMP (r016f-pyc-*), forged, then the run CLI:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   marker: forged code not executed
+== RACE: a watcher plants forged ct16/stats bytecode into every NEW r016*-pyc-* directory as it appears; 20 runs each
+   run CLI x20:
+   marker: forged code not executed
+   fetch CLI x20:
+   MARKER: forged ct16.stats EXECUTED
+== in-process: a -c program that dresses __main__ as r016_fetch.py with a forged prefix (cf. r1-m4):
+   forged stats loaded: True | (v) failures: []
+   MARKER: forged ct16.stats EXECUTED

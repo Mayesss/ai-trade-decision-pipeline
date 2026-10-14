@@ -20,5 +20,7 @@ if kind == 'run':
 else:
     prefix = Path(sys.argv[3])
     src = A / 'ct16' / 'stats.py'
-    body = src.read_text() + '\nFORGED_BY_REVIEWER = True\n'
+    marker = sys.argv[4] if len(sys.argv) > 4 else None     # R2: a marker file written when the forged code runs
+    body = src.read_text() + '\nFORGED_BY_REVIEWER = True\n' + (
+        f'open({marker!r}, "a").write("forged ct16.stats executed\\n")\n' if marker else '')
     write(src, body, prefix / str(src.parent).lstrip('/') / f'stats.{tag}.pyc')

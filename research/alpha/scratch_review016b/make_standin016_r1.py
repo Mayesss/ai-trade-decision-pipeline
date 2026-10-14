@@ -30,7 +30,7 @@ if '--no-pin-patch' not in sys.argv:
     (A / 'r016_run.py').write_text(new); patched.append('r016_run.py')
 if '--gate-open' in sys.argv:
     src = (A / 'ct16/rule.py').read_text()
-    new = re.sub(r'^READ_NOT_BEFORE = dt\.date\(2028, 1, 8\)', 'READ_NOT_BEFORE = dt.date(2026, 10, 1)', src, count=1,
+    new = re.sub(r'^READ_NOT_BEFORE = dt\.date\(20[0-9][0-9], 1, 8\)', 'READ_NOT_BEFORE = dt.date(2026, 10, 1)', src, count=1,
                  flags=re.M)
     assert new != src
     (A / 'ct16/rule.py').write_text(new); patched.append('ct16/rule.py')

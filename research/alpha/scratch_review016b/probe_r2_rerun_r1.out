@@ -1,0 +1,145 @@
+################ probe_r1_b1
+== origin --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== clone, data SYMLINKED, --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== clone, fetch CLI:
+(w) the fetcher runs only from the real repository
+== clone, fetch via in-process mock harness:
+fetch refused/stopped: (w) the fetcher runs only from the real repository
+== clone, data COPIED, --check:
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== linked worktree (detached):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+(w) HEAD is detached — run on a named branch of the real repository
+== linked worktree (named branch):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_wt, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_wt', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+== main worktree, detached HEAD:
+(w) HEAD is detached — run on a named branch of the real repository
+== recovery line while the pinned path EXISTS (in the clone, line names the clone):
+(w) this runner lives in /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone, not in the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) git top level is '/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1_clone', not the real repository /private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/b1
+(w) not the main worktree of the real repository (a clone, a linked worktree or another .git)
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== ABUSE 1: the pinned path moved away (mv origin origin.away); the clone's self-issued repo-path line:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   fetch (mock harness) + approval + --run in the CLONE:
+fetched: 1827 files in the manifest after 1 attempt(s)
+outcome: alive route: paper_then_scale
+   clone ledger 016 modes: ['result', 'fetch_started', 'fetch_attempt', 'fetched', 'read_started', 'read']
+   origin back in place, origin --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+   origin ledger 016 modes: ['result']
+== ABUSE 2: a SYMLINK at the pinned path pointing at a fresh clone (no repo-path line needed):
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+################ probe_r1_m1
+  refused _fetch_in(root=REAL, store=tmp, mocks, now) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused _fetch_in(root=tmp, store=REAL store, mocks, now) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused _fetch_in(root=REAL/research, ...) (a parent) -> (M1) mock hooks and a `now` never touch the real repository (tree, store or ledger)
+  refused fetch(now=...) (the real fetch takes no argument) -> fetch() got an unexpected keyword argument 'now'
+  refused fetch(hooks=...) -> fetch() got an unexpected keyword argument 'hooks'
+  guard_failures(REAL, now=2028): ['(t) a `now` override is never accepted on the real repository (review B M1)', '(t) the forward span ends 2028-12-31; nothing is fetched or read before 2029-01-']
+  refused record() into the real ledger without the real guard -> (M1) rows are written into the real repository only by the real run, after the real guard, with the default co
+  refused run() (real guard: today < gate) -> (t) the forward span ends 2028-12-31; nothing is fetched or read before 2029-01-08 (UTC)
+  refused Panel(run) on the real pull -> the real 016 data (or a byte copy of it) open only after the real guard passed and the started row is committe
+== ledger lines        3 ->        3; HEAD moved: no; store exists: no
+################ probe_r1_m3
+== --skip-worktree: git status: []
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) ct16/stats.py carries an index flag (S) that hides working-tree changes
+(d) registrations/016-crypto-trend-verbatim.md carries an index flag (S) that hides working-tree changes
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== --assume-unchanged: git status: []
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) ct16/stats.py carries an index flag (h) that hides working-tree changes
+(d) registrations/016-crypto-trend-verbatim.md carries an index flag (h) that hides working-tree changes
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+== filter: git status: [ M research/alpha/ct16/stats.py  M research/alpha/registrations/016-crypto-trend-verbatim.md ]
+(b) 016-crypto-trend-verbatim.md: the working-tree bytes differ from the committed version
+(d) guarded code ct16/stats.py: the working-tree bytes differ from HEAD (or it is not committed)
+(d) a filter attribute applies: registrations/016-crypto-trend-verbatim.md: filter: rb
+(d) a filter attribute applies: ct16/stats.py: filter: rb
+(d) untracked, ignored, modified or stdlib-named importable files at research/alpha top level or in ct16/: ['ct16/stats.py'] — commit every 
+(e) ct16/stats.py does not match its registered SHA-256
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+################ probe_r1_m4
+### E1: a committed revision after REGISTERED
+(r) 2 different REGISTERED versions of the registration exist in the history (first 8634f2d78bf3) — an amendment after REGISTERED is a new registratio
+(r) HEAD's registration differs from the REGISTERED commit 8634f2d78bf3 beyond approval, restart and repo-path lines
+(r) ct16/stats.py at HEAD differs from the REGISTERED commit 8634f2d78bf3
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### E2: --no-ff merge of REGISTERED + revision into another branch
+  on main-merge:
+(r) 2 different REGISTERED versions of the registration exist in the history (first 529058367c8a) — an amendment after REGISTERED is a new registratio
+(r) HEAD's registration differs from the REGISTERED commit 529058367c8a beyond approval, restart and repo-path lines
+(r) ct16/stats.py at HEAD differs from the REGISTERED commit 529058367c8a
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+### E3: REGISTERED + revision only in a linked worktree, squash-merged into main, worktree removed, branch deleted
+Squash commit -- not updating HEAD
+  original REGISTERED commit 98aa46a545fc reachable via --all --reflog? 0
+  main --check:
+(g1) 0 fetch_started and 0 fetched rows; exactly one of each is required (fetch first)
+  ct16.stats forged: True
+### E4: the data gate opens only after the started row is in HEAD
+fetched: 1827 files in the manifest after 1 attempt(s)
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    ctx = R.guard('run'); print('  guard(run) passed; _GATE =', R._GATE)
+  File "/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb
+    raise Refused('\n'.join(failures))
+ct16.rule.Refused: (v) module r016_run bytecode /var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r016f-pyc-f9ti8zfm/private/tmp/claude-502/-Users-maye
+### E5: restart after a RUNNER-committed read_started (data opened, then a hard crash): reset, re-commit by hand, restart line
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    ctx = R.guard('run')
+  File "/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/m4d/research/alpha/r016_run.py", line 595, in guard
+    raise Refused('\n'.join(failures))
+ct16.rule.Refused: (v) module r016_run bytecode /var/folders/lq/g957b02j15s3ygkw77z1_zsw0000gp/T/r016f-pyc-y4foyk6k/private/tmp/claude-502/-Users-mayess-sammoud-Documents-persogit-ai-trade-decision-pipeline/7b2e3f5e-bd1a-4fe0-b780-0c6d54079801/scratchpad/rb016r2/m4d/research/alpha/r016_run.cpython-314.pyc is not under the fresh pycache_prefix
+  NO LINE
+################ probe_r1_minors
+### m1: the witness refuses before any row or file (gate-open stand-in, witness without the 2027-12 key)
+  refused (keys to 2026-09, server date 2028-01-09): (t) witness: the archive does not list BTCUSDT 2028-12 yet | store files: 0
+  refused (all keys, server date 2026-09-15, before the stand-in gate 2026-10-01): (t) witness: the server date 2026-09-15 00:00:00+00:00 is before 2026-10-01 | store files: 0
+  ledger lines        3 ->        3
+### m2: the read gate
+  a byte copy of the pull: refused: the real 016 data (or a byte copy of it) open only after the real guar
+  _GATE assigned by hand: refused
+  _GATE and _GUARD_PASSED both assigned by hand: OPENED (in-process residual)
+  guard() with a stubbed _GUARD_FAILURES: passed, _guard_ok = False
+### m2b (new): the fetcher's network hooks are module globals: replaced in process, the REAL fetch() fills the REAL store
+  (probe_r1_legit.out: r1_fetch_harness.py.txt replaces REAL_HOOKS and _real_witness_hooks, then calls fetch():
+   fetched: 1251 files in the manifest after 1 attempt(s)
+### m3: rows
+  results.jsonl without a trailing newline:
+(k) results.jsonl does not end with a newline — a row appended now would merge into another
+  orphan-root read row with log.showRoot=false in the repository config:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog, merge, stash or root) — once
+  git replace <row commit> <decoy>:
+(i) a 016 read or read_failed row exists (tree, any branch, reflog, merge, stash or root) — once
+### m6, m7, m9, m10, m11: text and code (grep of the real repository's committed files)
+139:  live symbols were first archived between 2024-04 and 2025-06, and token migrations restart both the age and the
+140:  Donchian history at the new ticker: MATIC→POL (2024-09), FTM→S (2025-01), RNDR→RENDER (2024-07), EOS→A (2025-05),
+757:        non_coin, known_2026 = set(), set()
+759:            known_2026.add(x.get('symbol'))
+413:`--fingerprint`), `r016_fetch.py` (the guarded fetch), `tests/test_r016.py`, `tests/test_r016_mutants.py`.
+418:`brew upgrade`), the recovery is to install CPython 3.14.8 until `--fingerprint` equals the pins; **the pins are never
+653:| **B-B1** the guard binds to any clone or worktree | REAL_REPO pinned; main worktree; named branch; repo-path recovery line only when REAL_REPO no longer exists; tes
+431:  commit every top-level `.py` and package, of any study, before the fetch and before the read (m10);
+registrations/016-crypto-trend-verbatim.md:22:The runner refuses any fetch or read before **2029-01-08** (the registered end 2028-12-31 + 8 
+registrations/016-crypto-trend-verbatim.md:89:**One read only**, on or after 2029-01-08 (2028-12-31 + 8 days). There is no interim look and 
+registrations/016-crypto-trend-verbatim.md:668:| B-m11 nits | END + 8 days; `guard_failures` captured; the failed-commit note | §1, §11 |
+r016_run.py:23:  (t)  today (UTC) >= 2029-01-08 (the registered end 2028-12-31 + 8 days); a `now` argument is refused whenever the

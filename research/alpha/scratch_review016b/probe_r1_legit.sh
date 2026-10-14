@@ -6,7 +6,7 @@ set -u
 A=$1; OBJ=$2; D=$(cd "$(dirname "$0")" && pwd); G="/usr/bin/git -c user.name=owner -c user.email=owner@x"
 cd "$A"
 echo "== ledger before: $(wc -l < results.jsonl) lines, registrations: $(grep -o '"registration": "[0-9]*-' results.jsonl | sort | uniq -c | tr '\n' ' ')"
-echo "== fetch:"; python3 -I -S -c "$(cat "$D/r1_fetch_harness.py.txt")" "$A" "$OBJ" 2>&1 | tail -3
+echo "== fetch:"; python3 -I -S -c "$(cat "$D/${HARNESS:-r1_fetch_harness.py.txt}")" "$A" "$OBJ" 2>&1 | tail -3
 echo "== commits by the runner: $(/usr/bin/git log --format='%an|%s' -5 | tr '\n' ' ')"
 FL=$(grep '"mode": "fetched"' results.jsonl | tail -1)
 SHA=$(printf '%s' "$FL" | shasum -a 256 | cut -d' ' -f1)

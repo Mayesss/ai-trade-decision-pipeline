@@ -1,6 +1,16 @@
 # 016 — Crypto time-series trend following: the Zarattini–Pagani–Barbon (2025) rule verbatim, registered before its forward span exists
 
-**Status: DRAFT** — Revision 2 (2026-10-13, drafter), the final revision before registration. Revision 1 answered two
+**Status: REGISTERED 2026-10-14** (orchestrator, under the owner's research mandate; review A: register (Revision 1
+recheck, after the end-date change made in Revision 2); review B: register (Revision 2 recheck)). Every row of §13 is
+adopted as recommended. Registration procedure: this commit is made in the main worktree and tagged
+`r016-registered`; the tag must be kept (the guard does not require it; it keeps this commit reachable from `--all`
+against the worktree-squash attack). Residuals stated at registration (deliberate tampering only, review B Revision 2
+recheck): a concurrent same-user process racing the runner's fresh bytecode prefix in the temporary directory (forged
+`ct16` code ran in 1 of 20 fetcher runs in the reviewer's probe, 0 of 20 runner runs); an in-process `-c` program
+posing as the fetcher. Known cosmetic defect: some code comments and labels still say "G = 33" / "2027-12" (the
+registered values are G = 45 and 2028-12-31, enforced in code and tests). Nothing runs before 2029-01-08.
+
+Previously DRAFT — Revision 2 (2026-10-13, drafter), the final revision before registration. Revision 1 answered two
 independent reviews (`reviews/016-review-a.md`: 2 blockers, 3 majors, 10 minors; `reviews/016-review-b.md`: 1
 blocker, 4 majors, 11 minors); both reviewers' rechecks of Revision 1 (the appendices of those files) say register
 after one change each, and Revision 2 makes them: **the end date moves to 2028-12-31** (review A R1-M1, accepted by the

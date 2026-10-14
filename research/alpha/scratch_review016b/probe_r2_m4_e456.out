@@ -1,0 +1,12 @@
+### E4: the data gate opens only after the started row is in HEAD
+fetched: 1827 files in the manifest after 1 attempt(s)
+  guard(run) passed; _GATE = None
+  Panel refused: the real 016 data (or a byte copy of it) open only after the real guard passed and the started row i
+### E5: restart after a RUNNER-committed read_started: reset, re-commit by hand, restart line
+  after a runner-committed read_started:
+(i) a read_started row exists and the runner committed a read row, or no committed, later '016 read restart: APPROVED <date> started-row <sha256>' lin
+  after reset + hand re-commit + restart line:
+(i) a read_started row exists and the runner committed a read row, or no committed, later '016 read restart: APPROVED <date> started-row <sha256>' lin
+### E6: control - a hand-committed read_started (the runner never committed one) + restart line
+fetched: 1827 files in the manifest after 1 attempt(s)
+guard open: REGISTERED commit 486b98fb64423cdc75ef3587a0b4fc86ded480dc
