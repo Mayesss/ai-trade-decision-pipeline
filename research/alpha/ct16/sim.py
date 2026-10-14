@@ -183,7 +183,7 @@ def run_world(spec, draws, seed0, pool=None, fn='draw'):
 
 # ------------------------------------------------------------------ the worlds
 GJR = (0.05, 0.88, 0.10)                              # GARCH with a leverage term (review A B1)
-CELL_SEQ = (0.9, -0.7, 0.3, -0.5, 0.8, -0.3)          # annual drifts per half-year cell (aligned)
+CELL_SEQ = (0.9, -0.7, 0.3, -0.5, 0.8, -0.3, 0.6, -0.6)   # annual drifts per half-year cell (aligned; 8 cells to 2028)
 CALIBRATION = [                                       # trend-free (constant or regime drift): H1's size, 3,000 draws each
     {'name': 'null flat', 'drift': 'flat'},
     {'name': 'null bull +60%', 'drift': 'const', 'annual': 0.6},
@@ -193,7 +193,7 @@ CALIBRATION = [                                       # trend-free (constant or 
     {'name': 'null chop vol x1.4', 'drift': 'flat', 'vol_mult': 1.4},
     {'name': 'null mean-reverting chop', 'drift': 'flat', 'ar': -0.10},
     {'name': 'null vol-timing pays', 'drift': 'voldrift', 'low': 1.0, 'high': -1.0},
-    {'name': 'null alt-beta cells', 'drift': 'cells', 'seq': CELL_SEQ, 'beta_cells': (1.5, 0.7, 1.4, 0.8, 1.5, 0.7)},
+    {'name': 'null alt-beta cells', 'drift': 'cells', 'seq': CELL_SEQ, 'beta_cells': (1.5, 0.7, 1.4, 0.8, 1.5, 0.7, 1.4, 0.8)},
     {'name': 'null fat t3 leverage cells', 'drift': 'cells', 'seq': CELL_SEQ, 'df': 3, 'garch': GJR},
     {'name': 'null bull + crash', 'drift': 'const', 'annual': 0.6, 'crashes': {'2025-10-10': -0.30}},
     # review A B1: leverage effect with a sustained bull, and asymmetric vol timing
@@ -217,7 +217,8 @@ HINDSIGHT = [                                         # the designer-known shape
     {'name': 'S2 trend (a) SR~2.5, (c) dead', 'kappa': 0.26, 'half_life': 60, 'kappa_until': '2026-06-30'},
     {'name': 'regimes misaligned (quarterly)', 'drift': 'windows',
      'windows': [('2025-04-01', '2025-06-30', 1.0), ('2025-10-01', '2025-12-31', -1.0), ('2026-04-01', '2026-06-30', 1.0),
-                 ('2026-10-01', '2026-12-31', -1.0), ('2027-04-01', '2027-06-30', 1.0), ('2027-10-01', '2027-12-31', -1.0)]},
+                 ('2026-10-01', '2026-12-31', -1.0), ('2027-04-01', '2027-06-30', 1.0), ('2027-10-01', '2027-12-31', -1.0),
+                 ('2028-04-01', '2028-06-30', 1.0), ('2028-10-01', '2028-12-31', -1.0)]},
 ]
 TARGETS = (0.0, 0.5, 0.75, 1.0, 1.5)
 HALF_LIVES = (20, 60, 120)
@@ -295,7 +296,8 @@ def summary_row(name, recs):
 def _world_file(cache_dir, spec, draws, seed0, fn):
     import hashlib
     import json
-    key = json.dumps({'spec': spec, 'draws': draws, 'seed0': seed0, 'fn': fn}, sort_keys=True)
+    key = json.dumps({'spec': spec, 'draws': draws, 'seed0': seed0, 'fn': fn, 'end': str(R.END),
+                      'cells': len(R.CELLS)}, sort_keys=True)          # the calendar is part of the world
     return cache_dir / f"{hashlib.sha256(key.encode()).hexdigest()[:20]}.json", key
 
 

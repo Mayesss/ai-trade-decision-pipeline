@@ -279,14 +279,14 @@ def stats_checks():
     check('noncentral t at delta 0 is Student t', close(S.nct_quantile(0.05, 20, 0.0), -S.t_crit(20), 1e-3))
     rng = random.Random(4)
     days = list(range(R.day(R.START), R.day(R.END) + 1))
-    check('G = 33 month clusters (the March 2025 stub joins April)', len({R.cluster_of(d) for d in days}) == 33)
+    check('G = 45 month clusters (the March 2025 stub joins April)', len({R.cluster_of(d) for d in days}) == 45)
     x = [rng.gauss(0.001, 0.01) for _ in days]
     mt = S.mean_t(days, x)
     m = sum(x) / len(x)
     g = {}
     for d, v in zip(days, x):
         g[R.cluster_of(d)] = g.get(R.cluster_of(d), 0.0) + v - m
-    se = math.sqrt(sum(u * u for u in g.values()) / len(x) ** 2 * 33 / 32)
+    se = math.sqrt(sum(u * u for u in g.values()) / len(x) ** 2 * 45 / 44)
     check('mean_t: the CR1 standard error by calendar month, by hand', close(mt['se'], se, 1e-15) and close(mt['t'], m / se))
     contrib, cost = _fake_book(days, timing=0.0, drift=0.0005)
     A, wbar = S.timing_series(contrib, cost)
@@ -309,8 +309,8 @@ def stats_checks():
     h2_ = S.h1(days, c2_, k2, cal=1.9)
     check('H1 refuses when the pooled t passes but (c) alone is below 1.282 (review A B2)',
           h2_['pass_t'] and not h2_['pass_forward'] and not h2_['pass'], f"{h2_['pooled']['t']:.2f} / {h2_['forward']['t']:.2f}")
-    check('the floor is t_{G-1}(0.95) = t_32; a calibrated value never lowers it',
-          S.h1_crit(33, cal=0.0) == (S.t_crit(32), S.t_crit(32)) and S.h1_crit(33, cal=2.5)[0] == 2.5)
+    check('the floor is t_{G-1}(0.95) = t_44; a calibrated value never lowers it',
+          S.h1_crit(45, cal=0.0) == (S.t_crit(44), S.t_crit(44)) and S.h1_crit(45, cal=2.5)[0] == 2.5)
     check('ladder: alive > decayed (t < C2) > not_demonstrated',
           S.ladder({'pass': True, 'pooled': {'t': 5.0}}, c2=1.0) == 'alive'
           and S.ladder({'pass': False, 'pooled': {'t': 0.5}}, c2=1.0) == 'decayed'
@@ -350,10 +350,10 @@ def stats_checks():
     f3 = [0.3 * a + rng.gauss(0, 0.01) for a in f2]
     yc = [0.0004 + 0.2 * a + 0.05 * b - 0.2 * cc + rng.gauss(0, 0.004) for a, b, cc in zip(f1, f2, f3)]
     fc = S.alpha_fit(days, yc, [f1, f2, f3])
-    check('the reported factor alpha: constant slopes, k = 3, G = 33, recovers the slope', fc['k'] == 3 and fc['G'] == 33
+    check('the reported factor alpha: constant slopes, k = 3, G = 45, recovers the slope', fc['k'] == 3 and fc['G'] == 45
           and abs(fc['slopes'][0] - 0.2) < 0.03)
     fh = S.alpha_fit(days, yc, [f1, f2, f3], per_cell=True)
-    check('half-year cells (reported): k = 18', fh['k'] == 18 and fh['cells'] == 6)
+    check('half-year cells (reported): k = 24 over eight cells', fh['k'] == 24 and fh['cells'] == 8)
 
 
 # ------------------------------------------------------------------ parsers
@@ -418,8 +418,8 @@ def _two_member_zip():
 CODE = ('ct16/rule.py', 'r016_run.py')
 DATAF = ('data/static.json',)
 REG = 'registrations/016-x.md'
-NOW = dt.datetime(2028, 1, 10, tzinfo=dt.UTC)
-EARLY = dt.datetime(2028, 1, 7, 23, 0, tzinfo=dt.UTC)
+NOW = dt.datetime(2029, 1, 10, tzinfo=dt.UTC)
+EARLY = dt.datetime(2029, 1, 7, 23, 0, tzinfo=dt.UTC)
 GIT = '/usr/bin/git'
 PY = sys.executable
 
@@ -492,8 +492,14 @@ def guard_checks(layout):
     _write_reg(root)
     git('add', rel(REG))
     git('commit', '-q', '-m', 'register')
-    check('REGISTERED, committed, clean, after 2028-01-08: the fetch gate opens', _gf(root) == [], str(_gf(root)))
-    check('(t) the date gate refuses before 2028-01-08 (UTC)', _has(_gf(root, now=EARLY), '(t) the forward span'))
+    reg0 = git('rev-parse', 'HEAD').stdout.strip()
+    check('REGISTERED, committed, clean, after 2029-01-08: the fetch gate opens', _gf(root) == [], str(_gf(root)))
+    _add(root, {'registration': '015-month-end-liquidity-cycle.md', 'mode': 'started'})
+    _add(root, {'registration': '015-month-end-liquidity-cycle.md', 'mode': 'result', 'decision': 'not_demonstrated'})
+    git('commit', '-q', '-am', "015's rows in the shared ledger")
+    check("another registration's committed rows (015, lines 1-3 of the real ledger) do not block 016", _gf(root) == [],
+          str(_gf(root)))
+    check('(t) the date gate refuses before 2029-01-08 (UTC)', _has(_gf(root, now=EARLY), '(t) the forward span'))
     check('the real clock today is before the gate', _has(_gf(root, now=None), '(t)') or dt.date.today() >= R.READ_NOT_BEFORE)
     (root / REG).write_text((root / REG).read_text().replace('REGISTERED', 'DRAFT'))
     f_wt = _gf(root)
@@ -514,7 +520,7 @@ def guard_checks(layout):
           raises(lambda: RUN.append_row({'registration': '016-x.md'}, root / 'results.jsonl')))
     git('reset', '-q', '--hard', 'HEAD~1')
     check('(w) the anchor must be an ancestor of HEAD', _has(_gf(root, anchor='0' * 40), '(w)'))
-    rc = git('rev-parse', 'HEAD').stdout.strip()
+    rc = reg0
     _add(root, {'registration': '016-x.md', 'mode': 'fetch_started', 'registration_commit': rc})
     git('commit', '-q', '-am', 'fetch_started')
     check('a committed fetch_started row carrying reg0: the fetch resumes', _gf(root) == [], str(_gf(root)))
@@ -530,7 +536,7 @@ def guard_checks(layout):
     fr = _gf(root, mode='run')
     check("(h') the read needs the approval line", _has(fr, "(h')") and not _has(fr, '(g'), str(fr))
     fline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"fetched"' in l][0]
-    (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2028-01-11 row {RUN.line_sha(fline)}\n')
+    (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2029-01-11 row {RUN.line_sha(fline)}\n')
     git('commit', '-q', '-am', 'approval')
     check('everything in order: the read gate opens (HEAD:./ paths; reg0 accepts an approval line)',
           _gf(root, mode='run') == [], str(_gf(root, mode='run')))
@@ -542,7 +548,7 @@ def guard_checks(layout):
     git('commit', '-q', '-am', 'started by hand')
     check('(i) a read_started row without a restart line blocks', _has(_gf(root, mode='run'), '(i)'))
     sline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"read_started"' in l][0]
-    (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2028-01-12 started-row '
+    (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2029-01-12 started-row '
                             f'{RUN.line_sha(sline)}\n')
     git('commit', '-q', '-am', 'restart')
     check('a restart line reopens a started row that no runner commit wrote', _gf(root, mode='run') == [],
@@ -571,7 +577,7 @@ def restart_checks():
     rg = _git_fn(top, name=RUN.RUNNER_NAME)
     rg('commit', '-q', '-am', 'started by the runner')
     sline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"read_started"' in l][0]
-    (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2028-01-12 started-row '
+    (root / REG).write_text((root / REG).read_text() + f'016 read restart: APPROVED 2029-01-12 started-row '
                             f'{RUN.line_sha(sline)}\n')
     git('commit', '-q', '-am', 'restart line')
     check('(i) a runner-committed read_started row is never restarted', _has(_gf(root, mode='run'), '(i) a read_started'))
@@ -659,7 +665,7 @@ def bypass_checks():
         line = json.dumps(fr, sort_keys=True)
         with open(root / 'results.jsonl', 'a') as fh:
             fh.write(line + '\n')
-        (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2028-01-11 row {RUN.line_sha(line)}\n')
+        (root / REG).write_text((root / REG).read_text() + f'016 read: APPROVED 2029-01-11 row {RUN.line_sha(line)}\n')
         git('commit', '-q', '-am', 'rows and approval together')
         check(f"({layout}) (h') an approval committed with the fetched row is refused", _has(_gf(root, mode='run'), "(h')"))
     root, top, git = _registered()
@@ -732,11 +738,16 @@ def env_checks():
                         'print(any("-O" in x for x in R.environment_failures(R.HERE)))'], cwd=HERE,
                        capture_output=True, text=True)
     check('python -O is refused by (v)', p.stdout.strip() == 'True', p.stderr[-200:])
-    p = subprocess.run([PY, '-I', '-S', '-c', 'import runpy, sys; runpy.run_path("r016_fetch.py", run_name="fetcher"); '
-                        'print(sys.modules["r016_run"].module_origin_failures())'], cwd=HERE, capture_output=True,
-                       text=True)
-    check('the fetcher imports the guard from source under a fresh pycache prefix (review B M2)',
-          p.stdout.strip() == '[]', p.stdout[-300:] + p.stderr[-300:])
+    p = subprocess.run([PY, '-I', '-S', 'r016_fetch.py'], cwd=HERE, capture_output=True, text=True)
+    out = p.stdout + p.stderr
+    check('the fetcher, run as the registered command, imports the guard under its own fresh prefix: no (v) refusal',
+          '(v)' not in out and ('(t)' in out or (not RUN.in_real(RUN.HERE) and 'the fetcher runs only from the real' in out)),
+          out[-400:])
+    forge = Path(tempfile.mkdtemp(prefix='r016f-pyc-'))
+    p = subprocess.run([PY, '-I', '-S', '-X', f'pycache_prefix={forge}', 'r016_run.py', '--check'], cwd=HERE,
+                       capture_output=True, text=True)
+    check('a command-line -X pycache_prefix (even one named like the fetcher\'s) is refused by (v) (review B R1-M1)',
+          '(v) -X options are refused' in p.stdout, p.stdout[-300:] + p.stderr[-200:])
     root, top, git = _registered()
     (root / 'csv.py').write_text('MARK = True\n')
     git('add', _rel(root, top, 'csv.py'))
@@ -997,7 +1008,7 @@ def _mock_hooks(objects, page=3, hl=None, fail=(), empty=(), badsum=(), witness=
     def hl_funding(coin, start, end):
         h = hl[coin]
         out = []
-        stop = h['last'] if h['last'] is not None else F.ms(dt.date(2028, 1, 1)) + 10 * 3600000
+        stop = h['last'] if h['last'] is not None else F.ms(dt.date(2029, 1, 1)) + 10 * 3600000
         t = max(h['first'], start - (start - h['first']) % 3600000)
         while t <= min(end, stop) and len(out) < 500:
             if t >= start:
@@ -1005,7 +1016,7 @@ def _mock_hooks(objects, page=3, hl=None, fail=(), empty=(), badsum=(), witness=
             t += 3600000
         return out
     wit = witness or ([k for k in keys if k.startswith(F.KLINES_BASE + 'BTCUSDT/1d/')],
-                      dt.datetime(2028, 1, 9, tzinfo=dt.UTC))
+                      dt.datetime(2029, 1, 9, tzinfo=dt.UTC))
     return {'witness': lambda: wit, 's3_list': s3_list, 'get': get,
             'exchange_info': lambda: ex or {'symbols': [{'symbol': 'BTCUSDT', 'contractType': 'PERPETUAL',
                                                           'underlyingType': 'COIN'}]},
@@ -1026,7 +1037,7 @@ def _fund_zip(sym, mo):
     return _zip(f'{sym}-fundingRate-{mo}.csv', f'calc_time,funding_interval_hours,last_funding_rate\n{t},8,0.0001\n')
 
 
-def _objs(syms=('BTCUSDT', 'ETHUSDT'), k_months=('2026-05', '2028-02'), f_months=('2025-01', '2028-02')):
+def _objs(syms=('BTCUSDT', 'ETHUSDT'), k_months=('2026-05', '2029-02'), f_months=('2025-01', '2029-02')):
     objs = {}
     for sym in syms:
         for mo in F.months(*k_months):
@@ -1042,15 +1053,15 @@ def fetch_checks():
     hk = _mock_hooks(objs)
     want, later = F.plan(hk, F.KLINES_BASE, '1d/', *RUN.FWD_MONTHS)
     check('plan: exactly the 18 forward months per symbol; later months counted, never planned; <= 2026-06 not planned',
-          [m for m, _ in want['BTCUSDT']] == F.months('2026-07', '2027-12') and later == 4)
+          [m for m, _ in want['BTCUSDT']] == F.months('2026-07', '2028-12') and later == 4)
     full = [k for kind, k in hk['s3_list'](F.KLINES_BASE + 'BTCUSDT/1d/') if kind == 'obj']
     check('S3 paging forward with an exclusive marker: every key once (page size 3)',
           full == sorted(k for k in objs if k.startswith(F.KLINES_BASE + 'BTCUSDT/1d/')) and len(full) == len(set(full)))
     early = _mock_hooks(objs, witness=([k for k in objs if '2026-0' in k and 'BTCUSDT/1d' in k],
-                                       dt.datetime(2028, 1, 9, tzinfo=dt.UTC)))
-    check('witness: the archive must list BTCUSDT 2027-12', F.witness_failures(early) != [])
-    late_clock = _mock_hooks(objs, witness=([k for k in objs if 'BTCUSDT/1d' in k], dt.datetime(2027, 12, 31, tzinfo=dt.UTC)))
-    check('witness: the server date must be >= 2028-01-08', F.witness_failures(late_clock) != [] and F.witness_failures(hk) == [])
+                                       dt.datetime(2029, 1, 9, tzinfo=dt.UTC)))
+    check('witness: the archive must list BTCUSDT 2028-12', F.witness_failures(early) != [])
+    late_clock = _mock_hooks(objs, witness=([k for k in objs if 'BTCUSDT/1d' in k], dt.datetime(2028, 12, 31, tzinfo=dt.UTC)))
+    check('witness: the server date must be >= 2029-01-08', F.witness_failures(late_clock) != [] and F.witness_failures(hk) == [])
     with tempfile.TemporaryDirectory() as d:
         store = Path(d)
         key = f'{F.KLINES_BASE}BTCUSDT/1d/BTCUSDT-1d-2026-07.zip'
@@ -1064,12 +1075,12 @@ def fetch_checks():
         _, files, errors, _l = F.pull(fl, store, F.KLINES_BASE, '1d/', *RUN.FWD_MONTHS, 'klines')
         check('a failed download is a keyed error and is never written',
               'klines_error:BTCUSDT:2026-07' in errors and not (store / 'klines/BTCUSDT/1d/BTCUSDT-1d-2026-07.zip').exists()
-              and len(files) == 35)
+              and len(files) == 2 * len(F.months(*RUN.FWD_MONTHS)) - 1)
         tam = store / 'klines/BTCUSDT/1d/BTCUSDT-1d-2026-08.zip'
         tam.write_bytes(b'tampered')
         _, files2, errors2, _l = F.pull(hk, store, F.KLINES_BASE, '1d/', *RUN.FWD_MONTHS, 'klines')
         check('resume: a stored file is re-checked against .CHECKSUM and re-fetched when it differs (review B m5d)',
-              not errors2 and len(files2) == 36
+              not errors2 and len(files2) == 2 * len(F.months(*RUN.FWD_MONTHS))
               and D.sha256_bytes(tam.read_bytes()) == D.sha256_bytes(objs[f'{F.KLINES_BASE}BTCUSDT/1d/BTCUSDT-1d-2026-08.zip']))
         _, ff, ferr, _l = F.pull(hk, store, F.FUNDING_BASE, '', *RUN.FUNDING_MONTHS, 'fundingRate')
         allf = {**files2, **ff}
@@ -1078,10 +1089,10 @@ def fetch_checks():
               str(F.coverage(root, store, allf, {}))[:300])
         no_eth = {k: v for k, v in allf.items() if not ('ETHUSDT' in k and '2027-03' in k and k.startswith('klines'))}
         check('coverage: an interior month missing is a keyed refusal', 'klines_gap:ETHUSDT' in F.coverage(root, store, no_eth, {}))
-        no_dec = {k: v for k, v in allf.items() if not ('ETHUSDT-1d-2027-12' in k)}
-        check('coverage: traded at the end of 2027-11 but no 2027-12 file (the second seam; review B m5b)',
-              'klines_seam:ETHUSDT:2027-12' in F.coverage(root, store, no_dec, {}))
-        no_btc = {k: v for k, v in allf.items() if 'BTCUSDT-1d-2027-12' not in k}
+        no_dec = {k: v for k, v in allf.items() if not ('ETHUSDT-1d-2028-12' in k)}
+        check('coverage: traded at the end of 2028-11 but no 2028-12 file (the second seam; review B m5b)',
+              'klines_seam:ETHUSDT:2028-12' in F.coverage(root, store, no_dec, {}))
+        no_btc = {k: v for k, v in allf.items() if 'BTCUSDT-1d-2028-12' not in k}
         check('coverage: BTC missing its last month refuses (never persistable)', 'btc_months' in F.coverage(root, store, no_btc, {}))
         no_fund = {k: v for k, v in allf.items() if not ('ETHUSDT-fundingRate-2027-05' in k)}
         check('coverage: a traded kline month without a funding file refuses (review B m5a)',
@@ -1106,8 +1117,8 @@ def fetch_checks():
     check('persistence: 3 attempts >= 24 h apart make a key unavailable; a BTCUSDT key never',
           'klines_gap:ETHUSDT' in per and 'klines_error:BTCUSDT:2026-07' in blk)
     blk2, per2 = F.apply_persistence({'klines_gap:ETHUSDT': 'x'}, att, t0 + 2 * gap + 20, not_before_s=t0 + 1)
-    check('persistence: attempts committed before 2028-01-08 never count (review B m1)', 'klines_gap:ETHUSDT' in blk2)
-    end_ms = F.ms(dt.date(2028, 1, 1))
+    check('persistence: attempts committed before 2029-01-08 never count (review B m1)', 'klines_gap:ETHUSDT' in blk2)
+    end_ms = F.ms(dt.date(2029, 1, 1))
     hl = {'AAA': {'first': F.ms(dt.date(2023, 6, 1)), 'last': None},
           'BBB': {'first': F.ms(dt.date(2024, 2, 1)), 'last': F.ms(dt.date(2026, 9, 15))},
           'CCC': {'first': F.ms(dt.date(2026, 11, 1)), 'last': F.ms(dt.date(2026, 11, 1))}}
@@ -1136,7 +1147,7 @@ def _synthetic_tree(root, seed=11):
                 sums.append(f'{D.sha256_bytes(blob)}  {rel}')
             else:
                 objs[f'{F.KLINES_BASE}{name}/1d/{name}-1d-{mo}.zip'] = blob
-        for mo in F.months('2025-03', '2027-12'):
+        for mo in F.months('2025-03', '2028-12'):
             objs[f'{F.FUNDING_BASE}{name}/{name}-fundingRate-{mo}.zip'] = _fund_zip(name, mo)
     (a_dir / 'SHA256SUMS').write_text('\n'.join(sorted(sums, key=lambda x: x.split('  ')[1])) + '\n')
     (root / RUN.STATIC_EXCHANGE_REL).parent.mkdir(parents=True, exist_ok=True)
@@ -1158,7 +1169,7 @@ def e2e_checks(layout):
     hooks.pop('calls')
     kw = dict(code=CODE, data=data, reg_rel=REG)
     store = root / RUN.STORE_REL
-    check('fetch refuses before 2028-01-08', raises(lambda: F._fetch_in(root, store, hooks, EARLY, **kw), (SystemExit,)))
+    check('fetch refuses before 2029-01-08', raises(lambda: F._fetch_in(root, store, hooks, EARLY, **kw), (SystemExit,)))
     F._fetch_in(root, store, hooks, NOW, **kw)
     head = git('show', 'HEAD:' + _rel(root, top, 'results.jsonl')).stdout
     check('the fetch commits fetch_started, an attempt row and the fetched row (verified in HEAD), as the runner',
@@ -1168,14 +1179,14 @@ def e2e_checks(layout):
     fr = RUN.guard_failures(root, 'run', now=NOW, **kw)[0]
     check("the read needs the approval line (h')", _has(fr, "(h')") and len(fr) == 1, str(fr))
     fline = [l for l in (root / 'results.jsonl').read_text().splitlines() if '"fetched"' in l][0]
-    (root / REG).write_text((root / REG).read_text() + f'\n016 read: APPROVED 2028-01-11 row {RUN.line_sha(fline)}\n')
+    (root / REG).write_text((root / REG).read_text() + f'\n016 read: APPROVED 2029-01-11 row {RUN.line_sha(fline)}\n')
     git('commit', '-q', '-am', 'approval')
     gfo = RUN.guard_failures(root, 'run', now=NOW, **kw)[0]
     check('after the approval the read gate opens', gfo == [], str(gfo))
     table = RUN.guard_failures(root, 'run', now=NOW, **kw)[1]['table']
     panel = RUN.Panel('run', klines_a=root / RUN.KLINES_A_REL, store=store, table=table)
     syms, funding, non_coin, hl, counts = panel.load(static_exchange=root / RUN.STATIC_EXCHANGE_REL)
-    check('the panel joins the pinned pull (<= 2026-06) and the fetch (2026-07 -> 2027-12) without overlap',
+    check('the panel joins the pinned pull (<= 2026-06) and the fetch (2026-07 -> 2028-12) without overlap',
           counts['symbols'] == 24 and min(syms[R.BTC].rows) == R.day(sim.SIM_START)
           and max(syms[R.BTC].rows) == R.day(R.END) and len(funding) == 24, str(counts))
     dec, rep, series, bk = RUN.compute(syms, funding, non_coin, hl, placebo_seeds=2)
@@ -1183,7 +1194,7 @@ def e2e_checks(layout):
            'h1_t_forward': dec['h1']['forward']['t'], 'series': series}
     fails, _ = S.recheck(json.loads(json.dumps(row)))
     check('compute runs end to end on the synthetic trend world; the decision recomputes from the stored records',
-          fails == [] and dec['h1']['pooled']['G'] == 33, f"{dec['outcome']} tA {dec['h1']['pooled']['t']:.2f} {fails}")
+          fails == [] and dec['h1']['pooled']['G'] == 45, f"{dec['outcome']} tA {dec['h1']['pooled']['t']:.2f} {fails}")
     check('the reported blocks are present (strata, factor alphas, raw Sharpe, variants, tail, age, placebo)',
           {'strata', 'factor_alpha_constant', 'raw_sharpe_vs_paper', 'costs', 'long_short', 'tail_gross_x_k25',
            'age_excluded_by_month', 'placebo_shifted_signals'} <= set(rep))
@@ -1250,9 +1261,9 @@ def real_file_checks():
     present = [f for f in RUN.GUARDED_DATA if (HERE / f).exists()]
     check('the data hashes equal the files on disk (where the gitignored data exist on this machine)',
           all(RUN.sha256(HERE / f) == tab.get(f) for f in present))
-    check('the calendars: (a) 2025-03-20 -> 2026-06-30, (c) 2026-07-01 -> 2027-12-31, gate 2028-01-08 = END + 8 days',
-          R.SPAN_A == (dt.date(2025, 3, 20), dt.date(2026, 6, 30)) and R.SPAN_C == (dt.date(2026, 7, 1), dt.date(2027, 12, 31))
-          and R.READ_NOT_BEFORE == dt.date(2028, 1, 8) == R.END + dt.timedelta(days=8))
+    check('the calendars: (a) 2025-03-20 -> 2026-06-30, (c) 2026-07-01 -> 2028-12-31, gate 2029-01-08 = END + 8 days',
+          R.SPAN_A == (dt.date(2025, 3, 20), dt.date(2026, 6, 30)) and R.SPAN_C == (dt.date(2026, 7, 1), dt.date(2028, 12, 31))
+          and R.READ_NOT_BEFORE == dt.date(2029, 1, 8) == R.END + dt.timedelta(days=8))
 
 
 SECTIONS = {

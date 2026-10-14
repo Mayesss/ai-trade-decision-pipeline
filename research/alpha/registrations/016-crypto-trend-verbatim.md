@@ -1,8 +1,10 @@
 # 016 — Crypto time-series trend following: the Zarattini–Pagani–Barbon (2025) rule verbatim, registered before its forward span exists
 
-**Status: DRAFT** — Revision 1 (2026-10-13, drafter), after two independent reviews (`reviews/016-review-a.md`:
-2 blockers, 3 majors, 10 minors; `reviews/016-review-b.md`: 1 blocker, 4 majors, 11 minors) and the orchestrator's
-decisions on them. Every finding and its fix is in §R1. A second-round recheck is required before REGISTERED. Every
+**Status: DRAFT** — Revision 2 (2026-10-13, drafter), the final revision before registration. Revision 1 answered two
+independent reviews (`reviews/016-review-a.md`: 2 blockers, 3 majors, 10 minors; `reviews/016-review-b.md`: 1
+blocker, 4 majors, 11 minors); both reviewers' rechecks of Revision 1 (the appendices of those files) say register
+after one change each, and Revision 2 makes them: **the end date moves to 2028-12-31** (review A R1-M1, accepted by the
+orchestrator) and **`-X` options are refused** (review B R1-M1). Every finding and its fix is in §R1 and §R2. Every
 row of §13 is PROPOSED.
 
 **What changed, in one paragraph.** The decision statistic is now a **holdings-based timing statistic** (Lo 2008),
@@ -11,13 +13,13 @@ not a factor α: constant-slope α manufactures α out of a constant drift when 
 leverage-effect bull worlds included, with the Monte Carlo error stated and a 2-SE margin. Span (c) must pass on its
 own at 10% (B2). Decay is tested on the same statistic against the paper's Table 4, under any forward drift (M1),
 and the four outcomes became a three-step ladder. The guard is rebuilt on 015's fixes: bound to the real repository,
-read from HEAD, bound to the one REGISTERED commit for the 15 months to the read, `python3 -I -S` with a pinned
+read from HEAD, bound to the one REGISTERED commit for the 27 months to the read, `python3 -I -S` with a pinned
 interpreter, no mocks or `now` near the real tree, and a mutation harness that shows each protection's test failing
 when the protection is removed.
 
 **Nothing in this draft was computed on real data beyond hashes, file counts and first/last months** (§15). Every
 size, power and false-pass number below comes from synthetic worlds (`r016_run.py --power`, which reads no data).
-The runner refuses any fetch or read before **2028-01-08** (the registered end 2027-12-31 + 8 days), and refuses
+The runner refuses any fetch or read before **2029-01-08** (the registered end 2028-12-31 + 8 days), and refuses
 everything while this file says DRAFT.
 
 Programme: `docs/alpha-discovery-2026-10-13.md` (round 4, light C1). Scout: `scouts/c1-crypto-trend.md`.
@@ -30,7 +32,7 @@ Ledger entries read: `000t` (C1 scout), `000q` (D1 seasoned-path look), `copytra
 ## 0. Hypothesis, mechanism, sign, and what has been seen
 
 **Hypothesis.** The paper's top-20 long-only crypto trend book, run verbatim on Binance USDⓈ-M perpetual closes
-from 2025-03-20 (the day after the paper's sample ends) to 2027-12-31, earns a positive **timing return** net of the paper's 10 bp
+from 2025-03-20 (the day after the paper's sample ends) to 2028-12-31, earns a positive **timing return** net of the paper's 10 bp
 costs: the part of its return that comes from *when* it holds each coin, beyond what holding each coin's average
 weight throughout would have earned (Lo 2008's active component; §4). The same statistic, read against the paper's own
 strength, decides whether the rule has **decayed** from what Table 4 published.
@@ -81,11 +83,11 @@ return > 0.
 |---|---|---|---|
 | warm-up | each symbol's first archived Binance perp close (from 2019-12) → 2025-03-19 | signal states, σ90 and universe only; **no return is booked** | — |
 | **(a)** | **2025-03-20 → 2026-06-30** | out of the paper's sample; before the programme's cut; **designer-known** | 15 (the 12-day March 2025 stub joins April) |
-| **(c)** | **2026-07-01 → 2027-12-31** | **forward, unread, claimed openly for this family.** It does not exist yet in full. 008 reads HL fills in 2026-07 → 09, and `000l` looked at momentum through 2026-09 (stated in §0) | 18 |
-| **pooled (a)+(c)** | 2025-03-20 → 2027-12-31 | **the primary**, with (c) required to pass on its own at 10% (§7) | **G = 33** |
+| **(c)** | **2026-07-01 → 2028-12-31** (Revision 2: one year longer; review A R1-M1) | **forward, unread, claimed openly for this family.** It does not exist yet in full. 008 reads HL fills in 2026-07 → 09, and `000l` looked at momentum through 2026-09 (stated in §0) | 18 |
+| **pooled (a)+(c)** | 2025-03-20 → 2028-12-31 | **the primary**, with (c) required to pass on its own at 10% (§7) | **G = 45** |
 
-**One read only**, on or after 2028-01-08 (2027-12-31 + 8 days). There is no interim look and no second look inside 016. A later
-extension (2028-01 →) would be a new registration with its own forward span.
+**One read only**, on or after 2029-01-08 (2028-12-31 + 8 days). There is no interim look and no second look inside 016. A later
+extension (2029-01 →) would be a new registration with its own forward span.
 
 ## 2. The rule, verbatim (paper sections and printed pages)
 
@@ -121,8 +123,8 @@ is a property of the price path, not of membership).
   each verified against Binance's `.CHECKSUM` at pull time). It is pinned here by the SHA-256 of its `SHA256SUMS`
   (§16), and every file is re-hashed against that list as the read opens it. The scout's funding pull is **not**
   used (it covers the scout's own top-20 months only).
-- **Months 2026-07 → 2027-12 (klines) and 2025-03 → 2027-12 (funding, every USDT symbol):** fetched by
-  `r016_fetch.py` after 2028-01-08 (§11), each zip verified against `.CHECKSUM` and pinned by a manifest digest in
+- **Months 2026-07 → 2028-12 (klines) and 2025-03 → 2028-12 (funding, every USDT symbol):** fetched by
+  `r016_fetch.py` after 2029-01-08 (§11), each zip verified against `.CHECKSUM` and pinned by a manifest digest in
   the `fetched` row.
 - **Contract types:** the `fapi/v1/exchangeInfo` snapshot fetched for 013 on 2026-10-11 (its `serverTime` is
   2026-10-09T07:16Z; copied into `data/r016/static/`, pinned) plus the snapshot the fetch takes in 2028. A symbol is
@@ -160,7 +162,7 @@ is a property of the price path, not of membership).
 
 ### 4.1 The statistic: the book's timing return (Lo 2008)
 
-On each day t of 2025-03-20 → 2027-12-31, from the book as run (10 bp, no funding):
+On each day t of 2025-03-20 → 2028-12-31, from the book as run (10 bp, no funding):
 
     A_t = Σ_i (w_i,t−1 − w̄_i) · r_i,t − cost_t
 
@@ -175,7 +177,7 @@ On each day t of 2025-03-20 → 2027-12-31, from the book as run (10 bp, no fund
   that property: OLS weights days by variance, and with a leverage effect the book is out exactly when volatility is
   high, so β̂ falls below the book's average exposure and α̂ ≈ (w̄ − β̂)·μ > 0 in any bull (review A's GJR bull worlds:
   false pass 0.05–0.12). Calendar-cell slopes do not cure it and cost 0.2–0.4 of power (Revision 0 §5).
-- **t_A** = mean(A) / its CR1 standard error clustered by calendar month (G = 33; the 12-day March 2025 stub joins
+- **t_A** = mean(A) / its CR1 standard error clustered by calendar month (G = 45; the 12-day March 2025 stub joins
   April). The span-(c) statistic t_A,c uses (c)'s days only and **its own w̄** over (c).
 - The factor α (BTC, EW alt, vol-managed EW; constant, half-year and year slopes) and the raw Sharpe are reported.
 
@@ -183,13 +185,13 @@ On each day t of 2025-03-20 → 2027-12-31, from the book as run (10 bp, no fund
 
 | step | condition | outcome | what follows |
 |---|---|---|---|
-| 1 | **t_A ≥ CAL_H1 = 1.75** (= the largest 95th percentile over the 19 calibration worlds + 2 Monte Carlo SE, rounded up; never below t_32(0.95) = 1.694) **and t_A,c ≥ 1.282** (span (c) alone, one-sided 10%; review A B2) | **`alive`** | the economic bar (§4.3): clears → **`paper_then_scale`** (a forward paper/live period at the paper's sizing, scaling toward the Bayes-Kelly size); below → `exists_below_bar` |
-| 2 | otherwise, **t_A < C2 = −1.26** (the smallest 5th percentile of t_A over nine "as published" worlds − 2 MC SE, rounded down; §6) | **`decayed`** | **`close`**: the family closes; any owner allocation ends |
+| 1 | **t_A ≥ CAL_H1 = 2.00** (= the largest 95th percentile over the 19 calibration worlds + 2 Monte Carlo SE, rounded up; never below t_44(0.95) = 1.680) **and t_A,c ≥ 1.282** (span (c) alone, one-sided 10%; review A B2) | **`alive`** | the economic bar (§4.3): clears → **`paper_then_scale`** (a forward paper/live period at the paper's sizing, scaling toward **min(the Bayes-Kelly size, 2.8 × the paper's sizing)** — review A R1-m2: at any `alive` the Bayes-Kelly vol of the timing leg is ≈ 50% or more, beyond §9's tail budget); below → `exists_below_bar` |
+| 2 | otherwise, **t_A < C2 = −0.94** (the smallest 5th percentile of t_A over nine "as published" worlds − 2 MC SE, rounded down; §6) | **`decayed`** | **`close`**: the family closes; any owner allocation ends |
 | 3 | otherwise | **`not_demonstrated`** | "not demonstrated at this power", never "no effect"; any owner allocation ends (review A M2) |
 
 - **"As published"** (review A M1) is the timing strength at which a synthetic decade 2015-01 → 2025-03-19 (a shared
   +75%/yr drift, GJR leverage, t(3) tails) reproduces Table 4's α/vol = 10.8% / 9% = 1.2 against BTC (§6). C2 is the
-  t_A that such a rule would beat 95% of the time over 2025-03 → 2027-12 with a forward drift of 0, +40% or −40%/yr.
+  t_A that such a rule would beat 95% of the time over 2025-03 → 2028-12 with a forward drift of 0, +40% or −40%/yr.
   So `decayed` has size ≤ 0.05 under any of those drifts.
 - **No two point bars in series.** Step 1 is an existence test with a calibrated small-sample critical value; its
   only conjunction is (c)'s 10% significance, whose power cost is stated (§6). The economic bar routes only.
@@ -201,110 +203,129 @@ On each day t of 2025-03-20 → 2027-12-31, from the book as run (10 bp, no fund
 - Its **timing leg** A^dep (the same statistic, funding included in cost_t; tradable as the book with a static short
   of w̄_i per coin) has an annualised Sharpe SR_A. Shrink it by the positive-part James–Stein factor (1 − 1/t_A²) of
   the H1 t: SR_s.
-- Size at the **Bayes-Kelly vol** SR_s / (1 + 1/T), T = 2.78 years (the variance of a Sharpe estimate over T). The
-  return there is **SR_s² / (1 + 1/T)**; it must reach **4%/yr** (HLP calm), i.e. SR_s ≥ 0.23.
+- Size at the **Bayes-Kelly vol** SR_s / (1 + 1/T), T = 3.78 years (the variance of a Sharpe estimate over T). The
+  return there is **SR_s² / (1 + 1/T)**; it must reach **4%/yr** (HLP calm), i.e. SR_s ≥ 0.22.
 - Stated plainly: a sanity floor at a like-for-like risk budget, not a hurdle with power. The Revision-0 bar
   (2.8 × min(raw, α) × shrink) compared a 25%-vol book with HLP's calm return and cleared on 67–90% of false passes.
 
-## 5. Calibration (synthetic only; `data/r016/logs/power.json`)
+## 5. Calibration (synthetic only; `data/r016/logs/power.json`; Revision 2: end 2028-12-31, G = 45)
 
 **The calibration set (D19): 19 trend-free worlds, 3,000 draws each** (24 coins, rotating volumes, the real
-calendar; GARCH(1,1) vol and t(4) innovations unless stated; "GJR" = GARCH(0.05, 0.88) with a leverage term 0.10).
+calendar to 2028-12-31; GARCH(1,1) vol and t(4) innovations unless stated; "GJR" = GARCH(0.05, 0.88) with a leverage
+term 0.10).
 
-| world | mean t_A | q95 of t_A (± MC SE) |
-|---|---|---|
-| flat | −0.88 | 0.97 ± 0.04 |
-| bull +60%/yr | −0.73 | 0.91 ± 0.03 |
-| bear −60%/yr | −0.81 | 0.95 ± 0.03 |
-| drift aligned with the half-year cells (a six-month regime) | −0.18 | 1.48 ± 0.05 |
-| two −35% crash days | −0.71 | 0.98 ± 0.03 |
-| chop, vol × 1.4 | −0.68 | 1.06 ± 0.04 |
-| mean-reverting chop (AR −0.1) | −1.61 | 0.37 ± 0.04 |
-| **vol timing pays** (drift +100%/yr in low vol, −100% in high) | +0.16 | **1.69 ± 0.03** (binding) |
-| alt β switching by cell, cell drifts | −0.33 | 1.36 ± 0.03 |
-| Student-t(3), GJR, cell drifts (Revision 0's binding world) | +0.04 | 1.65 ± 0.03 |
-| bull +60% + a −30% crash | −0.59 | 1.10 ± 0.03 |
-| GJR bull +40%, t3 | −0.78 | 0.99 ± 0.05 |
-| GJR bull +80%, t3 | −0.66 | 0.93 ± 0.03 |
-| GJR bull +80%, t4 | −0.74 | 0.90 ± 0.04 |
-| GJR bull +80%, t3, −35% day in (a) | −0.61 | 1.05 ± 0.04 |
-| GJR bull +80%, t3, −35% day in (c) | −0.56 | 1.12 ± 0.03 |
-| GJR bull +120%, t3 | −0.51 | 0.99 ± 0.04 |
-| asymmetric vol timing (+100 / −60), GJR t3 | +0.02 | 1.55 ± 0.03 |
-| GJR bear −60%, t3 | −0.79 | 0.99 ± 0.04 |
+| world | mean t_A | q95 of t_A (± MC SE) | `alive` |
+|---|---|---|---|
+| flat | −0.82 | 1.02 ± 0.04 | 0.001 |
+| bull +60%/yr | −0.66 | 0.99 ± 0.04 | 0.002 |
+| bear −60%/yr | −0.78 | 0.93 ± 0.04 | 0.003 |
+| drift aligned with the half-year cells (a six-month regime) | −0.03 | 1.60 ± 0.03 | 0.015 |
+| two −35% crash days | −0.67 | 1.05 ± 0.03 | 0.003 |
+| chop, vol × 1.4 | −0.60 | 1.10 ± 0.03 | 0.004 |
+| mean-reverting chop (AR −0.1) | −1.64 | 0.34 ± 0.05 | 0.000 |
+| **vol timing pays** (drift +100%/yr in low vol, −100% in high) | +0.37 | **1.93 ± 0.03** (binding) | 0.029 |
+| alt β switching by cell, cell drifts | −0.19 | 1.48 ± 0.04 | 0.010 |
+| Student-t(3), GJR, cell drifts | +0.18 | 1.78 ± 0.03 | 0.020 |
+| bull +60% + a −30% crash | −0.55 | 1.11 ± 0.04 | 0.002 |
+| GJR bull +40%, t3 | −0.69 | 0.97 ± 0.04 | 0.001 |
+| GJR bull +80%, t3 | −0.61 | 1.01 ± 0.03 | 0.001 |
+| GJR bull +80%, t4 | −0.67 | 0.98 ± 0.04 | 0.002 |
+| GJR bull +80%, t3, −35% day in (a) | −0.55 | 1.05 ± 0.03 | 0.001 |
+| GJR bull +80%, t3, −35% day in (c) | −0.52 | 1.11 ± 0.04 | 0.004 |
+| GJR bull +120%, t3 | −0.47 | 1.03 ± 0.03 | 0.001 |
+| asymmetric vol timing (+100 / −60), GJR t3 | +0.17 | 1.70 ± 0.04 | 0.018 |
+| GJR bear −60%, t3 | −0.80 | 0.93 ± 0.03 | 0.001 |
 
-- **CAL_H1 = 1.75**: the largest q95 + 2 SE is the vol-timing world's 1.691 + 2 × 0.028 = 1.746, rounded up; the floor t_32(0.95) = 1.694 does not bind.
-- The Monte Carlo SE of each q95 is the half-width of the order-statistic 95% interval / 1.96 (≈ 0.03–0.05 at 3,000
+- **CAL_H1 = 2.00**: the largest q95 + 2 SE is the vol-timing world's 1.930 + 2 × 0.033 = 1.995, rounded up (the floor
+  t_44(0.95) = 1.680 does not bind). Revision 1 at G = 33 had 1.75. **Review A's estimate was ≈ 1.84**: its
+  trend-free worlds at 1,000–1,500 draws did not include this symmetric vol-timing world at G = 45 (its q95 rises from
+  1.69 at G = 33 to 1.93: with more months the inverse-vol timing that pays in that world becomes more visible). The
+  next worlds are 1.78 (t3 GJR cells, review A's 1.71 at 2027) and 1.70 (asymmetric vol timing).
+- The Monte Carlo SE of each q95 is the half-width of the order-statistic 95% interval / 1.96 (0.03–0.05 at 3,000
   draws). Adding worlds can only raise CAL_H1.
-- **The leverage-bull worlds are where the factor α failed** (review A: q95 1.83–2.27, false pass 0.05–0.12). The
-  timing statistic is flat there (mean t_A −0.78 to −0.51 in the six GJR bull worlds; q95 0.90–1.12), because a constant drift earns the passive book, not the timing
-  leg. The worlds that still lift t_A are those where *something predictable from the past* pays: vol timing (the
-  inverse-vol sizing is timing, too) and the aligned six-month drift regimes (a six-month drift is a six-month trend);
-  both are in the set, and the latter is a trend the rule legitimately harvests.
+- **The leverage-bull worlds, where the factor α failed** (review A: q95 1.83–2.27, false pass 0.05–0.12), stay flat:
+  mean t_A −0.69 to −0.47, q95 0.97–1.11, `alive` 0.001–0.004. What lifts t_A is something predictable from the past:
+  vol timing (the inverse-vol sizing is timing too) and the aligned six-month regimes (a six-month trend).
 
-## 6. Power, false-pass and decay rates (synthetic)
+## 6. Power, false-pass and decay rates (synthetic; Revision 2, end 2028-12-31)
 
 **Provenance.** `python3 -I -S r016_run.py --power` wrote `power.json` (per world) and `power_records.json` (per draw):
-19 calibration worlds and 9 "as published" worlds at 3,000 draws, 15 trend worlds and 4 drift-power worlds at 600, 4
-hindsight / regime worlds at 1,000; fixed seeds. CAL_H1 and C2 were then written into `ct16/stats.py` from these
-records; the records hold t_A, t_A,c and the raw statistics, never a decision, so the hashed code reproduces them.
-The run is **resumable**: each finished world is stored in `data/r016/logs/worlds/` under a key of (spec, draws, seeds)
-and is read back, not re-run. Verified three ways: (i) a second `--power` over the full cache wrote `power.json` and
-`power_records.json` byte-identical to the first (SHA-256 `1aa7ab8c…` and `5d9150fa…`); (ii) one finished world
-(GJR bull +80%, 3,000 draws) re-run from scratch equals its stored records exactly; (iii) a draw is bit-identical
-across three processes (a test). An earlier run differed from its interrupted predecessor at the 1e-15 level: a fee
-sum iterated a `set`, whose order follows per-process string hashing; `ct16/rule.py` now iterates it sorted, and the
-whole run was redone on the fixed code (the earlier logs are kept as `power_run_interrupted.log` and
-`power_run_setorder.log`, superseded).
+19 calibration worlds and 9 as-published worlds at 3,000 draws, 15 trend worlds and 4 drift-power worlds at 600, 4
+hindsight / regime worlds at 1,000; fixed seeds. CAL_H1 and C2 were then written into `ct16/stats.py`; the records hold
+t_A, t_A,c and the raw statistics, never a decision. The run is **resumable**: each finished world is stored in
+`data/r016/logs/worlds/` under a key of (spec, draws, seeds, **and the calendar**: end date and cell count, so a
+Revision-1 world is never reused at the new end) and is read back, not re-run; this run was paused by the owner and
+resumed from the cache. Verified in Revision 1: a second `--power` over the full cache wrote byte-identical outputs;
+a finished world re-run from scratch equals its stored records; a draw is bit-identical across processes (a test; a
+`set`-order float nondeterminism in a fee sum was found and fixed then). Revision 1's logs are in `data/r016/logs_rev1/`.
 
 **Trend worlds.** Each coin's drift is κ × its daily vol × (0.7 u_t + 0.71 v_i,t), u and v AR(1) with half-life h ∈
-{20, 60, 120} days, mean zero, no market drift. κ is the Revision-0 pilot's; the axis is labelled by the **mean
-per-draw 33-month Sharpe** and the pooled population Sharpe is given beside it (review A m1).
+{20, 60, 120} days, mean zero, no market drift. The axis is the **mean per-draw 45-month Sharpe**, with the pooled
+population Sharpe beside it (review A m1).
 
 | mean per-draw ŜR (pooled SR), h 20 / 60 / 120 | **`alive`** h 20 / 60 / 120 | t_A ≥ CAL only | `decayed` h 20 / 60 / 120 |
 |---|---|---|---|
-| 0 → −0.02 / 0.03 / 0.02 (pooled 0.16 / 0.22 / 0.23) | 0.017 / 0.012 / 0.017 | 0.020 / 0.027 / 0.035 | **0.18 / 0.12 / 0.15** |
-| 0.5 → 0.53 / 0.50 / 0.47 (0.64 / 0.64 / 0.70) | 0.16 / 0.12 / 0.09 | 0.30 / 0.24 / 0.20 | **0.02 / 0.02 / 0.05** |
-| **0.75** → 0.78 / 0.74 / 0.71 (0.88 / 0.88 / 0.93) | **0.37 / 0.21 / 0.16** | 0.58 / 0.40 / 0.34 | 0.002 / 0.007 / 0.015 |
-| **1.0** → 1.07 / 0.92 / 0.98 (1.13 / 1.08 / 1.16) | **0.65 / 0.39 / 0.23** | 0.83 / 0.62 / 0.52 | 0.000 / 0.002 / 0.008 |
-| **1.5** → 1.49 / 1.46 / 1.48 (1.48 / 1.53 / 1.63) | **0.88 / 0.74 / 0.59** | 0.96 / 0.93 / 0.85 | 0 / 0 / 0 |
+| 0 → 0.02 / 0.09 / 0.09 (pooled 0.17 / 0.23 / 0.25) | 0.008 / 0.008 / 0.017 | 0.012 / 0.018 / 0.022 | **0.23 / 0.15 / 0.17** |
+| 0.5 → 0.56 / 0.53 / 0.51 (0.63 / 0.63 / 0.69) | 0.24 / 0.23 / 0.18 | 0.30 / 0.29 / 0.25 | **0.013 / 0.015 / 0.038** |
+| **0.75** → 0.83 / 0.75 / 0.78 (0.89 / 0.86 / 0.94) | **0.59 / 0.38 / 0.32** | 0.66 / 0.47 / 0.42 | 0.000 / 0.003 / 0.012 |
+| **1.0** → 1.10 / 0.98 / 1.02 (1.13 / 1.08 / 1.15) | **0.85 / 0.67 / 0.53** | 0.90 / 0.75 / 0.66 | 0 / 0 / 0.007 |
+| **1.5** → 1.49 / 1.48 / 1.49 (1.48 / 1.51 / 1.58) | **0.96 / 0.93 / 0.88** | 0.98 / 0.96 / 0.93 | 0 / 0 / 0 |
 
-- **`alive`:** at a true SR of 1 the ladder says `alive` with probability **0.65 / 0.39 / 0.23** (h 20 / 60 / 120); at 0.75, 0.37 / 0.21 / 0.16; at 1.5, 0.88 / 0.74 / 0.59. The timing statistic loses power as the trend slows, because w̄ absorbs a trend that persists for most of the 33 months (review A: 0–0.11 at the t-only level; the (c) condition adds the rest). "Alive at half strength" (SR ≈ 0.78) is about a one-in-four to one-in-three event.
-- **`decayed`:** a dead rule (mean per-draw ŜR ≈ 0) ends `decayed` with probability **0.18 / 0.12 / 0.15**, and **0.17** under a ±40%/yr forward drift (h 60); at SR 0.5, 0.02–0.05. Its size against as-published is 0.003–0.043 (h 20 → h 120) under every drift. So most dead books end `not_demonstrated`, which ends any allocation all the same (§14).
-- **The cost of (c)'s own 10% test** (review A B2): at SR 1 the t-only rate 0.83 / 0.62 / 0.52 becomes `alive` 0.65 / 0.39 / 0.23 (−0.18 / −0.23 / −0.29); at SR 0.75, −0.21 / −0.19 / −0.18; at SR 1.5, −0.07 / −0.19 / −0.26. Larger than the reviewer's α-t estimate (−0.18 at SR 1) at slow trends, for the same w̄ reason.
+- **`alive`:** at a true SR of 1, **0.85 / 0.67 / 0.53** (Revision 1 at 2027-12-31: 0.65 / 0.39 / 0.23; review A
+  estimated 0.87 / 0.67 / 0.60 at 2028-12-31); at 0.75, **0.59 / 0.38 / 0.32** (review A: 0.43 at h 60); at 1.5,
+  0.96 / 0.93 / 0.88. The extra year more than doubles (c) (18 → 30 months), which makes t_A,c ≥ 1.282 attainable and
+  weakens w̄'s absorption of the trend; the higher CAL (2.00) gives back a little.
+- **`decayed`:** a dead rule ends `decayed` with probability **0.23 / 0.15 / 0.17**, and **0.21 / 0.18** under a +40% /
+  −40%/yr forward drift (h 60); at SR 0.5, 0.013–0.038. Its size against as-published is **0.004–0.044** under every
+  drift (below). Review A estimated 0.24 at h 60 with C2 ≈ −0.72 (drift 0 only); the drift worlds set C2 lower here.
+  Most dead books still end `not_demonstrated`, which ends any allocation all the same (§14).
+- **The cost of (c)'s own 10% test** (review A B2): at SR 1 the t-only rate 0.90 / 0.75 / 0.66 becomes `alive`
+  0.85 / 0.67 / 0.53 (−0.05 / −0.08 / −0.12); at SR 0.75, −0.07 / −0.09 / −0.11 (Revision 1: −0.18 to −0.29).
+- **Why H1 power exceeds the scout's arithmetic** (0.49 at SR 1 over 33 months): the timing statistic is estimated on
+  daily data and carries none of the market's variance.
 
 **"As published" (C2).** Table-4 pilot (40 synthetic decades per κ ∈ {0, 0.03, 0.06, 0.09, 0.12}; every coin shares
-the +75%/yr drift; GJR; t(3)): the α/vol ratio against BTC is 0.40–0.45 at κ = 0 — **a third of Table 4's 1.2 is the
-leverage-effect artefact alone** — and reaches 1.2 at κ = 0.090 / 0.065 / 0.061 (h 20 / 60 / 120). The simulated
-decade's β is 0.16–0.17 and its vol 12.5% (Table 4: 0.08 and 9%): only the scale-free ratio is matched. On the test
-calendar these κ correspond to a timing Sharpe of roughly 0.25–0.4 with no drift: **the paper's own timing strength,
-net of the artefact, is modest.**
+the +75%/yr drift; GJR; t(3)): the α/vol ratio against BTC is 0.40–0.45 at κ = 0 — **under this calibration's GJR t(3)
+assumption, about a third of Table 4's 1.2 is the leverage-effect artefact alone**; this is an assumption, not a
+finding (review A R1-m1): it holds only if crypto has an equity-style leverage effect, and under symmetric GARCH t(4)
+the artefact is ≈ 12% (0.15 at κ = 0; review A `p8_log.txt`), the h-60 κ that reproduces Table 4 rises to ≈ 0.10, and
+a C2 calibrated there would be higher (review A: ≈ −0.45 at G = 33). The GJR mapping is kept because it is the
+conservative one for a kill switch (`decayed` fires less). It reaches 1.2 at κ = 0.090 / 0.065 / 0.061 (h 20 / 60 /
+120). The simulated decade's β is 0.16–0.17 and its vol 12.5% (Table 4: 0.08 and 9%): only the scale-free ratio is
+matched. Under the GJR assumption the paper's own timing strength, net of the artefact, is modest (a timing Sharpe of
+roughly 0.25–0.4 with no drift).
 
-| as-published world (h, forward drift) | mean t_A | q05 of t_A (± MC SE) | `decayed` rate at C2 |
+| as-published world (h; forward drift 0 / +40% / −40%) | mean t_A | q05 of t_A (± MC SE) | `decayed` rate at C2 |
 |---|---|---|---|
-| h 20, 0 / +40% / −40% | +1.43 / +1.21 / +1.60 | −0.40 ± 0.05 / −0.49 ± 0.05 / −0.26 ± 0.04 | 0.005 / 0.007 / 0.003 |
-| h 60, 0 / +40% / −40% | +0.90 / +0.77 / +0.95 | −0.95 ± 0.05 / −1.00 ± 0.03 / −0.97 ± 0.04 | 0.028 / 0.027 / 0.027 |
-| **h 120, 0** / +40% / −40% | +0.71 / +0.61 / +0.77 | **−1.17 ± 0.04** / −1.13 ± 0.04 / −1.13 ± 0.05 | 0.043 / 0.040 / 0.038 |
+| h 20 | +1.78 / +1.53 / +1.99 | −0.00 ± 0.05 / −0.21 ± 0.03 / +0.12 ± 0.05 | 0.007 / 0.010 / 0.004 |
+| h 60 | +1.27 / +1.09 / +1.32 | −0.57 ± 0.05 / −0.68 ± 0.05 / −0.54 ± 0.05 | 0.027 / 0.029 / 0.024 |
+| **h 120** | +1.10 / +0.96 / +1.21 | −0.81 ± 0.05 / **−0.86 ± 0.04** / −0.62 ± 0.04 | 0.040 / 0.044 / 0.029 |
 
-- **C2 = −1.26**: the smallest q05 − 2 SE is the h-120, zero-drift world's −1.174 − 2 × 0.040 = −1.254, rounded down. Because the paper's timing strength is modest once the artefact is removed, a dead rule's
-  t_A is not far below an as-published one's; `decayed` therefore has limited power (table above). That is the
-  honest consequence of calibrating "as published" to Table 4 rather than to its headline Sharpe.
+- **C2 = −0.94**: the smallest q05 − 2 SE is the h-120, +40%-drift world's −0.857 − 2 × 0.041 = −0.939, rounded down.
+  Revision 1 at G = 33 had −1.26. **Review A's estimate was ≈ −0.72**: from drift-0 worlds only; the +40% forward drift
+  and the 2-SE margin set it lower here.
 
-**False-pass rates of `alive`** in the 19 calibration worlds at CAL_H1: **0.001–0.021** (largest: vol timing 0.021, the Student-t(3) GJR cell world 0.019, asymmetric vol timing 0.017, the aligned six-month regime 0.015); the six GJR bull worlds 0.001–0.006, where Revision 0's rule gave 0.05–0.12; the trend-free trend worlds (κ at SR 0) 0.012–0.017. Forward drift ±40% at a dead and
-a half-strength book (h 60): dead: `alive` 0.013 at +40% and at −40%, `decayed` 0.172 at both; half strength: `alive` 0.088 / 0.137, `decayed` 0.027 / 0.032.
+**False-pass rates of `alive`** in the 19 calibration worlds at CAL_H1 = 2.00: **0.000–0.029** (largest: vol timing
+0.029, the t(3) GJR cell world 0.020, asymmetric vol timing 0.018, the aligned six-month regime 0.015; the six GJR
+bull worlds 0.001–0.004, where Revision 0's rule gave 0.05–0.12); the trend-free trend worlds (κ at SR 0) 0.008–0.017.
+Forward drift ±40% at a dead and a half-strength book (h 60): dead `alive` 0.008 / 0.017, `decayed` 0.207 / 0.177;
+half strength `alive` 0.165 / 0.202, `decayed` 0.013 / 0.022.
 
-**Hindsight (review A B2).** The designer-shaped index path in (a) with (c) trend-free: `alive` 0.003 (t-only 0.037; mean t_A −0.03, on (a) +0.14). Trend in the warm-up
-and (a) (ŜR ≈ 1.5 / ≈ 2.5 there), none in (c): `alive` **0.012 / 0.017**, against 0.38 / 0.86 for the pooled t alone and 0.15 / 0.22 with Revision 0's sign condition (mean t_A on (a) 1.88 / 3.55, on (c) −1.00 / −0.98). Quarterly regimes switching mid-cell (a trend world,
-reported): `alive` 0.027 (mean t_A +0.06).
+**Hindsight (review A B2).** The designer-shaped index path in (a), (c) trend-free: `alive` **0.006** (t-only 0.016).
+Trend in the warm-up and (a) (ŜR ≈ 1.5 / ≈ 2.5 there), none in (c): `alive` **0.017 / 0.022**, against 0.24 / 0.70 for
+the pooled t alone and 0.13 / 0.23 with Revision 0's sign condition (mean t_A on (a) 1.88 / 3.55, on (c) −0.87 /
+−0.84). Quarterly regimes switching mid-cell (a trend world, reported): `alive` 0.018.
 
 ## 7. Span (a): in the primary, and (c) must stand on its own (D18; review A B2)
 
-- **Why pool.** (a) adds 15 of 33 month clusters. On the registered path a (c)-only test at its own calibrated value (max(t_17(0.95), largest q95 + 2 SE of t_A,c) = 1.74) has power 0.51 / 0.27 / 0.18 at SR 1, against **0.65 / 0.39 / 0.23** for the pooled ladder: pooling buys 0.05–0.14.
+- **Why pool.** (a) adds 15 of 45 month clusters. A (c)-only test at its own calibrated value (max(t_29(0.95), the
+  largest q95 + 2 SE of t_A,c) = 1.79) has power 0.76 / 0.59 / 0.48 at SR 1, against **0.85 / 0.67 / 0.53** for the
+  pooled ladder: pooling buys 0.05–0.09.
 - **Why (c) must pass alone.** The drafter knows the shape of (a): a rally, a cascade, a decline. The risk is not that
-  the known index path manufactures timing return (it does not: the hindsight world above) but that the rule was
-  chosen *now because* (a) looked like a good trend year. With trend in (a) and none in (c), Revision 0's sign
-  condition passed 0.20–0.24 (review A). Requiring **t_A,c ≥ 1.282** caps that at 0.012–0.017 (the S worlds above):
-  `000t`'s "never its sole decider" now holds by construction, not by a coin flip.
+  the known index path manufactures timing return (it does not: 0.006 above) but that the rule was chosen *now
+  because* (a) looked like a good trend year. With trend in (a) and none in (c), Revision 0's sign condition passed
+  0.20–0.24 (review A). Requiring **t_A,c ≥ 1.282** caps that at **0.017–0.022**: `000t`'s "never its sole decider"
+  holds by construction.
 - **The decay step pools (a) and (c)** with no condition: (a)'s known decline is a drift, and the timing statistic does
   not carry drift (C2 is calibrated under ±40%/yr forward drift).
 
@@ -354,7 +375,7 @@ held on the eve of an episode), re-derived here:
 - **Kelly.** If alive at half strength (SR 0.78), full Kelly runs at ≈ 78% vol, so 25% is ≈ 0.32 Kelly. At the
   programme's odds (1 in 3 alive) the Sharpe is a two-point prior (0.78 w.p. ⅓, −0.15 w.p. ⅔): E[SR] ≈ 0.16 and
   Var(SR) ≈ 0.19, so the Bayes-Kelly vol is E[SR]/(1 + Var) ≈ **13.5%** (review A m7; not 16%). The paper's ≈ 9% is
-  ≈ 0.67 of it. Start there; scale only after `alive`.
+  ≈ 0.67 of it. Start there; scale only after `alive`, and never beyond min(Bayes-Kelly, 2.8 × the paper's sizing).
 - **Capacity.** At $1 M, k = 2.8, the largest single-coin notional is ≈ $120 k, ≈ 0.17% of the rank-20 coin's daily
   volume: non-binding to tens of $M.
 
@@ -403,12 +424,12 @@ edited after REGISTERED** (review B m7).
 - **(r) reg0** (M4): exactly one REGISTERED content of the registration across `--all --reflog` (no first-parent
   restriction: a `--no-ff` merge cannot re-register), approval, restart and repo-path lines removed; reg0 = the
   earliest such commit by ancestry; HEAD's registration and every guarded code blob equal reg0's; both fetch rows
-  carry reg0. A revision committed at any time in the 15 months before the read refuses, even if later reset;
+  carry reg0. A revision committed at any time in the 27 months before the read refuses, even if later reset;
 - (d) guarded code bytes equal HEAD; no assume-unchanged / skip-worktree flag or filter attribute on the
   registration, the code or `results.jsonl`; no untracked, ignored, modified or **stdlib-named** importable file at
   research/alpha's top level or in ct16/ (research/alpha is *appended* to `sys.path`) — remedy named in the refusal:
   commit every top-level `.py` and package, of any study, before the fetch and before the read (m10);
-- (e) the table; **(t)** the wall clock ≥ 2028-01-08 UTC, and a `now` argument is refused whenever the real
+- (e) the table; **(t)** the wall clock ≥ 2029-01-08 UTC, and a `now` argument is refused whenever the real
   repository is involved (M1); (k) `results.jsonl` clean and ending with a newline (m3);
 - **(w)** (B1): this file's repository is the pinned `REAL_REPO`
   (`/Users/mayess.sammoud/Documents/persogit/ai-trade-decision-pipeline`), its main worktree (`--absolute-git-dir` =
@@ -438,45 +459,66 @@ results file and the real data are used only together, only with the default com
 line without a newline (m3). The runner never pushes. A failed automatic commit leaves the row — for the read row,
 the decision — in plain text in the working tree: commit it by hand, as it is (m11).
 
+**Bytecode (Revision 2, review B R1-M1).** Any `-X` option is refused (`sys._xoptions` or `-X` in `sys.orig_argv`):
+a command-line `-X pycache_prefix=<dir>` used to bring back forged decision bytecode under `-I -S`. A pre-existing
+prefix is kept only when the running program is `r016_fetch.py` and the prefix is the one it just created itself
+(`_R016_PREFIX`); otherwise the runner creates a fresh one, and (v) refuses if `sys.pycache_prefix` is not the prefix
+this program created.
+
+**Accepted residuals: each needs deliberate tampering, as in 015** (review B r1-m2, r1-m3, r1-m4).
+- **A symlink at the pinned path, or a self-issued repo-path line** (r1-m2): both need the real repository moved away
+  (`mv`) and replaced by a link or a clone; `resolve()` follows the link, and a repo-path line is accepted only when
+  the pinned path no longer exists. Not closed in code; it is an act on the owner's file system, visible in history.
+- **Swapping module globals in-process** (r1-m3, r1-m4): replacing the fetcher's `REAL_HOOKS` or
+  `_real_witness_hooks`, or assigning both `_GATE` and `_GUARD_PASSED`, after the guard and inside the running
+  process. `guard`, `_GUARD_FAILURES` and `HOOKS['commit']` are identity-checked; the rest needs a harness that
+  imports the runner and patches it, which is not the registered command.
+- **Machine-level tampering**: the stdlib's own `__pycache__` (the fingerprint hashes `.py` and `.so`), the system
+  clock (the witness's server date and the archive's 2028-12 key still gate the fetch), site-packages (unreachable
+  under `-S`).
+
 **The fetcher** (`r016_fetch.py`):
 - `fetch()` takes no argument and runs only from the real repository; `_fetch_in()` (tests only) refuses when the
   tree, the store or the ledger lies in the real repository (M1), before anything that could write;
-- the guard (clock gate) first, then the **witness** (m1): the archive must list BTCUSDT 2027-12 and the listing's
-  HTTP `Date` must be ≥ 2028-01-08 — before any row is committed or any file written, so an early run (a forged
-  clock) leaves nothing behind; attempts committed before 2028-01-08 never count toward persistence;
-- pulls Binance klines 2026-07 → 2027-12 and funding 2025-03 → 2027-12 (every USDT symbol), the exchangeInfo, the HL
+- the guard (clock gate) first, then the **witness** (m1): the archive must list BTCUSDT 2028-12 and the listing's
+  HTTP `Date` must be ≥ 2029-01-08 — before any row is committed or any file written, so an early run (a forged
+  clock) leaves nothing behind; attempts committed before 2029-01-08 never count toward persistence;
+- pulls Binance klines 2026-07 → 2028-12 and funding 2025-03 → 2028-12 (every USDT symbol), the exchangeInfo, the HL
   probe; later months counted, never fetched; months ≤ 2026-06 never re-fetched;
 - every zip verified against `.CHECKSUM` and parsed before an atomic write; **on resume every stored file is
   re-checked against `.CHECKSUM`** and re-fetched if it differs (m5d); never cached: an error, an empty answer, a
   mismatch;
-- coverage, keyed (m5): BTCUSDT every forward day (never waivable); the 2026-06/07 and **2027-11/12 seams**; contiguous
+- coverage, keyed (m5): BTCUSDT every forward day (never waivable); the 2026-06/07 and **2028-11/12 seams**; contiguous
   forward months; **a funding file for every (symbol, month) with a traded kline row**; **every live COIN perp of the
-  2028 exchangeInfo onboarded before 2027-12 has forward klines** (a truncated listing cannot drop a symbol silently);
+  2029 exchangeInfo onboarded before 2028-12 has forward klines** (a truncated listing cannot drop a symbol silently);
 - the same key on 3 committed attempts ≥ 24 h apart (all after the gate) becomes unavailable, ≤ 10 names; BTCUSDT
   keys never;
 - S3 pages forward (exclusive `marker`); HL windows [a, b − 1 ms] (inclusive `endTime`).
 
-**Tests.** `tests/test_r016.py`: **205** checks, all synthetic, with **every socket connection disabled** (m4). Both
+**Tests.** `tests/test_r016.py`: **208** checks, all synthetic, with **every socket connection disabled** (m4). Both
 layouts (runner at the top level and in `research/alpha/`) for the guard and the end-to-end fetch → approval → read.
 A **sandbox** stands in for the real repository (a fresh git repository with 016's code, REAL_REPO and ANCHOR
 rewritten to it, synthetic data; never a clone of the real repository, never real data): there the registered
 command refuses only on (t) and (g1), and a clone with its data copied, the fetcher run in that clone, a linked
-worktree and a detached HEAD each refuse with (w). `tests/test_r016_mutants.py`: **26 of 26 mutants killed** (8 of 8 unmutated baselines pass) — each of the
+worktree and a detached HEAD each refuse with (w). `tests/test_r016_mutants.py`: **27 of 27 mutants killed** (8 of 8 unmutated baselines pass; Revision 2 adds the `-X` check) — each of the
 protections review B listed (and the new ones) is deleted in its own sandbox, and the targeted test fails on the named
 check. **No test goes stale**: the real-file checks accept DRAFT or REGISTERED, the date checks are conditional on
-today, and "no approval line" is required only while no `fetched` row exists (m9). Commit-state simulation (`scratchpad/scripts/r016_commit_sim.sh`: a `git clone --local` with its own `.git` and **no data**, real or copied): 202 of 202 pass at DRAFT and at REGISTERED (in a clone the three real-tree M1 checks become one check that the clone is refused with (w)), and the real guard in the REGISTERED clone refuses with **(w)** (four lines) and (t) — the Revision-0 simulation's "only (t) and (g1)" is now impossible.
+today, and "no approval line" is required only while no `fetched` row exists (m9). Commit-state simulation (`scratchpad/scripts/r016_commit_sim.sh`: a `git clone --local` with its own `.git` and **no data**, real or copied): 205 of 205 pass at DRAFT and at REGISTERED (in a clone the three real-tree M1 checks become one check that the clone is refused with (w)), and the real guard in the REGISTERED clone refuses with **(w)** (four lines) and (t) — the Revision-0 simulation's "only (t) and (g1)" is now impossible.
 
 **Procedure.**
-1. The recheck, then REGISTERED (the orchestrator), committed with the code; every `.py` at the top of
-   `research/alpha` and in `ct16/` committed (015's and any later study's included). The orchestrator writes reg0
-   into the programme document.
-2. From 2028-01-08, in the real repository, on a named branch: `python3 -I -S research/alpha/r016_fetch.py`,
+1. REGISTERED (the orchestrator), committed with the code **in the main worktree of the real repository** and
+   **tagged `r016-registered`** (an annotated tag on reg0; review B r1-m1: a REGISTERED commit made in a linked
+   worktree and squashed away could otherwise leave no REGISTERED content in `--all --reflog`; the tag keeps reg0
+   reachable for the 27 months, and anyone can check `git rev-parse r016-registered` against the guard's reg0). Every
+   `.py` at the top of `research/alpha` and in `ct16/` committed (015's and any later study's included). The
+   orchestrator writes reg0 into the programme document.
+2. From 2029-01-08, in the real repository, on a named branch: `python3 -I -S research/alpha/r016_fetch.py`,
    resumable until its `fetched` row.
 3. The orchestrator reads the fetch report (counts only), then commits `016 read: APPROVED <date> row <sha256>`.
 4. `python3 -I -S research/alpha/r016_run.py --run`, once. The result is written into this file in its own terms.
 5. **Clean-up rule for an early run** (review B): an early fetch is refused by the clock gate before anything is
    written; if one ever leaves a `fetch_started` or attempt row (a forged clock and a forged server date), the rows
-   stay, they are ledgered, and the fetch resumes in 2028 (their attempts never count toward persistence, and every
+   stay, they are ledgered, and the fetch resumes in 2029 (their attempts never count toward persistence, and every
    stored file is re-checked). Nothing is deleted from `results.jsonl`, ever.
 
 ## 12. Known weaknesses, stated now
@@ -485,7 +527,8 @@ today, and "no approval line" is required only while no `fetched` row exists (m9
 - **`000l` and 008 inside (c):** 2026-07 → 09 were looked at as cross-sectional momentum ICs and will be as HL
   inverted positioning. Neither is this book's statistic; both are outcome-adjacent.
 - **"As published" depends on the Table-4 mapping** (§6): the synthetic decade matches the α/vol ratio, not β or vol.
-  If the paper's α owes less to the leverage artefact than the sim says, C2 is too low and `decayed` too rare
+  If the paper's α owes less to the leverage artefact than the GJR t(3) sim assumes (≈ ⅓; ≈ 12% under symmetric
+  GARCH, review A R1-m1), C2 is too low and `decayed` too rare
   (conservative for a kill switch only in the sense that it rarely fires; the ladder then ends in `not_demonstrated`,
   which ends any allocation too).
 - **The timing statistic counts vol timing as timing** (inverse-vol sizing moves weights with predictable vol); the
@@ -515,10 +558,10 @@ today, and "no approval line" is required only while no `fetched` row exists (m9
 | D11 | instrument | perp closes; no funding in the primary | §8 |
 | D12 | new members | enter at their current Combo target | the signal is a property of the price path |
 | D13 | direction | long-only; long/short reported | p. 3 |
-| **D14** | **statistic** | **the timing return t_A (Lo 2008), CR1 by month, G = 33**; the factor α (constant, half-year, year slopes) reported | review A B1: the factor α fails in leverage-effect bulls; t_A has mean ≈ −cost under any constant drift |
-| **D15** | **`alive`** | t_A ≥ CAL_H1 = 1.75 and t_A,c ≥ 1.282 | §4.2, §5; review A B1, B2 |
-| **D16** | **`decayed`** | t_A < C2 = −1.26 (Table-4 worlds × forward drift 0 / ±40%) | §4.2, §6; review A M1 |
-| D17 | calendars | (a) 2025-03-20 → 2026-06-30; (c) 2026-07-01 → 2027-12-31; one read on or after 2028-01-08 | §1 |
+| **D14** | **statistic** | **the timing return t_A (Lo 2008), CR1 by month, G = 45**; the factor α (constant, half-year, year slopes) reported | review A B1: the factor α fails in leverage-effect bulls; t_A has mean ≈ −cost under any constant drift |
+| **D15** | **`alive`** | t_A ≥ CAL_H1 = 2.00 and t_A,c ≥ 1.282 | §4.2, §5; review A B1, B2 |
+| **D16** | **`decayed`** | t_A < C2 = −0.94 (Table-4 worlds × forward drift 0 / ±40%) | §4.2, §6; review A M1 |
+| D17 | calendars | (a) 2025-03-20 → 2026-06-30; (c) 2026-07-01 → **2028-12-31**; one read on or after **2029-01-08** | §1; review A R1-M1 |
 | **D18** | span (a) | pooled, with (c) required at 10% on its own | §7; review A B2 |
 | **D19** | calibration | 19 worlds × 3,000 draws (incl. GJR bulls +40/+80/+120%, ±crash days, asymmetric vol timing, GJR bear); CAL = max(q95 + 2 SE), rounded up; C2 = min(q05 − 2 SE) over 9 as-published worlds, rounded down | review A B1, M1 |
 | **D20** | outcomes and bar | the three-step ladder; the bar at the Bayes-Kelly size of the shrunk timing Sharpe vs 4% | review A M1, M3 |
@@ -556,6 +599,19 @@ listing's line count and last month; the 2026 exchangeInfo's field names and typ
 does). Synthetic only: the Table-4 pilot (scratchpad), the calibration and power run (`data/r016/logs/`; Revision
 0's logs kept in `data/r016/logs_rev0/`).
 
+**Revision 2 (drafter):** the two recheck appendices and their tables; `000u`. Synthetic only: the re-run
+calibration and power at the 2028-12-31 end (`data/r016/logs/`; Revision 1's kept in `data/r016/logs_rev1/`).
+
+**`000u` (ledgered by the orchestrator):** during review B's recheck, one probe without the network sandbox sent **one
+real listing request** to Binance's archive for BTCUSDT's monthly 1d kline file names. The answer carried file names
+for months in span (c) (2026-07 →) and the server date: **existence of files, no values**; nothing was downloaded,
+parsed beyond key names, or written. Span (c) stays unread as data.
+
+**015 has run** (`results.jsonl` lines 1–3: its started, result and reported rows, committed; outcome
+`not_demonstrated`). They are another registration's rows in the shared ledger: 016's scan matches only the `016-`
+prefix, does not block on them, and keeps refusing on an unparseable line that mentions 016 (tested: a committed
+015 row leaves the fetch gate open; review B's recheck confirmed the same against the real ledger, read-only).
+
 **Designer knowledge** (§0) is disclosed, not a read.
 
 ## 16. SHA-256 of the code and data the read depends on
@@ -563,12 +619,12 @@ does). Synthetic only: the Table-4 pilot (scratchpad), the calibration and power
 | file | sha256 |
 |---|---|
 | `ct16/__init__.py` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `ct16/rule.py` | `fb8eb85d92a890257b9a144656b9ca11502f96683a99fca57cc129c817eab9bf` |
-| `ct16/stats.py` | `84a1346f68c53053f6ddecdeffe6330decedad93703d963a1353f57c8094f716` |
+| `ct16/rule.py` | `5138cc0e34954eda46fe2800bc36df963e57010f73fed31780b9051acc0a5552` |
+| `ct16/stats.py` | `0f25cd45a1a314c7f186857196d2ffa8572ac564c88eac35338185f315ccd4c2` |
 | `ct16/data.py` | `bffd4a78bec08fcdf3d5cc258f3eaa7bfeefea031f8ae64727ed02ff27b224e7` |
-| `ct16/sim.py` | `c2bfe1513d12b6e10f75d3bdf74b4f91e0a7b4b10fe6ffbbee66d1cca8771154` |
-| `r016_run.py` | `c4721f231777c6a2e06f3b55c24f089037599ddc6c54c2cca76f4afcdb42b489` |
-| `r016_fetch.py` | `f3c7487abf319fa97c5473a05c85607256ab42944759e83fe41b2f40fbb48466` |
+| `ct16/sim.py` | `e626e49b30fa863dbe2382111ff0def0c6f5cf39aee940e4a6aee1822579e6bc` |
+| `r016_run.py` | `718bf42f52aa8f4128986bd41795db6369ff4ba46a8abb659caf53b3eed9b70c` |
+| `r016_fetch.py` | `dfb1f188aa615e5b4678b11df62f628e4b292e2eabc37b2f15d3f9870538f33b` |
 | `data/scout_c1/bn_um_klines_1d_monthly/SHA256SUMS` | `ff50da311181f092581bf61b953fe51750872d33cc9e8a7c7021ffe2a7f91b31` |
 | `data/r016/static/fapi_exchangeInfo_20261011.json` | `a7f720f5ece63fe9ab087cbdd9fecc66d18645f113896b81ec171c89636ed39f` |
 
@@ -613,3 +669,17 @@ T = `tests/test_r016.py`, X = `tests/test_r016_mutants.py`.
 | Orch.: no real data in clones | the commit simulation and every sandbox use synthetic trees only | §11, §15 |
 | Orch.: the power run was killed mid-way | the run is resumable per world (keyed by spec, draws, seeds); a `set`-order float nondeterminism found by the resume check fixed (sorted iteration) and the run redone; byte-identical re-run and a fresh world re-run verified | M `run_set`, `power_run`; U `run_book.build`; R `power`; T `sim_checks`; §6 |
 
+
+## R2. Revision 2: the Revision 1 rechecks and their fixes (2026-10-13)
+
+| finding | fix | where |
+|---|---|---|
+| **A R1-M1** the end date (accepted by the orchestrator) | span (c) 2026-07-01 → **2028-12-31**; G = 45; the fetch and read gate **2029-01-08**; fetch months 2026-07 → 2028-12 (klines) and 2025-03 → 2028-12 (funding); the second seam, the witness key and the listing cross-check move with the end; eight half-year cells (reported); CAL_H1 and C2 recalibrated at 3,000 draws per world on the 19 null worlds and the nine as-published worlds (0 / ±40%/yr), MC SE and the +2 SE rule; the power table re-run | U `SPAN_C`, `READ_NOT_BEFORE`, `CELLS`; R `FWD_MONTHS`, `FUNDING_MONTHS`; F `coverage`, `hl_presence`; M `CELL_SEQ`, the world-cache key now carries the calendar; S `CAL_H1`, `C2`; §1, §4–§7, §11 |
+| **B R1-M1** `-X pycache_prefix` restores forged bytecode | any `-X` option refused (`sys._xoptions`, `orig_argv`); a pre-existing prefix kept only when the running program is `r016_fetch.py` and the prefix is its own `_R016_PREFIX`; (v) refuses a prefix this program did not create; test plus mutant (the test fails with the check removed) | R header, `environment_failures`; F `_R016_PREFIX`; T `env_checks`; X `B-R1-M1` |
+| B r1-m1 reg0 lost through a worktree squash | procedure: REGISTERED committed in the main worktree and tagged `r016-registered` (no code change) | §11 procedure 1 |
+| B r1-m2 symlink at the pinned path; self-issued repo-path line | stated as a residual needing deliberate tampering (the real repository moved away) | §11 |
+| B r1-m3, r1-m4 in-process hook / gate swaps; machine-level tampering | stated as residuals, as in 015 | §11 |
+| A R1-m1 the leverage-artefact share | stated as conditional on the GJR t(3) calibration (≈ 12% under symmetric GARCH); kept as the conservative mapping | §6, §12 |
+| A R1-m2 scale-to size | `paper_then_scale` scales toward min(Bayes-Kelly, 2.8 × the paper's sizing) | §4.2 |
+| A (recheck) the bar clears on every `alive` | accepted as a sanity floor, as §4.3 says | §4.3 |
+| Disclosures | `000u` (one real listing request returned span-(c) file names, no data); 015's committed rows in the shared ledger, handled and tested | §15; T `guard_checks` |

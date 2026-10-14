@@ -1,6 +1,6 @@
 """Registration 016 — the guarded forward fetch (Revision 1). Runs only through r016_run's guard in mode 'fetch':
 REGISTERED (reg0-bound), committed, unmodified, the real repository's main worktree on a named branch, python -I -S
-with the pinned interpreter, code and static data matching the table, today >= 2028-01-08 (UTC), results.jsonl clean,
+with the pinned interpreter, code and static data matching the table, today >= 2029-01-08 (UTC), results.jsonl clean,
 no fetched / read_started / read row anywhere.
 
     python3 -I -S research/alpha/r016_fetch.py      # resumable until its `fetched` row
@@ -9,23 +9,23 @@ The real fetch takes NO argument. `_fetch_in()` (tests only) refuses unless the 
 lie outside the real repository (review B M1: mock hooks and a `now` never touch the real repository in any role).
 
 Witness (review B m1): after the guard, before any row is committed or any file written, the real fetch lists BTCUSDT's monthly
-1d keys and requires the 2027-12 key, and requires the HTTP `Date` of that answer (UTC) >= 2028-01-08: an early run
-leaves nothing behind. Attempts committed before 2028-01-08 never count toward the persistence chain.
+1d keys and requires the 2028-12 key, and requires the HTTP `Date` of that answer (UTC) >= 2029-01-08: an early run
+leaves nothing behind. Attempts committed before 2029-01-08 never count toward the persistence chain.
 
 What it pulls (free, keyless, public; nothing else):
-1. Binance USDⓈ-M monthly 1d klines (data.binance.vision), every USDT symbol, months 2026-07 -> 2027-12. Keys of
+1. Binance USDⓈ-M monthly 1d klines (data.binance.vision), every USDT symbol, months 2026-07 -> 2028-12. Keys of
    later months are COUNTED, never fetched; months <= 2026-06 are the C1 scout's pinned pull (never re-fetched).
-2. Binance USDⓈ-M monthly fundingRate, every USDT symbol, months 2025-03 -> 2027-12 (the deployable variant).
+2. Binance USDⓈ-M monthly fundingRate, every USDT symbol, months 2025-03 -> 2028-12 (the deployable variant).
 3. Binance fapi exchangeInfo (contract types; the listing cross-check).
 4. Hyperliquid `meta` and, per HL coin, its first funding time and the last month start at which it still funded.
 Every zip is verified against Binance's `.CHECKSUM` (also on resume: a stored file is re-checked) and parsed before an
 atomic write. Never cached: an error, a null, an empty answer or a checksum mismatch. S3 ListObjects pages FORWARD
 (`marker` exclusive); HL `fundingHistory` takes inclusive start and end, so windows are [a, b - 1 ms].
 Coverage (keyed refusals; review B m5): BTCUSDT every forward day (never waivable); the 2026-06 / 2026-07 seam and the
-2027-11 / 2027-12 seam for every symbol trading at the end of the earlier month; contiguous forward months; a funding
-file for every (symbol, month) with a traded kline row in 2025-03 -> 2027-12; every PERPETUAL/COIN USDT contract of
-the 2028 exchangeInfo onboarded before 2027-12 and alive after 2026-07-01 has forward klines. The same key on 3
-committed attempts, each >= 24 h after the previous one and all on or after 2028-01-08, becomes 'unavailable
+2028-11 / 2028-12 seam for every symbol trading at the end of the earlier month; contiguous forward months; a funding
+file for every (symbol, month) with a traded kline row in 2025-03 -> 2028-12; every PERPETUAL/COIN USDT contract of
+the 2029 exchangeInfo onboarded before 2028-12 and alive after 2026-07-01 has forward klines. The same key on 3
+committed attempts, each >= 24 h after the previous one and all on or after 2029-01-08, becomes 'unavailable
 (persistent)', recorded and counted (<= 10 names, else stop for a decision); BTCUSDT keys never do.
 """
 import datetime as dt
@@ -42,7 +42,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.pycache_prefix = tempfile.mkdtemp(prefix='r016f-pyc-')  # BEFORE importing the guard (review B M2)
+_R016_PREFIX = tempfile.mkdtemp(prefix='r016f-pyc-')       # created HERE, recorded for the guard (review B R1-M1)
+sys.pycache_prefix = _R016_PREFIX                            # BEFORE importing the guard (review B M2)
 sys.dont_write_bytecode = True
 sys.path.append(str(HERE))                                  # after the stdlib
 import r016_run as run016  # noqa: E402
@@ -182,7 +183,7 @@ def _write(path, blob):
 
 
 def witness_failures(hooks):
-    """Review B m1: the archive must already hold BTCUSDT 2027-12 and the server's own clock must be past the gate."""
+    """Review B m1: the archive must already hold BTCUSDT 2028-12 and the server's own clock must be past the gate."""
     keys, date = hooks['witness']()
     out = []
     if not any(month_of_key(k) == run016.FWD_MONTHS[1] for k in keys):
@@ -258,7 +259,7 @@ def pull(hooks, store, base, sub, first, last, kind):
 def hl_presence(hooks, coins, end_ms):
     """{coin: {'first': ms | None, 'last': month-start ms at which it still funded | None (alive at the end)}}."""
     out, errors = {}, {}
-    starts = [ms(dt.date.fromisoformat(m + '-01')) for m in months('2025-03', '2027-12')]
+    starts = [ms(dt.date.fromisoformat(m + '-01')) for m in months(run016.FUNDING_MONTHS[0], run016.FWD_MONTHS[1])]
     for c in coins:
         try:
             page = hooks['hl_funding'](c, int(HL_START.timestamp() * 1000), end_ms - 1)
@@ -296,16 +297,18 @@ def coverage(root, store, files, a_sums, ex=None):
     refuse = {}
     by_sym, traded = {}, set()
     span = months(*run016.FWD_MONTHS)
-    end_nov = R.day(dt.date(2027, 11, 30))
+    last_mo = run016.FWD_MONTHS[1]
+    prev_mo = months(run016.FWD_MONTHS[0], last_mo)[-2]
+    end_prev = R.day(dt.date.fromisoformat(last_mo + '-01')) - 1
     lo_f, hi_f = R.day(R.SPAN_C[0]), R.day(R.END) + 1
     for rel in files:
         fm = D.file_month(rel)
         if fm and fm[0] == 'klines':
             by_sym.setdefault(fm[1], set()).add(fm[2])
-            mos, tail = traded_months((store / rel).read_bytes(), lo_f, hi_f, end_nov - 6 if fm[2] == '2027-11' else None)
+            mos, tail = traded_months((store / rel).read_bytes(), lo_f, hi_f, end_prev - 6 if fm[2] == prev_mo else None)
             traded |= {(fm[1], m) for m in mos}
-            if fm[2] == '2027-11' and tail and not any(D.file_month(r) == ('klines', fm[1], '2027-12') for r in files):
-                refuse[f'klines_seam:{fm[1]}:2027-12'] = 'traded at the end of 2027-11 but no 2027-12 file'
+            if fm[2] == prev_mo and tail and not any(D.file_month(r) == ('klines', fm[1], last_mo) for r in files):
+                refuse[f'klines_seam:{fm[1]}:{last_mo}'] = f'traded at the end of {prev_mo} but no {last_mo} file'
     for sym, have in sorted(by_sym.items()):
         gap = [m for m in span if min(have) <= m <= max(have) and m not in have]
         if gap:
@@ -328,7 +331,7 @@ def coverage(root, store, files, a_sums, ex=None):
     for x in (ex or {}).get('symbols', []):
         s, ob, dl = x.get('symbol', ''), int(x.get('onboardDate') or 0), int(x.get('deliveryDate') or 0)
         if (SYM_RE.match(s) and x.get('contractType') == 'PERPETUAL' and x.get('underlyingType') == 'COIN'
-                and 0 < ob < ms(dt.date(2027, 12, 1)) and (x.get('status') == 'TRADING' or dl >= ms(R.SPAN_C[0]))
+                and 0 < ob < ms(dt.date.fromisoformat(run016.FWD_MONTHS[1] + '-01')) and (x.get('status') == 'TRADING' or dl >= ms(R.SPAN_C[0]))
                 and s not in by_sym):
             refuse[f'listing_missing:{s}'] = 'a live COIN perp of the exchangeInfo has no forward klines in the listing'
     btc = sorted(by_sym.get(R.BTC, ()))
@@ -360,7 +363,7 @@ def attempt_history(root, results_rel=run016.RESULTS_REL):
 
 
 def apply_persistence(refusals, att, now_s, not_before_s=None):
-    """Split keyed refusals into (blocking, persistent). Only attempts committed on or after 2028-01-08 count."""
+    """Split keyed refusals into (blocking, persistent). Only attempts committed on or after 2029-01-08 count."""
     nb = not_before_s if not_before_s is not None else ms(R.READ_NOT_BEFORE) / 1000
     blocking, persistent = {}, {}
     for key, msg in refusals.items():
@@ -440,7 +443,7 @@ def fetch():
     f = run016.real_tree_failures()
     if f:
         raise SystemExit('\n'.join(f))
-    ctx = run016.guard('fetch')                         # the clock gate first: no request at all before 2028-01-08
+    ctx = run016.guard('fetch')                         # the clock gate first: no request at all before 2029-01-08
     wf = witness_failures(_real_witness_hooks())        # then the archive's and the server's own witness
     if wf:
         raise SystemExit('\n'.join(wf))

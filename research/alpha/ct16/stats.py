@@ -312,10 +312,10 @@ def forward_idx(days):
     return [i for i, d in enumerate(days) if d >= R.day(R.SPAN_C[0])]
 
 
-CAL_H1 = 1.75                      # §5: max over the 19 calibration worlds of q95 + 2 MC SE, rounded up
-                                   # ('null vol-timing pays': q95 1.691, SE 0.028 -> 1.746), 3,000 draws per world
-C2 = -1.26                         # §6: min over the 9 Table-4 worlds of q05 - 2 MC SE, rounded down
-                                   # ('as published h120 drift +0%': q05 -1.174, SE 0.040 -> -1.254)
+CAL_H1 = 2.00                      # §5 (Revision 2, G = 45): max over the 19 calibration worlds of q95 + 2 MC SE, rounded
+                                   # up ('null vol-timing pays': q95 1.930, SE 0.033 -> 1.995), 3,000 draws per world
+C2 = -0.94                         # §6 (Revision 2): min over the 9 Table-4 worlds of q05 - 2 MC SE, rounded down
+                                   # ('as published h120 drift +40%': q05 -0.857, SE 0.041 -> -0.939)
 
 
 def h1_crit(G, cal=None):

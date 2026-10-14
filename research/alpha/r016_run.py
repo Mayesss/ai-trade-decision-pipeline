@@ -20,7 +20,7 @@ The read refuses unless (every check is a refusal, never an assert; `r016_fetch.
        modified importable file at research/alpha's top level or in ct16/, and no module there named like a stdlib
        module (research/alpha is APPENDED to sys.path, after the stdlib) — commit every top-level .py first;
   (e)  every guarded code and data file is listed exactly once in the HEAD table and matches it;
-  (t)  today (UTC) >= 2028-01-08 (the registered end 2027-12-31 + 8 days); a `now` argument is refused whenever the
+  (t)  today (UTC) >= 2029-01-08 (the registered end 2028-12-31 + 8 days); a `now` argument is refused whenever the
        real repository is involved (review B M1);
   (k)  results.jsonl is tracked, equals its HEAD blob, and is empty or ends with a newline;
   (w)  the repository is THE real one: this file's repository is the pinned REAL_REPO (or the path of a committed
@@ -61,9 +61,14 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-if not (sys.pycache_prefix and Path(sys.pycache_prefix).name.startswith('r016f-pyc-')
-        and Path(sys.pycache_prefix).parent == Path(tempfile.gettempdir())):   # keep the fetcher's own fresh prefix
+_MAIN = sys.modules.get('__main__')
+if not (_MAIN is not None and sys.pycache_prefix
+        and Path(getattr(_MAIN, '__file__', '') or '/').resolve() == (HERE / 'r016_fetch.py').resolve()
+        and getattr(_MAIN, '_R016_PREFIX', None) == sys.pycache_prefix):
+    # Revision 2 (review B R1-M1): a prefix is kept ONLY when it is the one r016_fetch.py itself just created as the
+    # running program; any other pre-existing prefix (`-X pycache_prefix=...`, PYTHONPYCACHEPREFIX) is replaced.
     sys.pycache_prefix = tempfile.mkdtemp(prefix='r016-pyc-')   # never load bytecode from an existing __pycache__
+_PYC_OWN = sys.pycache_prefix
 sys.dont_write_bytecode = True
 sys.path.append(str(HERE))                                   # AFTER the stdlib (review B M2)
 from ct16 import data as D  # noqa: E402
@@ -95,8 +100,8 @@ GUARDED_CODE = ('ct16/__init__.py', 'ct16/rule.py', 'ct16/stats.py', 'ct16/data.
 GUARDED_DATA = (f'{KLINES_A_REL}/SHA256SUMS', STATIC_EXCHANGE_REL)
 ALLOWED_MODULES = ('ct16/__init__.py', 'ct16/rule.py', 'ct16/stats.py', 'ct16/data.py', 'r016_run.py', 'r016_fetch.py')
 A_MONTH_LAST = '2026-06'                                     # the scout pull's last month (the programme's cut)
-FWD_MONTHS = ('2026-07', '2027-12')                          # klines fetched by r016_fetch.py
-FUNDING_MONTHS = ('2025-03', '2027-12')                      # funding fetched by r016_fetch.py (the test span)
+FWD_MONTHS = ('2026-07', '2028-12')                          # klines fetched by r016_fetch.py
+FUNDING_MONTHS = ('2025-03', '2028-12')                      # funding fetched by r016_fetch.py (the test span)
 
 HASH_ROW = re.compile(r'^\|\s*`([^`]+)`\s*\|\s*`([0-9a-f]{64})`\s*\|', re.M)
 STATUS = re.compile(r'^\*\*Status: (\w+)', re.M)
@@ -332,6 +337,10 @@ def environment_failures(root):
         out.append('(v) run with python3 -I -S (no site): a site-packages .pth would execute at startup')
     if 'site' in sys.modules or type(sys.flags).__name__ != 'flags' or not isinstance(sys.flags, tuple):
         out.append("(v) the site module ran or sys.flags is not the interpreter's own struct")
+    if sys._xoptions or any(a.startswith('-X') for a in sys.orig_argv[1:]):
+        out.append(f'(v) -X options are refused (review B R1-M1): {sorted(sys._xoptions)}')
+    if sys.pycache_prefix != _PYC_OWN:
+        out.append('(v) sys.pycache_prefix is not the fresh prefix this program created')
     opts = [a for a in sys.orig_argv[1:] if a.startswith('-') and not a.startswith('--')]
     if not (any('I' in a for a in opts) and any('S' in a for a in opts)):
         out.append('(v) the command line does not carry -I and -S (sys.orig_argv)')
@@ -699,7 +708,7 @@ class Panel:
     def load(self, static_exchange=None):
         """(syms, funding, non_coin, hl, counts). Span (a) and the warm-up from the scout's pull (each file checked
         against its pinned SHA256SUMS, itself checked against the registered table; months <= 2026-06; rows before
-        2026-07-01), the forward span from the fetch manifest (months 2026-07 -> 2027-12, each file checked)."""
+        2026-07-01), the forward span from the fetch manifest (months 2026-07 -> 2028-12, each file checked)."""
         before = R.day(R.END) + 1
         sums_blob = (self.a / 'SHA256SUMS').read_bytes()
         static_path = Path(static_exchange or _HERE0 / STATIC_EXCHANGE_REL)

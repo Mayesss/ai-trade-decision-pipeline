@@ -39,14 +39,15 @@ TRADED_TAIL_DAYS = 7                                   # D9 (delisting cut): tra
 # ------------------------------------------------------------------ the calendars (registration §2)
 PAPER_END = dt.date(2025, 3, 19)                       # §5-§7: every backtest ends 2025-03-19
 SPAN_A = (dt.date(2025, 3, 20), dt.date(2026, 6, 30))  # out of the paper's sample, before the programme's cut
-SPAN_C = (dt.date(2026, 7, 1), dt.date(2027, 12, 31))  # forward, unread, claimed openly
+SPAN_C = (dt.date(2026, 7, 1), dt.date(2028, 12, 31))  # forward, unread, claimed openly (Revision 2: end 2028-12-31)
 START, END = SPAN_A[0], SPAN_C[1]
-READ_NOT_BEFORE = dt.date(2028, 1, 8)                  # END + 7 days: the guard refuses any fetch or read before it
+READ_NOT_BEFORE = dt.date(2029, 1, 8)                  # END + 8 days: the guard refuses any fetch or read before it
 CELLS = ((dt.date(2025, 3, 20), dt.date(2025, 6, 30)), (dt.date(2025, 7, 1), dt.date(2025, 12, 31)),
          (dt.date(2026, 1, 1), dt.date(2026, 6, 30)), (dt.date(2026, 7, 1), dt.date(2026, 12, 31)),
-         (dt.date(2027, 1, 1), dt.date(2027, 6, 30)), (dt.date(2027, 7, 1), dt.date(2027, 12, 31)))
+         (dt.date(2027, 1, 1), dt.date(2027, 6, 30)), (dt.date(2027, 7, 1), dt.date(2027, 12, 31)),
+         (dt.date(2028, 1, 1), dt.date(2028, 6, 30)), (dt.date(2028, 7, 1), dt.date(2028, 12, 31)))
 YEAR_CELLS = ((dt.date(2025, 3, 20), dt.date(2025, 12, 31)), (dt.date(2026, 1, 1), dt.date(2026, 12, 31)),
-              (dt.date(2027, 1, 1), dt.date(2027, 12, 31)))   # reported variant (D14)
+              (dt.date(2027, 1, 1), dt.date(2027, 12, 31)), (dt.date(2028, 1, 1), dt.date(2028, 12, 31)))   # reported
 STUB_MONTH, STUB_INTO = '2025-03', '2025-04'           # the 12-day March 2025 stub joins April's cluster (G = 33)
 
 # ------------------------------------------------------------------ the universe exclusions (§3, §7.1; D8)
