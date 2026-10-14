@@ -20,10 +20,13 @@ first: `docs/alpha-discovery-2026-10-13.md` (round 4), `docs/edge-discovery-2026
 ## Open items
 
 1. **016 — crypto trend following, the paper's rule verbatim**
-   (`research/alpha/registrations/016-crypto-trend-verbatim.md`). Status at
-   the end of round 4: see the registration's status line and the programme
-   document §3 (Revision 2 with the forward span to **2028-12-31**; the read
-   is gated to **2029-01-08**). Nothing runs before then. When the date
+   (`research/alpha/registrations/016-crypto-trend-verbatim.md`):
+   **REGISTERED 2026-10-14**, commit `56628fc`, tag `r016-registered` (keep
+   the tag). Forward span to **2028-12-31**; the read is gated to
+   **2029-01-08**; nothing runs before then. Thresholds: *alive* iff the
+   timing-return t ≥ 2.00 and span (c) alone ≥ 1.282; *decayed* iff t <
+   −0.94. Power: alive at SR 1 ≈ 0.53–0.85; a dead rule ends *decayed* only
+   15–23% of the time. When the date
    comes: `python3 -I -S research/alpha/r016_fetch.py`, the approval line
    the registration specifies, then `python3 -I -S research/alpha/r016_run.py
    --run`, once. Outcomes: *alive* / *not_demonstrated* / *decayed*; any owner

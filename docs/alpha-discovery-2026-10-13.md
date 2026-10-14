@@ -29,7 +29,7 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 | 008 (L3) | Inverted 001 T3 positioning, HL holdout only | REGISTERED; attempts 1–2 done (one genuine Bitget gap, PONSUSDT). **Optional (owner, 2026-10-13)**: attempt 3 any day (≥ 24 h after attempt 2; no deadline), attempt 4 ≥ 24 h later, then the A1 check and the one read | 1 in 5 (gross) | 1 in 20 (taker book never traded) | a confirm only earns a cost-reduced follow-up |
 | A1 | Be the house: perp-DEX LP pools and protocol vaults (counterparty to persistent losers, fact 1) | **scout done; no trial** — an allocation with a venue-exploit tail (5–10%/yr est.), NAV test unpowered (~9 yr for t 2) | LLP 0.6 | LLP 1 in 6 | HLP-like; owner option: HLP + LLP sleeve ≤ 25% per venue |
 | B1 | US equities/ETFs/rates: scheduled and structural flows | **015 run: `not_demonstrated`** (z t 0.34 vs 1.92; raw +27 bp/month, t 0.85, vs published 85 bp; nothing in the paper's own T+3 windows). Auctions and FOMC weeks held; overnight drift, PEAD, `xyz` carry dead or lending | — | — | nothing at MES cost and a Kelly-consistent size |
-| C1 | Crypto trend following (N7-1), the paper's rule verbatim | **016: Revision 2 in progress** (timing-return primary per Lo 2008; forward span to 2028-12-31; read January 2029) | 1 in 3 | 1 in 5 (return), 1 in 15 (risk-adj.) | if alive: +13.7%/yr at ≈ 9% vol, +36–38% at 25% vol; month tail −30 to −40% at 25% |
+| C1 | Crypto trend following (N7-1), the paper's rule verbatim | **016 REGISTERED 2026-10-14** (`56628fc`, tag `r016-registered`): timing-return primary (Lo 2008), CAL 2.00, span (c) alone ≥ 1.282; decayed below −0.94; forward span to 2028-12-31; **read gated to 2029-01-08** | 1 in 3 | 1 in 5 (return), 1 in 15 (risk-adj.) | if alive: +13.7%/yr at ≈ 9% vol, +36–38% at 25% vol; month tail −30 to −40% at 25% |
 | D1 | New-perp listings: squeeze tail by mechanism vs 013 T2 frozen, for the unread confirmation calendar | **scout done; parked, no trial** — best trial is T2 frozen, P(confirm) ≈ 0.09, ≈ 0–4%/yr at the robust size after the peso charge; calendar stays unread | 1 in 3 | 1 in 20 | below HLP |
 | E1 | Structural payers beyond trading (BNB rewards, dollar yields, points, event contracts, futures/FX premia, pre-IPO perps) | **scout done; no trial** — all lending-like today; BNB stack ≈ 2.5%/yr hedged at the 2026-H1 pace | 9 in 10 (paid) | 1 in 4 | below HLP calm |
 
@@ -46,8 +46,8 @@ drawdown −2.5%. Its lending leg: about 3%/yr.
 - **HL `xyz` dex:** 0 trials; shares account-scoring selection with 001.
 - **US equity calendar flows (round 4):** 1 trial (015), no pass. The
   Europe month-end calendar 2014 → 2026-05 stays unread.
-- **Crypto time-series trend (round 4):** 016 drafting; forward span
-  2026-07-01 → 2027-12-31 claimed openly.
+- **Crypto time-series trend (round 4):** 016 REGISTERED (trial 1); forward
+  span 2026-07-01 → 2028-12-31 claimed openly; read from 2029-01-08.
 - **2026-07-01 → is held back for every new light,** unless a registration
   claims it openly. The 2026-07 → 2026-09 crypto market was looked at by
   other studies (`000l`); any registration on those months states it.
@@ -595,6 +595,30 @@ fresh runner-made pycache; the squash-merge minor closes by procedure (tag
 `r016-registered`); two in-process/symlink residuals stated. One real
 listing request during B's probes is ledgered as `000u`.
 
+**2026-10-14 — 016 Revision 2 committed (`0e01814`); 016 REGISTERED
+(`56628fc`, tag `r016-registered`). Round 4 closes.**
+- **Revision 2:** span (c) to 2028-12-31 (G 45; gate 2029-01-08 for fetcher
+  and runner). Recalibrated at 3,000 draws, verified by the orchestrator
+  from the run log: **CAL_H1 2.00** (binding: symmetric vol timing, q95
+  1.930 ± 0.033, + 2 SE) and **C2 −0.94** (as published, h120, +40% drift:
+  q05 −0.857 ± 0.041, − 2 SE). More conservative than review A's estimates
+  (≈ 1.84 / −0.72), whose worlds lacked the symmetric vol-timing world and
+  the drift worlds. **Power:** alive at SR 1 0.85 / 0.67 / 0.53 (h 20 / 60 /
+  120), SR 1.5 0.88–0.96, SR 0.75 0.32–0.59; decayed for a dead book 0.15–0.23;
+  decayed when as published 0.004–0.044; alive false pass 0.000–0.029
+  (leverage bulls 0.001–0.004); hindsight passes 0.017 / 0.022. 208/208,
+  27/27 mutants. `-X` refused; fresh runner-made bytecode prefix.
+- **Review B's Revision 2 recheck: register** (every `-X` and `PYTHON*`
+  variant refused; dates consistent; a stand-in with 015's rows fetched,
+  read once, refused a second read). Residuals stated at registration: a
+  concurrent same-user process racing the temp bytecode prefix; an
+  in-process `-c` program posing as the fetcher. Stale "G = 33 / 2027-12"
+  comments noted as cosmetic.
+- **Guard (`--check`):** refuses only with (t) "nothing is fetched or read
+  before 2029-01-08" and (g1) "fetch first". **Nothing runs before
+  2029-01-08.**
+- **Round 4 closes here.** Next session: `docs/alpha-discovery-next-prompt-2026-10-13.md`.
+
 ## 4. Distance to goal
 
 **At the start of round 4 (2026-10-13):** unchanged from round 3. Nothing
@@ -615,6 +639,10 @@ supported result: 010 T2, +2.96%/yr (the lending rate).
   - **016, crypto trend verbatim**: if alive at half strength ≈ +16–18%/yr
     at 25% vol, month tail −30 to −40%. Decided 2028-01; decay verdict is
     the likely answer.
+- **At the close of round 4 (2026-10-14):** 015 `not_demonstrated`; 016
+  registered, decided from 2029-01-08 (alive at SR 1 ≈ 0.53–0.85); 008
+  optional; the open-ended search is paused (owner). Nothing tested beats
+  HLP.
 - **After 015 (2026-10-13):** the month-end cycle is not demonstrated
   (≈ +27 bp a month at most, not significant; nothing at MES cost and a
   Kelly-consistent size). Still nothing beats HLP. 016 is the round's
@@ -652,6 +680,7 @@ Everything in round 2 §5 and round 3 §5 (all under
 | 016 drafter | `research/alpha/registrations/016-crypto-trend-verbatim.md` | 2026-10-13 | DRAFT committed `66df71a` (186/186) |
 | 016 review A (design) | `research/alpha/registrations/reviews/016-review-a.md` | 2026-10-13 | done: 2 blockers, 3 majors (accepted) |
 | 016 Revision 1 | drafter | 2026-10-13 | committed `1555bf8` (205/205); rechecks: A register after end-date change, B one major |
-| 016 Revision 2 | drafter | 2026-10-13 | running (end 2028-12-31; recalibration) |
+| 016 Revision 2 | drafter | 2026-10-13 | committed `0e01814` (208/208; 27/27 mutants); B recheck: register |
+| **016 REGISTERED** | `56628fc`, tag `r016-registered` | 2026-10-14 | waits for 2029-01-08 (fetch, approval, one read) |
 | 016 review B (guard/fetch) | `research/alpha/registrations/reviews/016-review-b.md` | 2026-10-13 | done: 1 blocker, 4 majors (accepted) |
 | 008 attempt-3 timer | — | 2026-10-13 | **stopped 2026-10-13 22:15: 008 made optional (owner)** |
